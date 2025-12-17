@@ -1,0 +1,12 @@
+{
+  "name": "wrinklefree-meta",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Meta repo for WrinkleFree projects - efficient LLM training and quantization",
+  "scripts": {
+    "clone": "meta git clone .",
+    "update": "meta git update",
+    "status": "meta git status",
+    "pull": "meta git pull"
+  }
+}
