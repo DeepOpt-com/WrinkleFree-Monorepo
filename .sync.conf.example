@@ -1,0 +1,48 @@
+# Project Sync Configuration Template
+# Copy this to .sync.conf and customize for your project
+
+# ============================================
+# Project-Wide Settings (Optional)
+# ============================================
+[project]
+# Space-separated list of subdirectories to run 'uv sync' on
+# Leave empty or omit if you don't use uv or have no sub-projects
+uv_projects=API-Manager Aider.PP OpenOrchestra
+
+# Path fix commands to run after sync (can have multiple path_fix lines)
+# These run on the remote machine and can use $REMOTE_DIR variable
+# Useful for fixing relative paths in pyproject.toml, config files, etc.
+path_fix=sed -i 's|file:\\.\\./API-Manager|file://$REMOTE_DIR/API-Manager|g' $REMOTE_DIR/OpenOrchestra/pyproject.toml
+path_fix=sed -i 's|file:\\.\\./API-Manager|file://$REMOTE_DIR/API-Manager|g' $REMOTE_DIR/Aider.PP/pyproject.toml
+path_fix=rm -f $REMOTE_DIR/OpenOrchestra/uv.lock $REMOTE_DIR/Aider.PP/uv.lock
+
+# ============================================
+# Remote Host Presets
+# ============================================
+
+[desktop]
+host=Desktop
+dir=/home/user/code/BigDeep
+# Optional: specify port and SSH key
+# port=22
+# key=~/.ssh/id_ed25519
+
+[gpu-server]
+host=user@192.168.1.100
+port=22
+dir=/workspace/BigDeep
+key=~/.ssh/id_rsa
+
+[cloud-dev]
+host=dev@cloud.example.com
+dir=/opt/projects/BigDeep
+key=~/.ssh/cloud_key
+
+# ============================================
+# Usage Examples
+# ============================================
+# ./sync.sh --preset desktop              # Use 'desktop' preset
+# ./sync.sh --preset gpu-server           # Use 'gpu-server' preset
+# ./sync.sh --preset desktop --no-watch   # One-time sync only
+# ./sync.sh --preset desktop --skip-deps  # Skip dependency installation
+# ./sync.sh -h user@host -d /path/to/dir  # Manual configuration (no preset)

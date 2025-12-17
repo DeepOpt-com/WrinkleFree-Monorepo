@@ -4,3 +4,4 @@ WrinkleFree-CheaperTraining/
 
 # Node
 node_modules/
+.sync.conf
