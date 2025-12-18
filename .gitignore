@@ -1,6 +1,7 @@
 # Child repositories (managed by meta)
 WrinkleFree-1.58Quant/
 WrinkleFree-CheaperTraining/
+WrinkleFree-Deployer/
 
 # Node
 node_modules/
