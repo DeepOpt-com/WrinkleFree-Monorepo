@@ -6,3 +6,8 @@ WrinkleFree-Deployer/
 # Node
 node_modules/
 .sync.conf
+
+# Python
+.venv/
+__pycache__/
+*.pyc
