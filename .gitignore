@@ -2,6 +2,7 @@
 WrinkleFree-1.58Quant/
 WrinkleFree-CheaperTraining/
 WrinkleFree-Deployer/
+WrinkleFree-Eval/
 
 # Node
 node_modules/
@@ -11,3 +12,6 @@ node_modules/
 .venv/
 __pycache__/
 *.pyc
+
+# Claude
+.claude/

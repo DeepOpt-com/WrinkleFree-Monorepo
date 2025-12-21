@@ -30,7 +30,9 @@ meta git update
 | Repository | Description |
 |------------|-------------|
 | [WrinkleFree-1.58Quant](https://github.com/DeepOpt-com/WrinkleFree-1.58Quant) | 1.58-bit (ternary) LLM training using BitDistill approach |
-| [WrinkleFree-CheaperTraining](https://github.com/DeepOpt-com/WrinkleFree-CheaperTraining) | Cost-efficient training strategies |
+| [WrinkleFree-CheaperTraining](https://github.com/DeepOpt-com/WrinkleFree-CheaperTraining) | Cost-efficient training with data influence functions |
+| [WrinkleFree-Deployer](https://github.com/DeepOpt-com/WrinkleFree-Deployer) | Cloud deployment with SkyPilot |
+| [WrinkleFree-Eval](https://github.com/DeepOpt-com/WrinkleFree-Eval) | Evaluation harness for GLUE & CNN/DailyMail benchmarks |
 
 ## Common Commands
 

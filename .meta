@@ -2,6 +2,7 @@
   "projects": {
     "WrinkleFree-1.58Quant": "git@github.com:DeepOpt-com/WrinkleFree-1.58Quant.git",
     "WrinkleFree-CheaperTraining": "git@github.com:DeepOpt-com/WrinkleFree-CheaperTraining.git",
-    "WrinkleFree-Deployer": "git@github.com:DeepOpt-com/WrinkleFree-Deployer.git"
+    "WrinkleFree-Deployer": "git@github.com:DeepOpt-com/WrinkleFree-Deployer.git",
+    "WrinkleFree-Eval": "git@github.com:DeepOpt-com/WrinkleFree-Eval.git"
   }
 }
