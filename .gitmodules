@@ -1,0 +1,3 @@
+[submodule "extern/BitNet"]
+	path = extern/BitNet
+	url = https://github.com/microsoft/BitNet.git
