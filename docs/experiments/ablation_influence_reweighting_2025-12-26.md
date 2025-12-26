@@ -61,8 +61,8 @@ uv run wf train -m smollm2_135m -s 2 --scale dev \
 ## Results
 
 ### Run IDs
-- Exp A (dynamic): `sky-smollm2_135m-s2:22` (Nebius H100 on-demand, update_interval=250)
-- Exp B (fixed): `sky-smollm2_135m-s2:23` (Nebius H100 on-demand)
+- Exp A (dynamic): `sky-smollm2_135m-s2:36` (Nebius H100 on-demand, update_interval=250, no W&B)
+- Exp B (fixed): `sky-smollm2_135m-s2:39` (Nebius H100 on-demand, no W&B)
 
 ### Training Curves
 *To be added after runs complete*

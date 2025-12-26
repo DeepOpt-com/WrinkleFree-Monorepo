@@ -55,7 +55,7 @@ ssh Desktop 'cat > /tmp/serve.sh << "SCRIPT"
 export PATH="$HOME/.local/bin:$PATH"
 cd /home/lev/code/WrinkleFree/WrinkleFree-Inference-Engine
 tmux kill-session -t streamlit 2>/dev/null || true
-tmux new-session -d -s streamlit "uv run streamlit run demo/serve_streamlit.py --server.port 7860 --server.address 0.0.0.0"
+tmux new-session -d -s streamlit "uv run streamlit run demo/serve_sglang.py --server.port 7860 --server.address 0.0.0.0"
 SCRIPT
 chmod +x /tmp/serve.sh && /tmp/serve.sh'
 
