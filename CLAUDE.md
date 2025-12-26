@@ -65,3 +65,5 @@ chmod +x /tmp/serve.sh && /tmp/serve.sh'
 ## SSH Hosts
 
 Desktop is configured in `~/.ssh/config`. Current IP: `192.168.1.217`
+
+## FAIL LOUDLY INSTEAD OF FALLBACKS FOR MOST CODE
