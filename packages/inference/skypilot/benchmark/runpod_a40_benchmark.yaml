@@ -1,0 +1,120 @@
+# SkyPilot configuration for RunPod A40 GPU benchmarking
+# Uses pre-built Docker image for fast startup
+#
+# Launch:
+#   sky launch skypilot/benchmark/runpod_a40_benchmark.yaml -c benchmark-a40
+
+name: bench-a40
+
+resources:
+  cloud: runpod
+  accelerators: A40:1
+  disk_size: 100
+  use_spot: false  # Use on-demand for benchmarks (more stable, consistent results)
+  ports: 8080
+
+envs:
+  MODEL_REPO: microsoft/BitNet-b1.58-2B-4T
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "0"
+  CTX_SIZE: "4096"  # Reduced from 8192 to speed up model loading
+  PORT: "8080"
+  BENCHMARK_MODE: "true"
+  RESULTS_DIR: /results
+
+# Mount network volume for model caching (create with runpod web UI first)
+# file_mounts:
+#   /runpod-volume:
+#     source: models-cache
+#     mode: rw
+
+setup: |
+  set -ex
+
+  # Install system dependencies
+  apt-get update && apt-get install -y clang cmake git curl
+
+  # Clone or update inference engine
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine
+    git pull
+    git submodule update --init --recursive
+  else
+    git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+  fi
+
+  cd /opt/inference-engine
+
+  # Install Python dependencies
+  pip install uv huggingface_hub hf_transfer
+  uv sync --extra benchmark
+
+  # Setup BitNet
+  cd extern/BitNet
+
+  # Download pre-converted GGUF using wget
+  mkdir -p models/BitNet-b1.58-2B-4T
+  wget -O models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf \
+    "https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf"
+
+  # Build BitNet.cpp
+  pip install -r requirements.txt
+  python setup_env.py --hf-repo $MODEL_REPO -q $QUANT_TYPE
+
+  mkdir -p /results
+
+run: |
+  set -ex
+  cd /opt/inference-engine/extern/BitNet
+
+  MODEL_PATH="models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf"
+
+  echo "=== BitNet A40 GPU Benchmark ==="
+  echo "Model: $MODEL_PATH"
+  echo "Context: $CTX_SIZE"
+  echo "Port: $PORT"
+
+  # Start server in background
+  ./build/bin/llama-server \
+    -m "$MODEL_PATH" \
+    -c $CTX_SIZE \
+    -t $NUM_THREADS \
+    --host 0.0.0.0 \
+    --port $PORT &
+
+  SERVER_PID=$!
+
+  # Wait for server to be ready (model loading takes 30-300 seconds depending on context size)
+  echo "Waiting for server to start..."
+  for i in $(seq 1 180); do
+    # Use -sf to fail on HTTP errors (503 = still loading)
+    if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+      echo "Server is ready after $((i*2)) seconds!"
+      break
+    fi
+    if [ $i -eq 180 ]; then
+      echo "ERROR: Server did not become ready after 360 seconds"
+      exit 1
+    fi
+    sleep 2
+  done
+
+  # Run benchmark using uv
+  cd /opt/inference-engine
+  source .venv/bin/activate
+  python scripts/benchmark_cost.py \
+    --url http://localhost:$PORT \
+    --hardware a40 \
+    --model bitnet-2b-4t \
+    --output-dir $RESULTS_DIR \
+    --duration 60 \
+    --full
+
+  # Show results
+  echo "=== Results ==="
+  cat $RESULTS_DIR/*.json 2>/dev/null || echo "No results yet"
+
+  # Stop server
+  kill $SERVER_PID 2>/dev/null || true
+
+  echo "Benchmark complete. Results in $RESULTS_DIR"

@@ -1,0 +1,26 @@
+# GPU Profile: NVIDIA A100 80GB
+# Use with: python scripts/train.py gpu=a100_80gb ...
+name: a100_80gb
+vram_gb: 80
+disk_gb: 100  # Recommended cloud disk size
+
+# Qwen3-4B batch sizes by stage
+# Target: ~60GB VRAM usage (leave 20GB headroom)
+qwen3_4b:
+  stage1_9:
+    batch_size: 8
+    gradient_accumulation_steps: 8
+    # Teacher + Student loaded, ~60GB total
+  stage2:
+    batch_size: 16
+    gradient_accumulation_steps: 4
+    # Student only, ~55GB total
+
+# SmolLM2-135M batch sizes (small model, maximize throughput)
+smollm2_135m:
+  stage1_9:
+    batch_size: 32
+    gradient_accumulation_steps: 2
+  stage2:
+    batch_size: 64
+    gradient_accumulation_steps: 1

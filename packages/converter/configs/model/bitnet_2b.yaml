@@ -1,0 +1,29 @@
+# BitNet b1.58 2B - DLM Conversion Config
+#
+# Microsoft's official BitNet 1.58-bit 2B model (4T tokens pretrained).
+# Reference: https://huggingface.co/microsoft/bitnet-b1.58-2B-4T
+
+name: bitnet_2b
+
+# Source model (Microsoft's pretrained BitNet - bf16 for training)
+source_pretrained: microsoft/bitnet-b1.58-2B-4T-bf16
+bitnet_checkpoint: microsoft/bitnet-b1.58-2B-4T-bf16  # bf16 master weights for training
+
+# Architecture (LLaMA-style, 2.4B params)
+hidden_size: 2048
+num_hidden_layers: 24
+num_attention_heads: 32
+num_kv_heads: 8
+intermediate_size: 5632
+vocab_size: 128256
+max_position_embeddings: 4096
+
+# Block diffusion parameters
+block_size: 32
+diffusion_steps: 8
+
+# Conversion settings
+conversion:
+  preserve_quantization: true
+  add_noise_embedding: true
+  modify_attention_mask: true

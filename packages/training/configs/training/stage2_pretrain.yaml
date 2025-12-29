@@ -1,0 +1,115 @@
+# Stage 2: Continue Pre-Training
+# Adapt model to 1.58-bit quantization with large-scale pre-training
+stage: continue_pretrain
+
+# torch.compile for 2.9x training speedup (A40 benchmark)
+# First step takes ~97s to compile, then 3x faster steady-state
+# Set TORCHINDUCTOR_CACHE_DIR for persistent caching across runs
+torch_compile:
+  enabled: true
+  mode: default
+
+# FP8 GEMM acceleration (DeepSeek-V3 style)
+# Uses TorchAO for FP8 training on H100/H200 GPUs
+# Falls back to BF16 on unsupported hardware (A100, etc.)
+# Benchmark: 10% speedup with BF16 acc, no quality loss (SmolLM2-135M)
+fp8:
+  enabled: true  # Auto-enabled; falls back to BF16 on non-Hopper GPUs
+  recipe: rowwise  # "rowwise" (more accurate) or "tensorwise" (faster)
+  accumulator_dtype: bfloat16  # 10% faster than float32, safe for <10B models
+  min_gemm_size: 512
+  exclude_patterns:
+    - embed_tokens
+    - lm_head
+    - norm
+    - subln
+
+# Sequence packing - concatenate multiple documents with position_id resets
+# See: https://huggingface.co/blog/sirluk/llm-sequence-packing
+packing:
+  enabled: true  # Default on for training efficiency
+
+# Optimization (MuonClip: Muon + QK-clipping for training stability)
+# Hyperparams tuned via Ax Bayesian optimization (Trial 4: loss 4.93)
+optimizer:
+  type: muonclip
+  lr: 5e-4  # Halved for resume stability (was 1e-3)
+  momentum: 0.95
+  weight_decay: 0.024  # Optimized from 0.1 (Ax sweep)
+  adamw_betas: [0.9, 0.95]  # For embed/head params
+  # QK-clipping settings (Kimi K2 defaults)
+  enable_clipping: true
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
+
+scheduler:
+  type: wsd  # Warmup-Stable-Decay (DeepSeek-V3 style)
+  warmup_steps: 500  # Short warmup
+  decay_ratio: 0.2   # 20% of training for decay
+  decay_type: linear  # "linear" or "cosine"
+  min_lr_ratio: 0.0   # Decay to zero
+
+# Training parameters
+total_tokens: 10_000_000_000  # 10B tokens
+max_steps: null  # Optional: override total_tokens with fixed step count
+max_seq_length: 512  # Reduced for single GPU
+batch_size: 8  # Reduced for single GPU (use gradient_accumulation for larger effective batch)
+gradient_accumulation_steps: 16  # Doubled for resume (was 8); Effective batch = 128
+gradient_clipping: 1.0
+
+# Loss (no distillation, just LM loss)
+loss:
+  type: cross_entropy
+  ignore_index: -100
+
+# Lambda warmup for gradual quantization
+# Prevents catastrophic forgetting by slowly transitioning from FP to ternary
+# Reference: https://huggingface.co/blog/1_58_llm_extreme_quantization
+lambda_warmup:
+  enabled: true  # Enable gradual quantization
+  warmup_steps: 1000  # Steps to reach full quantization (lambda=1)
+  schedule: linear  # "linear" or "cosine"
+
+# Q-Sparse: Activation sparsity for inference/training efficiency
+# Keeps top (1 - sparsity_ratio) activations by magnitude per token
+# Reference: https://arxiv.org/abs/2407.10969
+activation_sparsity:
+  enabled: false  # Off by default for backward compatibility
+  mode: topk  # "topk" (unstructured) or "block" (N:M structured)
+  sparsity_ratio: 0.61  # ~61% sparse for 1-bit models (paper recommendation)
+  granularity: per_token  # "per_token" or "per_tensor"
+  warmup:
+    enabled: true
+    warmup_steps: 1000  # Steps to reach target sparsity
+    schedule: linear  # "linear" or "cosine"
+    initial_sparsity: 0.0  # Start dense
+  # Block Q-Sparse settings (only when mode=block)
+  block:
+    n: 2  # Keep N elements
+    m: 4  # Per M-element block
+
+# Checkpointing
+checkpoint:
+  save_interval: 2500
+  keep_last_n: 3
+  save_optimizer: true
+
+# Logging (no eval - all data is unseen in streaming pre-training)
+logging:
+  log_interval: 100
+  wandb:
+    enabled: true
+    project: wrinklefree
+    entity: null
+    name: null  # Override with run name
+    tags: [stage2, pretrain]
+
+# CheaperTraining influence-based data selection
+influence:
+  enabled: true
+  update_interval: 1000
+  learning_rate: 0.2
+  config:
+    lambda_val: 0.1
+    gamma_val: 0.1
+    temperature: 1.0

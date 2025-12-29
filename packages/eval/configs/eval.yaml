@@ -1,0 +1,42 @@
+# WrinkleFree-Eval main configuration
+# Usage: uv run python -m wrinklefree_eval model_path=/path/to/model benchmark=bitdistill
+
+defaults:
+  - _self_
+  - benchmark: bitdistill
+  - model: hf_model
+
+# Required: path to model (HuggingFace model ID or local path)
+model_path: null
+
+# Output directory for results
+output_dir: ./eval_results
+
+# Device configuration
+device: cuda
+dtype: bfloat16  # float16, bfloat16, float32
+
+# Batch size (auto = automatic based on memory)
+batch_size: auto
+
+# Random seed for reproducibility
+seed: 42
+
+# Smoke test mode: limit samples for quick validation
+smoke_test: false
+smoke_test_limit: 10
+
+# Logging
+verbosity: INFO
+show_progress: true
+
+# Output format
+save_results: true
+results_format: json  # json, csv
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${output_dir}/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: false

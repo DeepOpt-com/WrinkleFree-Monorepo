@@ -1,0 +1,112 @@
+# Fast-dLLM v2 Training Job
+#
+# Trains a model with Fast-dLLM v2 SFT recipe for 2.5x faster inference.
+#
+# Launch via wf CLI (recommended):
+#   wf dlm -m qwen3_4b -s hf://org/checkpoint
+#
+# Or manually:
+#   sky launch skypilot/dlm_train.yaml -y \
+#     --env MODEL=qwen3_4b \
+#     --env SOURCE_PATH=hf://org/checkpoint
+#
+# Monitor:
+#   wf logs wf-dlm-train
+
+name: wf-dlm-train
+
+resources:
+  # Use standard PyTorch image for portability across clouds
+  # Custom image only available on Nebius/GCP
+  accelerators: H100:1  # Single GPU, scale via wf dlm --scale
+  use_spot: false
+  disk_size: 200
+  disk_tier: best
+
+# Sync DLM-Converter code to cluster
+workdir: ../WrinkleFree-DLM-Converter
+
+# Mount GCS credentials for checkpoint upload (ADC)
+# Use absolute paths - ~ doesn't expand in SkyPilot file_mounts
+file_mounts:
+  /home/ubuntu/.config/gcloud/application_default_credentials.json: /home/lev/.config/gcloud/application_default_credentials.json
+
+envs:
+  # Model config name (matches configs/model/*.yaml)
+  MODEL: smollm2_135m
+
+  # Source checkpoint (optional - can be set via Hydra override)
+  SOURCE_PATH: ""
+
+  # Hydra overrides (passed from wf dlm command)
+  HYDRA_OVERRIDES: ""
+
+  # W&B tracking (set via WANDB_API_KEY env var)
+  WANDB_PROJECT: wrinklefree-dlm
+
+  # GCS credentials (ADC) - absolute path for remote
+  GOOGLE_APPLICATION_CREDENTIALS: /home/ubuntu/.config/gcloud/application_default_credentials.json
+  GCS_BUCKET: wrinklefree-checkpoints
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv for fast package management
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Install dependencies
+  uv sync
+
+  # Verify GPU setup
+  uv run python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
+
+  # Verify GCS credentials
+  echo "Testing GCS access..."
+  uv run python -c "from google.cloud import storage; client = storage.Client(); bucket = client.bucket('${GCS_BUCKET}'); print(f'GCS bucket access: {bucket.exists()}')" || echo "GCS check failed, continuing..."
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  echo "=============================================="
+  echo "Fast-dLLM v2 SFT Training (Hydra)"
+  echo "Model: ${MODEL}"
+  echo "Source: ${SOURCE_PATH:-'(from config)'}"
+  echo "Overrides: ${HYDRA_OVERRIDES:-'(none)'}"
+  echo "=============================================="
+
+  # Build Hydra command
+  HYDRA_CMD="uv run python scripts/train_dlm.py model=${MODEL}"
+
+  # Add source path if provided
+  if [ -n "${SOURCE_PATH}" ]; then
+    HYDRA_CMD="${HYDRA_CMD} source.path=${SOURCE_PATH}"
+  fi
+
+  # Add any additional overrides
+  if [ -n "${HYDRA_OVERRIDES}" ]; then
+    HYDRA_CMD="${HYDRA_CMD} ${HYDRA_OVERRIDES}"
+  fi
+
+  echo "Running: ${HYDRA_CMD}"
+  eval ${HYDRA_CMD}
+
+  # Upload to GCS using gsutil
+  echo ""
+  echo "Uploading to GCS..."
+  OUTPUT_DIR="./outputs/dlm/${MODEL}"
+  if [ -d "${OUTPUT_DIR}" ]; then
+    gsutil -m cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/dlm/${MODEL}/ || echo "gsutil failed, trying gcloud storage..."
+    gcloud storage cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/dlm/${MODEL}/ || echo "Upload failed"
+  else
+    echo "Warning: Output directory ${OUTPUT_DIR} not found"
+  fi
+
+  echo ""
+  echo "=============================================="
+  echo "TRAINING COMPLETE!"
+  echo "GCS: gs://${GCS_BUCKET}/dlm/${MODEL}/"
+  echo "=============================================="

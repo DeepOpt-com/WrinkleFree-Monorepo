@@ -1,0 +1,114 @@
+# BitNet Cost Benchmarking Container
+# Pre-built image with BitNet.cpp optimized for CPU inference
+#
+# Build:
+#   docker build -f docker/Dockerfile.benchmark -t wrinklefree-benchmark .
+#
+# Run:
+#   docker run -p 8080:8080 -v /path/to/models:/models wrinklefree-benchmark
+
+FROM ubuntu:22.04
+
+LABEL maintainer="WrinkleFree Team"
+LABEL description="BitNet 1.58-bit cost benchmarking image"
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Build arguments
+ARG LLAMA_AVX512=1
+ARG LLAMA_AVX512_VBMI=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    clang \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    wget \
+    curl \
+    htop \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up Python environment
+RUN python3 -m pip install --upgrade pip
+
+# Install Python dependencies for benchmarking
+RUN pip install \
+    requests \
+    httpx \
+    aiohttp \
+    pyyaml \
+    hydra-core \
+    omegaconf \
+    huggingface_hub \
+    hf_transfer \
+    gguf \
+    pandas \
+    matplotlib \
+    pydantic \
+    psutil \
+    click \
+    rich
+
+# Clone BitNet.cpp
+WORKDIR /opt
+RUN git clone https://github.com/microsoft/BitNet.git bitnet
+
+WORKDIR /opt/bitnet
+
+# Install BitNet Python dependencies
+RUN pip install -r requirements.txt
+
+# Build with AVX512 support for AMD EPYC / Intel Xeon
+ENV LLAMA_AVX512=${LLAMA_AVX512}
+ENV LLAMA_AVX512_VBMI=${LLAMA_AVX512_VBMI}
+
+# Setup BitNet environment (builds the C++ components)
+# Using a small model to trigger the build without downloading large files
+RUN python setup_env.py --hf-repo microsoft/BitNet-b1.58-2B-4T-gguf -q i2_s || true
+
+# Pre-download native BitNet models for fast startup
+RUN mkdir -p /opt/bitnet/models/BitNet-b1.58-2B-4T && \
+    python -c "from huggingface_hub import hf_hub_download; \
+               import shutil; import os; \
+               p=hf_hub_download('microsoft/bitnet-b1.58-2B-4T-gguf','ggml-model-i2_s.gguf'); \
+               t='/opt/bitnet/models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf'; \
+               os.makedirs(os.path.dirname(t), exist_ok=True); \
+               shutil.copy(p, t); \
+               print(f'Downloaded to {t}')"
+
+# Clone the inference engine
+WORKDIR /opt
+RUN git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git inference-engine || \
+    mkdir -p inference-engine
+
+WORKDIR /opt/inference-engine
+
+# Create model directory
+RUN mkdir -p /models /results
+
+# Runtime configuration
+ENV MODEL_PATH=/models/model.gguf
+ENV HOST=0.0.0.0
+ENV PORT=8080
+ENV NUM_THREADS=0
+ENV CONTEXT_SIZE=4096
+ENV BENCHMARK_MODE=true
+ENV RESULTS_DIR=/results
+
+# Expose inference port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Copy entrypoint script
+COPY docker/entrypoint-benchmark.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

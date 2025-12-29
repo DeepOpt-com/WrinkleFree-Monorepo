@@ -1,0 +1,46 @@
+# FP8 GEMM acceleration configuration (DeepSeek-V3 style)
+# Uses TorchAO for FP8 training on H100/H200 GPUs
+#
+# IMPORTANT: FP8 is used for COMPUTE ONLY, not storage (following DeepSeek-V3):
+#   - Master weights: stored in BF16 (FP32 in DeepSeek-V3)
+#   - Weight gradients: BF16
+#   - Optimizer states: FP32 (Adam moments need precision)
+#   - GEMM computation: FP8 (the only place FP8 is used)
+#   - Activations between layers: BF16
+#
+# The FP8 format is applied on-the-fly during each GEMM, then result is cast back to BF16.
+# This gives ~10% speedup on H100 with no quality loss for models <10B params.
+#
+# References:
+# - DeepSeek-V3 Technical Report: https://arxiv.org/abs/2412.19437
+# - TorchAO Float8: https://github.com/pytorch/ao
+
+fp8:
+  # Enable FP8 GEMM acceleration
+  # Note: Still requires H100+ hardware; falls back to BF16 on A100
+  enabled: false  # Set to true to enable
+
+  # Scaling recipe:
+  #   - "rowwise": More accurate, per-row/column scaling (DeepSeek-V3 style)
+  #                1.11x throughput improvement, better training stability
+  #   - "tensorwise": Faster, single scale per tensor
+  #                   1.21x throughput improvement, slightly higher quantization error
+  recipe: rowwise
+
+  # Accumulator dtype for GEMM:
+  #   - "float32": Higher precision, recommended for training stability (DeepSeek-V3 default)
+  #   - "bfloat16": Faster but may have precision issues for large K dimensions
+  # Note: DeepSeek-V3 uses FP32 accumulation every 128 elements for stability
+  accumulator_dtype: float32
+
+  # Minimum GEMM dimension for FP8 to be beneficial
+  # Small GEMMs have FP8 overhead > speedup
+  min_gemm_size: 512
+
+  # Layers to exclude from FP8 (following DeepSeek-V3 pattern)
+  # FP8 only for linear GEMMs, not embedding/output/normalization
+  exclude_patterns:
+    - embed_tokens
+    - lm_head
+    - norm
+    - subln

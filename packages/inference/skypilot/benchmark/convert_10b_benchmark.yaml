@@ -1,0 +1,95 @@
+# SkyPilot configuration for Falcon3-10B-1.58bit benchmarking
+# Uses the official TII 1.58-bit trained model (not naive conversion)
+#
+# Launch:
+#   sky launch skypilot/benchmark/convert_10b_benchmark.yaml -c falcon-10b
+
+name: bench-10b-falcon
+
+resources:
+  cloud: runpod
+  cpus: 32+
+  memory: 64+
+  disk_size: 100
+  use_spot: false
+  ports: 8080
+
+envs:
+  MODEL_REPO: tiiuae/Falcon3-10B-1.58bit
+  MODEL_NAME: Falcon3-10B-1.58bit
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "32"
+  CTX_SIZE: "2048"
+  PORT: "8080"
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -ex
+  apt-get update && apt-get install -y clang cmake git curl wget
+
+  # Clone inference engine
+  if [ ! -d /opt/inference-engine ]; then
+    git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+  fi
+
+  cd /opt/inference-engine
+  pip install uv huggingface_hub hf_transfer safetensors torch
+  uv sync --extra benchmark
+
+  # Build BitNet.cpp using official 2B model
+  cd extern/BitNet
+  pip install -r requirements.txt
+  mkdir -p models/BitNet-b1.58-2B-4T
+
+  # Download pre-built GGUF first so setup_env.py skips conversion
+  wget -O models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf \
+    "https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf"
+
+  # Download config files needed for kernel generation
+  huggingface-cli download microsoft/BitNet-b1.58-2B-4T \
+    --local-dir models/BitNet-b1.58-2B-4T \
+    --include "*.json" "*.model"
+
+  # Generate kernels and build (skips GGUF conversion since it exists)
+  python setup_env.py --hf-repo microsoft/BitNet-b1.58-2B-4T -q i2_s
+
+run: |
+  set -ex
+  cd /opt/inference-engine/extern/BitNet
+
+  echo "=== Downloading Falcon3-10B-1.58bit ==="
+  mkdir -p models/$MODEL_NAME
+  huggingface-cli download $MODEL_REPO --local-dir models/$MODEL_NAME
+
+  echo "=== Model config ==="
+  cat models/$MODEL_NAME/config.json | head -30
+
+  echo "=== Step 1: Converting to f32 GGUF ==="
+  python utils/convert-hf-to-gguf-bitnet.py models/$MODEL_NAME --outtype f32 --outfile models/$MODEL_NAME/ggml-model-f32.gguf
+  ls -lh models/$MODEL_NAME/ggml-model-f32.gguf
+
+  echo "=== Step 2: Quantizing to i2_s ==="
+  ./build/bin/llama-quantize models/$MODEL_NAME/ggml-model-f32.gguf models/$MODEL_NAME/ggml-model-i2_s.gguf I2_S 1
+  ls -lh models/$MODEL_NAME/ggml-model-i2_s.gguf
+
+  echo "=== Starting server ==="
+  ./build/bin/llama-server -m models/$MODEL_NAME/ggml-model-i2_s.gguf -c $CTX_SIZE -t $NUM_THREADS --host 0.0.0.0 --port $PORT &
+  SERVER_PID=$!
+
+  for i in $(seq 1 300); do
+    if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+      echo "Server ready after $((i*2))s!"
+      break
+    fi
+    [ $i -eq 300 ] && { echo "ERROR: Timeout"; exit 1; }
+    sleep 2
+  done
+
+  echo "=== Running benchmark ==="
+  cd /opt/inference-engine
+  source .venv/bin/activate
+  python scripts/benchmark_cost.py --url http://localhost:$PORT --hardware cpu_32 --model falcon3-10b-1.58bit --model-size 10B --quantization naive --output-dir /tmp/results --duration 60 --full
+
+  cat /tmp/results/*.json 2>/dev/null || echo "No results"
+  kill $SERVER_PID 2>/dev/null || true
+  echo "Done"

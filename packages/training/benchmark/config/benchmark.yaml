@@ -1,0 +1,73 @@
+# Benchmark runner configuration
+# Hydra base config for Ax optimization
+
+defaults:
+  - _self_
+
+# Benchmark settings
+benchmark:
+  # Number of steps for warmup (not measured)
+  warmup_steps: 20
+
+  # Number of steps for measurement (must be enough to see convergence)
+  measurement_steps: 300
+
+  # Total number of Ax optimization trials
+  num_trials: 10
+
+  # SOBOL initialization trials (random exploration)
+  sobol_trials: 5
+
+  # Trial timeout in seconds
+  trial_timeout: 600
+
+  # Sequence length for benchmarks (reduced for memory)
+  sequence_length: 256
+
+  # Random seed for reproducibility
+  seed: 42
+
+  # Output directory for results
+  output_dir: ./benchmark_results
+
+  # Device configuration
+  device: cuda
+  dtype: float32  # float32, float16, bfloat16
+
+# Ax optimization settings
+ax:
+  experiment_name: wrinklefree_efficiency_search
+
+  # Generation strategy: SOBOL_GPEI uses Sobol for init, then GP-based Bayesian opt
+  generation_strategy: SOBOL_GPEI
+
+  # Enable early stopping if no improvement
+  enable_early_stopping: false
+  early_stopping_patience: 10
+
+# Model configuration (optional - uses small default if not specified)
+# Uncomment to use a specific model config
+# model:
+#   vocab_size: 32000
+#   hidden_size: 512
+#   intermediate_size: 1024
+#   num_hidden_layers: 4
+#   num_attention_heads: 8
+#   num_kv_heads: 4
+#   max_position_embeddings: 512
+
+# Logging configuration
+logging:
+  level: INFO
+
+  wandb:
+    enabled: true
+    project: wrinklefree-benchmark
+    tags: [benchmark, ax-optimization, muon, stage2]
+
+# Search space config file path
+search_space_path: ${hydra:runtime.cwd}/benchmark/config/search_space.yaml
+
+# Model configuration
+model_name: Qwen/Qwen3-4B-Base
+stage1_checkpoint: ./outputs/bitdistill_qwen3_4b_subln_insertion/stage1_checkpoint

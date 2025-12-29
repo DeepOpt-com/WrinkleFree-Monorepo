@@ -1,0 +1,27 @@
+# BitDistill paper benchmarks (arxiv.org/abs/2510.13998)
+# Full evaluation suite: GLUE classification + CNN/DailyMail summarization
+
+name: bitdistill
+description: "Full BitDistill paper benchmarks: GLUE (MNLI, QNLI, SST-2) + CNN/DailyMail"
+
+tasks:
+  # GLUE classification tasks (accuracy metric)
+  - mnli
+  - qnli
+  - sst2
+  # Summarization task (ROUGE metrics)
+  - cnn_dailymail_summarization
+
+# Few-shot settings (0-shot as in the paper)
+num_fewshot:
+  mnli: 0
+  qnli: 0
+  sst2: 0
+  cnn_dailymail_summarization: 0
+
+# Task-specific limits (null = use full dataset)
+limits:
+  mnli: null
+  qnli: null
+  sst2: null
+  cnn_dailymail_summarization: null

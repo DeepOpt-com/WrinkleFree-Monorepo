@@ -1,0 +1,17 @@
+# Single GPU training configuration
+backend: nccl
+strategy: single
+
+# No FSDP/DDP settings needed
+num_gpus: 1
+num_nodes: 1
+
+# Mixed precision (still useful for single GPU)
+mixed_precision:
+  enabled: true
+  dtype: bfloat16
+
+# Activation checkpointing (for memory efficiency)
+activation_checkpointing:
+  enabled: true
+  checkpoint_impl: NO_REENTRANT

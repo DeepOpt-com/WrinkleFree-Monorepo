@@ -1,0 +1,15 @@
+{
+  "os":  "Linux-6.1.0-37-amd64-x86_64-with-glibc2.36",
+  "python":  "CPython 3.11.2",
+  "startedAt":  "2025-12-26T20:38:31.080925Z",
+  "program":  "<python with no main file>",
+  "git":  {
+    "remote":  "git@github.com:DeepOpt-com/WrinkleFree-CheaperTraining.git",
+    "commit":  "fbac4f72fa6d66407d1e2f04175c3c27613d8e6e"
+  },
+  "email":  "levstamb@gmail.com",
+  "root":  "/home/lev/code/WrinkleFree/WrinkleFree-CheaperTraining",
+  "host":  "lev",
+  "executable":  "/home/lev/code/WrinkleFree/WrinkleFree-CheaperTraining/.venv/bin/python3",
+  "writerId":  "gdiwy2xhwdv9a10zvsbcr4stfzx1bpbf"
+}

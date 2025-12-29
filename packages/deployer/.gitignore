@@ -1,0 +1,92 @@
+# Environment and credentials
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*-credentials.json
+*-service-account.json
+credentials/*.json
+credentials/.env
+!credentials/*.example.json
+!credentials/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# uv
+.uv/
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models (large files)
+models/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+results.json
+test_metrics.json
+locust_metrics.json
+cloud_smoke_results.json
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+terraform/.terraform.lock.hcl
+
+# Logs
+*.log
+logs/
+
+# SkyPilot
+.sky/
+sky_logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

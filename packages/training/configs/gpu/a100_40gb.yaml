@@ -1,0 +1,26 @@
+# GPU Profile: NVIDIA A100 40GB
+# Use with: python scripts/train.py gpu=a100_40gb ...
+name: a100_40gb
+vram_gb: 40
+disk_gb: 100
+
+# Qwen3-4B batch sizes by stage
+# Target: ~30GB VRAM usage (leave 10GB headroom)
+qwen3_4b:
+  stage1_9:
+    batch_size: 2
+    gradient_accumulation_steps: 32
+    # Teacher + Student loaded, tight fit
+  stage2:
+    batch_size: 4
+    gradient_accumulation_steps: 16
+    # Student only
+
+# SmolLM2-135M batch sizes
+smollm2_135m:
+  stage1_9:
+    batch_size: 16
+    gradient_accumulation_steps: 4
+  stage2:
+    batch_size: 32
+    gradient_accumulation_steps: 2

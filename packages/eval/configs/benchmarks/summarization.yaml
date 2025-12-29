@@ -1,0 +1,21 @@
+# CNN/DailyMail summarization benchmark only
+# Full generation with ROUGE metrics
+
+name: summarization
+description: "CNN/DailyMail abstractive summarization with ROUGE metrics"
+
+tasks:
+  - cnn_dailymail_summarization
+
+num_fewshot:
+  cnn_dailymail_summarization: 0
+
+limits:
+  cnn_dailymail_summarization: null
+
+# Generation settings for summarization
+generation:
+  max_new_tokens: 128
+  do_sample: false
+  temperature: 1.0
+  top_p: 1.0

@@ -1,0 +1,197 @@
+# SkyPilot configuration for GCP H3 inference
+# Uses Intel Sapphire Rapids with DDR5-4800 for high memory bandwidth
+#
+# GCP H3 Instance Specifications:
+# - CPU: Intel Sapphire Rapids (4th Gen Xeon), 3.0 GHz all-core
+# - vCPUs: 88 (single-threaded, no SMT)
+# - Memory: 352 GB DDR5-4800
+# - Memory Bandwidth: ~307 GB/s (8 channels × 38.2 GB/s)
+# - Network: 200 Gbps bandwidth
+# - Cost: ~$1.76/hour on-demand
+#
+# Memory throughput is critical for BitNet performance:
+# - 1.58-bit weights are memory-bound (low compute intensity)
+# - H3's DDR5 bandwidth provides 50% higher bandwidth vs DDR4
+# - Uses TL2 kernel optimized for x86 AVX512
+#
+# Build caching: Uses GCS to cache compiled binaries
+# First run: ~5min (build + convert), Subsequent: ~30s (download cache)
+
+name: inference-h3
+
+resources:
+  cloud: gcp
+  instance_type: h3-standard-88  # 88 vCPUs, 352GB DDR5
+  region: us-central1            # H3 availability
+  disk_size: 200                 # Larger disk for model storage
+  disk_tier: high                 # SSD for faster I/O
+  use_spot: false                # On-demand for stability
+  ports: 8080
+
+envs:
+  # Model configuration
+  MODEL_REPO: microsoft/BitNet-b1.58-2B-4T
+  QUANT_TYPE: tl2               # TL2 kernel for x86 AVX512 optimization
+  NUM_THREADS: "88"             # Match vCPU count
+  CTX_SIZE: "8192"              # Larger context leveraging high bandwidth
+  PORT: "8080"
+
+  # Build optimization flags
+  BITNET_USE_CCACHE: "1"
+  BITNET_OPTIMIZATION_LEVEL: native  # -march=native -mtune=native -O3
+  BITNET_KERNEL_TYPE: tl2            # Use TL2 kernel for AVX512
+  CMAKE_BUILD_PARALLEL_LEVEL: "88"   # Use all cores for compilation
+
+  # GCS cache bucket (provisioned via terraform)
+  # If using terraform: export GCS_CACHE_BUCKET=$(terraform output -raw build_cache_bucket_url)
+  GCS_CACHE_BUCKET: gs://wrinklefree-build-cache-dev
+  CACHE_VERSION: v2_h3_tl2     # Bump to invalidate cache
+
+setup: |
+  set -ex
+
+  echo "=== GCP H3 Instance Setup ==="
+  echo "Instance: h3-standard-88 (88 vCPUs, 352GB DDR5)"
+
+  # Show CPU info
+  echo "=== CPU Information ==="
+  lscpu | grep -E "(Model name|CPU\(s\)|Thread|Core|Socket|Cache|AVX)" | head -20 || true
+  cat /proc/cpuinfo | grep -m1 "flags" | tr ' ' '\n' | grep -E "^avx" || true
+
+  # Install build dependencies
+  apt-get update && apt-get install -y \
+    clang cmake ccache git curl \
+    python3-pip python3-venv
+
+  # Configure ccache
+  ccache --max-size=10G
+  ccache --set-config=compression=true
+
+  # Install huggingface_hub CLI for model downloading
+  python3 -m pip install "huggingface_hub[cli]"
+
+  # Clone or update the inference engine repo
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine
+    git pull || true
+    git submodule update --init --recursive
+  else
+    git clone --recurse-submodules \
+      https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git \
+      /opt/inference-engine
+    cd /opt/inference-engine
+  fi
+
+  # Install Python dependencies
+  pip install uv
+  uv sync
+
+  # Build BitNet.cpp with optimized settings
+  cd extern/BitNet
+
+  MODEL_NAME=$(basename $MODEL_REPO)
+  CACHE_KEY="h3_${MODEL_NAME}_${QUANT_TYPE}_${CACHE_VERSION}"
+  CACHE_TARBALL="${CACHE_KEY}.tar.gz"
+  CACHE_PATH="${GCS_CACHE_BUCKET}/${CACHE_TARBALL}"
+
+  # Try to restore from GCS cache
+  CACHE_HIT=false
+  if command -v gsutil &> /dev/null; then
+    echo "Checking for cached build at ${CACHE_PATH}..."
+    if gsutil -q stat "${CACHE_PATH}" 2>/dev/null; then
+      echo "Cache hit! Downloading..."
+      gsutil cp "${CACHE_PATH}" /tmp/
+      tar -xzf "/tmp/${CACHE_TARBALL}" -C .
+      CACHE_HIT=true
+      echo "Cache restored successfully"
+
+      # Verify binaries exist
+      if [[ ! -f "build/bin/llama-server" ]]; then
+        echo "Warning: Cache restored but llama-server not found, rebuilding..."
+        CACHE_HIT=false
+      fi
+    else
+      echo "Cache miss, will build from source"
+    fi
+  else
+    echo "gsutil not available, building from source"
+  fi
+
+  if [ "$CACHE_HIT" = false ]; then
+    # Download model from HuggingFace
+    echo "Downloading model: $MODEL_REPO"
+    mkdir -p models/$MODEL_NAME
+    python3 -c "
+  import os
+  from huggingface_hub import snapshot_download
+  repo = os.environ['MODEL_REPO']
+  model_name = repo.split('/')[-1]
+  model_dir = 'models/' + model_name
+  print(f'Downloading {repo} to {model_dir}')
+  snapshot_download(repo, local_dir=model_dir)
+  print('Download complete')
+  "
+
+    # Build with optimized settings using our build script
+    echo "Building BitNet.cpp with H3 optimizations..."
+    echo "Optimization level: $BITNET_OPTIMIZATION_LEVEL"
+    echo "Kernel type: $BITNET_KERNEL_TYPE"
+
+    # Install requirements
+    pip install -r requirements.txt
+
+    # Generate kernel code and compile
+    python3 setup_env.py --hf-repo $MODEL_REPO -q $QUANT_TYPE -p
+
+    # Upload to cache
+    if command -v gsutil &> /dev/null; then
+      echo "Uploading build to cache: ${CACHE_PATH}"
+      tar -czf "/tmp/${CACHE_TARBALL}" \
+        build/bin \
+        models/${MODEL_NAME}/*.gguf \
+        include/*.h 2>/dev/null || \
+      tar -czf "/tmp/${CACHE_TARBALL}" \
+        build/bin \
+        models/${MODEL_NAME}/*.gguf
+      gsutil cp "/tmp/${CACHE_TARBALL}" "${CACHE_PATH}" || \
+        echo "Cache upload failed (non-fatal)"
+    fi
+  fi
+
+  echo "=== Build Complete ==="
+  ls -lh build/bin/ || true
+  ccache --show-stats || true
+
+run: |
+  set -ex
+  cd /opt/inference-engine
+
+  MODEL_NAME=$(basename $MODEL_REPO)
+  MODEL_PATH="extern/BitNet/models/${MODEL_NAME}/ggml-model-${QUANT_TYPE}.gguf"
+
+  echo "=========================================="
+  echo "GCP H3 BitNet Inference Server"
+  echo "=========================================="
+  echo "Instance: h3-standard-88"
+  echo "Memory Bandwidth: ~307 GB/s DDR5-4800"
+  echo "Model: $MODEL_PATH"
+  echo "Context size: $CTX_SIZE"
+  echo "Threads: $NUM_THREADS"
+  echo "Kernel: $QUANT_TYPE (AVX512 optimized)"
+  echo "=========================================="
+
+  # Verify model exists
+  if [[ ! -f "extern/BitNet/$MODEL_PATH" ]] && [[ ! -f "$MODEL_PATH" ]]; then
+    echo "Error: Model not found at $MODEL_PATH"
+    ls -la extern/BitNet/models/*/
+    exit 1
+  fi
+
+  # Start the inference server
+  python extern/BitNet/run_inference_server.py \
+    -m "$MODEL_PATH" \
+    -t $NUM_THREADS \
+    -c $CTX_SIZE \
+    -cb \
+    --host 0.0.0.0 \
+    --port $PORT

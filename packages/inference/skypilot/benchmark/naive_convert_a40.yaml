@@ -1,0 +1,55 @@
+# SkyPilot configuration for naive ternary conversion on A40
+# Converts FP16/BF16 models to naive ternary format for benchmarking
+#
+# Launch:
+#   sky launch skypilot/benchmark/naive_convert_a40.yaml -c naive-convert
+
+name: bench-naive-a40
+
+resources:
+  cloud: runpod
+  accelerators: A40:1
+  disk_size: 200  # Large models need space
+  use_spot: true
+
+envs:
+  # Model to convert (change as needed)
+  MODEL_ID: meta-llama/Llama-3.1-8B  # Start with smaller model
+  OUTPUT_DIR: /workspace/models/converted
+
+setup: |
+  set -ex
+
+  apt-get update && apt-get install -y git curl
+
+  # Clone inference engine
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine && git pull
+  else
+    git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+  fi
+
+  cd /opt/inference-engine
+
+  # Install with conversion dependencies
+  pip install uv
+  uv sync --extra convert --extra benchmark
+
+  mkdir -p $OUTPUT_DIR
+
+run: |
+  set -ex
+  cd /opt/inference-engine
+
+  echo "=== Naive Ternary Conversion ==="
+  echo "Model: $MODEL_ID"
+  echo "Output: $OUTPUT_DIR"
+
+  # Run naive conversion
+  python scripts/naive_to_bitnet.py \
+    --model-id "$MODEL_ID" \
+    --output-dir "$OUTPUT_DIR" \
+    --use-gpu
+
+  echo "Conversion complete. Files in $OUTPUT_DIR"
+  ls -la $OUTPUT_DIR

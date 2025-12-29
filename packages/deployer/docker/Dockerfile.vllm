@@ -1,0 +1,59 @@
+# vLLM Inference Container
+# General-purpose LLM serving with advanced features
+#
+# Build:
+#   docker build -f Dockerfile.vllm -t wrinklefree-vllm .
+#
+# Run:
+#   docker run -p 8080:8080 -v /path/to/models:/models wrinklefree-vllm
+
+FROM ubuntu:22.04
+
+LABEL maintainer="WrinkleFree Team"
+LABEL description="vLLM inference server for WrinkleFree models"
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3 \
+    python3-pip \
+    python3-venv \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up Python environment
+RUN python3 -m pip install --upgrade pip
+
+# Install vLLM
+# Note: For CPU-only, you may need vllm-cpu or specific build
+RUN pip install vllm
+
+# Create model directory
+RUN mkdir -p /models
+
+# Runtime configuration
+ENV MODEL_PATH=/models/model
+ENV HOST=0.0.0.0
+ENV PORT=8080
+ENV MAX_MODEL_LEN=4096
+ENV TENSOR_PARALLEL_SIZE=1
+
+# vLLM specific settings
+ENV VLLM_ATTENTION_BACKEND=FLASHINFER
+ENV VLLM_USE_V1=1
+
+# Expose inference port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Entry point
+COPY docker/entrypoint-vllm.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,51 @@
+# SkyPilot configuration for RunPod GPU inference (future)
+# Note: BitNet.cpp is primarily CPU-optimized, but GPU support may improve performance
+
+name: inference-engine-gpu
+
+resources:
+  cloud: runpod
+  accelerators: L4:1  # Cost-effective GPU, or use A10G, A100
+  disk_size: 40
+  use_spot: true
+  ports: 8080
+
+envs:
+  MODEL_REPO: microsoft/BitNet-b1.58-2B-4T
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "0"
+  CTX_SIZE: "8192"    # Larger context with GPU
+  PORT: "8080"
+
+setup: |
+  set -ex
+
+  # Clone the inference engine repo
+  git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+  cd /opt/inference-engine
+
+  # Install uv and sync dependencies
+  pip install uv
+  uv sync
+
+  # Setup BitNet with GPU support
+  uv run python extern/BitNet/setup_env.py \
+    --hf-repo $MODEL_REPO \
+    -q $QUANT_TYPE
+
+run: |
+  set -ex
+  cd /opt/inference-engine
+
+  MODEL_NAME=$(basename $MODEL_REPO)
+  MODEL_PATH="extern/BitNet/models/${MODEL_NAME}/ggml-model-${QUANT_TYPE}.gguf"
+
+  echo "Starting BitNet inference server (GPU)..."
+
+  python extern/BitNet/run_inference_server.py \
+    -m "$MODEL_PATH" \
+    -t $NUM_THREADS \
+    -c $CTX_SIZE \
+    -cb \
+    --host 0.0.0.0 \
+    --port $PORT

@@ -1,0 +1,86 @@
+# Model configurations for cost benchmarking
+# Includes native BitNet models and candidates for naive conversion
+
+native_bitnet:
+  # Models trained natively as BitNet 1.58-bit
+  bitnet_2b_4t:
+    hf_repo: "microsoft/BitNet-b1.58-2B-4T"
+    gguf_repo: "microsoft/bitnet-b1.58-2B-4T-gguf"
+    params: "2B"
+    context_length: 4096
+    bits_per_weight: 1.58
+    estimated_size_gb: 0.5
+    quant_type: "i2_s"
+    description: "Microsoft's native 1.58-bit model - quality baseline"
+
+  llama3_8b_158:
+    hf_repo: "HF1BitLLM/Llama3-8B-1.58-100B-tokens"
+    params: "8B"
+    context_length: 8192
+    bits_per_weight: 1.58
+    estimated_size_gb: 1.0
+    quant_type: "i2_s"
+    description: "Llama3 architecture trained with 1.58-bit - larger native model"
+
+naive_conversion:
+  # Models to convert naively for cost benchmarking
+  # Quality will be poor - for speed/cost analysis only
+  llama_3_1_70b:
+    hf_repo: "meta-llama/Llama-3.1-70B"
+    params: "70B"
+    context_length: 128000
+    bits_per_weight: 1.58  # After naive conversion
+    estimated_size_gb: 9.0  # 70B * 1.58 bits / 8 bits
+    architecture: "llama"
+    requires_auth: true
+    description: "Llama 3.1 70B - naive ternary conversion for cost analysis"
+
+  mixtral_8x7b:
+    hf_repo: "mistralai/Mixtral-8x7B-v0.1"
+    params: "46.7B"  # Total params
+    active_params: "12.9B"  # Per forward pass
+    context_length: 32768
+    bits_per_weight: 1.58
+    estimated_size_gb: 6.0
+    architecture: "moe"
+    num_experts: 8
+    top_k_experts: 2
+    description: "Mixtral MoE - test sparse architecture with naive conversion"
+
+# Benchmark configurations
+benchmark_configs:
+  quick:
+    warmup_requests: 3
+    benchmark_requests: 20
+    max_tokens: 50
+    duration_seconds: 30
+    batch_sizes: [1, 4, 8]
+
+  standard:
+    warmup_requests: 5
+    benchmark_requests: 50
+    max_tokens: 100
+    duration_seconds: 60
+    batch_sizes: [1, 4, 8, 16]
+
+  thorough:
+    warmup_requests: 10
+    benchmark_requests: 100
+    max_tokens: 200
+    duration_seconds: 120
+    batch_sizes: [1, 2, 4, 8, 16, 32]
+
+# Default prompts for benchmarking
+prompts:
+  short:
+    - "What is machine learning?"
+    - "Explain AI briefly."
+    - "Hello, how are you?"
+
+  medium:
+    - "Explain the concept of neural networks in simple terms."
+    - "What are the benefits of cloud computing for businesses?"
+    - "Describe the process of photosynthesis step by step."
+
+  long:
+    - "Write a detailed explanation of how transformer models work, including attention mechanisms, positional encodings, and the differences between encoder and decoder architectures."

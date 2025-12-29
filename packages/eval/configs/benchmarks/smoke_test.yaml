@@ -1,0 +1,23 @@
+# Smoke test configuration
+# Quick validation with limited samples (~1 minute runtime)
+
+name: smoke_test
+description: "Quick smoke test: 10 samples per task for pipeline validation"
+
+tasks:
+  - sst2
+  - cnn_dailymail_summarization
+
+num_fewshot:
+  sst2: 0
+  cnn_dailymail_summarization: 0
+
+# Limit to 10 samples per task for fast validation
+limits:
+  sst2: 10
+  cnn_dailymail_summarization: 10
+
+# Generation settings (faster for smoke test)
+generation:
+  max_new_tokens: 64
+  do_sample: false

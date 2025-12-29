@@ -1,0 +1,26 @@
+# MuonClip optimizer - Muon + QK-clipping for training stability
+# Used in Kimi K2 (1 trillion parameter model) trained on 15.5T tokens
+# Reference: https://github.com/GAD-cell/muon-clip
+#
+# QK-clipping prevents attention score explosions during training,
+# enabling smoother loss curves for large-scale pre-training.
+
+optimizer:
+  type: muonclip
+  momentum: 0.95
+  # QK-clipping settings
+  enable_clipping: true
+  clipping_threshold: 50.0  # Kimi K2 default
+  clipping_alpha: 0.5       # Balance between Q and K scaling
+  # AdamW settings for embed/head/bias/norm params
+  adamw_betas: [0.9, 0.95]
+  adamw_eps: 1.0e-8
+  # Note: lr and weight_decay come from training config
+
+# Gradient scaling for mixed precision
+grad_scaler:
+  enabled: true
+  init_scale: 65536
+  growth_factor: 2.0
+  backoff_factor: 0.5
+  growth_interval: 2000

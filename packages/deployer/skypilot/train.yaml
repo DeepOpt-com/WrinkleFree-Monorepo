@@ -1,0 +1,119 @@
+# WrinkleFree Training Job
+#
+# Launch training as a managed job (auto-restart on preemption):
+#   sky jobs launch train.yaml -e MODEL=qwen3_4b -e STAGE=2
+#
+# Monitor:
+#   sky jobs queue
+#   sky jobs logs <job_id>
+#
+# Cancel:
+#   sky jobs cancel <job_id>
+
+name: wrinklefree-train  # Dynamic name set by CLI
+
+resources:
+  # TODO: Re-enable Docker image once GCR auth on Nebius is fixed
+  # See: https://github.com/DeepOpt-com/WrinkleFree-Deployer/issues/8
+  # image_id: docker:gcr.io/wrinklefree-481904/wf-train:latest
+  accelerators: H100:1  # Override from core.py based on scale
+  use_spot: false  # On-demand for stability (spot keeps getting preempted)
+  disk_size: 200  # GB - enough for checkpoints and model weights
+  disk_tier: best
+  cloud: nebius  # Nebius for H100 training
+  job_recovery:
+    max_restarts_on_errors: 3  # Handle NCCL timeouts, driver issues
+
+# Sync local training code to cluster
+workdir: ../WrinkleFree-1.58Quant
+
+# Sync CheaperTraining library to match pyproject.toml's expected path
+file_mounts:
+  ~/WrinkleFree-CheaperTraining: ../WrinkleFree-CheaperTraining
+  # GCP credentials for GCS checkpointing
+  ~/.config/gcloud/application_default_credentials.json: ~/.config/gcloud/application_default_credentials.json
+
+envs:
+  # Training configuration (override with -e)
+  MODEL: qwen3_4b
+  STAGE: "2"
+
+  # Weights & Biases tracking
+  WANDB_PROJECT: wrinklefree
+  WANDB_API_KEY: b95b2998e7ecb4a69680f83796f01a38672baf4a
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+
+  # Create venv and install dependencies
+  uv venv .venv
+  source .venv/bin/activate
+
+  # Install all dependencies (this takes ~5-10 min without Docker cache)
+  uv pip install -e .
+  uv pip install -e ~/WrinkleFree-CheaperTraining
+
+run: |
+  set -e
+  cd ~/sky_workdir
+
+  # Activate the venv created in setup
+  source .venv/bin/activate
+
+  # Install gcloud for GCS access (if not present)
+  if ! command -v gcloud &> /dev/null; then
+    echo "Installing gcloud CLI..."
+    curl -sSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar -xz -C $HOME
+    $HOME/google-cloud-sdk/install.sh --quiet --path-update=false
+    export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  fi
+
+  # Determine training config based on stage
+  case $STAGE in
+    1)   TRAINING_CONFIG="stage1_subln" ;;
+    1.9) TRAINING_CONFIG="stage1_9_layerwise" ;;
+    2)   TRAINING_CONFIG="stage2_pretrain" ;;
+    3)   TRAINING_CONFIG="stage3_distill" ;;
+    *)   echo "Unknown STAGE: $STAGE"; exit 1 ;;
+  esac
+
+  # Check for existing checkpoint to resume from
+  CHECKPOINT_DIR="$HOME/checkpoints/${MODEL}/stage${STAGE}"
+  mkdir -p $CHECKPOINT_DIR
+  RESUME_FLAG=""
+  if [ "$(ls -A $CHECKPOINT_DIR 2>/dev/null)" ]; then
+    echo "Found existing checkpoint at $CHECKPOINT_DIR, resuming..."
+    RESUME_FLAG="training.resume_from_checkpoint=$CHECKPOINT_DIR"
+  else
+    echo "No checkpoint found, starting fresh training..."
+  fi
+
+  # Determine data config based on stage
+  case $STAGE in
+    1)   DATA_CONFIG="" ;;  # Stage 1 doesn't need data
+    1.9) DATA_CONFIG="data=fineweb" ;;
+    2)   DATA_CONFIG="data=fineweb" ;;
+    3)   DATA_CONFIG="data=downstream" ;;  # Fine-tuning uses task-specific data
+    *)   DATA_CONFIG="data=fineweb" ;;
+  esac
+
+  # Debug: show configuration
+  echo "HYDRA_OVERRIDES: ${HYDRA_OVERRIDES:-}"
+  echo "RESUME_CHECKPOINT: ${RESUME_CHECKPOINT:-not set}"
+
+  # Run training
+  # Note: distributed config (single_gpu vs fsdp_multi) is set via HYDRA_OVERRIDES from core.py
+  python scripts/train.py \
+    model=${MODEL} \
+    training=${TRAINING_CONFIG} \
+    $DATA_CONFIG \
+    output_dir=${CHECKPOINT_DIR} \
+    $RESUME_FLAG \
+    ${HYDRA_OVERRIDES:-}

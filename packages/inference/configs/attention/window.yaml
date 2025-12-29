@@ -1,0 +1,15 @@
+# Sliding window attention (Longformer-style)
+# Efficient for long sequences
+# Reference: https://arxiv.org/abs/2004.05150
+
+attention_sparsity:
+  enabled: true
+  mode: "window"
+  window:
+    size: 256       # Local attention window
+    global_tokens: 1  # CLS token attends to all
+    stride: 64      # Global attention every 64 tokens
+  track_stats: true
+
+# Memory usage: O(n * window_size) instead of O(n^2)
+# Example: 8K context, window=256 → 32x memory reduction

@@ -1,0 +1,64 @@
+# Diffusion Fine-tuning Configuration
+#
+# Training settings for converting BitNet to DLM.
+# Based on Fast-dLLM v2 recipe (~1B tokens).
+
+stage: finetune
+
+# Training parameters (~1B tokens per Fast-dLLM v2)
+total_tokens: 1_000_000_000
+max_seq_length: 512
+batch_size: 32
+gradient_accumulation_steps: 4
+
+# Effective batch size: 130 * 4 * 512 = 266,240 tokens/step
+# Steps for 1B tokens: ~3,757 steps
+# Larger batch = better H100 utilization + smoother loss
+
+# Optimizer: MuonClip (Muon for internals, AdamW for embeddings/norms)
+# From Kimi K2 (arXiv:2507.20534)
+optimizer:
+  type: adamw
+  lr_muon: 1.0e-5    # Halved from 2e-5 for stability
+  lr_adam: 1.0e-5    # Same (unused, kept for compatibility)
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  ns_steps: 5        # Newton-Schulz iterations
+  qk_clip: 100.0     # Attention score clipping threshold
+
+scheduler:
+  type: cosine
+  warmup_steps: 1000
+  min_lr_ratio: 0.1
+
+# Gradient clipping
+max_grad_norm: 1.0
+
+# Diffusion training settings
+diffusion:
+  mask_ratio: 0.15
+  complementary_training: true
+  token_shift: true
+
+# Checkpointing
+checkpoint:
+  save_interval: 5000
+  keep_last_n: 3
+  hub:
+    enabled: false
+    repo_id: null
+    private: true
+
+# Logging
+logging:
+  log_interval: 100
+  wandb:
+    enabled: true
+    project: wrinklefree-dlm
+    tags: [dlm, conversion, finetune]
+
+# Compute settings
+compute:
+  dtype: bfloat16
+  compile_model: false  # Enable for PyTorch 2.0+ speedup
+  gradient_checkpointing: true

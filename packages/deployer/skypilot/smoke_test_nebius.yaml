@@ -1,0 +1,127 @@
+# Nebius Smoke Test - All 3 Stages with 8x H100 Full GPU Utilization
+#
+# Launch:
+#   source credentials/.env
+#   sky launch skypilot/smoke_test_nebius.yaml -y --env WANDB_API_KEY
+#
+# Monitor:
+#   sky logs <cluster_name>
+#
+# Down:
+#   sky down <cluster_name> -y
+
+name: wf-smoke-nebius
+
+resources:
+  # Pre-built image with ML deps - reduces startup from ~10min to ~30s
+  image_id: docker:gcr.io/wrinklefree-481904/wf-train:latest
+  cloud: nebius
+  accelerators: H100:8  # Nebius only has 8-GPU instances
+  use_spot: false  # On-demand for reliability
+  disk_size: 100
+  disk_tier: best
+
+# Sync training code
+workdir: ../WrinkleFree-1.58Quant
+
+# Mount GCS for checkpoint persistence + CheaperTraining for influence
+file_mounts:
+  /gcs-creds/gcp-service-account.json: credentials/gcp-service-account.json
+  /cheapertraining: ../WrinkleFree-CheaperTraining
+
+envs:
+  # Model config
+  MODEL: smollm2_135m
+
+  # W&B tracking
+  WANDB_PROJECT: wrinklefree
+
+  # GCS credentials (mounted file)
+  GOOGLE_APPLICATION_CREDENTIALS: /gcs-creds/gcp-service-account.json
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Base dependencies are pre-installed in the Docker image
+  source /app/.venv/bin/activate
+
+  # Install wrinklefree package (editable)
+  pip install -e . --no-deps
+
+  # Install CheaperTraining for influence-based training
+  pip install -e /cheapertraining --no-deps
+
+  # Verify GPU setup
+  python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
+
+  # Verify GCS credentials
+  echo "Testing GCS access..."
+  python -c "from google.cloud import storage; client = storage.Client(); bucket = client.bucket('wrinklefree-checkpoints'); print(f'GCS bucket access: {bucket.exists()}')"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  source /app/.venv/bin/activate
+
+  echo "=============================================="
+  echo "WrinkleFree Smoke Test - Nebius 8x H100"
+  echo "Model: ${MODEL}"
+  echo "W&B Project: ${WANDB_PROJECT}"
+  echo "=============================================="
+
+  # Common settings for 8x H100 - maximize GPU utilization
+  # SmolLM2-135M is small, so we can use large batch sizes
+  COMMON_ARGS="distributed=fsdp_multi gcs.enabled=true gcs.bucket=wrinklefree-checkpoints"
+
+  # Stage 1.9: Layer-wise distillation (quick, ~500 steps)
+  # Final checkpoint now uploads synchronously (fix in trainer.py)
+  echo ""
+  echo "=== Stage 1.9: Layer-wise Distillation ==="
+  python scripts/train.py \
+    model=${MODEL} \
+    training=stage1_9_layerwise \
+    training.max_steps=500 \
+    training.batch_size=64 \
+    training.gradient_accumulation_steps=2 \
+    training.max_seq_length=512 \
+    training.logging.log_interval=10 \
+    ${COMMON_ARGS}
+
+  echo "Stage 1.9 complete!"
+
+  # Stage 2: Continue pre-training with INFLUENCE-BASED data selection
+  # CheaperTraining installed from /cheapertraining mount
+  echo ""
+  echo "=== Stage 2: Continue Pre-Training (with Influence) ==="
+  python scripts/train.py \
+    model=${MODEL} \
+    training=stage2_pretrain \
+    training.max_steps=1000 \
+    training.batch_size=64 \
+    training.gradient_accumulation_steps=2 \
+    training.max_seq_length=512 \
+    training.logging.log_interval=10 \
+    ${COMMON_ARGS}
+
+  echo "Stage 2 complete!"
+
+  # Stage 3: Distillation (quick refinement, ~500 steps)
+  echo ""
+  echo "=== Stage 3: Distillation ==="
+  python scripts/train.py \
+    model=${MODEL} \
+    training=stage3_distill_smollm2 \
+    training.max_steps=500 \
+    training.batch_size=64 \
+    training.gradient_accumulation_steps=2 \
+    training.max_seq_length=512 \
+    training.logging.log_interval=10 \
+    ${COMMON_ARGS}
+
+  echo ""
+  echo "=============================================="
+  echo "ALL STAGES COMPLETE!"
+  echo "Check W&B: https://wandb.ai/${WANDB_ENTITY:-your-entity}/${WANDB_PROJECT}"
+  echo "Check GCS: gs://wrinklefree-checkpoints/"
+  echo "=============================================="

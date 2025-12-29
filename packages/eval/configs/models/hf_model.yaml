@@ -1,0 +1,22 @@
+# Standard HuggingFace model configuration
+
+name: hf_model
+description: "Standard HuggingFace transformers loading"
+
+# Model loading settings
+backend: huggingface
+
+# Quantization (null = no quantization, or: int8, int4, gptq, awq)
+quantization: null
+
+# Trust remote code (required for some models like Qwen)
+trust_remote_code: true
+
+# Use Flash Attention 2 if available
+use_flash_attention: true
+
+# Device map for multi-GPU
+device_map: auto
+
+# Low memory mode (gradient checkpointing, etc.)
+low_memory: false

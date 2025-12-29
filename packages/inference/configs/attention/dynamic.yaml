@@ -1,0 +1,14 @@
+# Dynamic sparse attention based on attention entropy
+# Adapts sparsity per query based on how focused attention is
+# Inspired by DejaVu contextual sparsity
+
+attention_sparsity:
+  enabled: true
+  mode: "dynamic"
+  dynamic:
+    min_ratio: 0.1   # Minimum tokens to attend to (focused attention)
+    max_ratio: 0.5   # Maximum tokens to attend to (diffuse attention)
+  track_stats: true
+
+# Entropy-based: Low entropy (focused) → more sparsity is safe
+# Expected sparsity: 50-90% depending on attention pattern

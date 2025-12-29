@@ -1,0 +1,24 @@
+# GPU Profile: NVIDIA H100 80GB
+# Use with: python scripts/train.py gpu=h100_80gb ...
+name: h100_80gb
+vram_gb: 80
+disk_gb: 100
+
+# Same as A100-80GB but faster compute
+# Qwen3-4B batch sizes by stage
+qwen3_4b:
+  stage1_9:
+    batch_size: 8
+    gradient_accumulation_steps: 8
+  stage2:
+    batch_size: 16
+    gradient_accumulation_steps: 4
+
+# SmolLM2-135M batch sizes
+smollm2_135m:
+  stage1_9:
+    batch_size: 32
+    gradient_accumulation_steps: 2
+  stage2:
+    batch_size: 64
+    gradient_accumulation_steps: 1

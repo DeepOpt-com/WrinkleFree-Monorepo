@@ -1,0 +1,13 @@
+# Aggressive sparsity configuration
+# Higher sparsity (70%) for maximum throughput
+# May have slight quality degradation - benchmark before using in production
+
+sparsity:
+  enabled: true
+  mode: "top_k"
+  top_k_ratio: 0.3  # Keep 30% → 70% sparsity
+  threshold: 0.01
+  adaptive:
+    min_ratio: 0.2
+    max_ratio: 0.5
+  track_stats: true

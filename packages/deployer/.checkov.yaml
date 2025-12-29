@@ -1,0 +1,49 @@
+# Checkov configuration for infrastructure security scanning
+# Run with: checkov -d terraform/ --config-file .checkov.yaml
+
+framework:
+  - terraform
+  - terraform_plan
+  - dockerfile
+
+# Directory to scan
+directory:
+  - terraform/
+  - docker/
+
+# Skip checks that are not applicable to this project
+skip-check:
+  # Skip IMDSv2 check - we control instance access via firewall
+  - CKV_AWS_79
+  # Skip VPC attachment check - using default VPC for simplicity
+  - CKV2_AWS_5
+  # Skip public IP check - needed for SSH access
+  - CKV_GCP_40
+  # Skip shielded VM - adds cost, not needed for inference
+  - CKV_GCP_32
+
+# Checks to always run (critical security)
+check:
+  # No SSH from 0.0.0.0/0 (when properly configured)
+  - CKV_AWS_24
+  # GCP firewall checks
+  - CKV_GCP_2
+  # Docker security
+  - CKV_DOCKER_2
+  - CKV_DOCKER_3
+
+# Fail on findings
+soft-fail: false
+
+# Output format
+compact: true
+output:
+  - cli
+  - json
+
+# Output file for CI
+output-file-path: checkov-results.json
+
+# External checks directory (if we add custom checks later)
+# external-checks-dir:
+#   - ./checkov-custom/

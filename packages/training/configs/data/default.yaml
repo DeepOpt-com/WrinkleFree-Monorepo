@@ -1,0 +1,11 @@
+# Minimal data config - delegates to CheaperTraining
+#
+# 1.58Quant doesn't manage data configs. The actual data config
+# (sources, probes, weights) lives in CheaperTraining/configs/data/
+#
+# Available configs in CheaperTraining:
+#   - mixed_pretrain: Multi-source with influence-based remixing (recommended)
+#   - fineweb: Single-source FineWeb-Edu (no influence)
+#   - downstream: SFT/finetuning tasks (Stage 3)
+
+config_name: mixed_pretrain

@@ -1,0 +1,19 @@
+# BitNet model configuration
+# Uses optimized BitNet kernels for ternary weight inference
+
+name: bitnet_model
+description: "BitNet-optimized inference with ternary kernels"
+
+backend: bitnet
+
+# Path to BitNet kernels (relative to WrinkleFree-1.58Quant/extern/BitNet)
+bitnet_path: null  # Auto-detect from environment
+
+# Fallback to HuggingFace if BitNet kernels not available
+fallback_to_hf: true
+
+# Trust remote code
+trust_remote_code: true
+
+# Device configuration
+device_map: auto

@@ -1,0 +1,271 @@
+# SkyPilot configuration for GCP H3 benchmarking
+# Uses Intel Sapphire Rapids with DDR5-4800 (~307 GB/s bandwidth)
+#
+# GCP H3 Instance Specifications:
+# - CPU: Intel Sapphire Rapids (4th Gen Xeon), 3.0 GHz all-core
+# - vCPUs: 88 (single-threaded, no SMT)
+# - Memory: 352 GB DDR5-4800
+# - Memory Bandwidth: ~307 GB/s (8 channels × 38.2 GB/s)
+# - Cost: ~$1.76/hour on-demand, ~$0.53/hour spot
+#
+# Benchmark metrics collected:
+# - Raw throughput (tokens/sec)
+# - Latency percentiles (P50/P95/P99)
+# - Cost efficiency ($/1M tokens)
+# - Memory bandwidth utilization
+#
+# Launch:
+#   sky launch skypilot/benchmark/gcp_h3_benchmark.yaml -c h3-bench
+#
+# View results:
+#   sky logs h3-bench
+
+name: bench-h3
+
+resources:
+  cloud: gcp
+  cpus: 88+               # High core count for parallelism
+  memory: 350+            # ~352GB DDR5 on H3
+  region: us-central1
+  disk_size: 200
+  disk_tier: high
+  use_spot: true          # Use spot for cost savings during benchmarks
+  ports: 8080
+
+envs:
+  # Model configuration
+  MODEL_REPO: microsoft/BitNet-b1.58-2B-4T
+  QUANT_TYPE: tl2                # TL2 kernel for x86 AVX512
+  NUM_THREADS: "88"              # Match vCPU count
+  CTX_SIZE: "8192"               # Larger context for high bandwidth
+  PORT: "8080"
+
+  # Benchmark configuration
+  BENCHMARK_MODE: "true"
+  RESULTS_DIR: /results
+  BENCHMARK_DURATION: "300"      # 5 minutes per test
+  BATCH_SIZES: "1,2,4,8,16,32"   # Test various batch sizes
+
+  # Build optimization
+  BITNET_USE_CCACHE: "1"
+  BITNET_OPTIMIZATION_LEVEL: native
+  BITNET_KERNEL_TYPE: tl2
+  CMAKE_BUILD_PARALLEL_LEVEL: "88"
+
+  # Hardware specs for cost calculation
+  HARDWARE_NAME: gcp_h3_88
+  HARDWARE_COST_PER_HOUR: "1.76"  # On-demand rate
+  MEMORY_BANDWIDTH_GB_S: "307"    # Theoretical max
+
+  # GCS cache
+  GCS_CACHE_BUCKET: gs://wrinklefree-build-cache-dev
+  CACHE_VERSION: v2_h3_tl2
+
+setup: |
+  set -ex
+
+  echo "============================================"
+  echo "GCP H3 Benchmark Setup"
+  echo "============================================"
+
+  # Check CPU features
+  echo "=== CPU Information ==="
+  lscpu | grep -E "(Model name|CPU\(s\)|Thread|Core|Socket|Cache|AVX)" | head -20
+  echo ""
+  echo "AVX512 Support:"
+  cat /proc/cpuinfo | grep -m1 "flags" | tr ' ' '\n' | grep -E "^avx512" | head -10 || echo "No AVX512 flags found"
+  echo ""
+
+  # Memory info
+  echo "=== Memory Information ==="
+  free -h
+  echo ""
+
+  # Install system dependencies
+  sudo apt-get update && sudo apt-get install -y \
+    clang cmake ccache git curl python3-pip python3-venv
+
+  # Configure ccache
+  ccache --max-size=10G
+  ccache --set-config=compression=true
+
+  # Clone or update inference engine
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine
+    git pull || true
+    git submodule update --init --recursive || true
+  else
+    sudo mkdir -p /opt/inference-engine
+    sudo chown $(whoami) /opt/inference-engine
+    git clone --recurse-submodules \
+      https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git \
+      /opt/inference-engine
+  fi
+
+  cd /opt/inference-engine
+
+  # Install Python dependencies with benchmark extras
+  pip install uv
+  uv sync --extra benchmark
+
+  # Setup BitNet with GCS caching
+  cd extern/BitNet
+
+  MODEL_NAME=$(basename $MODEL_REPO)
+  CACHE_KEY="h3_${MODEL_NAME}_${QUANT_TYPE}_${CACHE_VERSION}"
+  CACHE_TARBALL="${CACHE_KEY}.tar.gz"
+  CACHE_PATH="${GCS_CACHE_BUCKET}/${CACHE_TARBALL}"
+
+  # Try to restore from cache
+  CACHE_HIT=false
+  if command -v gsutil &> /dev/null; then
+    echo "Checking for cached build at ${CACHE_PATH}..."
+    if gsutil -q stat "${CACHE_PATH}" 2>/dev/null; then
+      echo "Cache hit! Downloading..."
+      gsutil cp "${CACHE_PATH}" /tmp/
+      tar -xzf "/tmp/${CACHE_TARBALL}" -C .
+      CACHE_HIT=true
+      echo "Cache restored successfully"
+
+      if [[ ! -f "build/bin/llama-server" ]]; then
+        echo "Warning: llama-server not found, rebuilding..."
+        CACHE_HIT=false
+      fi
+    else
+      echo "Cache miss, building from source"
+    fi
+  fi
+
+  if [ "$CACHE_HIT" = false ]; then
+    # Download model
+    echo "Downloading model: $MODEL_REPO"
+    mkdir -p models/$MODEL_NAME
+    python3 -c "
+    from huggingface_hub import snapshot_download
+    import os
+    repo = os.environ['MODEL_REPO']
+    model_name = repo.split('/')[-1]
+    model_dir = 'models/' + model_name
+    print(f'Downloading {repo}')
+    snapshot_download(repo, local_dir=model_dir)
+    print('Download complete')
+    "
+
+    # Build with optimizations
+    pip install -r requirements.txt
+    python3 setup_env.py --hf-repo $MODEL_REPO -q $QUANT_TYPE -p
+
+    # Upload to cache
+    if command -v gsutil &> /dev/null; then
+      echo "Uploading to cache: ${CACHE_PATH}"
+      tar -czf "/tmp/${CACHE_TARBALL}" \
+        build/bin \
+        models/${MODEL_NAME}/*.gguf \
+        include/*.h 2>/dev/null || \
+      tar -czf "/tmp/${CACHE_TARBALL}" \
+        build/bin \
+        models/${MODEL_NAME}/*.gguf
+      gsutil cp "/tmp/${CACHE_TARBALL}" "${CACHE_PATH}" || echo "Cache upload failed (non-fatal)"
+    fi
+  fi
+
+  # Create results directory
+  sudo mkdir -p /results
+  sudo chown $(whoami) /results
+
+  echo "=== Build Complete ==="
+  ls -lh build/bin/ || true
+  ccache --show-stats || true
+
+run: |
+  set -ex
+
+  cd /opt/inference-engine/extern/BitNet
+
+  MODEL_NAME=$(basename $MODEL_REPO)
+  MODEL_PATH="models/${MODEL_NAME}/ggml-model-${QUANT_TYPE}.gguf"
+
+  echo "============================================"
+  echo "GCP H3 BitNet Benchmark"
+  echo "============================================"
+  echo "Instance: h3-standard-88"
+  echo "Memory Bandwidth: ~${MEMORY_BANDWIDTH_GB_S} GB/s DDR5-4800"
+  echo "Cost: \$${HARDWARE_COST_PER_HOUR}/hour"
+  echo "Model: $MODEL_PATH"
+  echo "Context: $CTX_SIZE"
+  echo "Threads: $NUM_THREADS"
+  echo "Kernel: $QUANT_TYPE (AVX512)"
+  echo "Batch sizes: $BATCH_SIZES"
+  echo "Duration: ${BENCHMARK_DURATION}s per test"
+  echo "============================================"
+
+  # Verify binary exists
+  if [[ ! -f "./build/bin/llama-server" ]]; then
+    echo "ERROR: llama-server not found!"
+    ls -la ./build/bin/ 2>/dev/null || echo "build/bin does not exist"
+    exit 1
+  fi
+
+  # Start server in background
+  echo "Starting inference server..."
+  ./build/bin/llama-server \
+    -m "$MODEL_PATH" \
+    -c $CTX_SIZE \
+    -t $NUM_THREADS \
+    --host 0.0.0.0 \
+    --port $PORT &
+
+  SERVER_PID=$!
+
+  # Wait for server (model loading takes 30-120 seconds)
+  echo "Waiting for server to be ready..."
+  for i in $(seq 1 180); do
+    # Use -sf to fail on HTTP errors (503 = still loading model)
+    if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+      echo "Server is ready after ${i}s!"
+      break
+    fi
+    if [[ $i -eq 180 ]]; then
+      echo "ERROR: Server failed to start after 180 seconds"
+      kill $SERVER_PID 2>/dev/null || true
+      exit 1
+    fi
+    sleep 1
+  done
+
+  # Run comprehensive benchmark
+  cd /opt/inference-engine
+
+  echo ""
+  echo "=== Running Comprehensive Benchmark ==="
+
+  # Run cost benchmark with all metrics
+  python scripts/benchmark_cost.py \
+    --url http://localhost:$PORT \
+    --hardware $HARDWARE_NAME \
+    --model bitnet-2b-4t \
+    --output-dir $RESULTS_DIR \
+    --duration $BENCHMARK_DURATION \
+    --full
+
+  echo ""
+  echo "=== Benchmark Complete ==="
+  echo ""
+
+  # Display results
+  echo "=== Results Summary ==="
+  for f in $RESULTS_DIR/*.json; do
+    if [[ -f "$f" ]]; then
+      echo "--- $(basename $f) ---"
+      cat "$f" | python3 -m json.tool 2>/dev/null || cat "$f"
+      echo ""
+    fi
+  done
+
+  # Stop server
+  kill $SERVER_PID 2>/dev/null || true
+
+  echo "============================================"
+  echo "Benchmark complete!"
+  echo "Results saved to: $RESULTS_DIR"
+  echo "============================================"

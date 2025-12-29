@@ -1,0 +1,73 @@
+# Local test stack for WrinkleFree inference
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d
+#   ./scripts/wait_healthy.sh http://localhost:8080
+#   uv run pytest tests/
+#
+# Uses SmolLM2-135M for fast iteration (~100MB, loads in seconds)
+
+services:
+  inference:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bitnet
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount test model (download with scripts/download_test_model.sh)
+      - ./models/test:/models:ro
+    environment:
+      - MODEL_PATH=/models/smollm2-135m.gguf
+      - NUM_THREADS=4
+      - CONTEXT_SIZE=2048
+      - HOST=0.0.0.0
+      - PORT=8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  # Optional: Run tests in container
+  test-runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test
+    depends_on:
+      inference:
+        condition: service_healthy
+    environment:
+      - INFERENCE_URL=http://inference:8080
+    volumes:
+      - ./tests:/app/tests:ro
+      - ./results:/app/results
+    profiles:
+      - test  # Only start with: docker compose --profile test up
+
+  # Optional: Load testing with Locust
+  locust:
+    image: locustio/locust:2.20
+    depends_on:
+      inference:
+        condition: service_healthy
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./tests/locustfile.py:/mnt/locust/locustfile.py:ro
+    environment:
+      - LOCUST_HOST=http://inference:8080
+    command: -f /mnt/locust/locustfile.py
+    profiles:
+      - load  # Only start with: docker compose --profile load up
+
+networks:
+  default:
+    name: wrinklefree-test

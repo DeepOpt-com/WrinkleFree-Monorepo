@@ -1,0 +1,32 @@
+# Ax Bayesian Optimization Search Space: Saliency Curriculum Ablation
+# Target: Compare saliency curriculum ON/OFF with LR sweep
+# Stage 1.9 focused, Muon optimizer, ~100 steps per trial
+
+parameters:
+  # Learning rate (Muon typically uses higher LR)
+  learning_rate:
+    type: range
+    bounds: [1.0e-4, 5.0e-3]
+    log_scale: true
+    value_type: float
+
+  # Saliency curriculum toggle
+  saliency_enabled:
+    type: choice
+    values: [true, false]
+    is_ordered: false
+
+  # Saliency initial_k (only matters when enabled)
+  saliency_initial_k:
+    type: choice
+    values: [0.05, 0.1, 0.15]
+    is_ordered: true
+
+# Objective: minimize final loss
+objectives:
+  final_loss:
+    minimize: true
+
+# No constraints
+parameter_constraints: []
+outcome_constraints: []

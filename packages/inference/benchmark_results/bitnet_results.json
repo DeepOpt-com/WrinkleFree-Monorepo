@@ -1,0 +1,18 @@
+{
+  "timestamp": "2025-12-28T00:32:50.319985",
+  "threads": 22,
+  "runs_per_config": 3,
+  "quick_mode": true,
+  "bitnet_cpp": {
+    "name": "bitnet.cpp",
+    "tokens_per_second_mean": 47.25940106391143,
+    "tokens_per_second_std": 2.6382485663145094,
+    "ttft_mean_ms": 314.49800499998065,
+    "latency_per_token_mean_ms": 21.21459186999952,
+    "total_runs": 6,
+    "configs_tested": [
+      "prompt=32,max=50",
+      "prompt=128,max=100"
+    ]
+  }
+}

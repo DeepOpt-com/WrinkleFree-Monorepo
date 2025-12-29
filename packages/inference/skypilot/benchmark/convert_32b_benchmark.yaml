@@ -1,0 +1,133 @@
+# SkyPilot configuration for 32B model conversion and benchmarking
+# Converts Qwen2.5-32B-Instruct to BitNet format via naive ternary quantization
+#
+# Launch:
+#   sky launch skypilot/benchmark/convert_32b_benchmark.yaml -c convert-32b
+#
+# Memory: Need 128GB+ for loading 32B model weights in bfloat16
+
+name: bench-32b-convert
+
+resources:
+  cloud: runpod
+  cpus: 32+
+  memory: 128+  # Need 128GB+ RAM for 32B model conversion
+  disk_size: 200  # 200GB disk for model files
+  use_spot: false
+  ports: 8080
+
+envs:
+  MODEL_REPO: Qwen/Qwen2.5-32B-Instruct
+  MODEL_NAME: Qwen2.5-32B-Instruct
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "32"
+  CTX_SIZE: "2048"  # Conservative context size for 32B
+  PORT: "8080"
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -ex
+  apt-get update && apt-get install -y clang cmake git curl
+
+  # Clone or update inference engine
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine
+    git pull || true
+    git submodule update --init --recursive || true
+  else
+    git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+  fi
+
+  cd /opt/inference-engine
+
+  # Install Python dependencies
+  pip install uv huggingface_hub hf_transfer safetensors torch
+  uv sync --extra benchmark
+
+  # Build BitNet.cpp
+  cd extern/BitNet
+  pip install -r requirements.txt
+
+  # Build with CPU optimizations (no GPU for BitNet.cpp)
+  cmake -B build -DCMAKE_BUILD_TYPE=Release
+  cmake --build build --config Release -j32
+
+  mkdir -p /results
+  mkdir -p models/$MODEL_NAME
+
+run: |
+  set -ex
+  cd /opt/inference-engine/extern/BitNet
+
+  echo "=== Step 1: Download $MODEL_NAME ==="
+  echo "This will download ~65GB of model files..."
+
+  # Download model using huggingface-cli
+  huggingface-cli download $MODEL_REPO \
+    --local-dir models/$MODEL_NAME \
+    --include "*.safetensors" "*.json" "*.model" "*.txt"
+
+  echo "=== Step 2: Patch config.json for BitNet architecture ==="
+  cd models/$MODEL_NAME
+
+  # Backup original config
+  cp config.json config.json.bak
+
+  # Patch architecture to BitnetForCausalLM so converter applies ternary quantization
+  python3 -c "import json; c=json.load(open('config.json')); c['architectures']=['BitnetForCausalLM']; c['model_type']='bitnet'; json.dump(c,open('config.json','w'),indent=2); print('Patched config.json')"
+
+  cd /opt/inference-engine/extern/BitNet
+
+  echo "=== Step 3: Convert to GGUF with i2_s quantization ==="
+  echo "Converting model to BitNet GGUF format..."
+
+  python utils/convert-hf-to-gguf-bitnet.py \
+    models/$MODEL_NAME \
+    --outtype $QUANT_TYPE \
+    --outfile models/$MODEL_NAME/ggml-model-$QUANT_TYPE.gguf
+
+  MODEL_PATH="models/$MODEL_NAME/ggml-model-$QUANT_TYPE.gguf"
+
+  echo "=== Step 4: Verify converted model ==="
+  ls -lh $MODEL_PATH
+
+  echo "=== Step 5: Start BitNet server ==="
+  ./build/bin/llama-server \
+    -m "$MODEL_PATH" \
+    -c $CTX_SIZE \
+    -t $NUM_THREADS \
+    --host 0.0.0.0 \
+    --port $PORT &
+
+  SERVER_PID=$!
+
+  # Wait for server to be ready
+  echo "Waiting for server..."
+  for i in $(seq 1 300); do
+    if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+      echo "Server ready after $((i*2))s!"
+      break
+    fi
+    [ $i -eq 300 ] && { echo "ERROR: Server timeout"; exit 1; }
+    sleep 2
+  done
+
+  echo "=== Step 6: Run benchmark ==="
+  cd /opt/inference-engine
+  source .venv/bin/activate
+
+  python scripts/benchmark_cost.py \
+    --url http://localhost:$PORT \
+    --hardware cpu_32 \
+    --model qwen2.5-32b-bitnet \
+    --model-size 32B \
+    --quantization naive \
+    --output-dir /results \
+    --duration 60 \
+    --full
+
+  echo "=== Results ==="
+  cat /results/*.json 2>/dev/null || echo "No results"
+
+  kill $SERVER_PID 2>/dev/null || true
+  echo "Benchmark complete"

@@ -1,0 +1,88 @@
+# SkyPilot configuration for RunPod CPU-only inference
+# Uses BitNet.cpp's optimized I2_S kernels for 1.58-bit models
+#
+# CPU-only deployment for cost efficiency
+# BitNet I2_S quantization is CPU-optimized (not GPU accelerated)
+
+name: inference-cpu
+
+resources:
+  cloud: runpod
+  # CPU-only instance - no GPU needed for I2_S quantization
+  cpus: 16+
+  memory: 32+
+  disk_size: 40
+  use_spot: false
+  ports: 8080
+
+envs:
+  MODEL_REPO: microsoft/BitNet-b1.58-2B-4T
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "0"    # 0 = auto-detect
+  CTX_SIZE: "512"     # Smaller context for faster inference
+  PORT: "8080"
+
+file_mounts:
+  # Mount any local models if needed
+  # /models: ./models
+
+setup: |
+  set -ex
+
+  # Install build dependencies
+  apt-get update && apt-get install -y clang cmake
+
+  # Install huggingface_hub
+  python -m pip install huggingface_hub
+
+  # Clone or update repo
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine
+    git pull
+    git submodule update --init --recursive
+  else
+    git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+    cd /opt/inference-engine
+  fi
+
+  # Install dependencies
+  pip install uv
+  uv sync
+
+  # Setup BitNet
+  cd extern/BitNet
+
+  # Download pre-converted GGUF (faster than converting)
+  mkdir -p models/BitNet-b1.58-2B-4T
+  python -c "from huggingface_hub import hf_hub_download; import shutil; import os; p=hf_hub_download('microsoft/bitnet-b1.58-2B-4T-gguf','ggml-model-i2_s.gguf'); t='models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf'; os.makedirs(os.path.dirname(t),exist_ok=True); shutil.copy(p,t); print('Done')"
+
+  # Build BitNet.cpp using setup_env.py (handles kernel generation)
+  pip install -r requirements.txt
+
+  # Run setup_env.py which will:
+  # 1. Generate the optimized kernels for this CPU
+  # 2. Build the llama-server binary
+  # 3. Skip download since GGUF already exists
+  python setup_env.py --hf-repo $MODEL_REPO -q $QUANT_TYPE
+
+  cd /opt/inference-engine
+
+run: |
+  set -ex
+  cd /opt/inference-engine/extern/BitNet
+
+  MODEL_PATH="models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf"
+
+  echo "=== BitNet CPU-Only Inference Server ==="
+  echo "Model: $MODEL_PATH"
+  echo "Context: $CTX_SIZE"
+  echo "Threads: $NUM_THREADS (0=auto)"
+  echo "Port: $PORT"
+
+  # Use native llama-server for better performance
+  ./build/bin/llama-server \
+    -m "$MODEL_PATH" \
+    -c $CTX_SIZE \
+    -t $NUM_THREADS \
+    --host 0.0.0.0 \
+    --port $PORT

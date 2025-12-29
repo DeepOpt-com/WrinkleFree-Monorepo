@@ -1,0 +1,12 @@
+# Conservative sparsity configuration
+# Lower sparsity (30%) for maximum quality preservation
+
+sparsity:
+  enabled: true
+  mode: "top_k"
+  top_k_ratio: 0.7  # Keep 70% → 30% sparsity
+  threshold: 0.01
+  adaptive:
+    min_ratio: 0.5
+    max_ratio: 0.8
+  track_stats: true

@@ -1,0 +1,131 @@
+# SkyPilot configuration for GCP 32-core CPU benchmarking
+# Uses n2-standard-32 for high-bandwidth memory and AVX512 support
+# Fits within GCP default quota of 32 CPUs
+#
+# Launch:
+#   sky launch skypilot/benchmark/gcp_cpu_32core.yaml -c benchmark-cpu32
+
+name: bench-gcp32
+
+resources:
+  cloud: gcp
+  cpus: 32
+  memory: 128+
+  disk_size: 100
+  use_spot: false  # Use on-demand for benchmarks (more stable, consistent results)
+  ports: 8080
+
+envs:
+  MODEL_REPO: microsoft/BitNet-b1.58-2B-4T
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "32"
+  CTX_SIZE: "4096"
+  PORT: "8080"
+  BENCHMARK_MODE: "true"
+  RESULTS_DIR: /results
+
+setup: |
+  set -ex
+
+  # Check CPU features
+  echo "CPU Features:"
+  lscpu | grep -E "(AVX|SSE|Model name|CPU\(s\))"
+
+  # Install system dependencies
+  sudo apt-get update && sudo apt-get install -y clang cmake git curl python3-pip
+
+  # Clone or update inference engine
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine
+    git pull || true
+    git submodule update --init --recursive || true
+  else
+    sudo mkdir -p /opt/inference-engine
+    sudo chown $(whoami) /opt/inference-engine
+    git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+  fi
+
+  cd /opt/inference-engine
+
+  # Install Python dependencies
+  pip install uv huggingface_hub hf_transfer
+  uv sync --extra benchmark
+
+  # Setup BitNet
+  cd extern/BitNet
+
+  # Download pre-converted GGUF using wget
+  mkdir -p models/BitNet-b1.58-2B-4T
+  wget -O models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf \
+    "https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf"
+
+  # Build BitNet.cpp with AVX512 support
+  pip install -r requirements.txt
+
+  # Set build flags for AVX512
+  export LLAMA_AVX512=1
+  export LLAMA_AVX512_VBMI=1
+
+  python3 setup_env.py --hf-repo $MODEL_REPO -q $QUANT_TYPE
+
+  sudo mkdir -p /results
+  sudo chown $(whoami) /results
+
+run: |
+  set -ex
+  cd /opt/inference-engine/extern/BitNet
+
+  MODEL_PATH="models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf"
+
+  echo "=== BitNet GCP CPU-32 Benchmark ==="
+  echo "Model: $MODEL_PATH"
+  echo "Context: $CTX_SIZE"
+  echo "Threads: $NUM_THREADS"
+  echo "Port: $PORT"
+
+  # Check if binary exists
+  if [ ! -f ./build/bin/llama-server ]; then
+    echo "ERROR: llama-server not found!"
+    ls -la ./build/bin/ 2>/dev/null || echo "build/bin does not exist"
+    exit 1
+  fi
+
+  # Start server in background
+  ./build/bin/llama-server \
+    -m "$MODEL_PATH" \
+    -c $CTX_SIZE \
+    -t $NUM_THREADS \
+    --host 0.0.0.0 \
+    --port $PORT &
+
+  SERVER_PID=$!
+
+  # Wait for server to be ready
+  echo "Waiting for server to start..."
+  for i in $(seq 1 60); do
+    if curl -s http://localhost:$PORT/health > /dev/null 2>&1; then
+      echo "Server is ready!"
+      break
+    fi
+    sleep 2
+  done
+
+  # Run benchmark using venv
+  cd /opt/inference-engine
+  source .venv/bin/activate
+  python scripts/benchmark_cost.py \
+    --url http://localhost:$PORT \
+    --hardware cpu_32 \
+    --model bitnet-2b-4t \
+    --output-dir $RESULTS_DIR \
+    --duration 60 \
+    --full
+
+  # Show results
+  echo "=== Results ==="
+  cat $RESULTS_DIR/*.json 2>/dev/null || echo "No results yet"
+
+  # Stop server
+  kill $SERVER_PID 2>/dev/null || true
+
+  echo "Benchmark complete. Results in $RESULTS_DIR"

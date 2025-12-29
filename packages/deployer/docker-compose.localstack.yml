@@ -1,0 +1,84 @@
+version: '3.8'
+
+# LocalStack integration testing environment
+# Run with: docker compose -f docker-compose.localstack.yml up -d
+
+services:
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: wrinklefree-localstack
+    ports:
+      - "4566:4566"            # LocalStack Gateway
+      - "4510-4559:4510-4559"  # External services
+    environment:
+      - DEBUG=${DEBUG:-0}
+      - SERVICES=ec2,s3,iam,sts,secretsmanager
+      - DEFAULT_REGION=us-east-1
+      - AWS_DEFAULT_REGION=us-east-1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - LOCALSTACK_HOST=localhost
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "./localstack-init:/etc/localstack/init/ready.d:ro"
+      - "localstack-data:/var/lib/localstack"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - wrinklefree-test
+
+  # Fake GCS Server for GCP storage emulation
+  fake-gcs-server:
+    image: fsouza/fake-gcs-server:1.47
+    container_name: wrinklefree-fake-gcs
+    ports:
+      - "4443:4443"
+    command: ["-scheme", "http", "-port", "4443", "-backend", "memory"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4443/storage/v1/b"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wrinklefree-test
+
+  # Optional: Test runner container
+  test-runner:
+    image: python:3.12-slim
+    container_name: wrinklefree-test-runner
+    profiles:
+      - test
+    working_dir: /app
+    volumes:
+      - ".:/app:ro"
+      - "./tests:/app/tests:ro"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - LOCALSTACK_HOST=localstack
+      - STORAGE_EMULATOR_HOST=http://fake-gcs-server:4443
+    command: >
+      bash -c "
+        pip install -q pytest boto3 requests google-cloud-storage &&
+        pytest tests/integration/ -v
+      "
+    depends_on:
+      localstack:
+        condition: service_healthy
+      fake-gcs-server:
+        condition: service_healthy
+    networks:
+      - wrinklefree-test
+
+networks:
+  wrinklefree-test:
+    name: wrinklefree-integration-test
+    driver: bridge
+
+volumes:
+  localstack-data:
+    name: wrinklefree-localstack-data

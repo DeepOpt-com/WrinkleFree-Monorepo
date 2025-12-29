@@ -1,0 +1,66 @@
+# Ax Bayesian Optimization Search Space Configuration
+# Target metric: convergence_per_sec_per_gb (loss reduction per second per GB)
+#
+# Stage 2 (Continue Pretraining) focused sweep with Muon optimizer
+# NOTE: batch_size is AUTO-CALCULATED to target ~20GB memory usage
+
+parameters:
+  # Training hyperparameters
+  learning_rate:
+    type: range
+    bounds: [1.0e-4, 1.0e-2]
+    log_scale: true
+    value_type: float
+
+  # NOTE: batch_size is auto-calculated, not a search parameter
+  # This ensures all trials use the same ~20GB of GPU memory
+
+  gradient_accumulation_steps:
+    type: choice
+    values: [1, 2, 4, 8]
+    is_ordered: true
+
+  weight_decay:
+    type: range
+    bounds: [0.01, 0.2]
+    log_scale: false
+    value_type: float
+
+  warmup_steps:
+    type: choice
+    values: [500, 1000, 2000]
+    is_ordered: true
+
+  # Influence function parameters
+  # Enable/disable influence-based data selection
+  influence_enabled:
+    type: choice
+    values: [true, false]
+    is_ordered: false
+
+  # influence_lambda_reg: Regularization for DataInf algorithm
+  #   Higher = more stable, lower = more sensitive
+  influence_lambda_reg:
+    type: range
+    bounds: [1.0e-6, 1.0e-2]
+    log_scale: true
+    value_type: float
+
+# Objective to optimize
+# convergence_per_sec_per_gb = (initial_loss - final_loss) / wall_time / peak_memory
+# This measures learning efficiency: how much loss reduction per second per GB of memory
+objectives:
+  convergence_per_sec_per_gb:
+    minimize: false  # We want to maximize convergence efficiency
+
+# Parameter constraints (optional)
+parameter_constraints: []
+
+# Outcome constraints (optional quality gates)
+# Reject trials with very poor loss
+outcome_constraints: []
+  # Uncomment to enforce loss threshold:
+  # - "final_loss <= 5.0"
+
+# Fixed settings (not searched)
+# optimizer_type: muon (hardcoded in Stage 2 config)

@@ -1,0 +1,42 @@
+# Hetzner Cloud Configuration
+# Copy this file to terraform.tfvars and fill in your values
+
+# Required: Hetzner Cloud API Token
+# Get from: https://console.hetzner.cloud/projects/YOUR_PROJECT/security/tokens
+hetzner_cloud_token = "your-hetzner-cloud-api-token"
+
+# Environment (dev, staging, prod)
+environment = "dev"
+
+# Project name (used for resource naming)
+project_name = "wrinklefree"
+
+# Number of cloud servers (0 = none, use dedicated servers only)
+node_count = 0
+
+# Server type (see: https://www.hetzner.com/cloud)
+# cx52 = 16 vCPU, 32GB RAM (~$60/month)
+# ccx53 = 32 vCPU, 128GB RAM (~$180/month)
+server_type = "cx52"
+
+# Datacenter location
+# fsn1 = Falkenstein, Germany
+# nbg1 = Nuremberg, Germany
+# hel1 = Helsinki, Finland
+location = "fsn1"
+
+# SSH public key path
+ssh_public_key_path = "~/.ssh/hetzner_ed25519.pub"
+
+# SSH user
+ssh_user = "root"
+
+# Admin IP for SSH access (CIDR notation)
+# IMPORTANT: Restrict this in production!
+admin_ip = "YOUR_IP/32"
+
+# Additional labels
+labels = {
+  team       = "ml-infra"
+  cost_center = "research"
+}

@@ -1,0 +1,137 @@
+# SkyPilot configuration for RunPod inference
+# Uses BitNet.cpp's optimized kernels for 1.58-bit models
+#
+# Memory throughput is critical for BitNet performance:
+# - 1.58-bit weights are memory-bound (low compute intensity)
+# - High memory bandwidth CPUs/GPUs provide best performance
+# - AMD EPYC with DDR5 or GPUs with HBM are preferred
+#
+# Build caching: Uses GCS to cache compiled binaries and converted models
+# First run: ~5min (build + convert), Subsequent: ~30s (download cache)
+
+name: inference-engine
+
+resources:
+  cloud: runpod
+  # Request GPU instance for better availability and memory bandwidth
+  # A40 has ~696 GB/s memory bandwidth vs ~200 GB/s DDR5 CPU
+  accelerators: A40:1
+  disk_size: 40       # RunPod limit
+  use_spot: false     # Use on-demand for better availability
+  ports: 8080
+
+envs:
+  MODEL_REPO: microsoft/BitNet-b1.58-2B-4T
+  QUANT_TYPE: i2_s    # CPU optimized quantization (still works on GPU host)
+  NUM_THREADS: "0"    # 0 = auto-detect CPU threads
+  CTX_SIZE: "4096"    # KV cache context size
+  PORT: "8080"
+  # GCS cache bucket for build artifacts
+  GCS_CACHE_BUCKET: gs://wrinklefree-inference-cache
+  CACHE_VERSION: v1   # Bump to invalidate cache
+
+file_mounts:
+  # Mount any local models if needed
+  # /models: ./models
+
+setup: |
+  set -ex
+
+  # Install build dependencies (clang, cmake, gcloud for caching)
+  apt-get update && apt-get install -y clang cmake
+
+  # Install huggingface_hub with CLI for model downloading
+  # BitNet's setup_env.py uses huggingface-cli command
+  python -m pip install "huggingface_hub[cli]"
+
+  # Clone the inference engine repo (or update if exists)
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine
+    git pull
+    git submodule update --init --recursive
+  else
+    git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+    cd /opt/inference-engine
+  fi
+
+  # Install uv and sync dependencies
+  pip install uv
+  uv sync
+
+  # Setup BitNet with GCS caching
+  cd extern/BitNet
+
+  MODEL_NAME=$(basename $MODEL_REPO)
+  CACHE_KEY="${MODEL_NAME}_${QUANT_TYPE}_${CACHE_VERSION}"
+  CACHE_TARBALL="bitnet_cache_${CACHE_KEY}.tar.gz"
+  CACHE_PATH="${GCS_CACHE_BUCKET}/${CACHE_TARBALL}"
+
+  # Try to download from cache
+  CACHE_HIT=false
+  if command -v gcloud &> /dev/null; then
+    echo "Checking for cached build at ${CACHE_PATH}..."
+    if gsutil -q stat "${CACHE_PATH}" 2>/dev/null; then
+      echo "Cache hit! Downloading..."
+      gsutil cp "${CACHE_PATH}" /tmp/
+      tar -xzf "/tmp/${CACHE_TARBALL}" -C .
+      CACHE_HIT=true
+      echo "Cache restored successfully"
+    else
+      echo "Cache miss, will build from source"
+    fi
+  else
+    echo "gcloud not available, building from source"
+  fi
+
+  if [ "$CACHE_HIT" = false ]; then
+    # Pre-download the model using Python (more reliable than CLI)
+    mkdir -p models/$MODEL_NAME
+    python -c "
+  from huggingface_hub import snapshot_download
+  import os
+  repo = os.environ['MODEL_REPO']
+  model_name = repo.split('/')[-1]
+  model_dir = 'models/' + model_name
+  print('Downloading', repo)
+  snapshot_download(repo, local_dir=model_dir)
+  print('Download complete')
+  "
+
+    # Run setup_env.py - builds binaries and converts model
+    python setup_env.py --hf-repo $MODEL_REPO -q $QUANT_TYPE
+
+    # Upload to cache if gcloud available
+    if command -v gcloud &> /dev/null; then
+      echo "Uploading build to cache..."
+      # Cache: build/bin (binaries), models/*/*.gguf (converted model)
+      tar -czf "/tmp/${CACHE_TARBALL}" \
+        build/bin \
+        models/${MODEL_NAME}/*.gguf
+      gsutil cp "/tmp/${CACHE_TARBALL}" "${CACHE_PATH}" || echo "Cache upload failed (non-fatal)"
+      echo "Cache uploaded to ${CACHE_PATH}"
+    fi
+  fi
+
+  cd /opt/inference-engine
+
+run: |
+  set -ex
+  cd /opt/inference-engine
+
+  # Determine model path
+  MODEL_NAME=$(basename $MODEL_REPO)
+  MODEL_PATH="extern/BitNet/models/${MODEL_NAME}/ggml-model-${QUANT_TYPE}.gguf"
+
+  echo "Starting BitNet inference server..."
+  echo "Model: $MODEL_PATH"
+  echo "Context size: $CTX_SIZE"
+  echo "Threads: $NUM_THREADS (0=auto)"
+
+  # Start the inference server
+  python extern/BitNet/run_inference_server.py \
+    -m "$MODEL_PATH" \
+    -t $NUM_THREADS \
+    -c $CTX_SIZE \
+    -cb \
+    --host 0.0.0.0 \
+    --port $PORT

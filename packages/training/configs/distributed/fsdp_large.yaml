@@ -1,0 +1,38 @@
+# Large model FSDP configuration (for 13B+ models)
+backend: nccl
+strategy: fsdp
+
+# FSDP settings optimized for very large models
+fsdp:
+  sharding_strategy: FULL_SHARD
+
+  mixed_precision:
+    enabled: true
+    param_dtype: bfloat16
+    reduce_dtype: bfloat16
+    buffer_dtype: bfloat16
+
+  activation_checkpointing:
+    enabled: true
+    checkpoint_impl: NO_REENTRANT
+
+  # Aggressive memory optimization
+  backward_prefetch: BACKWARD_PRE
+  forward_prefetch: true
+  limit_all_gathers: true
+
+  # CPU offloading for very large models
+  cpu_offload:
+    enabled: true
+    offload_params: false  # Only offload optimizer states
+
+  state_dict:
+    type: sharded
+    offload_to_cpu: true
+
+# Hardware
+num_gpus: 8
+num_nodes: 1
+
+# Additional memory settings
+gradient_accumulation_factor: 2  # Additional factor on top of config

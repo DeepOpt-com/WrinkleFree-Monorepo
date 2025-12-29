@@ -1,0 +1,66 @@
+# Stage 3: Distillation Fine-Tuning (SmolLM2-135M)
+# Optimized settings for single GPU training with SmolLM2-135M
+stage: distillation
+
+# torch.compile for 38% training speedup (A10G benchmark)
+# First step takes ~60s to compile, then faster steady-state
+# Set TORCHINDUCTOR_CACHE_DIR for persistent caching across runs
+torch_compile:
+  enabled: true
+  mode: default
+
+# Optimization (Muon: 2x compute efficiency vs AdamW)
+# Hyperparams tuned via Ax Bayesian optimization (Trial 4: loss 4.93)
+optimizer:
+  type: muon
+  lr: 2.4e-3  # Optimized from 4e-3 (Ax sweep)
+  momentum: 0.95
+  nesterov: true
+  weight_decay: 0.024  # Optimized from 0.1 (Ax sweep)
+  adamw_betas: [0.9, 0.95]  # For embed/head params
+
+scheduler:
+  type: cosine
+  warmup_steps: 2000  # Optimized from 200 (Ax sweep)
+  min_lr_ratio: 0.1
+
+# Training parameters (tuned for single GPU with ~24GB VRAM)
+max_steps: 10000
+total_tokens: 1000000000  # ~1B tokens for stage 3 distillation
+max_seq_length: 1024  # SmolLM2 supports up to 8192
+batch_size: 8  # Adjust based on GPU memory
+gradient_accumulation_steps: 8  # Optimized from 4 (Ax sweep); Effective batch = 64
+gradient_clipping: 1.0
+
+# Distillation is configured in distillation/*.yaml
+# Loss coefficients (lambda, gamma) come from distillation config
+
+# Quantization warmup (optional, usually not needed if stage2 done)
+quantization_warmup:
+  enabled: false
+  warmup_steps: 0
+  schedule: linear
+
+# Checkpointing
+checkpoint:
+  save_interval: 1000
+  keep_last_n: 3
+  save_optimizer: true
+
+# Logging
+logging:
+  log_interval: 10
+  eval_interval: 200
+  wandb:
+    enabled: true
+    project: wrinklefree
+    entity: null
+    name: null  # Override with run name
+    tags: [stage3, distillation, smollm2, 135m]
+
+# Early stopping (optional)
+early_stopping:
+  enabled: false
+  patience: 5
+  metric: eval_loss
+  mode: min

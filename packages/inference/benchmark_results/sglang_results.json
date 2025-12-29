@@ -1,0 +1,18 @@
+{
+  "timestamp": "2025-12-28T00:32:40.505838",
+  "threads": 22,
+  "runs_per_config": 3,
+  "quick_mode": true,
+  "sglang_bitnet": {
+    "name": "sglang-bitnet",
+    "tokens_per_second_mean": 22.395190450996505,
+    "tokens_per_second_std": 8.555353451126575,
+    "ttft_mean_ms": 1333.6651309999372,
+    "latency_per_token_mean_ms": 64.59523459833235,
+    "total_runs": 6,
+    "configs_tested": [
+      "prompt=32,max=50",
+      "prompt=128,max=100"
+    ]
+  }
+}

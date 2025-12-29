@@ -1,0 +1,66 @@
+# WrinkleFree Training Image
+#
+# Pre-built image with all training dependencies for fast SkyPilot job startup.
+# Build: ./scripts/build-image.sh
+# Usage in train.yaml: image_id: docker:gcr.io/wrinklefree-481904/wf-train:latest
+
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
+
+# System dependencies
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-venv \
+    python3.11-dev \
+    python3-pip \
+    curl \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make python3.11 the default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+
+# Install uv for fast package management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# Create virtual environment
+WORKDIR /app
+RUN uv venv /app/.venv
+ENV VIRTUAL_ENV="/app/.venv"
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Install all training dependencies
+# Note: cheapertraining is excluded - it's mounted at runtime as editable
+RUN uv pip install \
+    "torch>=2.5.0" \
+    "transformers>=4.40.0" \
+    "datasets>=2.18.0" \
+    "hydra-core>=1.3.0" \
+    "omegaconf>=2.3.0" \
+    "bitsandbytes>=0.43.0" \
+    "wandb>=0.16.0" \
+    "tqdm>=4.66.0" \
+    "numpy>=1.26.0" \
+    "einops>=0.7.0" \
+    "safetensors>=0.4.0" \
+    "accelerate>=0.27.0" \
+    "zstandard>=0.22.0" \
+    "muon-optimizer>=0.1.0" \
+    "huggingface_hub>=0.20.0" \
+    "hf_transfer>=0.1.0" \
+    "google-cloud-storage>=2.14.0" \
+    "torchao>=0.7.0"
+
+# Enable fast HF downloads
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+
+# Cache busting label - rebuild when deps change
+ARG WF_VERSION=latest
+LABEL wf.version=$WF_VERSION
+LABEL org.opencontainers.image.source="https://github.com/wrinklefree/WrinkleFree"
+LABEL org.opencontainers.image.description="WrinkleFree training image with pre-installed ML dependencies"
+
+# Default working directory for SkyPilot
+WORKDIR /home/user

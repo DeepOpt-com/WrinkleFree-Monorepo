@@ -1,0 +1,145 @@
+# WrinkleFree Evaluation Job
+#
+# Launch evaluation on remote GPU:
+#   sky launch skypilot/eval.yaml -e MODEL_PATH=HuggingFaceTB/SmolLM2-135M -e BENCHMARK=smoke_test
+#
+# Launch as managed job (with spot recovery):
+#   sky jobs launch skypilot/eval.yaml -e MODEL_PATH=gs://bucket/checkpoint -e BENCHMARK=bitdistill
+#
+# Monitor:
+#   sky jobs queue
+#   sky jobs logs <job_id>
+
+name: wrinklefree-eval
+
+resources:
+  accelerators: RTX4090:1
+  use_spot: true
+  disk_tier: best
+  cloud: runpod
+  job_recovery:
+    max_restarts_on_errors: 2
+
+# Sync eval code to cluster
+workdir: /home/lev/code/WrinkleFree/WrinkleFree-Eval
+
+# Mount checkpoint bucket for reading models and writing results
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+
+envs:
+  # Model configuration (override with -e)
+  MODEL_PATH: HuggingFaceTB/SmolLM2-135M
+  BENCHMARK: smoke_test
+  DTYPE: bfloat16
+  BATCH_SIZE: auto
+
+  # GCP credentials for GCS access
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+
+  # Results storage
+  OUTPUT_BUCKET: ${OUTPUT_BUCKET:-wrinklefree-results}
+  OUTPUT_PREFIX: ${OUTPUT_PREFIX:-eval-results}
+
+  # Weights & Biases (optional)
+  WANDB_PROJECT: ${WANDB_PROJECT:-}
+  WANDB_RUN_ID: ${WANDB_RUN_ID:-eval-${SKYPILOT_TASK_ID}}
+  WANDB_API_KEY: ${WANDB_API_KEY:-}
+
+  # Enable fast HF downloads
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source $HOME/.local/bin/env
+  fi
+
+  # Install dependencies (including optional wandb)
+  uv sync --extra wandb
+
+  # Install gcsfs for GCS model loading
+  uv pip install gcsfs
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  source $HOME/.local/bin/env 2>/dev/null || true
+
+  OUTPUT_DIR="/tmp/eval_results"
+  mkdir -p $OUTPUT_DIR
+
+  echo "========================================="
+  echo "WrinkleFree Evaluation"
+  echo "Model: $MODEL_PATH"
+  echo "Benchmark: $BENCHMARK"
+  echo "Output: $OUTPUT_DIR"
+  echo "========================================="
+
+  # Handle GCS paths - download model first if needed
+  EVAL_MODEL_PATH="$MODEL_PATH"
+  if [[ "$MODEL_PATH" == gs://* ]]; then
+    echo "Downloading model from GCS..."
+    LOCAL_MODEL_DIR="/tmp/model"
+    mkdir -p $LOCAL_MODEL_DIR
+    gsutil -m cp -r "$MODEL_PATH/*" $LOCAL_MODEL_DIR/
+    EVAL_MODEL_PATH=$LOCAL_MODEL_DIR
+    echo "Model downloaded to $EVAL_MODEL_PATH"
+  fi
+
+  # Build evaluation command
+  EVAL_CMD="uv run python scripts/run_eval.py \
+    --model-path $EVAL_MODEL_PATH \
+    --benchmark $BENCHMARK \
+    --dtype $DTYPE \
+    --batch-size $BATCH_SIZE \
+    --output-dir $OUTPUT_DIR"
+
+  # Add smoke test flag for quick validation
+  if [ "$BENCHMARK" = "smoke_test" ]; then
+    EVAL_CMD="$EVAL_CMD --smoke-test"
+  fi
+
+  # Add W&B logging if configured
+  if [ -n "$WANDB_PROJECT" ]; then
+    EVAL_CMD="$EVAL_CMD --wandb-project $WANDB_PROJECT"
+    if [ -n "$WANDB_RUN_ID" ]; then
+      EVAL_CMD="$EVAL_CMD --wandb-run-id $WANDB_RUN_ID"
+    fi
+  fi
+
+  echo ""
+  echo "[Eval] Running evaluation..."
+  $EVAL_CMD
+
+  echo ""
+  echo "[Eval] Evaluation complete!"
+
+  # Upload results to GCS
+  if [ -n "$OUTPUT_BUCKET" ]; then
+    echo ""
+    echo "[Upload] Uploading results to gs://$OUTPUT_BUCKET/$OUTPUT_PREFIX/"
+
+    # Use upload script if available, otherwise use gsutil directly
+    if [ -f scripts/upload_results.py ]; then
+      OUTPUT_DIR=$OUTPUT_DIR GCS_BUCKET=$OUTPUT_BUCKET GCS_PREFIX=$OUTPUT_PREFIX \
+        uv run python scripts/upload_results.py
+    else
+      gsutil -m cp -r $OUTPUT_DIR/* gs://$OUTPUT_BUCKET/$OUTPUT_PREFIX/
+    fi
+
+    echo "[Upload] Results uploaded!"
+  fi
+
+  echo ""
+  echo "========================================="
+  echo "Evaluation Complete!"
+  echo "Results: $OUTPUT_DIR/results.json"
+  if [ -n "$OUTPUT_BUCKET" ]; then
+    echo "GCS: gs://$OUTPUT_BUCKET/$OUTPUT_PREFIX/"
+  fi
+  echo "========================================="

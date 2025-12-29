@@ -1,0 +1,721 @@
+/**
+ * BitNet C++ Inference Engine Implementation
+ *
+ * Self-contained inference engine for 1.58-bit BitNet models.
+ * Uses sgl-kernel SIMD operations for matrix multiplication.
+ *
+ * Model format: HuggingFace safetensors with BitNet quantization
+ */
+
+#include "bitnet_engine.h"
+#include "kv_cache.h"
+#include "../bitnet/bitnet_gemv.h"
+
+#include <cstdlib>
+#include <cstring>
+#include <cmath>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <memory>
+#include <random>
+#include <algorithm>
+#include <stdexcept>
+
+// Thread-local error message
+static thread_local std::string g_last_error;
+
+// Model configuration (BitNet-b1.58-2B-4T)
+struct ModelConfig {
+    int32_t vocab_size = 152064;
+    int32_t hidden_size = 2560;
+    int32_t intermediate_size = 6912;
+    int32_t num_hidden_layers = 26;
+    int32_t num_attention_heads = 20;
+    int32_t num_key_value_heads = 20;
+    int32_t head_dim = 128;  // hidden_size / num_attention_heads
+    int32_t max_position_embeddings = 4096;
+    float rms_norm_eps = 1e-6f;
+    int32_t bos_token_id = 151643;
+    int32_t eos_token_id = 151645;
+    int32_t pad_token_id = 151643;
+};
+
+// Weight tensor (packed 2-bit for linear layers, fp32/fp16 for others)
+struct WeightTensor {
+    std::vector<uint8_t> packed_data;  // For BitNet layers (2-bit packed)
+    std::vector<float> fp32_data;      // For embedding, norms, etc.
+    std::vector<int32_t> shape;
+    float scale = 1.0f;
+    bool is_packed = false;
+};
+
+// Layer weights
+struct LayerWeights {
+    // Attention
+    WeightTensor q_proj;
+    WeightTensor k_proj;
+    WeightTensor v_proj;
+    WeightTensor o_proj;
+
+    // MLP
+    WeightTensor gate_proj;
+    WeightTensor up_proj;
+    WeightTensor down_proj;
+
+    // Norms
+    WeightTensor input_layernorm;
+    WeightTensor post_attention_layernorm;
+};
+
+// Engine implementation
+struct BitNetEngine {
+    ModelConfig config;
+    std::vector<LayerWeights> layers;
+    WeightTensor embed_tokens;
+    WeightTensor lm_head;
+    WeightTensor final_norm;
+
+    std::unique_ptr<KVCache> kv_cache;
+
+    // Scratch buffers (pre-allocated)
+    std::vector<float> hidden_states;
+    std::vector<float> residual;
+    std::vector<float> attn_output;
+    std::vector<float> mlp_output;
+    std::vector<float> logits;
+    std::vector<int8_t> quant_buffer;
+    float quant_scale;
+
+    // Random generator for sampling
+    std::mt19937 rng;
+
+    // Current sequence length
+    int32_t seq_len = 0;
+
+    bool is_loaded = false;
+};
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+static void set_error(const std::string& msg) {
+    g_last_error = msg;
+}
+
+// RMS normalization
+static void rms_norm(float* output, const float* input, const float* weight,
+                     int n, float eps) {
+    float sum_sq = 0.0f;
+    for (int i = 0; i < n; i++) {
+        sum_sq += input[i] * input[i];
+    }
+    float rms = std::sqrt(sum_sq / n + eps);
+    float scale = 1.0f / rms;
+    for (int i = 0; i < n; i++) {
+        output[i] = input[i] * scale * weight[i];
+    }
+}
+
+// SiLU activation
+static void silu(float* x, int n) {
+    for (int i = 0; i < n; i++) {
+        x[i] = x[i] / (1.0f + std::exp(-x[i]));
+    }
+}
+
+// Element-wise multiply
+static void elementwise_mul(float* output, const float* a, const float* b, int n) {
+    for (int i = 0; i < n; i++) {
+        output[i] = a[i] * b[i];
+    }
+}
+
+// Softmax
+static void softmax(float* x, int n) {
+    float max_val = *std::max_element(x, x + n);
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        x[i] = std::exp(x[i] - max_val);
+        sum += x[i];
+    }
+    for (int i = 0; i < n; i++) {
+        x[i] /= sum;
+    }
+}
+
+// Top-p (nucleus) sampling
+static int32_t sample_top_p(const float* probs, int vocab_size, float top_p,
+                            std::mt19937& rng) {
+    // Sort indices by probability
+    std::vector<std::pair<float, int32_t>> sorted_probs;
+    sorted_probs.reserve(vocab_size);
+    for (int i = 0; i < vocab_size; i++) {
+        sorted_probs.emplace_back(probs[i], i);
+    }
+    std::sort(sorted_probs.begin(), sorted_probs.end(),
+              [](auto& a, auto& b) { return a.first > b.first; });
+
+    // Find cutoff
+    float cumsum = 0.0f;
+    int cutoff = 0;
+    for (int i = 0; i < vocab_size; i++) {
+        cumsum += sorted_probs[i].first;
+        if (cumsum >= top_p) {
+            cutoff = i + 1;
+            break;
+        }
+    }
+    if (cutoff == 0) cutoff = 1;
+
+    // Renormalize and sample
+    std::uniform_real_distribution<float> dist(0.0f, cumsum);
+    float r = dist(rng);
+    cumsum = 0.0f;
+    for (int i = 0; i < cutoff; i++) {
+        cumsum += sorted_probs[i].first;
+        if (r < cumsum) {
+            return sorted_probs[i].second;
+        }
+    }
+    return sorted_probs[0].second;
+}
+
+// ============================================================================
+// BitNet Matrix Operations (using sgl-kernel)
+// ============================================================================
+
+// BitNet linear layer: output = input @ weight.T * scale
+static void bitnet_linear(float* output, const float* input, int8_t* quant_input,
+                          const WeightTensor& weight, int M, int K,
+                          float* quant_scale) {
+    using namespace sgl_kernel::bitnet;
+
+    // Quantize input activations to INT8
+    quantize_activations_i8(K, quant_input, input, quant_scale);
+
+    // Call GEMV for each output row
+    // weight shape: [M, K/4] (packed 2-bit)
+    // TODO: Use batched GEMM for better performance
+    const int K_packed = K / 4;  // 4 weights per byte
+
+    for (int m = 0; m < M; m++) {
+        bitnet_vec_dot_i2_i8(K, &output[m],
+                             weight.packed_data.data() + m * K_packed,
+                             quant_input);
+        // Apply weight scale and activation scale
+        output[m] *= weight.scale * (*quant_scale);
+    }
+}
+
+// Regular fp32 linear layer (for embeddings, lm_head)
+static void fp32_linear(float* output, const float* input, const float* weight,
+                        int M, int K) {
+    // Simple GEMV: output[m] = sum_k(input[k] * weight[m*K + k])
+    for (int m = 0; m < M; m++) {
+        float sum = 0.0f;
+        for (int k = 0; k < K; k++) {
+            sum += input[k] * weight[m * K + k];
+        }
+        output[m] = sum;
+    }
+}
+
+// Embedding lookup
+static void embed_lookup(float* output, const float* embed_table,
+                         const int32_t* input_ids, int num_tokens, int hidden_size) {
+    for (int t = 0; t < num_tokens; t++) {
+        int32_t token_id = input_ids[t];
+        std::memcpy(output + t * hidden_size,
+                    embed_table + token_id * hidden_size,
+                    hidden_size * sizeof(float));
+    }
+}
+
+// ============================================================================
+// Attention Forward
+// ============================================================================
+
+static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
+                              float* hidden, float* output) {
+    auto& cfg = engine->config;
+    auto& layer = engine->layers[layer_idx];
+
+    const int H = cfg.hidden_size;
+    const int heads = cfg.num_attention_heads;
+    const int head_dim = cfg.head_dim;
+    const int kv_heads = cfg.num_key_value_heads;
+
+    std::vector<float> q(H), k(H), v(H);
+    int8_t* quant_buf = engine->quant_buffer.data();
+    float quant_scale;
+
+    // Q, K, V projections (BitNet linear)
+    bitnet_linear(q.data(), hidden, quant_buf, layer.q_proj, H, H, &quant_scale);
+    bitnet_linear(k.data(), hidden, quant_buf, layer.k_proj, H, H, &quant_scale);
+    bitnet_linear(v.data(), hidden, quant_buf, layer.v_proj, H, H, &quant_scale);
+
+    // Store K, V in cache
+    float* k_cache = kv_cache_get_key(engine->kv_cache.get(), layer_idx);
+    float* v_cache = kv_cache_get_value(engine->kv_cache.get(), layer_idx);
+
+    // Copy to position in cache
+    std::memcpy(k_cache + pos * heads * head_dim, k.data(), H * sizeof(float));
+    std::memcpy(v_cache + pos * heads * head_dim, v.data(), H * sizeof(float));
+
+    // Multi-head attention
+    std::vector<float> attn_out(H, 0.0f);
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    for (int h = 0; h < heads; h++) {
+        const float* q_head = q.data() + h * head_dim;
+
+        // Compute attention scores for all positions up to pos
+        std::vector<float> scores(pos + 1);
+        for (int p = 0; p <= pos; p++) {
+            const float* k_p = k_cache + p * heads * head_dim + h * head_dim;
+            float score = 0.0f;
+            for (int d = 0; d < head_dim; d++) {
+                score += q_head[d] * k_p[d];
+            }
+            scores[p] = score * scale;
+        }
+
+        // Softmax
+        softmax(scores.data(), pos + 1);
+
+        // Weighted sum of values
+        float* out_head = attn_out.data() + h * head_dim;
+        for (int p = 0; p <= pos; p++) {
+            const float* v_p = v_cache + p * heads * head_dim + h * head_dim;
+            for (int d = 0; d < head_dim; d++) {
+                out_head[d] += scores[p] * v_p[d];
+            }
+        }
+    }
+
+    // Output projection
+    bitnet_linear(output, attn_out.data(), quant_buf, layer.o_proj, H, H, &quant_scale);
+}
+
+// ============================================================================
+// MLP Forward
+// ============================================================================
+
+static void mlp_forward(BitNetEngine* engine, int layer_idx, float* hidden, float* output) {
+    auto& cfg = engine->config;
+    auto& layer = engine->layers[layer_idx];
+
+    const int H = cfg.hidden_size;
+    const int I = cfg.intermediate_size;
+
+    std::vector<float> gate(I), up(I);
+    int8_t* quant_buf = engine->quant_buffer.data();
+    float quant_scale;
+
+    // Gate and up projections
+    bitnet_linear(gate.data(), hidden, quant_buf, layer.gate_proj, I, H, &quant_scale);
+    bitnet_linear(up.data(), hidden, quant_buf, layer.up_proj, I, H, &quant_scale);
+
+    // SiLU(gate) * up
+    silu(gate.data(), I);
+    elementwise_mul(gate.data(), gate.data(), up.data(), I);
+
+    // Down projection
+    bitnet_linear(output, gate.data(), quant_buf, layer.down_proj, H, I, &quant_scale);
+}
+
+// ============================================================================
+// Full Forward Pass
+// ============================================================================
+
+static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
+                              float* logits_out) {
+    auto& cfg = engine->config;
+    const int H = cfg.hidden_size;
+
+    // Get hidden state buffer
+    float* hidden = engine->hidden_states.data();
+    float* residual = engine->residual.data();
+    float* attn_out = engine->attn_output.data();
+    float* mlp_out = engine->mlp_output.data();
+
+    // Embedding lookup
+    embed_lookup(hidden, engine->embed_tokens.fp32_data.data(),
+                 &token_id, 1, H);
+
+    // Process each layer
+    for (int l = 0; l < cfg.num_hidden_layers; l++) {
+        auto& layer = engine->layers[l];
+
+        // Save residual
+        std::memcpy(residual, hidden, H * sizeof(float));
+
+        // Pre-attention norm
+        rms_norm(hidden, hidden, layer.input_layernorm.fp32_data.data(),
+                 H, cfg.rms_norm_eps);
+
+        // Self-attention
+        attention_forward(engine, l, pos, hidden, attn_out);
+
+        // Residual connection
+        for (int i = 0; i < H; i++) {
+            hidden[i] = residual[i] + attn_out[i];
+        }
+
+        // Save residual
+        std::memcpy(residual, hidden, H * sizeof(float));
+
+        // Post-attention norm
+        rms_norm(hidden, hidden, layer.post_attention_layernorm.fp32_data.data(),
+                 H, cfg.rms_norm_eps);
+
+        // MLP
+        mlp_forward(engine, l, hidden, mlp_out);
+
+        // Residual connection
+        for (int i = 0; i < H; i++) {
+            hidden[i] = residual[i] + mlp_out[i];
+        }
+    }
+
+    // Final norm
+    rms_norm(hidden, hidden, engine->final_norm.fp32_data.data(),
+             H, cfg.rms_norm_eps);
+
+    // LM head (output projection to vocabulary)
+    if (engine->lm_head.is_packed) {
+        int8_t* quant_buf = engine->quant_buffer.data();
+        float quant_scale;
+        bitnet_linear(logits_out, hidden, quant_buf, engine->lm_head,
+                      cfg.vocab_size, H, &quant_scale);
+    } else {
+        fp32_linear(logits_out, hidden, engine->lm_head.fp32_data.data(),
+                    cfg.vocab_size, H);
+    }
+}
+
+// ============================================================================
+// Model Loading (Placeholder - needs safetensors implementation)
+// ============================================================================
+
+static bool load_model(BitNetEngine* engine, const char* model_path) {
+    // TODO: Implement safetensors loading
+    // For now, we'll initialize with random weights for testing the FFI
+
+    auto& cfg = engine->config;
+    const int H = cfg.hidden_size;
+    const int I = cfg.intermediate_size;
+    const int V = cfg.vocab_size;
+    const int L = cfg.num_hidden_layers;
+
+    // Allocate embedding (fp32)
+    engine->embed_tokens.fp32_data.resize(V * H);
+    engine->embed_tokens.is_packed = false;
+
+    // Allocate final norm
+    engine->final_norm.fp32_data.resize(H, 1.0f);
+
+    // Allocate lm_head (fp32 or packed)
+    engine->lm_head.fp32_data.resize(V * H);
+    engine->lm_head.is_packed = false;
+
+    // Allocate layer weights
+    engine->layers.resize(L);
+    for (int l = 0; l < L; l++) {
+        auto& layer = engine->layers[l];
+
+        // Attention (packed 2-bit)
+        layer.q_proj.packed_data.resize(H * H / 4);
+        layer.q_proj.is_packed = true;
+        layer.q_proj.scale = 1.0f;
+
+        layer.k_proj.packed_data.resize(H * H / 4);
+        layer.k_proj.is_packed = true;
+        layer.k_proj.scale = 1.0f;
+
+        layer.v_proj.packed_data.resize(H * H / 4);
+        layer.v_proj.is_packed = true;
+        layer.v_proj.scale = 1.0f;
+
+        layer.o_proj.packed_data.resize(H * H / 4);
+        layer.o_proj.is_packed = true;
+        layer.o_proj.scale = 1.0f;
+
+        // MLP (packed 2-bit)
+        layer.gate_proj.packed_data.resize(I * H / 4);
+        layer.gate_proj.is_packed = true;
+        layer.gate_proj.scale = 1.0f;
+
+        layer.up_proj.packed_data.resize(I * H / 4);
+        layer.up_proj.is_packed = true;
+        layer.up_proj.scale = 1.0f;
+
+        layer.down_proj.packed_data.resize(H * I / 4);
+        layer.down_proj.is_packed = true;
+        layer.down_proj.scale = 1.0f;
+
+        // Norms (fp32)
+        layer.input_layernorm.fp32_data.resize(H, 1.0f);
+        layer.post_attention_layernorm.fp32_data.resize(H, 1.0f);
+    }
+
+    // Note: Actual weight loading from safetensors needs implementation
+    // This placeholder returns true to allow testing the API
+
+    set_error("Model loading from safetensors not yet implemented. "
+              "Using placeholder weights for API testing.");
+
+    return true;  // Return true for now to test API
+}
+
+// ============================================================================
+// Public C API Implementation
+// ============================================================================
+
+extern "C" {
+
+BitNetEngine* bitnet_engine_create(const char* model_path, const BitNetConfig* config) {
+    try {
+        auto engine = new BitNetEngine();
+
+        // Apply configuration if provided
+        if (config) {
+            engine->config.max_position_embeddings = config->max_seq_len > 0
+                ? config->max_seq_len : engine->config.max_position_embeddings;
+        }
+
+        auto& cfg = engine->config;
+
+        // Create KV cache
+        engine->kv_cache.reset(
+            kv_cache_create(cfg.num_hidden_layers, cfg.num_attention_heads,
+                           cfg.head_dim, cfg.max_position_embeddings)
+        );
+        if (!engine->kv_cache) {
+            set_error("Failed to create KV cache");
+            delete engine;
+            return nullptr;
+        }
+
+        // Allocate scratch buffers
+        engine->hidden_states.resize(cfg.hidden_size);
+        engine->residual.resize(cfg.hidden_size);
+        engine->attn_output.resize(cfg.hidden_size);
+        engine->mlp_output.resize(cfg.hidden_size);
+        engine->logits.resize(cfg.vocab_size);
+        engine->quant_buffer.resize(std::max(cfg.hidden_size, cfg.intermediate_size));
+
+        // Initialize RNG
+        engine->rng.seed(42);
+
+        // Load model weights
+        if (!load_model(engine, model_path)) {
+            delete engine;
+            return nullptr;
+        }
+
+        engine->is_loaded = true;
+        return engine;
+
+    } catch (const std::exception& e) {
+        set_error(std::string("Engine creation failed: ") + e.what());
+        return nullptr;
+    }
+}
+
+void bitnet_engine_destroy(BitNetEngine* engine) {
+    delete engine;
+}
+
+const char* bitnet_get_error(void) {
+    return g_last_error.c_str();
+}
+
+int bitnet_generate(
+    BitNetEngine* engine,
+    const int32_t* input_ids,
+    int32_t num_input_tokens,
+    const SamplingParams* params,
+    GenerationResult* result
+) {
+    if (!engine || !engine->is_loaded) {
+        set_error("Engine not initialized");
+        return -1;
+    }
+
+    try {
+        auto& cfg = engine->config;
+
+        // Reset KV cache
+        kv_cache_reset(engine->kv_cache.get());
+        engine->seq_len = 0;
+
+        // Prefill: process all input tokens
+        for (int i = 0; i < num_input_tokens; i++) {
+            forward_one_token(engine, input_ids[i], i, engine->logits.data());
+        }
+        engine->seq_len = num_input_tokens;
+
+        // Decode: generate new tokens
+        std::vector<int32_t> generated;
+        generated.reserve(params->max_tokens);
+
+        for (int i = 0; i < params->max_tokens; i++) {
+            int32_t next_token;
+
+            if (params->temperature <= 0.0f) {
+                // Greedy decoding
+                next_token = std::distance(
+                    engine->logits.begin(),
+                    std::max_element(engine->logits.begin(), engine->logits.end())
+                );
+            } else {
+                // Apply temperature
+                std::vector<float> probs(cfg.vocab_size);
+                for (int v = 0; v < cfg.vocab_size; v++) {
+                    probs[v] = engine->logits[v] / params->temperature;
+                }
+                softmax(probs.data(), cfg.vocab_size);
+
+                // Sample with top-p
+                float top_p = params->top_p > 0.0f ? params->top_p : 1.0f;
+                next_token = sample_top_p(probs.data(), cfg.vocab_size,
+                                          top_p, engine->rng);
+            }
+
+            generated.push_back(next_token);
+
+            // Check for EOS
+            if (next_token == cfg.eos_token_id) {
+                break;
+            }
+
+            // Generate next logits
+            forward_one_token(engine, next_token, engine->seq_len,
+                             engine->logits.data());
+            engine->seq_len++;
+        }
+
+        // Fill result
+        result->num_tokens = generated.size();
+        result->output_ids = static_cast<int32_t*>(
+            malloc(generated.size() * sizeof(int32_t))
+        );
+        std::memcpy(result->output_ids, generated.data(),
+                    generated.size() * sizeof(int32_t));
+        result->logits = nullptr;
+        result->logits_size = 0;
+
+        return 0;
+
+    } catch (const std::exception& e) {
+        set_error(std::string("Generation failed: ") + e.what());
+        return -1;
+    }
+}
+
+int bitnet_prefill(
+    BitNetEngine* engine,
+    const int32_t* input_ids,
+    int32_t num_tokens
+) {
+    if (!engine || !engine->is_loaded) {
+        set_error("Engine not initialized");
+        return -1;
+    }
+
+    try {
+        // Reset and process all tokens
+        kv_cache_reset(engine->kv_cache.get());
+        for (int i = 0; i < num_tokens; i++) {
+            forward_one_token(engine, input_ids[i], i, engine->logits.data());
+        }
+        engine->seq_len = num_tokens;
+        kv_cache_set_seq_len(engine->kv_cache.get(), num_tokens);
+        return 0;
+
+    } catch (const std::exception& e) {
+        set_error(std::string("Prefill failed: ") + e.what());
+        return -1;
+    }
+}
+
+int bitnet_decode_step(
+    BitNetEngine* engine,
+    int32_t position,
+    const SamplingParams* params,
+    int32_t* output_id
+) {
+    if (!engine || !engine->is_loaded) {
+        set_error("Engine not initialized");
+        return -1;
+    }
+
+    try {
+        // Use logits from previous forward pass
+        auto& cfg = engine->config;
+
+        if (params->temperature <= 0.0f) {
+            *output_id = std::distance(
+                engine->logits.begin(),
+                std::max_element(engine->logits.begin(), engine->logits.end())
+            );
+        } else {
+            std::vector<float> probs(cfg.vocab_size);
+            for (int v = 0; v < cfg.vocab_size; v++) {
+                probs[v] = engine->logits[v] / params->temperature;
+            }
+            softmax(probs.data(), cfg.vocab_size);
+            float top_p = params->top_p > 0.0f ? params->top_p : 1.0f;
+            *output_id = sample_top_p(probs.data(), cfg.vocab_size,
+                                       top_p, engine->rng);
+        }
+
+        // Forward pass for next position
+        forward_one_token(engine, *output_id, position, engine->logits.data());
+        engine->seq_len = position + 1;
+        kv_cache_set_seq_len(engine->kv_cache.get(), engine->seq_len);
+
+        return 0;
+
+    } catch (const std::exception& e) {
+        set_error(std::string("Decode step failed: ") + e.what());
+        return -1;
+    }
+}
+
+void bitnet_reset_cache(BitNetEngine* engine) {
+    if (engine && engine->kv_cache) {
+        kv_cache_reset(engine->kv_cache.get());
+        engine->seq_len = 0;
+    }
+}
+
+int32_t bitnet_vocab_size(BitNetEngine* engine) {
+    return engine ? engine->config.vocab_size : 0;
+}
+
+int32_t bitnet_hidden_size(BitNetEngine* engine) {
+    return engine ? engine->config.hidden_size : 0;
+}
+
+int32_t bitnet_num_layers(BitNetEngine* engine) {
+    return engine ? engine->config.num_hidden_layers : 0;
+}
+
+int32_t bitnet_max_seq_len(BitNetEngine* engine) {
+    return engine ? engine->config.max_position_embeddings : 0;
+}
+
+void bitnet_free_result(GenerationResult* result) {
+    if (result) {
+        free(result->output_ids);
+        free(result->logits);
+        result->output_ids = nullptr;
+        result->logits = nullptr;
+    }
+}
+
+}  // extern "C"

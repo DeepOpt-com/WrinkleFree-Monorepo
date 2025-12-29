@@ -1,0 +1,54 @@
+_wandb:
+    value:
+        cli_version: 0.23.1
+        e:
+            rwfivyjkpe48mm9jbx6l9abyllj9p65n:
+                cpu_count: 8
+                cpu_count_logical: 16
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "972396679168"
+                        used: "745622306816"
+                email: levstamb@gmail.com
+                executable: /home/lev/code/WrinkleFree/WrinkleFree-CheaperTraining/.venv/bin/python3
+                git:
+                    commit: 41f27fe5cb6b7ca6fc5d7518bd675edc8c810a3b
+                    remote: git@github.com:DeepOpt-com/WrinkleFree-CheaperTraining.git
+                gpu: NVIDIA GeForce RTX 4070 Laptop GPU
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 4608
+                      memoryTotal: "8585740288"
+                      name: NVIDIA GeForce RTX 4070 Laptop GPU
+                      uuid: GPU-0cef64e9-7ab5-5f1c-2d3f-eceb3bf840fe
+                host: lev
+                memory:
+                    total: "33321648128"
+                os: Linux-6.1.0-37-amd64-x86_64-with-glibc2.36
+                program: <python with no main file>
+                python: CPython 3.11.2
+                root: /home/lev/code/WrinkleFree/WrinkleFree-CheaperTraining
+                startedAt: "2025-12-26T20:17:16.935367Z"
+                writerId: rwfivyjkpe48mm9jbx6l9abyllj9p65n
+        m: []
+        python_version: 3.11.2
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 13
+                - 16
+            "4": 3.11.2
+            "5": 0.23.1
+            "12": 0.23.1
+            "13": linux-x86_64
+model_dim:
+    value: 128
+num_layers:
+    value: 4
+test:
+    value: influence_distillation_integration

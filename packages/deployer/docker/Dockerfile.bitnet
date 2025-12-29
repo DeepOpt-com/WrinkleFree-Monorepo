@@ -1,0 +1,75 @@
+# BitNet Inference Container
+# Optimized for 1.58-bit LLM inference on CPU (AMD EPYC / AVX512)
+#
+# Build:
+#   docker build -f Dockerfile.bitnet -t wrinklefree-bitnet .
+#
+# Run:
+#   docker run -p 8080:8080 -v /path/to/models:/models wrinklefree-bitnet
+
+FROM ubuntu:22.04
+
+LABEL maintainer="WrinkleFree Team"
+LABEL description="BitNet 1.58-bit LLM inference server"
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Build arguments
+ARG LLAMA_AVX512=1
+ARG LLAMA_AVX512_VBMI=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    wget \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up Python environment
+RUN python3 -m pip install --upgrade pip
+
+# Clone and build BitNet
+WORKDIR /opt
+RUN git clone https://github.com/microsoft/BitNet.git bitnet
+
+WORKDIR /opt/bitnet
+
+# Install Python dependencies
+RUN pip install -r requirements.txt
+
+# Build with AVX512 support for AMD EPYC
+ENV LLAMA_AVX512=${LLAMA_AVX512}
+ENV LLAMA_AVX512_VBMI=${LLAMA_AVX512_VBMI}
+
+# Set up the environment (downloads/builds necessary components)
+# Note: This prepares the build environment but doesn't download models
+RUN python setup_env.py --hf-repo HF1BitLLM/Llama3-8B-1.58-100B-tokens -q i2_s || true
+
+# Create model directory
+RUN mkdir -p /models
+
+# Runtime configuration
+ENV MODEL_PATH=/models/model.gguf
+ENV HOST=0.0.0.0
+ENV PORT=8080
+ENV NUM_THREADS=0
+ENV CONTEXT_SIZE=4096
+
+# Expose inference port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Entry point
+COPY docker/entrypoint-bitnet.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

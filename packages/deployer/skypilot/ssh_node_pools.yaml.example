@@ -1,0 +1,49 @@
+# SkyPilot SSH Node Pools Configuration
+# Copy to ~/.sky/ssh_node_pools.yaml and customize
+#
+# Documentation: https://docs.skypilot.co/en/latest/reservations/existing-machines.html
+
+# Hetzner Bare Metal Pool (Base Layer)
+# These servers are provisioned via Terraform and registered here
+hetzner-base:
+  # Default SSH credentials for all nodes
+  user: root
+  identity_file: ~/.ssh/hetzner_ed25519
+  # password: optional-if-key-auth-fails
+
+  # List of Hetzner dedicated server IPs
+  # Update these after running `terraform apply` in terraform/hetzner/
+  hosts:
+    # Primary inference nodes (AX102 recommended: AMD EPYC, 256GB RAM)
+    - ip: 10.0.1.100
+      # Optional per-node overrides:
+      # user: deploy
+      # identity_file: ~/.ssh/node1_key
+
+    - ip: 10.0.1.101
+    - ip: 10.0.1.102
+
+    # Add more nodes as needed
+    # - ip: 10.0.1.103
+    # - ip: 10.0.1.104
+
+# Development/Testing Pool (smaller instances)
+# hetzner-dev:
+#   user: root
+#   identity_file: ~/.ssh/hetzner_ed25519
+#   hosts:
+#     - ip: 10.0.2.100
+
+# Multi-region setup example
+# hetzner-eu:
+#   user: root
+#   identity_file: ~/.ssh/hetzner_eu_key
+#   hosts:
+#     - ip: 10.1.1.100  # Falkenstein
+#     - ip: 10.1.1.101
+#
+# hetzner-us:
+#   user: root
+#   identity_file: ~/.ssh/hetzner_us_key
+#   hosts:
+#     - ip: 10.2.1.100  # Ashburn (if available)

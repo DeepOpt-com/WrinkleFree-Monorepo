@@ -1,0 +1,53 @@
+# CNN/DailyMail Summarization Task
+# Full generation + ROUGE metrics (as used in BitDistill paper)
+
+task: cnn_dailymail_summarization
+group: wrinklefree_summarization
+
+# Dataset configuration
+dataset_path: cnn_dailymail
+dataset_name: "3.0.0"
+validation_split: validation
+test_split: test
+
+# Task type: generative (not multiple choice)
+output_type: generate_until
+
+# Prompt template
+doc_to_text: !function utils.doc_to_text_summarization
+doc_to_target: "{{highlights}}"
+
+# Generation stopping criteria
+generation_kwargs:
+  until:
+    - "\n\n"
+    - "<|endoftext|>"
+    - "<|im_end|>"
+  max_gen_toks: 128
+  do_sample: false
+  temperature: 1.0
+
+# Metrics: ROUGE-1, ROUGE-2, ROUGE-L, BLEU
+metric_list:
+  - metric: rouge1
+    aggregation: mean
+    higher_is_better: true
+  - metric: rouge2
+    aggregation: mean
+    higher_is_better: true
+  - metric: rougeL
+    aggregation: mean
+    higher_is_better: true
+  - metric: bleu
+    aggregation: mean
+    higher_is_better: true
+
+# Use HuggingFace Evaluate for ROUGE
+filter_list:
+  - name: remove_whitespace
+    filter:
+      - function: !function utils.strip_whitespace
+
+metadata:
+  version: 1.0
+  description: "CNN/DailyMail abstractive summarization with ROUGE metrics"

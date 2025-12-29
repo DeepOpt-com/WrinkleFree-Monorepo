@@ -1,0 +1,38 @@
+# Qwen 7B style BitNet model configuration
+name: qwen_7b
+
+# Architecture (Qwen 2.5 7B style)
+vocab_size: 151936
+hidden_size: 3584
+intermediate_size: 18944
+num_hidden_layers: 28
+num_attention_heads: 28
+num_kv_heads: 4
+head_dim: 128
+max_position_embeddings: 32768
+rope_theta: 1000000.0
+
+# Quantization settings
+quantization:
+  weight_bits: 1.58
+  activation_bits: 8
+  per_token_activation: true
+
+# SubLN settings
+subln:
+  enabled: true
+  eps: 1.0e-6
+  elementwise_affine: true
+
+# Model behavior
+attention_dropout: 0.0
+hidden_act: relu2
+rms_norm_eps: 1.0e-6
+tie_word_embeddings: false
+use_flash_attention: false  # Disabled until flash_attn added to Modal image (see issue #8)
+
+# Teacher model for distillation
+teacher:
+  pretrained: Qwen/Qwen2.5-7B
+  load_in_fp16: true
+  freeze: true

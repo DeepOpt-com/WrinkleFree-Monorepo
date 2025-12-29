@@ -1,0 +1,20 @@
+# GLUE classification benchmarks only
+# Fast evaluation without summarization generation
+
+name: glue
+description: "GLUE classification tasks: MNLI, QNLI, SST-2"
+
+tasks:
+  - mnli
+  - qnli
+  - sst2
+
+num_fewshot:
+  mnli: 0
+  qnli: 0
+  sst2: 0
+
+limits:
+  mnli: null
+  qnli: null
+  sst2: null

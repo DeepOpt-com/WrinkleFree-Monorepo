@@ -1,0 +1,102 @@
+# SkyPilot configuration for 8B model conversion and benchmarking
+# Tests the naive ternary conversion pipeline on Qwen2.5-7B
+#
+# Launch:
+#   sky launch skypilot/benchmark/convert_8b_benchmark.yaml -c convert-8b
+
+name: bench-8b-convert
+
+resources:
+  cloud: runpod
+  cpus: 32+
+  memory: 64+
+  disk_size: 100
+  use_spot: false
+  ports: 8080
+
+envs:
+  MODEL_REPO: Qwen/Qwen2.5-7B-Instruct
+  MODEL_NAME: Qwen2.5-7B-Instruct
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "32"
+  CTX_SIZE: "2048"
+  PORT: "8080"
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -ex
+  apt-get update && apt-get install -y clang cmake git curl
+
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine
+    git pull || true
+    git submodule update --init --recursive || true
+  else
+    git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+  fi
+
+  cd /opt/inference-engine
+
+  pip install uv huggingface_hub hf_transfer safetensors torch
+  uv sync --extra benchmark
+
+  cd extern/BitNet
+  pip install -r requirements.txt
+
+  # Download pre-built GGUF and build BitNet.cpp
+  mkdir -p models/BitNet-b1.58-2B-4T
+  wget -O models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf \
+    "https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf"
+
+  # Run setup_env with pre-downloaded model (skips HF download but builds kernels)
+  pip install huggingface_hub
+  huggingface-cli download microsoft/BitNet-b1.58-2B-4T --local-dir models/BitNet-b1.58-2B-4T --include "*.json" "*.model"
+  python setup_env.py --hf-repo microsoft/BitNet-b1.58-2B-4T -q i2_s
+
+  mkdir -p /results
+  mkdir -p models/$MODEL_NAME
+
+run: |
+  set -ex
+  cd /opt/inference-engine/extern/BitNet
+
+  echo "=== Step 1: Download $MODEL_NAME ==="
+  huggingface-cli download $MODEL_REPO --local-dir models/$MODEL_NAME --include "*.safetensors" "*.json" "*.model" "*.txt"
+
+  echo "=== Step 2: Patch config.json for BitNet ==="
+  cd models/$MODEL_NAME
+  cp config.json config.json.bak
+  # Converter expects lowercase 'n' in BitnetForCausalLM
+  python3 -c "import json; c=json.load(open('config.json')); c['architectures']=['BitnetForCausalLM']; c['model_type']='bitnet-b1.58'; json.dump(c,open('config.json','w'),indent=2); print('Patched config.json for BitNet converter')"
+
+  cd /opt/inference-engine/extern/BitNet
+
+  echo "=== Step 3: Convert to GGUF with i2_s ==="
+  python utils/convert-hf-to-gguf-bitnet.py models/$MODEL_NAME --outtype $QUANT_TYPE --outfile models/$MODEL_NAME/ggml-model-$QUANT_TYPE.gguf
+
+  MODEL_PATH="models/$MODEL_NAME/ggml-model-$QUANT_TYPE.gguf"
+  ls -lh $MODEL_PATH
+
+  echo "=== Step 4: Start BitNet server ==="
+  ./build/bin/llama-server -m "$MODEL_PATH" -c $CTX_SIZE -t $NUM_THREADS --host 0.0.0.0 --port $PORT &
+  SERVER_PID=$!
+
+  echo "Waiting for server..."
+  for i in $(seq 1 300); do
+    if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+      echo "Server ready after $((i*2))s!"
+      break
+    fi
+    [ $i -eq 300 ] && { echo "ERROR: Timeout"; exit 1; }
+    sleep 2
+  done
+
+  echo "=== Step 5: Run benchmark ==="
+  cd /opt/inference-engine
+  source .venv/bin/activate
+  python scripts/benchmark_cost.py --url http://localhost:$PORT --hardware cpu_32 --model qwen2.5-7b-bitnet --model-size 7B --quantization naive --output-dir /results --duration 60 --full
+
+  echo "=== Results ==="
+  cat /results/*.json 2>/dev/null || echo "No results"
+  kill $SERVER_PID 2>/dev/null || true
+  echo "Benchmark complete"

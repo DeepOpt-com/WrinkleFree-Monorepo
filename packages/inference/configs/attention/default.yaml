@@ -1,0 +1,16 @@
+# Default attention sparsity configuration (disabled)
+
+attention_sparsity:
+  enabled: false
+  mode: "none"  # none, top_k, threshold, window, dynamic
+  top_k: null
+  top_k_ratio: 0.25
+  threshold: 0.01
+  window:
+    size: 256
+    global_tokens: 1
+    stride: 64
+  dynamic:
+    min_ratio: 0.1
+    max_ratio: 0.5
+  track_stats: false

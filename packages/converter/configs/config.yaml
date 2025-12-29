@@ -1,0 +1,48 @@
+# WrinkleFree DLM Converter - Main Configuration
+#
+# Usage:
+#   uv run python scripts/convert.py model=qwen3_4b
+#   uv run python scripts/convert.py model=smollm2_135m conversion.total_tokens=500000000
+
+defaults:
+  - _self_
+  - model: smollm2_135m
+  - conversion: finetune
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+# Global settings
+seed: 42
+output_dir: ./outputs/dlm
+
+# Source checkpoint (BitNet model from WrinkleFree-1.58Quant)
+source:
+  type: hf  # hf, gcs, local
+  path: null  # Set via CLI or override
+
+# Block diffusion parameters
+block_diffusion:
+  block_size: 32
+  num_diffusion_steps: 8
+  noise_schedule: cosine
+  preserve_bitlinear: true  # Keep ternary weights during fine-tuning
+
+# Inference settings (stored in output for Fast-dLLM)
+inference:
+  confidence_threshold: 0.9
+  use_kv_cache: true
+  parallel_decode: true
+
+# Logging
+logging:
+  level: INFO
+  wandb:
+    enabled: true
+    project: wrinklefree-dlm
+    entity: null  # Set via WANDB_ENTITY env var
+
+hydra:
+  run:
+    dir: ${output_dir}/${model.name}/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: false

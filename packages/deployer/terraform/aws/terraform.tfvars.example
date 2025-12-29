@@ -1,0 +1,36 @@
+# AWS Configuration for WrinkleFree
+# Copy this file to terraform.tfvars and fill in your values
+
+# AWS Region
+aws_region = "us-east-1"
+
+# Environment (dev, staging, prod)
+environment = "dev"
+
+# Project name
+project_name = "wrinklefree"
+
+# S3 bucket name for checkpoints (must be globally unique!)
+# Leave empty to auto-generate: wrinklefree-checkpoints-dev
+checkpoint_bucket_name = ""
+
+# S3 bucket name for trained models (must be globally unique!)
+# Leave empty to auto-generate: wrinklefree-models-dev
+model_bucket_name = ""
+
+# Enable versioning for checkpoint bucket (recommended)
+enable_versioning = true
+
+# Move old checkpoints to Glacier after N days (cost savings)
+# Set to 0 to disable
+lifecycle_glacier_days = 30
+
+# Delete old checkpoints after N days
+# Set to 0 to disable
+lifecycle_expire_days = 90
+
+# Additional tags
+tags = {
+  Team        = "ml-infra"
+  CostCenter  = "research"
+}

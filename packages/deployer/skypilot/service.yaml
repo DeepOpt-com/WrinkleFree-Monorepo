@@ -1,0 +1,172 @@
+# SkyServe Service Configuration for WrinkleFree Inference
+#
+# This configures a SkyServe service that:
+# 1. Prefers SSH Node Pools (Hetzner) - cheapest, fixed cost
+# 2. Spills over to cloud (AWS/GCP) when Hetzner is at capacity
+# 3. Autoscales based on QPS
+# 4. Scales cloud replicas to zero when load decreases
+#
+# Deploy:
+#   sky serve up skypilot/service.yaml --name wrinklefree
+#
+# Monitor:
+#   sky serve status wrinklefree --all
+#
+# Get endpoint:
+#   sky serve status wrinklefree
+#
+# Update:
+#   sky serve update wrinklefree --min-replicas 5
+#
+# Tear down:
+#   sky serve down wrinklefree
+#
+# Documentation: https://docs.skypilot.co/en/latest/serving/sky-serve.html
+
+service:
+  # Readiness probe - SkyServe only routes traffic to healthy replicas
+  readiness_probe:
+    path: /health
+    # Initial delay for model loading (BitNet loads fast, but leave buffer)
+    initial_delay_seconds: 120
+    # Timeout for health check response
+    timeout_seconds: 30
+    # Check interval
+    period_seconds: 10
+
+  # Autoscaling policy
+  replica_policy:
+    # Minimum replicas (should match Hetzner node count for always-on base)
+    min_replicas: 3
+    # Maximum replicas (Hetzner + cloud burst capacity)
+    max_replicas: 20
+    # Target QPS per replica - tune based on model performance
+    # Lower = more aggressive scaling, Higher = better utilization
+    target_qps_per_replica: 5.0
+    # Delay before scaling up (avoid thrashing on traffic spikes)
+    upscale_delay_seconds: 60
+    # Delay before scaling down (keep cloud replicas warm for a bit)
+    downscale_delay_seconds: 300
+
+# Resource requirements for each replica
+# SkyServe will find the cheapest infrastructure that meets these requirements
+resources:
+  # Port exposed by the service
+  ports: 8080
+
+  # CPU/Memory requirements (matches Hetzner AX102 and AWS r7a.xlarge)
+  cpus: 16+
+  memory: 128+
+  disk_size: 100
+
+  # Prefer spot instances for cloud (Hetzner SSH Pool is always "on-demand")
+  use_spot: true
+  # If spot is preempted, try next cheapest region
+  spot_recovery: FAILOVER
+
+  # Optional: Restrict to specific clouds (uncomment to limit)
+  # cloud: aws
+  # region: us-east-1
+
+# Environment variables for the inference server
+envs:
+  # Inference backend: bitnet or vllm
+  BACKEND: bitnet
+
+  # Model path (mounted via file_mounts)
+  MODEL_PATH: /models/model.gguf
+
+  # Context window size
+  CONTEXT_SIZE: "4096"
+
+  # CPU threads (0 = auto-detect based on available CPUs)
+  NUM_THREADS: "0"
+
+  # Lock model in memory to prevent swapping
+  MLOCK: "true"
+
+  # Server binding
+  HOST: "0.0.0.0"
+  PORT: "8080"
+
+# Mount model files to each replica
+file_mounts:
+  # Option 1: From local directory (for development)
+  /models:
+    source: ./models
+    mode: COPY
+
+  # Option 2: From cloud storage (for production)
+  # /models:
+  #   source: s3://your-bucket/wrinklefree-models/
+  #   mode: COPY
+
+  # Option 3: From HuggingFace (downloads on each replica)
+  # /models:
+  #   source: hf://HuggingFaceTB/SmolLM2-135M-Instruct-GGUF
+  #   mode: COPY
+
+# Setup script - runs once when replica starts
+setup: |
+  set -ex
+
+  echo "=== Setting up WrinkleFree inference replica ==="
+
+  # Install system dependencies
+  sudo apt-get update
+  sudo apt-get install -y build-essential cmake git curl
+
+  # Setup based on backend
+  if [ "$BACKEND" = "bitnet" ]; then
+    echo "Setting up BitNet backend..."
+
+    if [ ! -d "/opt/bitnet" ]; then
+      git clone https://github.com/microsoft/BitNet.git /opt/bitnet
+      cd /opt/bitnet
+      pip install uv
+      uv pip install --system -r requirements.txt
+
+      # Build with AVX512 support for AMD EPYC (Hetzner) and Intel (AWS)
+      python setup_env.py --hf-repo HF1BitLLM/Llama3-8B-1.58-100B-tokens -q i2_s
+    fi
+
+  elif [ "$BACKEND" = "vllm" ]; then
+    echo "Setting up vLLM backend..."
+    pip install vllm
+
+  else
+    echo "Unknown backend: $BACKEND"
+    exit 1
+  fi
+
+  echo "=== Setup complete ==="
+
+# Run script - starts the inference server
+run: |
+  set -ex
+
+  echo "=== Starting WrinkleFree inference server ==="
+  echo "Backend: $BACKEND"
+  echo "Model: $MODEL_PATH"
+  echo "Port: $PORT"
+
+  if [ "$BACKEND" = "bitnet" ]; then
+    cd /opt/bitnet
+    python run_inference.py \
+      --model "$MODEL_PATH" \
+      --n-threads "${NUM_THREADS:-0}" \
+      --ctx-size "${CONTEXT_SIZE:-4096}" \
+      --host "$HOST" \
+      --port "$PORT"
+
+  elif [ "$BACKEND" = "vllm" ]; then
+    python -m vllm.entrypoints.openai.api_server \
+      --model "$MODEL_PATH" \
+      --host "$HOST" \
+      --port "$PORT" \
+      --max-model-len "${CONTEXT_SIZE:-4096}"
+
+  else
+    echo "Unknown backend: $BACKEND"
+    exit 1
+  fi

@@ -1,0 +1,54 @@
+# Default influence function configuration
+# Reference: MobileLLM-R1 paper (arXiv:2509.24945)
+
+defaults:
+  - _self_
+
+# Influence calculation settings
+influence:
+  # Layer selection for gradient computation (AutoMixer discriminative layer selection)
+  # Options: "embedding", "output", "both"
+  target_layers: "both"
+
+  # DataInf regularization parameter (lambda)
+  # Prevents division by zero and stabilizes the estimate
+  lambda_reg: 1.0e-4
+
+  # Computation settings
+  batch_size: 32
+  use_fp16: true
+  num_workers: 4
+
+  # Gradient clipping during extraction
+  max_grad_norm: 1.0
+
+  # Caching settings
+  cache_gradients: true
+  cache_dir: ${hydra:runtime.output_dir}/influence_cache
+
+# Probe set configuration
+probe_set:
+  # Total probe set size (~10k as per paper)
+  size: 10000
+  seed: 42
+
+  # Quality filtering (FineWeb-Edu classifier)
+  fineweb_edu_min_score: 4.0
+
+  # Ask-LLM scoring - keep top 10%
+  ask_llm_top_fraction: 0.10
+
+  # Semantic deduplication
+  dedup_similarity_threshold: 0.85
+  dedup_method: "minhash"
+  minhash_num_perm: 128
+
+  # Domain categories
+  domains:
+    - code
+    - math
+    - knowledge
+  samples_per_domain: 3333
+
+  # Tokenization
+  max_length: 2048

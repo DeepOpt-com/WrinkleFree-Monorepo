@@ -1,0 +1,95 @@
+# SkyPilot configuration for RunPod CPU benchmarking
+# BitNet.cpp is CPU-only, so we need high CPU count, not GPU
+
+name: bench-cpu
+
+resources:
+  cloud: runpod
+  cpus: 32+
+  memory: 64+
+  disk_size: 100
+  use_spot: false
+  ports: 8080
+
+envs:
+  MODEL_REPO: microsoft/BitNet-b1.58-2B-4T
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "32"
+  CTX_SIZE: "2048"  # Smaller context for faster loading
+  PORT: "8080"
+  BENCHMARK_MODE: "true"
+  RESULTS_DIR: /results
+
+setup: |
+  set -ex
+  apt-get update && apt-get install -y clang cmake git curl
+
+  # Clone inference engine
+  if [ -d /opt/inference-engine ]; then
+    cd /opt/inference-engine
+    git pull || true
+    git submodule update --init --recursive || true
+  else
+    git clone --recurse-submodules https://github.com/DeepOpt-com/WrinkleFree-Inference-Engine.git /opt/inference-engine
+  fi
+
+  cd /opt/inference-engine
+  pip install uv huggingface_hub hf_transfer
+  uv sync --extra benchmark
+
+  # Setup BitNet
+  cd extern/BitNet
+  mkdir -p models/BitNet-b1.58-2B-4T
+  wget -O models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf \
+    "https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf"
+
+  pip install -r requirements.txt
+  python setup_env.py --hf-repo $MODEL_REPO -q $QUANT_TYPE
+
+  mkdir -p /results
+
+run: |
+  set -ex
+  cd /opt/inference-engine/extern/BitNet
+  MODEL_PATH="models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf"
+
+  echo "=== BitNet CPU Benchmark ==="
+  echo "Threads: $NUM_THREADS"
+  echo "Context: $CTX_SIZE"
+
+  # Start server
+  ./build/bin/llama-server \
+    -m "$MODEL_PATH" \
+    -c $CTX_SIZE \
+    -t $NUM_THREADS \
+    --host 0.0.0.0 \
+    --port $PORT &
+
+  SERVER_PID=$!
+
+  # Wait for server (smaller context = faster loading)
+  echo "Waiting for server..."
+  for i in $(seq 1 120); do
+    if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+      echo "Server ready after $((i*2))s!"
+      break
+    fi
+    [ $i -eq 120 ] && { echo "ERROR: Server timeout"; exit 1; }
+    sleep 2
+  done
+
+  # Run benchmark
+  cd /opt/inference-engine
+  source .venv/bin/activate
+  python scripts/benchmark_cost.py \
+    --url http://localhost:$PORT \
+    --hardware cpu_32 \
+    --model bitnet-2b-4t \
+    --output-dir $RESULTS_DIR \
+    --duration 60 \
+    --full
+
+  echo "=== Results ==="
+  cat $RESULTS_DIR/*.json 2>/dev/null || echo "No results"
+  kill $SERVER_PID 2>/dev/null || true
+  echo "Benchmark complete"

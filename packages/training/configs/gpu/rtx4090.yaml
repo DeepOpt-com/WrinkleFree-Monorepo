@@ -1,0 +1,25 @@
+# GPU Profile: NVIDIA RTX 4090 24GB
+# Use with: python scripts/train.py gpu=rtx4090 ...
+name: rtx4090
+vram_gb: 24
+disk_gb: 100
+
+# Qwen3-4B batch sizes by stage
+# Target: ~20GB VRAM usage (tight fit)
+qwen3_4b:
+  stage1_9:
+    batch_size: 1
+    gradient_accumulation_steps: 64
+    # Very tight, may need gradient checkpointing
+  stage2:
+    batch_size: 2
+    gradient_accumulation_steps: 32
+
+# SmolLM2-135M batch sizes
+smollm2_135m:
+  stage1_9:
+    batch_size: 8
+    gradient_accumulation_steps: 8
+  stage2:
+    batch_size: 16
+    gradient_accumulation_steps: 4

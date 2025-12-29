@@ -1,0 +1,32 @@
+# Multi-GPU FSDP training configuration
+backend: nccl
+strategy: fsdp
+
+# FSDP settings
+fsdp:
+  sharding_strategy: FULL_SHARD  # ZERO-3 (shard params, grads, optimizer)
+  # Other options: SHARD_GRAD_OP (ZERO-2), NO_SHARD (DDP), HYBRID_SHARD
+
+  mixed_precision:
+    enabled: true
+    param_dtype: bfloat16
+    reduce_dtype: bfloat16
+    buffer_dtype: bfloat16
+
+  activation_checkpointing:
+    enabled: true
+    checkpoint_impl: NO_REENTRANT
+
+  # Memory optimization
+  backward_prefetch: BACKWARD_PRE
+  forward_prefetch: false
+  limit_all_gathers: true
+
+  # State dict configuration (for checkpointing)
+  state_dict:
+    type: sharded  # sharded (distributed save) or full (gather to rank 0)
+    offload_to_cpu: true
+
+# Hardware configuration
+num_gpus: 8  # GPUs per node
+num_nodes: 1

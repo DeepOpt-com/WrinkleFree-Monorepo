@@ -1,0 +1,12 @@
+# Default sparsity configuration (disabled)
+# Use this as a baseline for benchmarking
+
+sparsity:
+  enabled: false
+  mode: "none"  # none, threshold, top_k, adaptive
+  threshold: 0.01
+  top_k_ratio: 0.5
+  adaptive:
+    min_ratio: 0.3
+    max_ratio: 0.7
+  track_stats: false

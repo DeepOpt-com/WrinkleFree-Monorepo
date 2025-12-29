@@ -1,0 +1,13 @@
+# Adaptive sparsity configuration
+# Entropy-based: adjusts sparsity per token based on input complexity
+# Inspired by DejaVu contextual sparsity (https://arxiv.org/abs/2310.17157)
+
+sparsity:
+  enabled: true
+  mode: "adaptive"
+  top_k_ratio: 0.5  # Fallback if adaptive fails
+  threshold: 0.01
+  adaptive:
+    min_ratio: 0.3   # At least 30% kept (70% sparsity max)
+    max_ratio: 0.7   # At most 70% kept (30% sparsity min)
+  track_stats: true

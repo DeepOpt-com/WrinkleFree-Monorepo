@@ -1,0 +1,41 @@
+# GCP Configuration
+# Copy this file to terraform.tfvars and fill in your values
+
+# Required: GCP Project ID
+gcp_project_id = "your-gcp-project-id"
+
+# GCP Region
+gcp_region = "us-central1"
+
+# Environment (dev, staging, prod)
+environment = "dev"
+
+# Project name (used for resource naming)
+project_name = "wrinklefree"
+
+# Number of spot instances (0 = scale to zero)
+spot_instance_count = 0
+
+# Maximum spot instances for autoscaling
+spot_max_instances = 10
+
+# Machine type
+# n2-highmem-16 = 16 vCPU, 128GB RAM
+# n2-highmem-32 = 32 vCPU, 256GB RAM
+machine_type = "n2-highmem-16"
+
+# Zones for instance distribution
+zones = ["us-central1-a", "us-central1-b", "us-central1-c"]
+
+# SSH public key content (not path!)
+# Generate with: cat ~/.ssh/id_ed25519.pub
+ssh_public_key = "ssh-ed25519 AAAA... your-email@example.com"
+
+# SSH username
+ssh_user = "wrinklefree"
+
+# Additional labels
+labels = {
+  team        = "ml-infra"
+  cost_center = "research"
+}

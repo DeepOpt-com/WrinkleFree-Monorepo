@@ -1,0 +1,109 @@
+# Credentials Setup
+
+This folder contains credentials for WrinkleFree cloud training. **Never commit actual credentials.**
+
+## Quick Start
+
+```bash
+# 1. Copy example files
+cp .env.example .env
+cp gcp-service-account.example.json gcp-service-account.json
+
+# 2. Fill in your credentials
+# Edit .env and gcp-service-account.json with your values
+
+# 3. Verify SkyPilot can see your clouds
+source .env
+sky check
+```
+
+## Required Credentials
+
+### 1. RunPod API Key
+**Location:** `credentials/.env` → `RUNPOD_API_KEY`
+
+```bash
+# Get key from: https://www.runpod.io/console/user/settings
+export RUNPOD_API_KEY=your_key_here
+```
+
+### 2. Weights & Biases
+**Location:** `credentials/.env` → `WANDB_API_KEY`
+
+```bash
+# Get key from: https://wandb.ai/authorize
+export WANDB_API_KEY=your_key_here
+```
+
+### 3. GCP Service Account (for GCS checkpoints)
+**Location:** `credentials/gcp-service-account.json`
+
+1. Go to [GCP Console → IAM → Service Accounts](https://console.cloud.google.com/iam-admin/serviceaccounts)
+2. Create or select a service account
+3. Grant roles: `Storage Object Admin`
+4. Create key → JSON → Download
+5. Save as `credentials/gcp-service-account.json`
+
+The smoke test mounts this file automatically to remote machines.
+
+## Optional Credentials
+
+### Nebius (Cheapest H100s - $1.99/hr)
+**Location:** `~/.nebius/credentials.json`
+
+```bash
+# Run the setup script (requires browser for OAuth)
+./scripts/setup-nebius.sh
+
+# Or manually:
+curl -sSL https://storage.eu-north1.nebius.cloud/cli/install.sh | bash
+nebius profile create
+# Follow prompts to create service account and access key
+```
+
+### HuggingFace Token (for private models)
+**Location:** `credentials/.env` → `HF_TOKEN`
+
+```bash
+# Get token from: https://huggingface.co/settings/tokens
+export HF_TOKEN=your_token_here
+```
+
+### Lambda Labs
+**Location:** `~/.lambda_cloud/lambda_keys`
+
+```bash
+# Get key from: https://cloud.lambdalabs.com/api-keys
+mkdir -p ~/.lambda_cloud
+echo "api_key = YOUR_KEY" > ~/.lambda_cloud/lambda_keys
+```
+
+## Credential Locations Summary
+
+| Credential | Location | Used By |
+|------------|----------|---------|
+| RunPod API | `credentials/.env` | SkyPilot |
+| W&B API | `credentials/.env` | Training |
+| GCP JSON | `credentials/gcp-service-account.json` | GCS uploads |
+| Nebius | `~/.nebius/credentials.json` | SkyPilot |
+| HuggingFace | `credentials/.env` | Model downloads |
+| Lambda | `~/.lambda_cloud/lambda_keys` | SkyPilot |
+
+## Verify Setup
+
+```bash
+# Check which clouds are enabled
+source credentials/.env
+sky check
+
+# Expected output:
+# ✓ GCP [compute, storage]
+# ✓ RunPod [compute]
+# ✓ Nebius [compute, storage]  (if configured)
+```
+
+## Security Notes
+
+- All files in `credentials/` except `*.example*` are gitignored
+- Never commit API keys or service account files
+- Use environment variables for CI/CD, not file-based credentials

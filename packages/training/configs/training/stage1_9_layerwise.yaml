@@ -1,0 +1,160 @@
+# Stage 1.9: Layer-wise Distillation
+# Align BitNet hidden states with the original full-precision teacher
+# Runs after Stage 1 (SubLN insertion) but before Stage 2 (pre-training)
+#
+# Research basis:
+# - OneBit (arxiv.org/abs/2402.11295): L2-normalized MSE for scale-invariance
+# - BitDistill (arxiv.org/abs/2510.13998): Later layers often more important
+stage: layerwise_distillation
+
+# torch.compile for 2.9x training speedup (A40 benchmark)
+# First step takes ~97s to compile, then 3x faster steady-state
+# Set TORCHINDUCTOR_CACHE_DIR for persistent caching across runs
+torch_compile:
+  enabled: true
+  mode: default
+
+# Teacher model (original pre-quantized model, BEFORE Stage 1 conversion)
+teacher:
+  # This should be the same model used as input to Stage 1
+  model_name: ${model.pretrained_name}
+  fp16: true  # Load teacher in FP16 for memory efficiency
+  offload_to_cpu: false  # Set true to offload between forward passes (slower but saves VRAM)
+
+# Layer-wise distillation settings
+layerwise:
+  # Loss type options:
+  #   - mse_normalized: MSE with L2 normalization (recommended, OneBit style)
+  #   - mse: Standard MSE (scale-dependent)
+  #   - kl: KL divergence after projecting to vocab space
+  #   - inner_product: Negative inner product (normalized)
+  # Note: cosine removed - mathematically equivalent to mse_normalized
+  #       (for L2-normalized vectors: mse_normalized = 2 * cosine_loss)
+  loss_type: mse_normalized
+
+  # Per-layer weights - how to weight each layer's contribution
+  # Options:
+  #   - null: Uniform weights (1/L for each layer)
+  #   - "progressive": Linearly increasing (later layers weighted more)
+  #   - "exponential": Exponentially increasing
+  #   - [0.1, 0.2, 0.3, ...]: Custom list per layer
+  layer_weights: progressive
+
+  # L2 normalize hidden states before loss computation
+  # Recommended: true for mse_normalized, inner_product
+  normalize: true
+
+  # Temperature (only used for KL loss)
+  temperature: 1.0
+
+  # LM loss weight: combines hidden state distillation with cross-entropy
+  # 0.0 = pure hidden state MSE (original behavior, may lose LM capability)
+  # 0.5 = balanced mix of distillation and cross-entropy (recommended)
+  # 1.0 = pure cross-entropy (no hidden state alignment)
+  # Adding LM loss helps maintain language modeling capability during distillation
+  # NOTE: If distill_schedule.enabled=true, this is ignored in favor of the schedule
+  lm_loss_weight: 0.5
+
+  # Distillation weight schedule (ramps down distillation over training)
+  # Gradually shifts from teacher alignment to LM capability
+  distill_schedule:
+    enabled: true
+    # Schedule type: "linear" or "cosine"
+    type: cosine
+    # Starting distillation weight (high = more distillation)
+    initial_weight: 0.5
+    # Final distillation weight (low = less distillation, more LM focus)
+    final_weight: 0.0
+    # Optional warmup: keep initial_weight constant for N steps before ramping
+    warmup_steps: 0
+
+  # Model dimensions (needed for KL loss projection)
+  hidden_size: ${model.hidden_size}
+  vocab_size: ${model.vocab_size}
+
+  # Saliency Smoothing Curriculum (DEPRECATED - use lambda warmup instead)
+  #
+  # DEPRECATED: Testing showed saliency curriculum provides marginal benefit
+  # compared to lambda warmup in Stage 2. Lambda warmup is simpler and more
+  # effective at preventing quantization shock. See docs/research/notebook.md
+  # for comparison results.
+  #
+  # Historical note: HBLLM-inspired approach to gradually transition from
+  # mixed-precision (FP16 for salient columns) to fully ternary.
+  saliency_curriculum:
+    # DEPRECATED: Keep disabled. Use lambda warmup in Stage 2 instead.
+    enabled: false
+
+    # Initial fraction of columns to protect (keep in FP16)
+    # Columns with highest L-infinity norm are protected
+    initial_k: 0.1  # Top 10%
+
+    # Final fraction of protected columns (should be 0 for fully ternary at end)
+    final_k: 0.0
+
+    # EMA decay for saliency tracking (higher = more stable, slower to adapt)
+    ema_decay: 0.99
+
+    # Annealing schedule: "linear" or "cosine"
+    schedule_type: cosine
+
+    # Warmup: keep initial_k constant for this many steps before annealing
+    warmup_steps: 100
+
+    # Update saliency EMA every N steps (reduces computational overhead)
+    # Higher = less overhead, but slower adaptation
+    update_interval: 10
+
+# Optimization (Muon optimizer for better convergence)
+optimizer:
+  type: muonclip
+  lr: 1.5e-3  # Muon-appropriate LR (similar to stage 2)
+  momentum: 0.95
+  weight_decay: 0.024
+  adamw_betas: [0.9, 0.95]  # For embed/head params
+  # QK-clipping settings (Kimi K2 defaults)
+  enable_clipping: true
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
+
+scheduler:
+  type: cosine
+  warmup_steps: 50  # ~10% of 500 steps; was 500 which caused T_max=0 error
+  min_lr_ratio: 0.1
+
+# Training parameters
+# Full 1000 steps needed for distill_schedule to complete (ramps to 0)
+max_steps: 1000
+total_tokens: 100000000  # ~100M tokens (can be overridden by max_steps)
+max_seq_length: 512
+batch_size: 16
+gradient_accumulation_steps: 8  # Effective batch = 128
+gradient_clipping: 1.0
+
+# Early stopping disabled - need full 1000 steps for distill_schedule to complete
+early_stopping:
+  enabled: false
+
+# Output directory for checkpoints
+output_dir: outputs/stage1_9
+
+# Checkpointing (lightweight since short stage)
+checkpoint:
+  save_interval: 1000
+  keep_last_n: 2
+  save_optimizer: false  # Don't need optimizer state for this short stage
+
+# Logging (no eval - all data is unseen in streaming pre-training)
+logging:
+  log_interval: 50
+  wandb:
+    enabled: true
+    project: wrinklefree
+    entity: null
+    name: null  # Override with run name
+    tags: [stage1_9, layerwise_distillation]
+
+# Memory optimization
+memory:
+  gradient_checkpointing: true
+  clear_cache_interval: 100

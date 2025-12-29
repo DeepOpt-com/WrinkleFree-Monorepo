@@ -1,0 +1,121 @@
+[project]
+name = "wrinklefree-dlm-converter"
+version = "0.1.0"
+description = "Convert BitNet 1.58-bit models to Diffusion LLMs for faster parallel inference"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "WrinkleFree Team" }
+]
+keywords = ["llm", "diffusion", "bitnet", "quantization", "inference", "dllm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # Core ML
+    "torch>=2.5.0",
+    "setuptools",  # Required for BitNet model loading (torch cpp extension)
+    "transformers>=4.40.0",
+    "safetensors>=0.4.0",
+    "accelerate>=0.27.0",
+    "einops>=0.7.0",
+
+    # Configuration
+    "hydra-core>=1.3.0",
+    "omegaconf>=2.3.0",
+
+    # Training
+    "datasets>=2.18.0",
+
+    # Infrastructure (Modal for training jobs)
+    "modal>=0.64.0",
+
+    # Logging
+    "wandb>=0.16.0",
+    "tqdm>=4.66.0",
+
+    # CLI
+    "click>=8.1.0",
+    "rich>=13.0.0",
+
+    # Storage
+    "huggingface_hub>=0.20.0",
+    "google-cloud-storage>=2.14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+]
+
+[project.scripts]
+wf-dlm = "wf_dlm_converter.cli:main"
+
+[project.urls]
+Repository = "https://github.com/DeepOpt-com/WrinkleFree-DLM-Converter"
+Documentation = "https://github.com/DeepOpt-com/WrinkleFree-DLM-Converter#readme"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wf_dlm_converter"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "smoke: Quick smoke tests",
+    "integration: Integration tests requiring Modal",
+    "slow: Slow tests that take >30s",
+]
+
+[tool.coverage.run]
+source = ["src/wf_dlm_converter"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

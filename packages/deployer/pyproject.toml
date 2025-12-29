@@ -1,0 +1,160 @@
+[project]
+name = "wrinklefree-deployer"
+version = "0.1.0"
+description = "Hybrid cloud deployment for 1.58-bit quantized LLM inference"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "WrinkleFree Team" }
+]
+keywords = ["llm", "inference", "deployment", "skypilot", "bitnet"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # Modal (default backend for training)
+    "modal>=0.64.0",
+    # SkyPilot (alternative backend)
+    "skypilot[nebius]>=0.10.0",
+    "pyyaml>=6.0",
+    "requests>=2.31.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "google-cloud-storage>=2.14.0",
+    "runpod>=1.8.1",
+    "google-api-python-client>=2.187.0",
+    # Config and infrastructure
+    "pydantic>=2.0",
+    "python-terraform>=0.10.0",
+    "python-dotenv>=1.0.0",
+    "wandb>=0.23.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-json-report>=1.5.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+
+test = [
+    "pytest>=7.4.0",
+    "pytest-json-report>=1.5.0",
+    "locust>=2.20.0",
+    "requests>=2.31.0",
+]
+
+benchmark = [
+    "pandas>=2.0.0",
+    "matplotlib>=3.8.0",
+]
+
+infra-test = [
+    "boto3>=1.34.0",
+    "pytest>=7.4.0",
+    "pytest-json-report>=1.5.0",
+]
+eval = [
+    # For local evaluation runs (optional)
+    # Install WrinkleFree-Eval from the sibling directory
+    # pip install -e ../WrinkleFree-Eval[all]
+]
+
+[project.scripts]
+wf = "wf_deployer.cli:main"
+wrinklefree-deploy = "wf_deployer.cli:main"
+
+[project.urls]
+Repository = "https://github.com/your-org/WrinkleFree-Deployer"
+Documentation = "https://github.com/your-org/WrinkleFree-Deployer#readme"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wf_deployer"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-json-report>=1.5.0",
+    "pytest-asyncio>=0.23.0",
+    "locust>=2.20.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+    "boto3>=1.34.0",
+    "aiohttp>=3.9.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "smoke: Quick smoke tests for basic functionality",
+    "integration: Integration tests requiring running server",
+    "load: Load/performance tests",
+    "cloud: Cloud smoke tests for spot instance validation",
+    "slow: Slower tests that take >30s",
+    "manual: Manual tests that should not run automatically",
+    "terraform: Terraform integration tests",
+    "localstack: Tests requiring LocalStack",
+    "library: Tests for the wf_deployer library",
+]
+
+[tool.coverage.run]
+source = ["src/wf_deployer", "scripts"]
+branch = true
+omit = [
+    "*/__pycache__/*",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+# Coverage target for scripts only (run_tests.py, benchmark_throughput.py)
+# These require running services, so we track but don't enforce a threshold yet
+fail_under = 0
+show_missing = true
+skip_covered = false
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.json]
+output = "coverage.json"

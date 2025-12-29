@@ -1,0 +1,55 @@
+# Qwen3-4B Stage 1.9 on 8x H100 (Nebius)
+#
+# Launch:
+#   sky jobs launch skypilot/qwen3_4b_stage1_9_8xh100.yaml
+#
+# Cost: ~$23.60/hr on Nebius (8x H100)
+# Duration: ~20-30 min for 1000 steps
+
+name: qwen3-4b-s1.9
+
+resources:
+  accelerators: H100:8
+  cloud: nebius
+  use_spot: false
+  disk_tier: best
+
+workdir: ../WrinkleFree-1.58Quant
+
+file_mounts:
+  ~/WrinkleFree-CheaperTraining: ../WrinkleFree-CheaperTraining
+
+envs:
+  # Set these in your shell or ~/.config/.env.global
+  # WANDB_API_KEY: <required>
+  # HF_TOKEN: <optional, for gated models>
+
+  # Torch compile cache for faster subsequent runs
+  TORCHINDUCTOR_CACHE_DIR: /tmp/torch_compile_cache
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source $HOME/.local/bin/env
+  fi
+
+  uv sync
+
+run: |
+  set -e
+  cd ~/sky_workdir
+
+  # Run Stage 1.9 with optimized settings for 8x H100
+  # batch_size=4, accum=16 => effective batch 512 (4*16*8)
+  uv run python scripts/train.py \
+    model=qwen3_4b \
+    training=stage1_9_layerwise \
+    data=fineweb \
+    distributed=fsdp_multi \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=16 \
+    training.max_steps=1000

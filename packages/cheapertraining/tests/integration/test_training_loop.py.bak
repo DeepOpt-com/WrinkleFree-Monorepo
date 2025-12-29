@@ -1,0 +1,232 @@
+"""Integration tests for training loops.
+
+Tests end-to-end training with minimal configurations.
+"""
+
+import pytest
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+from cheapertraining._legacy.models import MobileLLM, MobileLLMConfig
+from cheapertraining._legacy.training.stages.base import StageConfig
+from cheapertraining._legacy.training.stages.pretrain import PretrainStage
+from cheapertraining._legacy.training.stages.posttrain import PosttrainSFTStage
+from cheapertraining._legacy.training.optimizer import create_optimizer
+from cheapertraining._legacy.training.scheduler import create_scheduler
+
+
+class DummyPretrainDataset(Dataset):
+    """Dummy dataset for testing pretraining."""
+
+    def __init__(self, vocab_size: int = 1000, seq_len: int = 128, size: int = 100):
+        self.vocab_size = vocab_size
+        self.seq_len = seq_len
+        self.size = size
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        return {
+            "input_ids": torch.randint(0, self.vocab_size, (self.seq_len,)),
+            "attention_mask": torch.ones(self.seq_len, dtype=torch.long),
+        }
+
+
+class DummySFTDataset(Dataset):
+    """Dummy dataset for testing SFT."""
+
+    def __init__(self, vocab_size: int = 1000, seq_len: int = 128, size: int = 100):
+        self.vocab_size = vocab_size
+        self.seq_len = seq_len
+        self.size = size
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        input_ids = torch.randint(0, self.vocab_size, (self.seq_len,))
+        labels = input_ids.clone()
+        # Mask first half (prompt)
+        labels[:self.seq_len // 2] = -100
+        return {
+            "input_ids": input_ids,
+            "attention_mask": torch.ones(self.seq_len, dtype=torch.long),
+            "labels": labels,
+        }
+
+
+class TestPretrainStage:
+    """Integration tests for pretraining stage."""
+
+    @pytest.fixture
+    def setup(self):
+        """Setup model and training components."""
+        config = MobileLLMConfig(
+            num_layers=2,
+            num_heads=4,
+            num_kv_heads=2,
+            embed_dim=128,
+            hidden_dim=256,
+            vocab_size=1000,
+            max_seq_len=128,
+        )
+        model = MobileLLM(config)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+
+        stage_config = StageConfig(
+            name="test_pretrain",
+            num_steps=5,
+            batch_size_per_gpu=2,
+            seq_len=128,
+            learning_rate=1e-4,
+            warmup_steps=1,
+        )
+
+        optimizer = create_optimizer(model, learning_rate=stage_config.learning_rate)
+        scheduler = create_scheduler(
+            optimizer,
+            scheduler_type="linear_decay",
+            warmup_steps=1,
+            total_steps=5,
+        )
+
+        dataset = DummyPretrainDataset(vocab_size=1000, seq_len=128, size=20)
+        dataloader = DataLoader(dataset, batch_size=2)
+
+        return {
+            "model": model,
+            "stage_config": stage_config,
+            "optimizer": optimizer,
+            "scheduler": scheduler,
+            "dataloader": dataloader,
+            "device": device,
+        }
+
+    def test_pretrain_step(self, setup):
+        """Test single pretrain step."""
+        stage = PretrainStage(
+            config=setup["stage_config"],
+            model=setup["model"],
+            optimizer=setup["optimizer"],
+            scheduler=setup["scheduler"],
+            dataloader=setup["dataloader"],
+            device=setup["device"],
+        )
+
+        batch = next(iter(setup["dataloader"]))
+        metrics = stage.train_step(batch)
+
+        assert metrics is not None
+        assert metrics.loss > 0
+        assert metrics.step == 1
+
+    def test_pretrain_run(self, setup):
+        """Test pretrain run for multiple steps."""
+        stage = PretrainStage(
+            config=setup["stage_config"],
+            model=setup["model"],
+            optimizer=setup["optimizer"],
+            scheduler=setup["scheduler"],
+            dataloader=setup["dataloader"],
+            device=setup["device"],
+        )
+
+        metrics_list = list(stage.run(max_steps=3, log_interval=1))
+
+        assert len(metrics_list) == 3
+        assert all(m.loss > 0 for m in metrics_list)
+
+
+class TestSFTStage:
+    """Integration tests for SFT stage."""
+
+    @pytest.fixture
+    def setup(self):
+        """Setup model and training components."""
+        config = MobileLLMConfig(
+            num_layers=2,
+            num_heads=4,
+            num_kv_heads=2,
+            embed_dim=128,
+            hidden_dim=256,
+            vocab_size=1000,
+            max_seq_len=128,
+        )
+        model = MobileLLM(config)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+
+        stage_config = StageConfig(
+            name="test_sft",
+            num_steps=5,
+            batch_size_per_gpu=2,
+            seq_len=128,
+            learning_rate=1e-5,
+            warmup_steps=1,
+        )
+
+        optimizer = create_optimizer(
+            model,
+            learning_rate=stage_config.learning_rate,
+            weight_decay=0.0,
+        )
+        scheduler = create_scheduler(
+            optimizer,
+            scheduler_type="linear_decay_to_zero",
+            warmup_steps=1,
+            total_steps=5,
+        )
+
+        dataset = DummySFTDataset(vocab_size=1000, seq_len=128, size=20)
+        dataloader = DataLoader(dataset, batch_size=2)
+
+        return {
+            "model": model,
+            "stage_config": stage_config,
+            "optimizer": optimizer,
+            "scheduler": scheduler,
+            "dataloader": dataloader,
+            "device": device,
+        }
+
+    def test_sft_step(self, setup):
+        """Test single SFT step."""
+        stage = PosttrainSFTStage(
+            config=setup["stage_config"],
+            model=setup["model"],
+            optimizer=setup["optimizer"],
+            scheduler=setup["scheduler"],
+            dataloader=setup["dataloader"],
+            device=setup["device"],
+        )
+
+        batch = next(iter(setup["dataloader"]))
+        metrics = stage.train_step(batch)
+
+        assert metrics is not None
+        assert metrics.loss > 0
+
+    def test_sft_masks_prompt(self, setup):
+        """Test that SFT correctly masks prompt tokens."""
+        stage = PosttrainSFTStage(
+            config=setup["stage_config"],
+            model=setup["model"],
+            optimizer=setup["optimizer"],
+            scheduler=setup["scheduler"],
+            dataloader=setup["dataloader"],
+            device=setup["device"],
+        )
+
+        batch = next(iter(setup["dataloader"]))
+        loss, metrics = stage.compute_loss({
+            k: v.to(setup["device"]) for k, v in batch.items()
+        })
+
+        # Should only count completion tokens
+        assert metrics["num_completion_tokens"] < 128 * 2  # Less than full batch
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

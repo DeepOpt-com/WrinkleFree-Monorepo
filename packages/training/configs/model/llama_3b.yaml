@@ -1,0 +1,38 @@
+# LLaMA 3B style BitNet model configuration
+name: llama_3b
+
+# Architecture
+vocab_size: 128256
+hidden_size: 3200
+intermediate_size: 8640
+num_hidden_layers: 26
+num_attention_heads: 32
+num_kv_heads: 8
+head_dim: 100
+max_position_embeddings: 4096
+rope_theta: 500000.0
+
+# Quantization settings
+quantization:
+  weight_bits: 1.58
+  activation_bits: 8
+  per_token_activation: true
+
+# SubLN settings
+subln:
+  enabled: true
+  eps: 1.0e-6
+  elementwise_affine: true
+
+# Model behavior
+attention_dropout: 0.0
+hidden_act: relu2
+rms_norm_eps: 1.0e-6
+tie_word_embeddings: false
+use_flash_attention: false  # Disabled until flash_attn added to Modal image (see issue #8)
+
+# Teacher model for distillation
+teacher:
+  pretrained: meta-llama/Llama-2-7b-hf
+  load_in_fp16: true
+  freeze: true

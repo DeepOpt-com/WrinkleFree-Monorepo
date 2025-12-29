@@ -1,20 +1,46 @@
-# WrinkleFree Project Instructions
+# WrinkleFree Monorepo
 
-## Overview
+Monorepo for 1.58-bit quantized LLM research using uv workspaces.
 
-WrinkleFree is a monorepo for 1.58-bit quantized LLM research. It uses `meta` for managing multiple git repositories.
+## Package Map
 
-## Subprojects
+| Package | Type | Purpose |
+|---------|------|---------|
+| `packages/training` | App | 1.58-bit training pipeline (BitDistill) |
+| `packages/cheapertraining` | Lib | Shared data layer & utilities |
+| `packages/fairy2` | App | Complex-valued quantization (Fairy2i) |
+| `packages/inference` | App | Serving layer (sglang-bitnet) |
+| `packages/eval` | App | Model evaluation (lm-eval) |
+| `packages/deployer` | App | Cloud deployment (Modal/SkyPilot) |
+| `packages/converter` | App | Model format conversion (DLM) |
 
-| Project | Purpose |
-|---------|---------|
-| `WrinkleFree-1.58Quant` | Training pipeline for 1.58-bit quantization (Stage 1-3) |
-| `WrinkleFree-CheaperTraining` | Memory-efficient training experiments |
-| `WrinkleFree-Deployer` | Cloud deployment configs (SkyPilot, Modal) |
-| `WrinkleFree-Inference-Engine` | Serving layer for 1.58-bit models (BitNet.cpp, sglang-bitnet) |
-| `WrinkleFree-Eval` | Evaluation harness for quantized models |
-| `WrinkleFree-DLM-Converter` | Model format conversion utilities |
-| `extern/BitNet` | Microsoft BitNet.cpp submodule |
+## Quick Start
+
+```bash
+# Install all packages
+uv sync --all-packages
+
+# Run training
+uv run --package wrinklefree python scripts/train.py model=smollm2_135m training=stage2_pretrain
+
+# Run tests
+uv run pytest
+```
+
+## Key Commands
+
+| Task | Command |
+|------|---------|
+| Install all deps | `uv sync --all-packages` |
+| Install one package | `uv sync --package wrinklefree` |
+| Run in package context | `uv run --package wrinklefree python scripts/train.py` |
+| Add dep to package | `cd packages/training && uv add torch` |
+| Run all tests | `uv run pytest` |
+
+## Shared Dependencies
+
+- `cheapertraining` is imported by: training, fairy2
+- Use `workspace = true` in `[tool.uv.sources]` for inter-package deps
 
 ## GCP Configuration
 
@@ -22,51 +48,32 @@ WrinkleFree is a monorepo for 1.58-bit quantized LLM research. It uses `meta` fo
 
 ## Remote Sync
 
-Use `./sync.sh --preset <name>` to sync to remote machines:
-
 ```bash
-# Sync to Desktop (local LAN)
+# Sync to Desktop
 ./sync.sh --preset desktop --no-watch
 
 # Sync to RunPod
 ./sync.sh --preset runpod --no-watch
-
-# Watch mode (continuous sync)
-./sync.sh --preset desktop
 ```
 
-**Presets** (defined in `.sync.conf`):
-- `desktop` - Local Desktop machine at `/home/lev/code/WrinkleFree`
-- `runpod` - RunPod instance
-- `RTX6000` - RTX 6000 GPU server
-
-**Note**: For large submodules like `extern/BitNet`, use targeted rsync instead:
-```bash
-# Sync only specific files (faster)
-rsync -avz --no-owner --no-group /local/path/ Desktop:/remote/path/
-```
+**Presets** (in `.sync.conf`): `desktop`, `runpod`, `RTX6000`
 
 ## Inference Engine Quick Start
 
 ```bash
 # On Desktop: Start Streamlit chat interface
-ssh Desktop 'cat > /tmp/serve.sh << "SCRIPT"
-#!/bin/bash
-export PATH="$HOME/.local/bin:$PATH"
-cd /home/lev/code/WrinkleFree/WrinkleFree-Inference-Engine
-tmux kill-session -t streamlit 2>/dev/null || true
-tmux new-session -d -s streamlit "uv run streamlit run demo/serve_sglang.py --server.port 7860 --server.address 0.0.0.0"
-SCRIPT
-chmod +x /tmp/serve.sh && /tmp/serve.sh'
+ssh Desktop 'cd /home/lev/code/WrinkleFree/packages/inference && \
+  uv run streamlit run demo/serve_sglang.py --server.port 7860'
 
-# Access at http://192.168.1.217:7860 (Desktop LAN IP)
+# Access at http://192.168.1.217:7860
 ```
 
 ## SSH Hosts
 
-Desktop is configured in `~/.ssh/config`. Current IP: `192.168.1.217`
+Desktop IP: `192.168.1.217` (configured in `~/.ssh/config`)
 
-## Other Notes
-- FAIL LOUDLY INSTEAD OF FALLBACKS FOR MOST CODE
-- DO NOT LAUNCH GPU INSTANCES ON GCP! Just Nebius and RunPod for now.
+## Core Principles
 
+- FAIL LOUDLY INSTEAD OF FALLBACKS
+- DO NOT LAUNCH GPU INSTANCES ON GCP - use Nebius and RunPod
+- Each package has its own CLAUDE.md with package-specific guidance

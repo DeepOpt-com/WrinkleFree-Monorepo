@@ -1,0 +1,45 @@
+# Main Hydra configuration for WrinkleFree BitNet training
+defaults:
+  - _self_
+  - model: llama_7b
+  - training: stage3_distill
+  - data: default  # Just specifies config_name, actual data comes from CheaperTraining
+  - distributed: fsdp_multi
+  - distillation: classification
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+# Global settings
+seed: 42
+output_dir: ./outputs
+# Note: experiment_name is model-only so checkpoints are shared across stages
+experiment_name: bitdistill_${model.name}
+
+# GCS configuration for run fingerprinting and auto-resume
+# IMPORTANT: Always enabled to prevent checkpoint loss on ephemeral cloud instances
+gcs:
+  enabled: true  # Required for Modal/cloud - checkpoints are lost without this!
+  bucket: wrinklefree-checkpoints  # GCS bucket name
+  experiment_prefix: experiments  # Prefix for experiment data in bucket
+
+# Resume behavior
+resume:
+  skip_completed: true  # Skip runs that are already COMPLETED in GCS
+  checkpoint_path: null  # Path to checkpoint to resume from (local or gs://)
+
+# Audit logging (to training_logs/ folder)
+audit:
+  enabled: true
+  log_dir: training_logs/warnings
+  max_files: 100
+  max_age_days: 90
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${output_dir}/${experiment_name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${output_dir}/${experiment_name}/sweeps
+    subdir: ${hydra.job.num}
+  job:
+    chdir: false
