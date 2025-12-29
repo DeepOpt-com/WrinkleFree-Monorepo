@@ -554,9 +554,30 @@ class Trainer:
         # Load optimizer state
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
+        # Reset learning rate to config value (checkpoint may have different LR)
+        if self.config:
+            training_cfg = getattr(self.config, "training", self.config)
+            opt_cfg = getattr(training_cfg, "optimizer", None)
+            if opt_cfg:
+                config_lr = getattr(opt_cfg, "lr", None)
+                if config_lr is not None:
+                    old_lr = self.optimizer.param_groups[0]["lr"]
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = config_lr
+                    if self.rank == 0:
+                        logger.info(f"Reset LR from checkpoint value {old_lr} to config value {config_lr}")
+
         # Load scheduler state
         if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            # Also reset scheduler's base_lrs if we changed the LR
+            if self.config:
+                training_cfg = getattr(self.config, "training", self.config)
+                opt_cfg = getattr(training_cfg, "optimizer", None)
+                if opt_cfg:
+                    config_lr = getattr(opt_cfg, "lr", None)
+                    if config_lr is not None and hasattr(self.scheduler, "base_lrs"):
+                        self.scheduler.base_lrs = [config_lr] * len(self.scheduler.base_lrs)
 
         # Load training state
         self.global_step = checkpoint.get("global_step", 0)

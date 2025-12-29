@@ -64,24 +64,6 @@ lambda_warmup:
   warmup_steps: 1000  # Steps to reach full quantization (lambda=1)
   schedule: linear  # "linear" or "cosine"
 
-# Q-Sparse: Activation sparsity for inference/training efficiency
-# Keeps top (1 - sparsity_ratio) activations by magnitude per token
-# Reference: https://arxiv.org/abs/2407.10969
-activation_sparsity:
-  enabled: false  # Off by default for backward compatibility
-  mode: topk  # "topk" (unstructured) or "block" (N:M structured)
-  sparsity_ratio: 0.61  # ~61% sparse for 1-bit models (paper recommendation)
-  granularity: per_token  # "per_token" or "per_tensor"
-  warmup:
-    enabled: true
-    warmup_steps: 1000  # Steps to reach target sparsity
-    schedule: linear  # "linear" or "cosine"
-    initial_sparsity: 0.0  # Start dense
-  # Block Q-Sparse settings (only when mode=block)
-  block:
-    n: 2  # Keep N elements
-    m: 4  # Per M-element block
-
 # Checkpointing
 checkpoint:
   save_interval: 1000

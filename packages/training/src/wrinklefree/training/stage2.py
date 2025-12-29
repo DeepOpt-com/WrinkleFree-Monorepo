@@ -14,10 +14,6 @@ from wrinklefree.quantization.lambda_warmup import (
     LambdaWarmup,
     set_global_lambda_warmup,
 )
-from wrinklefree.quantization.sparsity_warmup import (
-    SparsityWarmup,
-    set_global_sparsity_warmup,
-)
 from wrinklefree.training.fsdp_wrapper import setup_distributed, wrap_model_fsdp
 from wrinklefree.training.trainer import Trainer, create_optimizer, create_scheduler
 
@@ -76,33 +72,6 @@ class Stage2Trainer(Trainer):
             self.lambda_warmup = None
             # Ensure full quantization when warmup not enabled
             set_global_lambda_warmup(None)
-
-        # Q-Sparse: Activation sparsity warmup
-        sparsity_cfg = getattr(self.training_cfg, "activation_sparsity", None)
-        if sparsity_cfg is not None and getattr(sparsity_cfg, "enabled", False):
-            warmup_cfg = getattr(sparsity_cfg, "warmup", {})
-            if getattr(warmup_cfg, "enabled", True):
-                self.sparsity_warmup = SparsityWarmup(
-                    warmup_steps=getattr(warmup_cfg, "warmup_steps", 1000),
-                    schedule=getattr(warmup_cfg, "schedule", "linear"),
-                    initial_sparsity=getattr(warmup_cfg, "initial_sparsity", 0.0),
-                    target_sparsity=getattr(sparsity_cfg, "sparsity_ratio", 0.61),
-                )
-            else:
-                # No warmup - use fixed sparsity from the start
-                self.sparsity_warmup = SparsityWarmup(
-                    warmup_steps=0,
-                    initial_sparsity=getattr(sparsity_cfg, "sparsity_ratio", 0.61),
-                    target_sparsity=getattr(sparsity_cfg, "sparsity_ratio", 0.61),
-                )
-            set_global_sparsity_warmup(self.sparsity_warmup)
-            logger.info(
-                f"Q-Sparse enabled: target sparsity={sparsity_cfg.sparsity_ratio}, "
-                f"mode={getattr(sparsity_cfg, 'mode', 'topk')}"
-            )
-        else:
-            self.sparsity_warmup = None
-            set_global_sparsity_warmup(None)
 
         # Track influence-aware optimizer
         self.has_influence = self._check_influence_optimizer()
@@ -221,10 +190,6 @@ class Stage2Trainer(Trainer):
                 if self.lambda_warmup is not None:
                     self.lambda_warmup.step()
 
-                # Step sparsity warmup (Q-Sparse)
-                if self.sparsity_warmup is not None:
-                    self.sparsity_warmup.step()
-
                 self.global_step += 1
                 avg_loss = accumulated_loss / num_accumulated
                 self.train_losses.append(avg_loss)
@@ -267,10 +232,6 @@ class Stage2Trainer(Trainer):
                         # Log lambda if warmup is active
                         if self.lambda_warmup is not None:
                             wandb_log["train/lambda"] = self.lambda_warmup.lambda_val
-
-                        # Log sparsity if Q-Sparse is active
-                        if self.sparsity_warmup is not None:
-                            wandb_log["train/sparsity_ratio"] = self.sparsity_warmup.sparsity
 
                         # Log mixture weights if using influence-aware optimizer
                         if self.has_influence:
@@ -592,16 +553,11 @@ def run_stage2(
     if resume_from is not None:
         trainer.load_checkpoint(resume_from)
 
-        # Fast-forward lambda_warmup and sparsity_warmup to match restored global_step
+        # Fast-forward lambda_warmup to match restored global_step
         if trainer.lambda_warmup is not None:
             for _ in range(trainer.global_step):
                 trainer.lambda_warmup.step()
             logger.info(f"Lambda warmup fast-forwarded to step {trainer.global_step}, lambda={trainer.lambda_warmup.lambda_val:.4f}")
-
-        if trainer.sparsity_warmup is not None:
-            for _ in range(trainer.global_step):
-                trainer.sparsity_warmup.step()
-            logger.info(f"Sparsity warmup fast-forwarded to step {trainer.global_step}, sparsity={trainer.sparsity_warmup.sparsity:.4f}")
 
     # Train
     metrics = trainer.train()

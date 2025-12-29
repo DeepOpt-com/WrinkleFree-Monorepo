@@ -72,39 +72,6 @@ layerwise:
   hidden_size: ${model.hidden_size}
   vocab_size: ${model.vocab_size}
 
-  # Saliency Smoothing Curriculum (DEPRECATED - use lambda warmup instead)
-  #
-  # DEPRECATED: Testing showed saliency curriculum provides marginal benefit
-  # compared to lambda warmup in Stage 2. Lambda warmup is simpler and more
-  # effective at preventing quantization shock. See docs/research/notebook.md
-  # for comparison results.
-  #
-  # Historical note: HBLLM-inspired approach to gradually transition from
-  # mixed-precision (FP16 for salient columns) to fully ternary.
-  saliency_curriculum:
-    # DEPRECATED: Keep disabled. Use lambda warmup in Stage 2 instead.
-    enabled: false
-
-    # Initial fraction of columns to protect (keep in FP16)
-    # Columns with highest L-infinity norm are protected
-    initial_k: 0.1  # Top 10%
-
-    # Final fraction of protected columns (should be 0 for fully ternary at end)
-    final_k: 0.0
-
-    # EMA decay for saliency tracking (higher = more stable, slower to adapt)
-    ema_decay: 0.99
-
-    # Annealing schedule: "linear" or "cosine"
-    schedule_type: cosine
-
-    # Warmup: keep initial_k constant for this many steps before annealing
-    warmup_steps: 100
-
-    # Update saliency EMA every N steps (reduces computational overhead)
-    # Higher = less overhead, but slower adaptation
-    update_interval: 10
-
 # Optimization (Muon optimizer for better convergence)
 optimizer:
   type: muonclip

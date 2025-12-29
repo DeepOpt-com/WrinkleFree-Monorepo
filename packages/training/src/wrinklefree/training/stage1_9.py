@@ -7,7 +7,6 @@ with the original full-precision teacher model.
 Research basis:
 - OneBit (arxiv.org/abs/2402.11295): L2-normalized MSE for scale-invariance
 - BitDistill (arxiv.org/abs/2510.13998): Layer-wise alignment, later layers more important
-- HBLLM: Saliency-based mixed-precision curriculum for stable quantization
 """
 
 import logging
@@ -24,8 +23,6 @@ from wrinklefree.distillation.layerwise_loss import (
     LayerwiseDistillationLoss,
     LayerwiseLossType,
 )
-from wrinklefree.models.bitlinear import SaliencyAwareBitLinear
-from wrinklefree.quantization.saliency_curriculum import SaliencyCurriculum
 from wrinklefree.training.fsdp_wrapper import setup_distributed, wrap_model_fsdp
 from wrinklefree.training.trainer import Trainer, create_optimizer, create_scheduler
 
@@ -239,45 +236,6 @@ class Stage19Trainer(Trainer):
         if self.lm_loss_weight > 0:
             logger.info(f"LM loss enabled with weight={self.lm_loss_weight}")
 
-        # Saliency curriculum setup
-        curriculum_config = getattr(layerwise_config, "saliency_curriculum", None)
-        if curriculum_config is not None and getattr(curriculum_config, "enabled", False):
-            self.saliency_curriculum = SaliencyCurriculum(
-                initial_saliency_k=getattr(curriculum_config, "initial_k", 0.1),
-                final_saliency_k=getattr(curriculum_config, "final_k", 0.0),
-                ema_decay=getattr(curriculum_config, "ema_decay", 0.99),
-                schedule_type=getattr(curriculum_config, "schedule_type", "cosine"),
-                warmup_steps=getattr(curriculum_config, "warmup_steps", 0),
-                update_interval=getattr(curriculum_config, "update_interval", 10),
-            )
-
-            # Attach curriculum to all SaliencyAwareBitLinear layers
-            self._attach_saliency_curriculum(model)
-            logger.info(
-                f"Saliency curriculum enabled: initial_k={self.saliency_curriculum.initial_k}, "
-                f"final_k={self.saliency_curriculum.final_k}, "
-                f"schedule={curriculum_config.schedule_type}, "
-                f"update_interval={self.saliency_curriculum.update_interval}"
-            )
-        else:
-            self.saliency_curriculum = None
-
-    def _attach_saliency_curriculum(self, model: nn.Module) -> None:
-        """
-        Attach saliency curriculum to all SaliencyAwareBitLinear layers in the model.
-
-        Args:
-            model: The model containing SaliencyAwareBitLinear layers
-        """
-        count = 0
-        for name, module in model.named_modules():
-            if isinstance(module, SaliencyAwareBitLinear):
-                module.set_saliency_curriculum(self.saliency_curriculum, name)
-                count += 1
-                logger.debug(f"Attached saliency curriculum to layer: {name}")
-
-        logger.info(f"Attached saliency curriculum to {count} SaliencyAwareBitLinear layers")
-
     def _get_current_distill_weight(self) -> float:
         """
         Get current distillation weight based on schedule.
@@ -404,10 +362,6 @@ class Stage19Trainer(Trainer):
                 if self.scheduler is not None:
                     self.scheduler.step()
 
-                # Step saliency curriculum
-                if self.saliency_curriculum is not None:
-                    self.saliency_curriculum.step()
-
                 self.global_step += 1
                 avg_loss = accumulated_loss / num_accumulated
                 self.train_losses.append(avg_loss)
@@ -430,11 +384,6 @@ class Stage19Trainer(Trainer):
                     )
                     logger.info(log_msg)
 
-                    # Log curriculum progress if enabled (outside wandb block)
-                    if self.saliency_curriculum is not None:
-                        current_k = self.saliency_curriculum.get_current_k()
-                        logger.info(f"Saliency curriculum: k={current_k:.4f}")
-
                     # Log distillation schedule progress
                     if self.distill_schedule_enabled:
                         current_distill = self._get_current_distill_weight()
@@ -456,10 +405,6 @@ class Stage19Trainer(Trainer):
                             wandb_log["train/lm_loss"] = loss_dict["lm_loss"].item()
                         if "distill_loss" in loss_dict:
                             wandb_log["train/distill_loss"] = loss_dict["distill_loss"].item()
-
-                        # Add curriculum metrics to wandb
-                        if self.saliency_curriculum is not None:
-                            wandb_log["curriculum/saliency_k"] = self.saliency_curriculum.get_current_k()
 
                         # Add distillation schedule metrics
                         if self.distill_schedule_enabled:
@@ -497,43 +442,6 @@ class Stage19Trainer(Trainer):
             logger.info(f"Training complete! Final metrics: {final_metrics}")
 
         return final_metrics
-
-    def save_checkpoint(self, name: str) -> None:
-        """Save checkpoint including saliency curriculum state."""
-        # Call parent save_checkpoint first
-        super().save_checkpoint(name)
-
-        # Save curriculum state if enabled
-        if self.saliency_curriculum is not None and self.rank == 0:
-            checkpoint_dir = self.output_dir / "checkpoints" / name
-            curriculum_state = self.saliency_curriculum.state_dict()
-            torch.save(curriculum_state, checkpoint_dir / "curriculum.pt")
-            logger.debug(f"Saved curriculum state to {checkpoint_dir / 'curriculum.pt'}")
-
-    def load_checkpoint(self, path: Path) -> None:
-        """Load checkpoint including saliency curriculum state."""
-        # Call parent load_checkpoint first
-        super().load_checkpoint(path)
-
-        # Load curriculum state if it exists
-        if self.saliency_curriculum is not None:
-            if path.is_dir():
-                curriculum_path = path / "curriculum.pt"
-            else:
-                curriculum_path = path.parent / "curriculum.pt"
-
-            if curriculum_path.exists():
-                curriculum_state = torch.load(curriculum_path, map_location=self.device)
-                self.saliency_curriculum.load_state_dict(curriculum_state, device=self.device)
-                logger.info(
-                    f"Loaded curriculum state: step={self.saliency_curriculum._current_step}, "
-                    f"k={self.saliency_curriculum.get_current_k():.4f}"
-                )
-            else:
-                logger.warning(
-                    f"Curriculum state not found at {curriculum_path}, "
-                    "starting fresh curriculum tracking"
-                )
 
     def _forward_step(self, batch: dict) -> dict[str, torch.Tensor]:
         """
@@ -692,14 +600,6 @@ def run_stage1_9(
         use_flash_attention=layerwise_config.get("teacher_flash_attention", False),  # Disabled until flash_attn added to Modal (issue #8)
     )
 
-    # Convert to saliency-aware layers if curriculum is enabled
-    curriculum_config = layerwise_config.get("saliency_curriculum", None)
-    if curriculum_config is not None and curriculum_config.get("enabled", False):
-        from wrinklefree.models.bitlinear import convert_bitlinear_to_saliency_aware
-
-        student_model = convert_bitlinear_to_saliency_aware(student_model)
-        logger.info("Converted BitLinear layers to SaliencyAwareBitLinear for curriculum training")
-
     # Move student to device with consistent bfloat16 dtype
     student_model = student_model.to(device=device, dtype=torch.bfloat16)
 
@@ -786,11 +686,6 @@ def run_stage1_9(
         stage="stage1_9",
     )
     trainer.output_dir = output_dir
-
-    # Set total steps for saliency curriculum scheduler
-    if trainer.saliency_curriculum is not None:
-        trainer.saliency_curriculum.set_total_steps(max_steps)
-        logger.info(f"Saliency curriculum configured for {max_steps} total steps")
 
     # Resume if specified
     if resume_from is not None:
