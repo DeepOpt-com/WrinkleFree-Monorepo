@@ -14,7 +14,7 @@
 use super::radix_tree::{common_prefix_len, current_time_ms, RadixTreeNode, TokenVec};
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, trace};
 
 /// Eviction policy for cache management.
@@ -137,6 +137,10 @@ pub struct RadixCache {
 
     /// Node ID counter for unique identification.
     next_node_id: AtomicU64,
+
+    /// Mutex to serialize insert operations to prevent race conditions during tree modification.
+    /// match_prefix is lock-free (read-only), but insert/split requires exclusive access.
+    insert_lock: Mutex<()>,
 }
 
 impl RadixCache {
@@ -148,6 +152,7 @@ impl RadixCache {
             config,
             cached_token_count: AtomicUsize::new(0),
             next_node_id: AtomicU64::new(1),
+            insert_lock: Mutex::new(()),
         }
     }
 
@@ -295,6 +300,10 @@ impl RadixCache {
         if !self.config.enabled || tokens.is_empty() {
             return 0;
         }
+
+        // Acquire insert lock to prevent race conditions during tree modification.
+        // This serializes all insert operations but allows concurrent match_prefix reads.
+        let _insert_guard = self.insert_lock.lock().unwrap();
 
         let mut current = Arc::clone(&self.root);
         let mut token_idx: usize = 0;
@@ -453,6 +462,9 @@ impl RadixCache {
         if !self.config.enabled || num_tokens_to_free == 0 {
             return 0;
         }
+
+        // Acquire insert lock to prevent race conditions with concurrent inserts.
+        let _insert_guard = self.insert_lock.lock().unwrap();
 
         // Collect all evictable leaf nodes
         let mut heap = BinaryHeap::new();
