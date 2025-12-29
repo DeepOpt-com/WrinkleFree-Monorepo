@@ -587,6 +587,20 @@ def train(
         try:
             optimizer.load_state_dict(resume_state["optimizer"])
             scheduler.load_state_dict(resume_state["scheduler"])
+
+            # Reset LR to config value (checkpoint may have different LR)
+            old_lr = optimizer.param_groups[0]["lr"]
+            if old_lr != learning_rate:
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = learning_rate
+                    if "initial_lr" in param_group:
+                        param_group["initial_lr"] = learning_rate
+                logger.info(f"Reset LR from checkpoint value {old_lr} to config value {learning_rate}")
+
+            # Update scheduler's base_lrs to match config LR
+            if hasattr(scheduler, "base_lrs"):
+                scheduler.base_lrs = [learning_rate] * len(scheduler.base_lrs)
+
             logger.info("Loaded optimizer and scheduler state from checkpoint")
         except Exception as e:
             logger.warning(f"Failed to load optimizer state: {e}")

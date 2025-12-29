@@ -4,6 +4,8 @@
 
 use super::batch_ffi::BitNetSeqId;
 use super::batch_engine::BatchSamplingParams;
+use super::radix_tree::RadixTreeNode;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 /// Token event for streaming responses
@@ -120,6 +122,10 @@ pub struct SequenceState {
     pub response_tx: Option<oneshot::Sender<InferenceResponse>>,
     /// Batch index for current iteration (tracks logits position)
     pub batch_idx: Option<i32>,
+    /// RadixCache node for prefix caching (if prefix was reused)
+    pub prefix_node: Option<Arc<RadixTreeNode>>,
+    /// Number of tokens reused from prefix cache
+    pub prefix_reused_len: i32,
 }
 
 impl SequenceState {
@@ -147,6 +153,68 @@ impl SequenceState {
             token_tx: request.token_tx,
             response_tx: request.response_tx,
             batch_idx: None,
+            prefix_node: None,
+            prefix_reused_len: 0,
+        }
+    }
+
+    /// Create a new sequence with prefix caching.
+    ///
+    /// This is used when a prefix was found in the RadixCache and the KV cache
+    /// has been copied from an existing sequence.
+    ///
+    /// # Arguments
+    /// * `seq_id` - Sequence ID from the engine
+    /// * `request` - The inference request
+    /// * `prefix_node` - The RadixCache node that was matched
+    /// * `prefix_len` - Number of tokens reused from prefix cache
+    /// * `start_position` - Position in KV cache where new tokens start
+    pub fn new_with_prefix(
+        seq_id: BitNetSeqId,
+        request: InferenceRequest,
+        prefix_node: Arc<RadixTreeNode>,
+        prefix_len: usize,
+        start_position: i32,
+    ) -> Self {
+        let prompt_len = request.input_ids.len() as i32;
+
+        // Remaining tokens to prefill (after the cached prefix)
+        let remaining_tokens: Vec<i32> = if prefix_len < request.input_ids.len() {
+            request.input_ids[prefix_len..].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        // Last token is either the last remaining token or the last cached token
+        let last_token = if remaining_tokens.is_empty() {
+            request.input_ids.get(prefix_len.saturating_sub(1)).copied().unwrap_or(0)
+        } else {
+            *remaining_tokens.last().unwrap_or(&0)
+        };
+
+        // If no remaining tokens, go directly to decode phase
+        let phase = if remaining_tokens.is_empty() {
+            SequencePhase::Decoding
+        } else {
+            SequencePhase::Prefilling { remaining_tokens }
+        };
+
+        Self {
+            seq_id,
+            request_id: request.request_id,
+            phase,
+            position: start_position,
+            prompt_len,
+            prompt_tokens: request.input_ids,
+            generated_tokens: Vec::new(),
+            params: request.params,
+            max_tokens: request.max_tokens,
+            last_token,
+            token_tx: request.token_tx,
+            response_tx: request.response_tx,
+            batch_idx: None,
+            prefix_node: Some(prefix_node),
+            prefix_reused_len: prefix_len as i32,
         }
     }
 

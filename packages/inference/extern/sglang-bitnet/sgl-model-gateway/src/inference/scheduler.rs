@@ -5,6 +5,7 @@
 
 use super::batch_engine::{Batch, BatchConfig, BatchError, NativeBatchEngine};
 use super::batch_ffi::BitNetSeqId;
+use super::radix_cache::{RadixCache, RadixCacheConfig};
 use super::sequence::{
     FinishReason, InferenceRequest, InferenceResponse, SequencePhase, SequenceState, StreamToken,
 };
@@ -26,6 +27,10 @@ pub struct SchedulerConfig {
     pub prefill_chunk_size: usize,
     /// Minimum tokens reserved for decode operations
     pub min_decode_budget: usize,
+    /// Enable RadixCache for prefix caching (improves long sequence performance)
+    pub enable_radix_cache: bool,
+    /// Maximum tokens to cache in RadixCache
+    pub radix_cache_max_tokens: usize,
 }
 
 impl Default for SchedulerConfig {
@@ -36,6 +41,8 @@ impl Default for SchedulerConfig {
             accumulation_window_ms: 10,
             prefill_chunk_size: 128,
             min_decode_budget: 8,
+            enable_radix_cache: true,  // Enabled by default for long sequence efficiency
+            radix_cache_max_tokens: 100_000,
         }
     }
 }
@@ -75,6 +82,9 @@ pub struct BatchScheduler {
 
     /// Token decoder (placeholder - would use tokenizer in real impl)
     eos_token_id: i32,
+
+    /// RadixCache for prefix sharing (KV cache reuse)
+    radix_cache: RadixCache,
 }
 
 impl BatchScheduler {
@@ -90,6 +100,17 @@ impl BatchScheduler {
 
         let eos_token_id = engine.eos_token_id();
 
+        // Create RadixCache for prefix sharing
+        let radix_cache = RadixCache::new(RadixCacheConfig {
+            max_cached_tokens: config.radix_cache_max_tokens,
+            enabled: config.enable_radix_cache,
+            ..Default::default()
+        });
+
+        if config.enable_radix_cache {
+            info!("RadixCache enabled with {} max tokens", config.radix_cache_max_tokens);
+        }
+
         let scheduler = Self {
             config,
             engine,
@@ -98,6 +119,7 @@ impl BatchScheduler {
             pending_queue: VecDeque::new(),
             batch,
             eos_token_id,
+            radix_cache,
         };
 
         let handle = SchedulerHandle { request_tx };
@@ -159,28 +181,48 @@ impl BatchScheduler {
     async fn receive_requests(&mut self) {
         use tokio::time::{timeout, Duration};
 
-        let deadline = Duration::from_millis(self.config.accumulation_window_ms);
-
-        // Try to receive as many requests as possible within the window
+        // First: Non-blocking drain of all pending requests
+        // This ensures we batch requests that arrived during processing
         loop {
-            match timeout(deadline, self.request_rx.recv()).await {
-                Ok(Some(req)) => {
-                    debug!("Received request {}", req.request_id);
+            match self.request_rx.try_recv() {
+                Ok(req) => {
+                    debug!("Received request {} (non-blocking)", req.request_id);
                     self.pending_queue.push_back(req);
                 }
-                Ok(None) => {
-                    // Channel closed
-                    break;
-                }
-                Err(_) => {
-                    // Timeout - accumulation window expired
-                    break;
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => return,
+            }
+        }
+
+        // If we have work to do (pending requests or active sequences), don't wait
+        if !self.pending_queue.is_empty() || !self.sequences.is_empty() {
+            return;
+        }
+
+        // Otherwise, wait for first request with accumulation window
+        let deadline = Duration::from_millis(self.config.accumulation_window_ms);
+        match timeout(deadline, self.request_rx.recv()).await {
+            Ok(Some(req)) => {
+                debug!("Received request {} (blocking)", req.request_id);
+                self.pending_queue.push_back(req);
+
+                // After receiving first request, immediately drain any others
+                // that arrived while we were waiting
+                loop {
+                    match self.request_rx.try_recv() {
+                        Ok(req) => {
+                            debug!("Received additional request {}", req.request_id);
+                            self.pending_queue.push_back(req);
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
-
-            // Don't wait forever if we have pending work
-            if !self.sequences.is_empty() {
-                break;
+            Ok(None) => {
+                // Channel closed
+            }
+            Err(_) => {
+                // Timeout - no requests
             }
         }
     }
@@ -188,17 +230,15 @@ impl BatchScheduler {
     /// Assign sequence slots to pending requests
     fn assign_slots(&mut self) {
         while !self.pending_queue.is_empty() {
-            // Try to allocate a slot
-            match self.engine.alloc_sequence() {
-                Ok(seq_id) => {
-                    let request = self.pending_queue.pop_front().unwrap();
-                    let request_id = request.request_id;
+            // Peek at the request to check for prefix match before allocating
+            let request = self.pending_queue.front().unwrap();
 
-                    let state = SequenceState::new(seq_id, request);
-                    self.sequences.insert(seq_id, state);
+            // Step 1: Check for prefix match in RadixCache
+            let match_result = self.radix_cache.match_prefix(&request.input_ids);
 
-                    debug!("Assigned slot {} to request {}", seq_id, request_id);
-                }
+            // Step 2: Try to allocate a sequence slot
+            let seq_id = match self.engine.alloc_sequence() {
+                Ok(id) => id,
                 Err(BatchError::NoAvailableSlots) => {
                     // No more slots available
                     break;
@@ -207,7 +247,45 @@ impl BatchScheduler {
                     error!("Failed to allocate slot: {}", e);
                     break;
                 }
-            }
+            };
+
+            // Now we can safely remove the request from the queue
+            let request = self.pending_queue.pop_front().unwrap();
+            let request_id = request.request_id;
+
+            // Step 3: Create sequence state, potentially with prefix reuse
+            let state = if match_result.has_match() {
+                // Found a prefix match! Copy KV cache from existing sequence.
+                let src_seq_id = match_result.reuse_seq_id.unwrap();
+                let prefix_len = match_result.matched_len;
+                let kv_end_pos = match_result.kv_end_pos;
+
+                // Zero-copy KV cache sharing via llama.cpp
+                // This adds seq_id to the KV cache cells' seq_id set without copying data
+                self.engine.kv_cache_seq_cp(src_seq_id, seq_id, 0, kv_end_pos);
+
+                // Lock the prefix node to prevent eviction while in use
+                self.radix_cache.inc_lock_ref(&match_result.last_node);
+
+                info!(
+                    "Request {} reusing {} tokens from seq {} (saved {} prefill tokens)",
+                    request_id, prefix_len, src_seq_id, prefix_len
+                );
+
+                SequenceState::new_with_prefix(
+                    seq_id,
+                    request,
+                    match_result.last_node,
+                    prefix_len,
+                    kv_end_pos,
+                )
+            } else {
+                // No prefix match - standard sequence creation
+                debug!("Assigned slot {} to request {} (no prefix match)", seq_id, request_id);
+                SequenceState::new(seq_id, request)
+            };
+
+            self.sequences.insert(seq_id, state);
         }
     }
 
@@ -305,7 +383,8 @@ impl BatchScheduler {
                 }
             };
 
-            let is_eos = token_id == self.eos_token_id;
+            // Check for EOS using engine's is_eos (handles all EOG tokens)
+            let is_eos = self.engine.is_eos(token_id);
 
             // Record token
             state.add_generated_token(token_id, is_eos);
@@ -315,9 +394,8 @@ impl BatchScheduler {
                 state.position += 1;
             }
 
-            // Send streaming token
-            // TODO: Decode token to text using tokenizer
-            let text = format!("<token:{}>", token_id); // Placeholder
+            // Decode token to text using engine's tokenizer
+            let text = self.engine.token_to_piece(token_id).unwrap_or_default();
             state.send_token(token_id, text, state.is_finished());
         }
     }
@@ -334,25 +412,54 @@ impl BatchScheduler {
         for seq_id in finished_ids {
             if let Some(mut state) = self.sequences.remove(&seq_id) {
                 debug!(
-                    "Sequence {} finished, generated {} tokens",
+                    "Sequence {} finished, generated {} tokens (prefix reused: {})",
                     seq_id,
-                    state.generated_tokens.len()
+                    state.generated_tokens.len(),
+                    state.prefix_reused_len
                 );
 
-                // Clear KV cache
+                // Insert completed sequence into RadixCache for future reuse
+                // This includes both prompt and generated tokens
+                let all_tokens: Vec<i32> = state.prompt_tokens.iter()
+                    .chain(state.generated_tokens.iter())
+                    .copied()
+                    .collect();
+
+                let newly_cached = self.radix_cache.insert(&all_tokens, seq_id);
+                if newly_cached > 0 {
+                    debug!(
+                        "Cached {} new tokens from seq {} (total cached: {})",
+                        newly_cached,
+                        seq_id,
+                        self.radix_cache.cached_tokens()
+                    );
+                }
+
+                // Unlock the prefix node if we were reusing one
+                if let Some(ref prefix_node) = state.prefix_node {
+                    self.radix_cache.dec_lock_ref(prefix_node);
+                }
+
+                // Clear KV cache for this sequence
+                // Note: We keep the KV cache if it was inserted into RadixCache,
+                // but we need to clear the sequence-specific association
                 self.engine.kv_cache_seq_rm(seq_id, -1, -1);
 
                 // Free slot
                 self.engine.free_sequence(seq_id);
 
-                // Send final response
-                // TODO: Decode tokens to text
-                let text = state
-                    .generated_tokens
-                    .iter()
-                    .map(|t| format!("<token:{}>", t))
-                    .collect::<Vec<_>>()
-                    .join("");
+                // Decode all tokens to text using engine's tokenizer
+                let text = self
+                    .engine
+                    .detokenize(&state.generated_tokens)
+                    .unwrap_or_else(|_| {
+                        // Fallback: decode token by token
+                        state
+                            .generated_tokens
+                            .iter()
+                            .filter_map(|&t| self.engine.token_to_piece(t).ok())
+                            .collect()
+                    });
                 state.complete(text);
             }
         }
@@ -375,7 +482,19 @@ impl BatchScheduler {
                 .count(),
             kv_cache_used: self.engine.kv_cache_used_cells() as usize,
             kv_cache_capacity: self.engine.kv_cache_capacity() as usize,
+            radix_cache_tokens: self.radix_cache.cached_tokens(),
+            radix_cache_enabled: self.radix_cache.is_enabled(),
         }
+    }
+
+    /// Get RadixCache statistics
+    pub fn radix_cache_stats(&self) -> super::radix_cache::RadixCacheStats {
+        self.radix_cache.stats()
+    }
+
+    /// Clear the RadixCache
+    pub fn clear_radix_cache(&self) {
+        self.radix_cache.clear();
     }
 }
 
@@ -388,6 +507,10 @@ pub struct SchedulerStats {
     pub decoding_sequences: usize,
     pub kv_cache_used: usize,
     pub kv_cache_capacity: usize,
+    /// Number of tokens cached in RadixCache
+    pub radix_cache_tokens: usize,
+    /// Whether RadixCache is enabled
+    pub radix_cache_enabled: bool,
 }
 
 #[cfg(test)]

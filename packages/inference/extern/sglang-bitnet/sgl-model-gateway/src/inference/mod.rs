@@ -24,6 +24,8 @@ mod batch_ffi;
 mod batch_engine;
 mod sequence;
 mod scheduler;
+pub mod radix_tree;
+pub mod radix_cache;
 
 // Single-sequence API
 pub use engine::NativeEngine;
@@ -48,3 +50,7 @@ pub use scheduler::{BatchScheduler, SchedulerConfig, SchedulerHandle, SchedulerS
 pub use sequence::{
     FinishReason, InferenceRequest, InferenceResponse, StreamToken,
 };
+
+// RadixCache API (prefix caching for KV cache reuse)
+pub use radix_cache::{RadixCache, RadixCacheConfig, EvictionPolicy, MatchResult, RadixCacheStats};
+pub use radix_tree::RadixTreeNode;

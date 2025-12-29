@@ -1,0 +1,1 @@
+{"_step":183,"train/loss":0.013808704912662506,"early_stop_step":183,"_timestamp":1.767020115836609e+09,"early_stopping/patience":10,"_wandb":{"runtime":0},"early_stopping/best":0.0010410137474536896,"plateau_loss":0.0010410137474536896,"early_stopping/wait":10,"early_stopping/metric":0.013808704912662506,"early_stopped":true,"_runtime":0.980873313}
