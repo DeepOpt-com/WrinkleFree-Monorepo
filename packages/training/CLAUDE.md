@@ -132,6 +132,26 @@ gs://{bucket}/checkpoints/{experiment_name}/{stage}_checkpoint/checkpoints/final
 uv run python scripts/train.py ... gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
 ```
 
+## Resume from Checkpoint
+
+To resume training from a specific checkpoint (e.g., step 5000):
+
+```bash
+# Via deployer CLI (recommended)
+wf train -m qwen3_4b -s 2 --cloud nebius --resume gs://wrinklefree-checkpoints/checkpoints/bitdistill_qwen3_4b/stage2_checkpoint/checkpoints/step_5000/checkpoint.pt
+
+# Or via environment variable
+RESUME_CHECKPOINT=gs://...checkpoint.pt python scripts/train.py ...
+```
+
+**Important**: When resuming, the script:
+1. Downloads the resume checkpoint directly from GCS
+2. Creates model architecture (skipping stage1_9 download - saves ~15GB!)
+3. Loads weights from the resume checkpoint
+4. Continues training from the saved step
+
+The checkpoint must be a **file path** (ending in `checkpoint.pt`), not a directory.
+
 ## Cloud Deployment (SkyPilot)
 
 Training can be run on cloud GPUs via SkyPilot (configured in `WrinkleFree-Deployer`).
