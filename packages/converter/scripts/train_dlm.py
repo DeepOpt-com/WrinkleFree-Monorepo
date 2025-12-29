@@ -548,17 +548,18 @@ def train(
     # Deterministic shuffle for reproducibility
     dataset = dataset.shuffle(seed=seed, buffer_size=10000)
 
-    # Fast-forward dataset if resuming (skip raw samples BEFORE tokenization)
+    # NOTE: We don't skip samples on resume because:
+    # 1. interleave_datasets + shuffle + skip has unreliable behavior
+    # 2. The shuffle buffer (10K) makes exact position restoration impossible
+    # 3. Training on some duplicate data is acceptable - model weights are restored
+    # The training loop will start from resume_step, so progress is maintained.
     if resume_raw_samples > 0:
-        logger.info(f"Skipping {resume_raw_samples:,} raw samples for resume...")
-        start_time = time.time()
-        dataset = dataset.skip(resume_raw_samples)
-        logger.info(f"Skip completed in {time.time() - start_time:.2f}s")
+        logger.info(f"Resuming from step {resume_step} (not skipping samples - shuffle buffer makes exact restore impossible)")
 
     tokenized_dataset = ConversationDataset(
         dataset, tokenizer, max_seq_length, block_size, mask_id, pad_id
     )
-    # Continue counting from where we left off
+    # Track cumulative samples across runs (for checkpoint metadata)
     tokenized_dataset.raw_samples_seen = resume_raw_samples
 
     dataloader = DataLoader(
