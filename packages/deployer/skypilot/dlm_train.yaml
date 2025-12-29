@@ -23,13 +23,12 @@ resources:
   disk_size: 200
   disk_tier: best
 
-# Sync DLM-Converter code to cluster
-workdir: ../WrinkleFree-DLM-Converter
+# Sync DLM-Converter code to cluster (monorepo path)
+workdir: ../converter
 
 # Mount GCS credentials for checkpoint upload (ADC)
-# Use absolute paths - ~ doesn't expand in SkyPilot file_mounts
 file_mounts:
-  /home/ubuntu/.config/gcloud/application_default_credentials.json: /home/lev/.config/gcloud/application_default_credentials.json
+  ~/.config/gcloud/application_default_credentials.json: ~/.config/gcloud/application_default_credentials.json
 
 envs:
   # Model config name (matches configs/model/*.yaml)
@@ -44,8 +43,8 @@ envs:
   # W&B tracking (set via WANDB_API_KEY env var)
   WANDB_PROJECT: wrinklefree-dlm
 
-  # GCS credentials (ADC) - absolute path for remote
-  GOOGLE_APPLICATION_CREDENTIALS: /home/ubuntu/.config/gcloud/application_default_credentials.json
+  # GCS credentials (ADC)
+  GOOGLE_APPLICATION_CREDENTIALS: ~/.config/gcloud/application_default_credentials.json
   GCS_BUCKET: wrinklefree-checkpoints
 
 setup: |

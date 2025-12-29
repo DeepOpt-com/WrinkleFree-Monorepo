@@ -58,7 +58,7 @@ def cli():
               type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
               help="GPU scale: dev (1xA10G), small (1xH100), medium (2xH100), large (4xH100), xlarge (8xH100)")
 @click.option("--resume", "-r", default=None, help="Resume from checkpoint (local path or gs://)")
-@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius"]), help="Cloud provider")
+@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod"]), help="Cloud provider")
 @click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
 @click.pass_context
 def train(ctx, model: str, stage: float, scale: str, resume: str, cloud: str, detach: bool):

@@ -17,8 +17,8 @@
 name: wrinklefree-train
 
 resources:
-  # Docker image from Google Artifact Registry (GAR)
-  image_id: docker:us-docker.pkg.dev/wrinklefree-481904/wf-train/wf-train:latest
+  # TODO: Enable Docker image once built and pushed to GAR
+  # image_id: docker:us-docker.pkg.dev/wrinklefree-481904/wf-train/wf-train:latest
   accelerators: H100:1  # Override from core.py based on scale
   use_spot: false  # On-demand for stability (spot keeps getting preempted)
   disk_size: 200  # GB - enough for checkpoints and model weights
@@ -45,28 +45,38 @@ envs:
   # Weights & Biases tracking
   WANDB_PROJECT: wrinklefree
 
-  # Docker registry auth for pulling from GAR on non-GCP clouds
-  SKYPILOT_DOCKER_USERNAME: _json_key
-  SKYPILOT_DOCKER_SERVER: us-docker.pkg.dev
-
-# Secrets are passed via --secret flag and redacted from logs/dashboard
-secrets:
-  WANDB_API_KEY: null           # Required - get from wandb.ai/authorize
-  SKYPILOT_DOCKER_PASSWORD: null  # GCP service account JSON for Docker auth
-  HF_TOKEN: null                # Optional - for gated HuggingFace models
+  # WANDB_API_KEY is set via core.py at launch time
+  # HF_TOKEN is optional, set via core.py if available
+  #
+  # Docker registry auth (uncomment when image_id is enabled):
+  # SKYPILOT_DOCKER_USERNAME: _json_key
+  # SKYPILOT_DOCKER_SERVER: us-docker.pkg.dev
+  # SKYPILOT_DOCKER_PASSWORD is set via core.py for non-GCP clouds
 
 setup: |
   set -e
   cd ~/sky_workdir
 
-  # Base dependencies are pre-installed in the Docker image
-  source /app/.venv/bin/activate
+  # Install uv if not present (required for dependency management)
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
 
-  # Install wrinklefree training package (editable)
-  pip install -e . --no-deps
+  # Create venv and install dependencies
+  uv venv .venv
+  source .venv/bin/activate
 
-  # Install CheaperTraining for influence-based training
-  pip install -e ~/cheapertraining --no-deps
+  # Remove workspace source (only works in monorepo context)
+  # This allows pip install to work with the mounted cheapertraining package
+  sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
+
+  # Install CheaperTraining first (dependency of wrinklefree)
+  uv pip install -e ~/cheapertraining
+
+  # Install the training package
+  uv pip install -e .
 
   # Verify GPU setup
   python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
@@ -74,7 +84,8 @@ setup: |
 run: |
   set -e
   cd ~/sky_workdir
-  source /app/.venv/bin/activate
+  export PATH="$HOME/.local/bin:$PATH"
+  source .venv/bin/activate
 
   # Determine training config based on stage
   case $STAGE in
@@ -85,24 +96,31 @@ run: |
     *)   echo "Unknown STAGE: $STAGE"; exit 1 ;;
   esac
 
-  # Check for existing checkpoint to resume from
+  # Check for checkpoint to resume from
   CHECKPOINT_DIR="$HOME/checkpoints/${MODEL}/stage${STAGE}"
   mkdir -p $CHECKPOINT_DIR
   RESUME_FLAG=""
-  if [ "$(ls -A $CHECKPOINT_DIR 2>/dev/null)" ]; then
+
+  # Priority: 1. RESUME_CHECKPOINT env var (passed from CLI), 2. Local checkpoint dir
+  # Note: Use +key= to add new keys to Hydra config (not in struct)
+  if [ -n "${RESUME_CHECKPOINT:-}" ]; then
+    echo "Resuming from checkpoint: $RESUME_CHECKPOINT"
+    RESUME_FLAG="+training.resume_from_checkpoint=$RESUME_CHECKPOINT"
+  elif [ "$(ls -A $CHECKPOINT_DIR 2>/dev/null)" ]; then
     echo "Found existing checkpoint at $CHECKPOINT_DIR, resuming..."
-    RESUME_FLAG="training.resume_from_checkpoint=$CHECKPOINT_DIR"
+    RESUME_FLAG="+training.resume_from_checkpoint=$CHECKPOINT_DIR"
   else
     echo "No checkpoint found, starting fresh training..."
   fi
 
   # Determine data config based on stage
+  # Note: data/default.yaml delegates to CheaperTraining's mixed_pretrain config
   case $STAGE in
     1)   DATA_CONFIG="" ;;  # Stage 1 doesn't need data
-    1.9) DATA_CONFIG="data=fineweb" ;;
-    2)   DATA_CONFIG="data=fineweb" ;;
-    3)   DATA_CONFIG="data=downstream" ;;  # Fine-tuning uses task-specific data
-    *)   DATA_CONFIG="data=fineweb" ;;
+    1.9) DATA_CONFIG="data=default" ;;
+    2)   DATA_CONFIG="data=default" ;;
+    3)   DATA_CONFIG="data=default" ;;  # Fine-tuning uses default config
+    *)   DATA_CONFIG="data=default" ;;
   esac
 
   # Debug: show configuration

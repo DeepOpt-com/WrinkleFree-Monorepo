@@ -23,12 +23,12 @@ resources:
   disk_size: 200
   disk_tier: best
 
-# Sync Fairy2 code to cluster
-workdir: ../WrinkleFree-Fairy2
+# Sync Fairy2 code to cluster (monorepo path)
+workdir: ../fairy2
 
 # Mount GCS credentials for checkpoint upload
 file_mounts:
-  /gcs-creds/gcp-service-account.json: credentials/gcp-service-account.json
+  ~/.config/gcloud/application_default_credentials.json: ~/.config/gcloud/application_default_credentials.json
 
 envs:
   # Model config name (matches configs/model/*.yaml)
@@ -43,8 +43,8 @@ envs:
   # W&B tracking (set via WANDB_API_KEY env var)
   WANDB_PROJECT: wrinklefree-fairy2
 
-  # GCS credentials
-  GOOGLE_APPLICATION_CREDENTIALS: /gcs-creds/gcp-service-account.json
+  # GCS credentials (ADC)
+  GOOGLE_APPLICATION_CREDENTIALS: ~/.config/gcloud/application_default_credentials.json
   GCS_BUCKET: wrinklefree-checkpoints
 
 setup: |

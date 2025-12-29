@@ -20,6 +20,7 @@ Example:
     wf train -m qwen3_4b -s 2 training.lr=1e-4 training.batch_size=8
 """
 
+import base64
 import os
 import subprocess
 from pathlib import Path
@@ -29,12 +30,58 @@ from wf_deployer.constants import (
     DEFAULT_SMOKE_TEST_MODEL,
     DEFAULT_WANDB_PROJECT,
     DEFAULT_CONTEXT_SIZE,
+    DOCKER_IMAGE,
+    GCP_PROJECT_ID,
+    GAR_REGION,
+    GAR_REPO,
     SCALES,
     get_scale_for_model,
 )
 
+# Deployer directory for finding credentials
+DEPLOYER_DIR = Path(__file__).parent.parent.parent
+GCP_SA_PATH = DEPLOYER_DIR / "credentials" / "gcp-service-account.json"
+
 # Valid scales (re-exported for convenience)
 Scale = Literal["dev", "small", "medium", "large", "xlarge"]
+
+
+def _prepare_docker_secrets(cloud: str) -> dict[str, str]:
+    """Prepare Docker registry secrets for non-GCP clouds.
+
+    Non-GCP clouds (Nebius, RunPod) need explicit credentials to pull
+    from Google Artifact Registry. This function reads the GCP service
+    account JSON and formats it appropriately for each cloud.
+
+    Args:
+        cloud: Cloud provider name ("gcp", "nebius", "runpod")
+
+    Returns:
+        Dict with SKYPILOT_DOCKER_PASSWORD set appropriately
+
+    Raises:
+        FileNotFoundError: If GCP service account file is missing
+    """
+    if cloud == "gcp":
+        return {}  # GCP VMs use IAM automatically
+
+    if not GCP_SA_PATH.exists():
+        raise FileNotFoundError(
+            f"GCP service account not found: {GCP_SA_PATH}\n"
+            f"Required to pull Docker images on {cloud}.\n"
+            "See: credentials/README.md for setup instructions."
+        )
+
+    sa_json = GCP_SA_PATH.read_text()
+
+    if cloud == "runpod":
+        # RunPod requires base64-encoded credentials
+        password = base64.b64encode(sa_json.encode()).decode()
+    else:
+        # Nebius and others use raw JSON
+        password = sa_json
+
+    return {"SKYPILOT_DOCKER_PASSWORD": password}
 
 
 def train(
@@ -42,7 +89,7 @@ def train(
     stage: float,
     scale: Scale | None = None,
     overrides: list[str] | None = None,
-    cloud: str = "gcp",
+    cloud: str = "nebius",
     detach: bool = True,
     resume_checkpoint: str | None = None,
 ) -> str:
@@ -54,7 +101,7 @@ def train(
         scale: GPU scale profile ("dev", "small", "medium", "large", "xlarge").
                If None, uses model-specific defaults.
         overrides: Hydra config overrides (e.g., ["training.lr=1e-4"])
-        cloud: Cloud provider ("gcp" or "nebius")
+        cloud: Cloud provider ("nebius", "gcp", or "runpod")
         detach: Return immediately (True) or wait for completion (False)
         resume_checkpoint: Path to checkpoint to resume from (local or gs://)
 
@@ -98,6 +145,7 @@ def _train_skypilot(
     accelerators = f"{gpu_type}:{gpu_count}"
 
     print(f"🚀 Launching {model} (Stage {stage}) on SkyPilot")
+    print(f"   Cloud: {cloud}")
     print(f"   Scale: {scale} ({accelerators})")
     if overrides:
         print(f"   Overrides: {overrides}")
@@ -115,13 +163,27 @@ def _train_skypilot(
     if not wandb_key:
         raise RuntimeError(
             "WANDB_API_KEY not set! Training requires W&B logging.\n"
-            "Fix: Add WANDB_API_KEY=your_key to .env file"
+            "Fix: source credentials/.env or export WANDB_API_KEY=your_key"
         )
+    # Pass W&B key as env var (not using secrets: block for Python API)
     envs["WANDB_API_KEY"] = wandb_key
 
     # HF_TOKEN is optional but useful for gated models
-    if os.environ.get("HF_TOKEN"):
-        envs["HF_TOKEN"] = os.environ["HF_TOKEN"]
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token:
+        envs["HF_TOKEN"] = hf_token
+
+    # Docker auth for non-GCP clouds (only needed when Docker image is enabled)
+    # TODO: Uncomment when Docker image is built and pushed to GAR
+    # if cloud != "gcp":
+    #     try:
+    #         docker_secrets = _prepare_docker_secrets(cloud)
+    #         for key, value in docker_secrets.items():
+    #             envs[key] = value  # Pass as env for Python API
+    #         print(f"   Docker auth: Prepared for {cloud}")
+    #     except FileNotFoundError as e:
+    #         print(f"   ⚠️  Docker auth: {e}")
+    #         print("   Continuing without Docker image (will install deps from scratch)")
 
     # Resume checkpoint (passed via env var to avoid Hydra parsing issues)
     if resume_checkpoint:
@@ -148,7 +210,13 @@ def _train_skypilot(
     use_spot = existing_resources.use_spot if existing_resources else False
 
     # Select cloud provider
-    cloud_obj = sky.GCP() if cloud == "gcp" else sky.Nebius()
+    if cloud == "gcp":
+        cloud_obj = sky.GCP()
+    elif cloud == "runpod":
+        cloud_obj = sky.RunPod()
+    else:
+        cloud_obj = sky.Nebius()
+
     task.set_resources(
         sky.Resources(accelerators=accelerators, cloud=cloud_obj, use_spot=use_spot)
     )
@@ -710,13 +778,12 @@ def wandb_status(
 # Docker Image Building
 # =============================================================================
 
-# Image configuration
-GCP_PROJECT_ID = "wrinklefree-481904"
-IMAGE_NAME = f"gcr.io/{GCP_PROJECT_ID}/wf-train"
+# Image configuration (using GAR - Google Artifact Registry)
+IMAGE_NAME = f"{GAR_REGION}-docker.pkg.dev/{GCP_PROJECT_ID}/{GAR_REPO}/wf-train"
 
 
 def build_image(push: bool = True, tag: str | None = None) -> str:
-    """Build and optionally push training Docker image to GCR.
+    """Build and optionally push training Docker image to GAR.
 
     Args:
         push: Whether to push to GCR after building
@@ -790,9 +857,9 @@ def build_image(push: bool = True, tag: str | None = None) -> str:
         print(f"  docker push {image_latest}")
         return image_url
 
-    # Push to GCR
+    # Push to GAR
     print()
-    print("📤 Pushing to GCR...")
+    print("📤 Pushing to Google Artifact Registry...")
 
     for img in [image_url, image_latest]:
         push_cmd = ["docker", "push", img]
@@ -802,7 +869,7 @@ def build_image(push: bool = True, tag: str | None = None) -> str:
             raise RuntimeError(f"Failed to push {img}")
 
     print()
-    print(f"✓ Successfully pushed to GCR!")
+    print(f"✓ Successfully pushed to GAR!")
     print(f"   {image_url}")
     print(f"   {image_latest}")
     print()
