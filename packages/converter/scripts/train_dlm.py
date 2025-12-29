@@ -407,7 +407,7 @@ def train(
                 # Load trainer state if available
                 state_path = local_resume_dir / "trainer_state.pt"
                 if state_path.exists():
-                    resume_state = torch.load(state_path)
+                    resume_state = torch.load(state_path, weights_only=False)
                     resume_step = resume_state.get("step", 0)
                     resume_tokens = resume_state.get("tokens_seen", 0)
                     resume_raw_samples = resume_state.get("raw_samples_seen", 0)

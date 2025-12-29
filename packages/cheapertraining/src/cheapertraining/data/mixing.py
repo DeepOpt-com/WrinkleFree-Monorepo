@@ -5,11 +5,14 @@ Implements weighted mixing of multiple datasets.
 """
 
 import collections
+import logging
 from dataclasses import dataclass, field
 from typing import Iterator, Optional, List, Any, Union
 
 import torch
 from torch.utils.data import IterableDataset, DataLoader
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,6 +70,10 @@ class MixedDataset(IterableDataset):
         self._datasets = None
         self._iterators = None
 
+        # Sampling statistics tracking
+        self._sample_counts: dict[str, int] = {m.name: 0 for m in mixtures}
+        self._exhausted_datasets: set[str] = set()
+
     def update_weights_from_influence(self, weights: dict[str, float]):
         """Update mixture weights based on influence calculation.
 
@@ -98,6 +105,31 @@ class MixedDataset(IterableDataset):
             m.name: self.normalized_weights[i].item()
             for i, m in enumerate(self.mixtures)
         }
+
+    def get_sampling_stats(self) -> dict:
+        """Return actual sampling statistics for debugging.
+
+        Returns:
+            Dictionary with counts, observed_weights, configured_weights,
+            exhausted datasets, and total samples.
+        """
+        total = sum(self._sample_counts.values())
+        return {
+            "counts": dict(self._sample_counts),
+            "observed_weights": {
+                k: v / total for k, v in self._sample_counts.items()
+            }
+            if total > 0
+            else {},
+            "configured_weights": self.get_current_weights(),
+            "exhausted": list(self._exhausted_datasets),
+            "total_samples": total,
+        }
+
+    def reset_stats(self) -> None:
+        """Reset sampling statistics. Call at start of new epoch."""
+        self._sample_counts = {m.name: 0 for m in self.mixtures}
+        self._exhausted_datasets = set()
 
     def _load_datasets(self):
         """Lazy load datasets with distributed sharding support."""
@@ -131,21 +163,29 @@ class MixedDataset(IterableDataset):
             self._datasets.append(ds)
             self._iterators.append(iter(ds))
 
-    def _get_sample(self, idx: int) -> dict:
+    def _get_sample(self, idx: int) -> dict | None:
         """Get a sample from the specified dataset.
 
         Args:
             idx: Dataset index
 
         Returns:
-            Sample dictionary
+            Sample dictionary, or None if dataset is exhausted
         """
         try:
             sample = next(self._iterators[idx])
         except StopIteration:
-            # Restart exhausted iterator
-            self._iterators[idx] = iter(self._datasets[idx])
-            sample = next(self._iterators[idx])
+            # Dataset exhausted - mark it and return None (don't restart!)
+            dataset_name = self.mixtures[idx].name
+            self._exhausted_datasets.add(dataset_name)
+            logger.info(
+                f"Dataset '{dataset_name}' exhausted after "
+                f"{self._sample_counts[dataset_name]} samples"
+            )
+            return None
+
+        # Track sample count
+        self._sample_counts[self.mixtures[idx].name] += 1
 
         # Extract text using the configured column(s)
         text_col = self.mixtures[idx].text_column
@@ -159,8 +199,14 @@ class MixedDataset(IterableDataset):
         elif text_col in sample:
             text = sample[text_col]
 
-        # Fallback if text not found
+        # Fallback if text not found - but warn loudly!
         if not text:
+            available_keys = list(sample.keys())
+            logger.warning(
+                f"Configured text_column '{text_col}' not found in sample from "
+                f"'{self.mixtures[idx].name}'. Available keys: {available_keys}. "
+                f"Attempting fallback..."
+            )
             if "content" in sample:
                 text = sample["content"]
             else:
@@ -170,6 +216,11 @@ class MixedDataset(IterableDataset):
                         text = sample[key]
                         break
                 else:
+                    # Last resort - stringify the sample (but warn!)
+                    logger.error(
+                        f"No text field found in sample from '{self.mixtures[idx].name}'. "
+                        f"Stringifying entire sample as fallback. Keys: {available_keys}"
+                    )
                     text = str(sample)
 
         return {
@@ -178,21 +229,48 @@ class MixedDataset(IterableDataset):
         }
 
     def __iter__(self) -> Iterator[dict]:
-        """Iterate over mixed samples."""
+        """Iterate over mixed samples.
+
+        When a dataset is exhausted, it is excluded from future sampling
+        (weights are renormalized among remaining datasets).
+        Iteration stops when all datasets are exhausted.
+        """
         if self._datasets is None:
             self._load_datasets()
 
+        # Reset stats for new epoch
+        self.reset_stats()
+
         rng = torch.Generator().manual_seed(self.seed)
 
-        while True:
-            # Sample dataset according to weights
-            idx = torch.multinomial(
-                self.normalized_weights,
-                1,
-                generator=rng,
-            ).item()
+        # Track which datasets are still active (not exhausted)
+        active_mask = torch.ones(len(self.mixtures), dtype=torch.bool)
 
-            yield self._get_sample(idx)
+        while active_mask.any():
+            # Renormalize weights among active datasets only
+            masked_weights = self.normalized_weights * active_mask.float()
+            weight_sum = masked_weights.sum()
+            if weight_sum == 0:
+                break  # All datasets exhausted
+            masked_weights = masked_weights / weight_sum
+
+            # Sample from active datasets only
+            idx = torch.multinomial(masked_weights, 1, generator=rng).item()
+
+            sample = self._get_sample(idx)
+            if sample is None:
+                # Dataset exhausted - mark as inactive
+                active_mask[idx] = False
+                remaining = active_mask.sum().item()
+                logger.info(
+                    f"Remaining active datasets: {remaining}/{len(self.mixtures)}"
+                )
+            else:
+                yield sample
+
+        # Log final stats when epoch completes
+        stats = self.get_sampling_stats()
+        logger.info(f"Epoch complete. Sampling stats: {stats}")
 
 
 class PackedDataset(IterableDataset):
