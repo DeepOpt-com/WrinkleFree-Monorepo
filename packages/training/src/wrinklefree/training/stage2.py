@@ -263,7 +263,8 @@ class Stage2Trainer(Trainer):
 
         logger.info(f"Stage 2: Training for {self.max_steps} steps ({self.total_tokens:,} tokens)")
 
-        accumulated_loss = 0.0
+        # Use tensor for loss accumulation to avoid GPU sync every micro-batch
+        accumulated_loss = torch.tensor(0.0, device=self.device)
         num_accumulated = 0
         start_time = time.time()
         last_loss_dict = {}
@@ -297,7 +298,8 @@ class Stage2Trainer(Trainer):
             # Backward pass
             loss.backward()
 
-            accumulated_loss += loss_dict["loss"].item()
+            # Accumulate loss on GPU (avoid .item() sync every micro-batch)
+            accumulated_loss += loss_dict["loss"].detach()
             num_accumulated += 1
 
             # Optimizer step
@@ -325,7 +327,9 @@ class Stage2Trainer(Trainer):
                     self.lambda_warmup.step()
 
                 self.global_step += 1
-                avg_loss = accumulated_loss / num_accumulated
+                # Only sync GPU here (once per optimizer step, not every micro-batch)
+                avg_loss = (accumulated_loss / num_accumulated).item()
+                accumulated_loss.zero_()  # Reset for next accumulation
                 self.train_losses.append(avg_loss)
 
                 # Update loss EMA for early stopping
@@ -419,7 +423,7 @@ class Stage2Trainer(Trainer):
                 pbar.update(1)
                 pbar.set_postfix({"loss": avg_loss, "ppl": ppl, "lr": lr})
 
-                accumulated_loss = 0.0
+                # Note: accumulated_loss already reset via .zero_() above
                 num_accumulated = 0
 
         pbar.close()

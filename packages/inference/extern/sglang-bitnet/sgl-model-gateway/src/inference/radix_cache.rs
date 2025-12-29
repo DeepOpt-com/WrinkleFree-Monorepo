@@ -379,6 +379,10 @@ impl RadixCache {
         let upper_tokens: TokenVec = child.tokens[..split_pos].into();
         let lower_tokens: TokenVec = child.tokens[split_pos..].into();
 
+        // Capture lengths before moving into constructors
+        let upper_len = upper_tokens.len();
+        let lower_len = lower_tokens.len();
+
         let child_start_pos = child.kv_start_pos.load(Ordering::Acquire);
         let child_prefix_len = child.prefix_len.load(Ordering::Acquire);
 
@@ -428,8 +432,8 @@ impl RadixCache {
         debug!(
             "Split node {}: upper({} tokens) -> lower({} tokens)",
             child.node_id,
-            upper_tokens.len(),
-            lower_tokens.len()
+            upper_len,
+            lower_len
         );
 
         (upper, lower)
