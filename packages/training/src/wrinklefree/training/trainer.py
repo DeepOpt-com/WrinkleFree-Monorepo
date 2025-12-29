@@ -555,29 +555,31 @@ class Trainer:
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
         # Reset learning rate to config value (checkpoint may have different LR)
+        config_lr = None
         if self.config:
-            training_cfg = getattr(self.config, "training", self.config)
-            opt_cfg = getattr(training_cfg, "optimizer", None)
-            if opt_cfg:
-                config_lr = getattr(opt_cfg, "lr", None)
-                if config_lr is not None:
-                    old_lr = self.optimizer.param_groups[0]["lr"]
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] = config_lr
-                    if self.rank == 0:
-                        logger.info(f"Reset LR from checkpoint value {old_lr} to config value {config_lr}")
+            # Try multiple access patterns for OmegaConf/dict compatibility
+            try:
+                if hasattr(self.config, "training") and hasattr(self.config.training, "optimizer"):
+                    config_lr = self.config.training.optimizer.lr
+                elif hasattr(self.config, "optimizer"):
+                    config_lr = self.config.optimizer.lr
+            except (AttributeError, KeyError):
+                pass
+
+        if config_lr is not None:
+            old_lr = self.optimizer.param_groups[0]["lr"]
+            if old_lr != config_lr:
+                for param_group in self.optimizer.param_groups:
+                    param_group["lr"] = config_lr
+                if self.rank == 0:
+                    logger.info(f"Reset LR from checkpoint value {old_lr} to config value {config_lr}")
 
         # Load scheduler state
         if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             # Also reset scheduler's base_lrs if we changed the LR
-            if self.config:
-                training_cfg = getattr(self.config, "training", self.config)
-                opt_cfg = getattr(training_cfg, "optimizer", None)
-                if opt_cfg:
-                    config_lr = getattr(opt_cfg, "lr", None)
-                    if config_lr is not None and hasattr(self.scheduler, "base_lrs"):
-                        self.scheduler.base_lrs = [config_lr] * len(self.scheduler.base_lrs)
+            if config_lr is not None and hasattr(self.scheduler, "base_lrs"):
+                self.scheduler.base_lrs = [config_lr] * len(self.scheduler.base_lrs)
 
         # Load training state
         self.global_step = checkpoint.get("global_step", 0)
