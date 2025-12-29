@@ -10,6 +10,7 @@ temperature: 5.0
 
 # Attention distillation settings (BitDistill Equation 11)
 attention:
-  alpha: 1.0
+  enabled: true
   use_relation_distill: true  # Use A·A^T relation matrices (BitDistill)
   distill_layer: -1           # Single layer (last), paper recommends for optimization flexibility
+  alpha: 1.0

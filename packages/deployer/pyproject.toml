@@ -23,7 +23,7 @@ dependencies = [
     # Modal (default backend for training)
     "modal>=0.64.0",
     # SkyPilot (alternative backend)
-    "skypilot[nebius]>=0.10.0",
+    "skypilot[nebius,vast]>=0.10.0",
     "pyyaml>=6.0",
     "requests>=2.31.0",
     "click>=8.1.0",

@@ -17,7 +17,9 @@ import torch.nn.functional as F
 from wrinklefree.models.bitlinear import BitLinear
 from wrinklefree.models.subln import SubLN
 from wrinklefree.distillation.layerwise_loss import LayerwiseDistillationLoss, LayerwiseLossType
-from wrinklefree.distillation.combined_loss import BitDistillLoss
+
+# Stage 3 distillation classes moved to distillation package
+from distillation.losses import BitDistillLoss
 from wrinklefree.quantization.lambda_warmup import (
     LambdaWarmup,
     set_global_lambda_warmup,

@@ -1,0 +1,16 @@
+# Logits-only distillation (no attention distillation)
+# Use when attention weights are not available (e.g., vLLM teacher)
+
+# Loss weights
+lambda_logits: 10.0      # Weight for logits distillation
+gamma_attention: 0.0     # Disabled - no attention distillation
+
+# Temperature for logits distillation
+temperature: 5.0
+
+# Attention distillation settings
+attention:
+  enabled: false
+  use_relation_distill: true
+  distill_layer: -1
+  alpha: 1.0

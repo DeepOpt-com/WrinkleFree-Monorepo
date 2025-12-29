@@ -7,9 +7,9 @@ Usage:
     # Start vLLM server (separate process):
     # python -m vllm.entrypoints.openai.api_server --model HuggingFaceTB/SmolLM2-135M
 
-    from wrinklefree.distillation.vllm_teacher import VLLMTeacherWrapper
+    from distillation.teachers import VLLMTeacher
 
-    teacher = VLLMTeacherWrapper(
+    teacher = VLLMTeacher(
         model_name="HuggingFaceTB/SmolLM2-135M",
         base_url="http://localhost:8000",
     )
@@ -27,6 +27,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from distillation.teachers.local_teacher import LocalTeacher
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,7 +44,7 @@ class VLLMConfig:
     use_async: bool = True
 
 
-class VLLMTeacherWrapper(nn.Module):
+class VLLMTeacher(nn.Module):
     """
     Teacher wrapper that queries a vLLM server for logits.
 
@@ -83,7 +85,7 @@ class VLLMTeacherWrapper(nn.Module):
         self._async_client = None
 
         logger.info(
-            f"VLLMTeacherWrapper initialized: model={model_name}, "
+            f"VLLMTeacher initialized: model={model_name}, "
             f"url={base_url}, top_k={top_k_logprobs}"
         )
 
@@ -94,7 +96,7 @@ class VLLMTeacherWrapper(nn.Module):
                 import httpx
                 self._client = httpx.Client(timeout=self.timeout)
             except ImportError:
-                raise ImportError("httpx is required for VLLMTeacherWrapper. Install with: pip install httpx")
+                raise ImportError("httpx is required for VLLMTeacher. Install with: pip install httpx")
         return self._client
 
     def _get_async_client(self):
@@ -104,7 +106,7 @@ class VLLMTeacherWrapper(nn.Module):
                 import httpx
                 self._async_client = httpx.AsyncClient(timeout=self.timeout)
             except ImportError:
-                raise ImportError("httpx is required for VLLMTeacherWrapper. Install with: pip install httpx")
+                raise ImportError("httpx is required for VLLMTeacher. Install with: pip install httpx")
         return self._async_client
 
     @torch.no_grad()
@@ -154,7 +156,7 @@ class VLLMTeacherWrapper(nn.Module):
 
         if output_attentions:
             logger.warning(
-                "VLLMTeacherWrapper does not support output_attentions. "
+                "VLLMTeacher does not support output_attentions. "
                 "Returning None for attentions."
             )
 
@@ -162,8 +164,6 @@ class VLLMTeacherWrapper(nn.Module):
 
     def _get_logits_sync(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Get logits synchronously."""
-        import json
-
         client = self._get_client()
         batch_size, seq_len = input_ids.shape
 
@@ -286,7 +286,7 @@ class VLLMTeacherWrapper(nn.Module):
         return result["logits"]
 
 
-class VLLMTeacherWithPrefetch(VLLMTeacherWrapper):
+class VLLMTeacherWithPrefetch(VLLMTeacher):
     """
     vLLM teacher with async prefetching for pipelined training.
 
@@ -368,11 +368,12 @@ def start_vllm_server(
     subprocess.Popen(cmd)
 
 
-def create_vllm_or_inprocess_teacher(
+def create_teacher(
     model_name: str,
     use_vllm: bool = False,
     vllm_base_url: str = "http://localhost:8000",
     device: Optional[torch.device] = None,
+    use_eager_attention: bool = True,
     **kwargs,
 ) -> nn.Module:
     """
@@ -383,26 +384,25 @@ def create_vllm_or_inprocess_teacher(
         use_vllm: If True, use vLLM server; else use in-process
         vllm_base_url: vLLM server URL
         device: Device for in-process teacher
+        use_eager_attention: Use eager attention for attention distillation
         **kwargs: Additional arguments for teacher wrapper
 
     Returns:
         Teacher wrapper module
     """
     if use_vllm:
-        return VLLMTeacherWrapper(
+        return VLLMTeacher(
             model_name=model_name,
             base_url=vllm_base_url,
             **kwargs,
         )
     else:
-        # Import in-process teacher from stage3
-        from wrinklefree.training.stage3 import TeacherWrapper
-
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        return TeacherWrapper(
+        return LocalTeacher(
             model_name_or_path=model_name,
             device=device,
+            use_eager_attention=use_eager_attention,
             **kwargs,
         )

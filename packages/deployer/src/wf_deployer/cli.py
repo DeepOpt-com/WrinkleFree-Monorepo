@@ -58,7 +58,7 @@ def cli():
               type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
               help="GPU scale: dev (1xA10G), small (1xH100), medium (2xH100), large (4xH100), xlarge (8xH100)")
 @click.option("--resume", "-r", default=None, help="Resume from checkpoint (local path or gs://)")
-@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod"]), help="Cloud provider")
+@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod", "vast"]), help="Cloud provider")
 @click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
 @click.pass_context
 def train(ctx, model: str, stage: float, scale: str, resume: str, cloud: str, detach: bool):
@@ -107,7 +107,7 @@ def train(ctx, model: str, stage: float, scale: str, resume: str, cloud: str, de
 @click.option("--scale", default=None,
               type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
               help="GPU scale profile")
-@click.option("--cloud", "-c", default="nebius", type=click.Choice(["nebius", "runpod", "gcp"]), help="Cloud provider")
+@click.option("--cloud", "-c", default="nebius", type=click.Choice(["nebius", "runpod", "gcp", "vast"]), help="Cloud provider")
 @click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
 @click.pass_context
 def dlm(ctx, model: str, source: str | None, scale: str, cloud: str, detach: bool):
@@ -174,6 +174,58 @@ def fairy2(ctx, model: str, mode: str, scale: str, detach: bool):
         mode=mode,
         scale=scale,
         overrides=overrides,
+        detach=detach,
+    )
+
+
+@cli.command(
+    context_settings=dict(
+        ignore_unknown_options=True,
+        allow_extra_args=True,
+    )
+)
+@click.option("--model", "-m", required=True, help="Model config (e.g., qwen3_4b)")
+@click.option("--checkpoint", "-ckpt", required=True, help="Student checkpoint path (gs:// or local)")
+@click.option("--teacher", "-t", default=None, help="Teacher model (default: same as student original)")
+@click.option("--config", "-cfg", default="bitdistill",
+              type=click.Choice(["bitdistill", "logits_only", "classification"]),
+              help="Distillation config")
+@click.option("--scale", "-s", default=None,
+              type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
+              help="GPU scale profile")
+@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod", "vast"]), help="Cloud provider")
+@click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
+@click.pass_context
+def distill(ctx, model: str, checkpoint: str, teacher: str | None, config: str, scale: str, cloud: str, detach: bool):
+    """Launch distillation training on cloud GPU.
+
+    Distills a BitNet student model against a teacher using BitDistill-style
+    distillation (logits + attention relation loss).
+
+    \b
+    Configs:
+        bitdistill:     Logits + attention distillation (default)
+        logits_only:    Logits KL divergence only (no attention)
+        classification: For classification tasks
+
+    \b
+    Examples:
+        wf distill -m qwen3_4b -ckpt gs://bucket/stage2/checkpoint.pt
+        wf distill -m qwen3_4b -ckpt gs://bucket/checkpoint.pt --cloud vast
+        wf distill -m qwen3_4b -ckpt gs://bucket/checkpoint.pt -t meta-llama/Llama-3.2-3B
+        wf distill -m qwen3_4b -ckpt gs://bucket/checkpoint.pt --config logits_only
+        wf distill -m smollm2_135m -ckpt gs://bucket/checkpoint.pt training.max_steps=1000
+    """
+    overrides = list(ctx.args)
+
+    core.train_distill(
+        model=model,
+        checkpoint=checkpoint,
+        teacher=teacher,
+        config=config,
+        scale=scale,
+        overrides=overrides,
+        cloud=cloud,
         detach=detach,
     )
 

@@ -23,10 +23,12 @@ from torch.utils.data import DataLoader
 
 from wrinklefree.distillation import (
     ContinuePretrainLoss,
-    HiddenStateTeacherWrapper,
     LayerwiseDistillationLoss,
     LayerwiseLossType,
 )
+
+# HiddenStateTeacher moved to distillation package (for layer-wise distillation)
+from distillation.teachers import HiddenStateTeacher
 from wrinklefree.quantization.lambda_warmup import (
     LambdaWarmup,
     set_global_lambda_warmup,
@@ -50,7 +52,7 @@ class Stage2Trainer(Trainer):
         optimizer: Optimizer instance
         train_dataloader: Training data loader
         config: Training configuration (DictConfig)
-        teacher: Optional HiddenStateTeacherWrapper for distillation mode
+        teacher: Optional HiddenStateTeacher for distillation mode
         pre_stage_2_config: Optional config for distillation settings
         **kwargs: Additional arguments for base Trainer
     """
@@ -61,7 +63,7 @@ class Stage2Trainer(Trainer):
         optimizer: torch.optim.Optimizer,
         train_dataloader: DataLoader,
         config: DictConfig,
-        teacher: Optional[HiddenStateTeacherWrapper] = None,
+        teacher: Optional[HiddenStateTeacher] = None,
         pre_stage_2_config: Optional[DictConfig] = None,
         **kwargs,
     ):
@@ -605,7 +607,7 @@ def run_stage2(
 
         # Get teacher loading settings
         teacher_cfg = pre_stage_2_config.get("teacher", {})
-        teacher = HiddenStateTeacherWrapper(
+        teacher = HiddenStateTeacher(
             model_name_or_path=teacher_model_name,
             device=device,
             load_in_fp16=teacher_cfg.get("fp16", True),

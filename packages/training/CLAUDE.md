@@ -46,14 +46,14 @@ uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain data=
 uv run python scripts/train.py model=qwen3_4b training=stage2_pretrain data=fineweb
 ```
 
-## Training Pipeline (4 Stages)
+## Training Pipeline (3 Stages + Distillation)
 
 | Stage | Config | Purpose | Tokens |
 |-------|--------|---------|--------|
 | 1 | `stage1_subln` | Convert model: insert SubLN + BitLinear | N/A (conversion only) |
 | 1.9 | `stage1_9_layerwise` | Layer-wise distillation to align with teacher | ~100M |
 | 2 | `stage2_pretrain` | Continue pre-training with ternary weights | ~10B |
-| 3 | `stage3_distill` | Knowledge distillation fine-tuning | ~1B |
+| 3 | **Moved to `distillation` package** | Knowledge distillation fine-tuning | ~1B |
 
 ### Training Commands by Stage
 
@@ -78,12 +78,10 @@ uv run python scripts/train.py \
   data=fineweb \
   distributed=fsdp_multi
 
-# Stage 3: Distillation Fine-tuning
-uv run python scripts/train.py \
-  model=smollm2_135m \
-  training=stage3_distill \
-  data=downstream \
-  distributed=single_gpu
+# Stage 3: Distillation (use the separate distillation package)
+# See packages/distillation for the distillation package
+uv run --package wrinklefree-distillation python scripts/distill.py \
+  student.checkpoint_path=outputs/stage2/checkpoint.pt
 ```
 
 ### Hydra Override Examples

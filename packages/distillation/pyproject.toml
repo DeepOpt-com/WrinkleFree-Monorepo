@@ -1,0 +1,93 @@
+[project]
+name = "wrinklefree-distillation"
+version = "0.1.0"
+description = "Knowledge distillation for quantized LLMs (BitNet, Fairy2, etc.)"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "WrinkleFree Team"},
+]
+keywords = ["llm", "distillation", "quantization", "bitnet", "deep-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.5.0",
+    "transformers>=4.40.0",
+    "datasets>=2.18.0",
+    "hydra-core>=1.3.0",
+    "omegaconf>=2.3.0",
+    "wandb>=0.16.0",
+    "tqdm>=4.66.0",
+    "safetensors>=0.4.0",
+    "accelerate>=0.27.0",
+    "google-cloud-storage>=2.14.0",
+    "cheapertraining",  # Shared data layer
+]
+
+[project.optional-dependencies]
+vllm = [
+    "httpx>=0.27.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+]
+
+[project.scripts]
+wrinklefree-distill = "distillation.scripts.distill:main"
+
+[project.urls]
+Homepage = "https://github.com/DeepOpt-com/WrinkleFree"
+Repository = "https://github.com/DeepOpt-com/WrinkleFree"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/distillation"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+markers = [
+    "smoke: Quick smoke tests",
+    "slow: Slow tests that require GPU",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+]
+
+[tool.uv.sources]
+cheapertraining = { workspace = true }

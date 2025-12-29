@@ -1,0 +1,174 @@
+# Distillation Training Job
+#
+# Distills a BitNet student model against a teacher (original or different).
+# Uses BitDistill-style distillation with logits + attention relation loss.
+#
+# Launch via wf CLI (recommended):
+#   wf distill -m qwen3_4b -ckpt gs://bucket/stage2/checkpoint.pt
+#   wf distill -m qwen3_4b -ckpt gs://bucket/checkpoint.pt --cloud vast
+#   wf distill -m qwen3_4b -ckpt gs://bucket/checkpoint.pt -t meta-llama/Llama-3.2-3B
+#
+# Monitor:
+#   wf logs wf-distill-train
+
+name: wf-distill-train
+
+resources:
+  # Cloud and accelerators set by core.py based on --cloud flag
+  accelerators: H100:1  # Single GPU, scale via wf distill --scale
+  use_spot: false
+  disk_size: 150
+  disk_tier: best
+  job_recovery:
+    max_restarts_on_errors: 3  # Handle transient errors
+
+# Sync distillation package code to cluster (monorepo path)
+workdir: ../distillation
+
+# Note: file_mounts removed - Vast.ai doesn't support storage mounting.
+# GCS credentials are passed via GCS_CREDENTIALS_B64 env var for non-GCP clouds.
+
+envs:
+  # Model config name (matches configs/model/*.yaml in training package)
+  MODEL: qwen3_4b
+
+  # Student checkpoint path (required - gs:// or local)
+  STUDENT_CHECKPOINT: ""
+
+  # Teacher model (optional - uses original model if empty)
+  TEACHER_MODEL: ""
+
+  # Distillation config: bitdistill, logits_only, classification
+  DISTILLATION_CONFIG: bitdistill
+
+  # Hydra overrides (passed from wf distill command)
+  HYDRA_OVERRIDES: ""
+
+  # W&B tracking (set via WANDB_API_KEY env var)
+  WANDB_PROJECT: wrinklefree-distill
+
+  # GCS credentials - on GCP uses IAM, on other clouds uses ADC file
+  # GCS_CREDENTIALS_B64 is set by core.py for non-GCP clouds (base64-encoded service account JSON)
+  GCS_BUCKET: wrinklefree-checkpoints
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv for fast package management
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
+
+  # Setup GCS credentials for non-GCP clouds
+  # If GCS_CREDENTIALS_B64 is set, decode and write to ADC file
+  if [ -n "${GCS_CREDENTIALS_B64:-}" ]; then
+    echo "Setting up GCS credentials from env var..."
+    mkdir -p $HOME/.config/gcloud
+    echo "${GCS_CREDENTIALS_B64}" | base64 -d > $HOME/.config/gcloud/application_default_credentials.json
+    chmod 600 $HOME/.config/gcloud/application_default_credentials.json
+    export GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json
+    echo "GCS credentials written to $GOOGLE_APPLICATION_CREDENTIALS"
+  fi
+
+  # Create venv and install dependencies
+  uv venv .venv
+  source .venv/bin/activate
+
+  # Remove workspace source (only works in monorepo context)
+  # This allows pip install to work without the full monorepo
+  sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
+
+  # Download and install cheapertraining (dependency for data loading)
+  # The package is uploaded to GCS alongside workdir
+  echo "Downloading cheapertraining from GCS..."
+  mkdir -p ~/cheapertraining
+  gsutil -m cp -r gs://${GCS_BUCKET}/packages/cheapertraining/* ~/cheapertraining/ || {
+    echo "cheapertraining not in GCS, skipping (limited features)"
+  }
+
+  # Install cheapertraining if available
+  if [ -f ~/cheapertraining/pyproject.toml ]; then
+    echo "Installing cheapertraining..."
+    pushd ~/cheapertraining
+    sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
+    uv pip install -e .
+    popd
+  fi
+
+  # Install the distillation package
+  uv pip install -e .
+
+  # Verify GPU setup
+  python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
+
+  # Verify GCS credentials
+  echo "Testing GCS access..."
+  python -c "from google.cloud import storage; client = storage.Client(); bucket = client.bucket('${GCS_BUCKET}'); print(f'GCS bucket access: {bucket.exists()}')" || echo "GCS check failed (may work via IAM on GCP)..."
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.local/bin:$PATH"
+  source .venv/bin/activate
+
+  # Set GCS credentials if available
+  if [ -f "$HOME/.config/gcloud/application_default_credentials.json" ]; then
+    export GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json
+  fi
+
+  echo "=============================================="
+  echo "BitDistill Knowledge Distillation"
+  echo "Model: ${MODEL}"
+  echo "Student checkpoint: ${STUDENT_CHECKPOINT}"
+  echo "Teacher model: ${TEACHER_MODEL:-'(same as student original)'}"
+  echo "Config: ${DISTILLATION_CONFIG}"
+  echo "Overrides: ${HYDRA_OVERRIDES:-'(none)'}"
+  echo "=============================================="
+
+  # Validate required inputs
+  if [ -z "${STUDENT_CHECKPOINT}" ]; then
+    echo "Error: STUDENT_CHECKPOINT not set"
+    exit 1
+  fi
+
+  OUTPUT_DIR="./outputs/distill/${MODEL}"
+  mkdir -p ${OUTPUT_DIR}
+
+  # Build Hydra command
+  # The distill.py script is inside the package structure
+  HYDRA_CMD="python src/distillation/scripts/distill.py"
+  HYDRA_CMD="${HYDRA_CMD} student.checkpoint_path=${STUDENT_CHECKPOINT}"
+  HYDRA_CMD="${HYDRA_CMD} distillation=${DISTILLATION_CONFIG}"
+  HYDRA_CMD="${HYDRA_CMD} training.output_dir=${OUTPUT_DIR}"
+
+  # Add teacher model if specified
+  if [ -n "${TEACHER_MODEL}" ]; then
+    HYDRA_CMD="${HYDRA_CMD} teacher.model_name=${TEACHER_MODEL}"
+  fi
+
+  # Add any additional overrides
+  if [ -n "${HYDRA_OVERRIDES}" ]; then
+    HYDRA_CMD="${HYDRA_CMD} ${HYDRA_OVERRIDES}"
+  fi
+
+  echo "Running: ${HYDRA_CMD}"
+  eval ${HYDRA_CMD}
+
+  # Upload to GCS using gsutil
+  echo ""
+  echo "Uploading to GCS..."
+  if [ -d "${OUTPUT_DIR}" ]; then
+    gsutil -m cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/distill/${MODEL}/ || echo "gsutil failed, trying gcloud storage..."
+    gcloud storage cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/distill/${MODEL}/ || echo "Upload failed"
+  else
+    echo "Warning: Output directory ${OUTPUT_DIR} not found"
+  fi
+
+  echo ""
+  echo "=============================================="
+  echo "DISTILLATION COMPLETE!"
+  echo "GCS: gs://${GCS_BUCKET}/distill/${MODEL}/"
+  echo "=============================================="

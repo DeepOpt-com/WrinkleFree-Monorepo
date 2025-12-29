@@ -146,6 +146,8 @@ def _train_skypilot(
 
     print(f"🚀 Launching {model} (Stage {stage}) on SkyPilot")
     print(f"   Cloud: {cloud}")
+    if cloud == "vast":
+        print("   ⚠️  Vast.ai: Marketplace pricing, variable reliability. Use --cloud nebius for critical runs.")
     print(f"   Scale: {scale} ({accelerators})")
     if overrides:
         print(f"   Overrides: {overrides}")
@@ -214,6 +216,8 @@ def _train_skypilot(
         cloud_obj = sky.GCP()
     elif cloud == "runpod":
         cloud_obj = sky.RunPod()
+    elif cloud == "vast":
+        cloud_obj = sky.Vast()
     else:
         cloud_obj = sky.Nebius()
 
@@ -513,6 +517,8 @@ def _train_dlm_skypilot(
 
     print(f"🚀 Launching DLM training for {model} on SkyPilot")
     print(f"   Cloud: {cloud}")
+    if cloud == "vast":
+        print("   ⚠️  Vast.ai: Marketplace pricing, variable reliability. Use --cloud nebius for critical runs.")
     print(f"   Scale: {scale} ({accelerators})")
     if source:
         print(f"   Source: {source}")
@@ -552,6 +558,8 @@ def _train_dlm_skypilot(
         cloud_obj = sky.GCP()
     elif cloud == "runpod":
         cloud_obj = sky.RunPod()
+    elif cloud == "vast":
+        cloud_obj = sky.Vast()
     else:
         cloud_obj = sky.Nebius()
 
@@ -563,6 +571,158 @@ def _train_dlm_skypilot(
     )
 
     job_name = "wf-dlm-train"
+
+    # Launch as managed job
+    if detach:
+        request_id = sky.jobs.launch(task)
+        job_id, _ = sky.get(request_id)
+        print(f"✓ Launched! Job ID: {job_id}")
+        print(f"  View logs: uv run wf logs {job_name}")
+        print(f"  Cancel:    uv run wf cancel {job_name}")
+        return job_name
+    else:
+        print("   Waiting for completion...")
+        request_id = sky.jobs.launch(task)
+        job_id, _ = sky.get(request_id)
+        log_request = sky.jobs.tail_logs(name=job_name)
+        sky.stream_and_get(log_request)
+        print(f"✓ Completed!")
+        return job_name
+
+
+# =============================================================================
+# Distillation Training (BitDistill)
+# =============================================================================
+
+
+def train_distill(
+    model: str,
+    checkpoint: str,
+    teacher: str | None = None,
+    config: str = "bitdistill",
+    scale: Scale | None = None,
+    overrides: list[str] | None = None,
+    cloud: str = "nebius",
+    detach: bool = True,
+) -> str:
+    """Launch a distillation training job on SkyPilot.
+
+    Distills a BitNet student model against a teacher using BitDistill-style
+    distillation (logits + attention relation loss).
+
+    Args:
+        model: Model config name (e.g., "qwen3_4b", "smollm2_135m")
+        checkpoint: Path to student checkpoint (gs:// or local)
+        teacher: Teacher model name (default: same as student's original model)
+        config: Distillation config ("bitdistill", "logits_only", "classification")
+        scale: GPU scale profile ("dev", "small", etc.)
+        overrides: Hydra config overrides
+        cloud: Cloud provider ("gcp", "nebius", "runpod", "vast")
+        detach: Return immediately (True) or wait for completion (False)
+
+    Returns:
+        Run ID
+
+    Example:
+        >>> from wf_deployer import train_distill
+        >>> run_id = train_distill("qwen3_4b", "gs://bucket/stage2/checkpoint.pt")
+        >>> run_id = train_distill("qwen3_4b", "gs://bucket/checkpoint.pt", teacher="meta-llama/Llama-3.2-3B")
+    """
+    overrides = overrides or []
+    return _train_distill_skypilot(model, checkpoint, teacher, config, scale, overrides, cloud, detach)
+
+
+def _train_distill_skypilot(
+    model: str,
+    checkpoint: str,
+    teacher: str | None,
+    config: str,
+    scale: Scale | None,
+    overrides: list[str],
+    cloud: str,
+    detach: bool,
+) -> str:
+    """Launch distillation training on SkyPilot."""
+    try:
+        import sky
+    except ImportError:
+        raise ImportError(
+            "SkyPilot not installed. Install with: uv add 'skypilot[all]'"
+        )
+
+    # Determine scale (use model default if not specified)
+    if scale is None:
+        scale = get_scale_for_model(model)
+
+    scale_config = SCALES[scale]
+    gpu_count = scale_config["gpus"]
+    gpu_type = scale_config["type"]
+    accelerators = f"{gpu_type}:{gpu_count}"
+
+    print(f"🚀 Launching distillation for {model} on SkyPilot")
+    print(f"   Cloud: {cloud}")
+    if cloud == "vast":
+        print("   ⚠️  Vast.ai: Marketplace pricing, variable reliability. Use --cloud nebius for critical runs.")
+    print(f"   Scale: {scale} ({accelerators})")
+    print(f"   Checkpoint: {checkpoint}")
+    if teacher:
+        print(f"   Teacher: {teacher}")
+    print(f"   Config: {config}")
+    if overrides:
+        print(f"   Overrides: {overrides}")
+
+    # Build environment variables
+    envs = {
+        "MODEL": model,
+        "STUDENT_CHECKPOINT": checkpoint,
+        "TEACHER_MODEL": teacher or "",
+        "DISTILLATION_CONFIG": config,
+    }
+
+    # Pass through secrets from local environment
+    wandb_key = os.environ.get("WANDB_API_KEY")
+    if wandb_key:
+        envs["WANDB_API_KEY"] = wandb_key
+    else:
+        print("   ⚠️  WANDB_API_KEY not set - logging disabled")
+
+    # HF_TOKEN is optional but useful for gated models
+    if os.environ.get("HF_TOKEN"):
+        envs["HF_TOKEN"] = os.environ["HF_TOKEN"]
+
+    # GCS credentials for non-GCP clouds (Vast.ai, RunPod, Nebius)
+    # Vast.ai doesn't support file_mounts, so we pass credentials as base64 env var
+    if cloud != "gcp" and GCP_SA_PATH.exists():
+        sa_json = GCP_SA_PATH.read_text()
+        envs["GCS_CREDENTIALS_B64"] = base64.b64encode(sa_json.encode()).decode()
+        print(f"   GCS auth: Using service account (base64)")
+
+    # Hydra overrides
+    if overrides:
+        envs["HYDRA_OVERRIDES"] = " ".join(overrides)
+
+    # Create task from distillation YAML
+    task = sky.Task.from_yaml("skypilot/distill_train.yaml")
+    task.update_envs(envs)
+
+    # Select cloud provider
+    if cloud == "gcp":
+        cloud_obj = sky.GCP()
+    elif cloud == "runpod":
+        cloud_obj = sky.RunPod()
+    elif cloud == "vast":
+        cloud_obj = sky.Vast()
+    else:
+        cloud_obj = sky.Nebius()
+
+    # Update accelerators based on scale (preserve use_spot from YAML)
+    existing_resources = list(task.resources)[0] if task.resources else None
+    use_spot = existing_resources.use_spot if existing_resources else False
+    task.set_resources(
+        sky.Resources(accelerators=accelerators, cloud=cloud_obj, use_spot=use_spot)
+    )
+
+    job_name = "wf-distill-train"
 
     # Launch as managed job
     if detach:

@@ -12,6 +12,7 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 | Command | Package | Description |
 |---------|---------|-------------|
 | `wf train` | `training` | 1.58-bit quantization training |
+| `wf distill` | `distillation` | Knowledge distillation (BitDistill) |
 | `wf fairy2` | `fairy2` | Complex-valued quantization |
 | `wf dlm` | `converter` | DLM format conversion |
 | `wf serve` | `inference` | Model serving |
@@ -57,9 +58,10 @@ uv run --package wrinklefree-deployer sky jobs queue
 | File | Purpose |
 |------|---------|
 | `src/wf_deployer/constants.py` | All magic strings, defaults, scales, GAR config |
-| `src/wf_deployer/core.py` | Main API: train(), logs(), cancel() |
+| `src/wf_deployer/core.py` | Main API: train(), train_distill(), logs(), cancel() |
 | `src/wf_deployer/cli.py` | CLI commands |
 | `skypilot/train.yaml` | SkyPilot training job template |
+| `skypilot/distill_train.yaml` | SkyPilot distillation job template |
 | `skypilot/service.yaml` | SkyServe inference template |
 | `credentials/.env` | Local credentials (gitignored) |
 | `credentials/gcp-service-account.json` | GCP service account for GCS + Docker auth |
@@ -105,6 +107,7 @@ Build and push with:
 | Nebius | `--cloud nebius` | $1.99/hr H100, recommended |
 | RunPod | `--cloud runpod` | Flexible, spot available |
 | GCP | `--cloud gcp` | A100/H100, expensive |
+| Vast.ai | `--cloud vast` | Cheap H100s, marketplace pricing |
 
 ## Troubleshooting
 
@@ -114,7 +117,17 @@ Build and push with:
 sky check
 
 # Re-authenticate
-sky check nebius  # or runpod, gcp
+sky check nebius  # or runpod, gcp, vast
+```
+
+### Vast.ai setup
+```bash
+# 1. Get API key from https://vast.ai/console/cli/
+# 2. Configure SkyPilot
+sky check vast
+
+# 3. Add to credentials/.env
+echo "VASTAI_API_KEY=your_key_here" >> credentials/.env
 ```
 
 ### Docker auth failures on Nebius/RunPod

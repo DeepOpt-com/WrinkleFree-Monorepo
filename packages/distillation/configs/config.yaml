@@ -1,0 +1,68 @@
+# Distillation main configuration
+# Override with: python scripts/distill.py distillation=logits_only student.checkpoint_path=...
+
+defaults:
+  - distillation: bitdistill
+  - _self_
+
+# Student model (required)
+student:
+  checkpoint_path: ???  # Required: path to student checkpoint
+  model_config: null    # Optional: override model config
+
+# Teacher model
+teacher:
+  model_name: null      # null = infer from student checkpoint's original model
+  use_vllm: false       # Use vLLM server instead of local loading
+  vllm_url: "http://localhost:8000"
+  vllm_top_k_logprobs: 100
+  load_in_4bit: false   # Load teacher in 4-bit quantization
+  offload_to_cpu: false # Offload to CPU between forward passes
+
+# Data (uses cheapertraining)
+data:
+  config_name: mixed_pretrain  # CheaperTraining config to use
+  max_seq_length: 1024
+  num_workers: 4
+
+# Training
+training:
+  max_steps: 5000
+  batch_size: 32
+  gradient_accumulation_steps: 8
+  gradient_clipping: 1.0
+
+# Optimizer
+optimizer:
+  type: adamw  # adamw, adamw_8bit, muon
+  lr: 2.4e-3
+  weight_decay: 0.024
+
+# Scheduler
+scheduler:
+  type: cosine
+  warmup_steps: 2000
+  min_lr_ratio: 0.1
+
+# Checkpointing
+checkpoint:
+  save_interval: 500
+  keep_last_n: 3
+
+# Logging
+logging:
+  log_interval: 10
+  eval_interval: 500
+  wandb:
+    enabled: true
+    project: wrinklefree-distillation
+
+# Influence-based rebalancing
+influence:
+  enabled: true
+  update_interval: 1000
+  learning_rate: 0.2
+
+# Output
+output_dir: outputs/distillation
+experiment_name: distill_${now:%Y%m%d_%H%M%S}

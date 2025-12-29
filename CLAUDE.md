@@ -6,7 +6,8 @@ Monorepo for 1.58-bit quantized LLM research using uv workspaces.
 
 | Package | Type | Purpose |
 |---------|------|---------|
-| `packages/training` | App | 1.58-bit training pipeline (BitDistill) |
+| `packages/training` | App | 1.58-bit training pipeline (BitDistill stages 1-2) |
+| `packages/distillation` | App | Knowledge distillation (Stage 3) |
 | `packages/cheapertraining` | Lib | Shared data layer & utilities |
 | `packages/fairy2` | App | Complex-valued quantization (Fairy2i) |
 | `packages/inference` | App | Serving layer (sglang-bitnet) |
@@ -45,6 +46,9 @@ uv run pytest
 cheapertraining (library)
     │
     ├──► training (wrinklefree)
+    │       Uses: cheapertraining.data, cheapertraining.influence
+    │
+    ├──► distillation (wrinklefree-distillation)
     │       Uses: cheapertraining.data, cheapertraining.influence
     │
     └──► fairy2

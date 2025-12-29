@@ -13,9 +13,13 @@ import torch.nn.functional as F
 
 from wrinklefree.models import BitLinear
 from wrinklefree.models.subln import SubLN
-from wrinklefree.distillation.attention_loss import BitDistillAttentionRelationLoss
-from wrinklefree.distillation.logits_loss import LogitsDistillationLoss
-from wrinklefree.distillation.combined_loss import BitDistillLoss
+
+# Stage 3 distillation classes moved to distillation package
+from distillation.losses import (
+    BitDistillAttentionRelationLoss,
+    LogitsDistillationLoss,
+    BitDistillLoss,
+)
 
 
 class TestWeightQuantizationFormula:

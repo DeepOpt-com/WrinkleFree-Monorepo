@@ -1,0 +1,17 @@
+# BitDistill settings (arxiv.org/abs/2510.13998)
+# Equation 13: L = L_CE + lambda * L_LD + gamma * L_AD
+
+# Loss weights
+lambda_logits: 10.0      # Weight for logits distillation (KL divergence)
+gamma_attention: 1.0e-5  # Weight for attention distillation (0 = disabled)
+
+# Temperature for logits distillation
+# Higher = softer distributions = more information transfer
+temperature: 5.0
+
+# Attention distillation settings (BitDistill Equation 11)
+attention:
+  enabled: true           # Easy toggle for attention distillation
+  use_relation_distill: true  # Use A·A^T relation matrices (BitDistill)
+  distill_layer: -1       # Single layer (-1 = last, recommended by paper)
+  alpha: 1.0              # Attention loss scaling coefficient
