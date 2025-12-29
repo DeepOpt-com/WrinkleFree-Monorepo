@@ -1,14 +1,15 @@
 # Fast-dLLM v2 Training Job
 #
 # Trains a model with Fast-dLLM v2 SFT recipe for 2.5x faster inference.
+# Auto-resumes from GCS checkpoint if available (checkpoint-step-* dirs).
 #
 # Launch via wf CLI (recommended):
+#   wf dlm -m bitnet_2b                # Resume from checkpoint (Nebius default)
 #   wf dlm -m qwen3_4b -s hf://org/checkpoint
 #
 # Or manually:
 #   sky launch skypilot/dlm_train.yaml -y \
-#     --env MODEL=qwen3_4b \
-#     --env SOURCE_PATH=hf://org/checkpoint
+#     --env MODEL=bitnet_2b
 #
 # Monitor:
 #   wf logs wf-dlm-train
@@ -16,17 +17,19 @@
 name: wf-dlm-train
 
 resources:
-  # Use standard PyTorch image for portability across clouds
-  # Custom image only available on Nebius/GCP
+  # Cloud and accelerators set by core.py based on --cloud flag
   accelerators: H100:1  # Single GPU, scale via wf dlm --scale
   use_spot: false
   disk_size: 200
   disk_tier: best
+  job_recovery:
+    max_restarts_on_errors: 3  # Handle transient errors
 
 # Sync DLM-Converter code to cluster (monorepo path)
 workdir: ../converter
 
-# Mount GCS credentials for checkpoint upload (ADC)
+# Mount GCS credentials for checkpoint upload
+# Note: On GCP, VMs use IAM automatically. This is for non-GCP clouds.
 file_mounts:
   ~/.config/gcloud/application_default_credentials.json: ~/.config/gcloud/application_default_credentials.json
 
@@ -52,8 +55,11 @@ setup: |
   cd ~/sky_workdir
 
   # Install uv for fast package management
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.cargo/bin:$PATH"
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
 
   # Install dependencies
   uv sync
@@ -61,14 +67,14 @@ setup: |
   # Verify GPU setup
   uv run python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
 
-  # Verify GCS credentials
+  # Verify GCS credentials (on GCP, IAM is used; on other clouds, ADC file is used)
   echo "Testing GCS access..."
-  uv run python -c "from google.cloud import storage; client = storage.Client(); bucket = client.bucket('${GCS_BUCKET}'); print(f'GCS bucket access: {bucket.exists()}')" || echo "GCS check failed, continuing..."
+  uv run python -c "from google.cloud import storage; client = storage.Client(); bucket = client.bucket('${GCS_BUCKET}'); print(f'GCS bucket access: {bucket.exists()}')" || echo "GCS check failed (may work via IAM on GCP)..."
 
 run: |
   set -e
   cd ~/sky_workdir
-  export PATH="$HOME/.cargo/bin:$PATH"
+  export PATH="$HOME/.local/bin:$PATH"
 
   echo "=============================================="
   echo "Fast-dLLM v2 SFT Training (Hydra)"

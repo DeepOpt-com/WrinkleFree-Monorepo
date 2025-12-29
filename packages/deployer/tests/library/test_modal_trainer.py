@@ -235,5 +235,5 @@ class TestCLI:
         assert result.exit_code == 0
         assert "--model" in result.output
         assert "--stage" in result.output
-        assert "--backend" in result.output
+        assert "--cloud" in result.output  # Cloud provider option
         # max_steps is now passed via Hydra overrides, not a CLI flag

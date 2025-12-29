@@ -199,6 +199,7 @@ class TestCacheVersioning:
         assert cache_2b != cache_1b
 
 
+@pytest.mark.skip(reason="Skypilot caching config was removed in monorepo migration")
 class TestDeploymentConfig:
     """Test deployment configuration."""
 

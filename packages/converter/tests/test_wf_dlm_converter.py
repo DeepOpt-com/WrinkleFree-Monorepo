@@ -224,15 +224,5 @@ class TestConversion:
         assert conversion is not None
 
 
-class TestModal:
-    """Tests for wf_dlm_converter.modal module."""
-
-    def test_import_modal_module(self):
-        """Test that modal module can be imported."""
-        from wf_dlm_converter import modal
-
-        assert modal is not None
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -31,6 +31,19 @@ DOCKER_IMAGE: Final[str] = f"{GAR_REGION}-docker.pkg.dev/{GCP_PROJECT_ID}/{GAR_R
 """Docker image URL in Google Artifact Registry."""
 
 # =============================================================================
+# Modal Configuration
+# =============================================================================
+
+MODAL_APP_NAME: Final[str] = "wf-train"
+"""Modal app name for training jobs."""
+
+MODAL_VOLUME_CHECKPOINTS: Final[str] = "wf-checkpoints"
+"""Modal volume name for checkpoint storage."""
+
+MODAL_VOLUME_HF_CACHE: Final[str] = "wf-hf-cache"
+"""Modal volume name for HuggingFace cache."""
+
+# =============================================================================
 # Repository URLs
 # =============================================================================
 

@@ -459,6 +459,7 @@ def train_dlm(
     source: str | None = None,
     scale: Scale | None = None,
     overrides: list[str] | None = None,
+    cloud: str = "nebius",
     detach: bool = True,
 ) -> str:
     """Launch a DLM (Fast-dLLM v2) training job on SkyPilot.
@@ -471,6 +472,7 @@ def train_dlm(
                 If None, uses model config default.
         scale: GPU scale profile ("dev", "small", etc.)
         overrides: Hydra config overrides
+        cloud: Cloud provider ("gcp", "nebius", or "runpod")
         detach: Return immediately (True) or wait for completion (False)
 
     Returns:
@@ -481,7 +483,7 @@ def train_dlm(
         >>> run_id = train_dlm("qwen3_4b", source="hf://org/checkpoint")
     """
     overrides = overrides or []
-    return _train_dlm_skypilot(model, source, scale, overrides, detach)
+    return _train_dlm_skypilot(model, source, scale, overrides, cloud, detach)
 
 
 def _train_dlm_skypilot(
@@ -489,6 +491,7 @@ def _train_dlm_skypilot(
     source: str | None,
     scale: Scale | None,
     overrides: list[str],
+    cloud: str,
     detach: bool,
 ) -> str:
     """Launch DLM training on SkyPilot."""
@@ -509,6 +512,7 @@ def _train_dlm_skypilot(
     accelerators = f"{gpu_type}:{gpu_count}"
 
     print(f"🚀 Launching DLM training for {model} on SkyPilot")
+    print(f"   Cloud: {cloud}")
     print(f"   Scale: {scale} ({accelerators})")
     if source:
         print(f"   Source: {source}")
@@ -543,11 +547,19 @@ def _train_dlm_skypilot(
     task = sky.Task.from_yaml("skypilot/dlm_train.yaml")
     task.update_envs(envs)
 
+    # Select cloud provider
+    if cloud == "gcp":
+        cloud_obj = sky.GCP()
+    elif cloud == "runpod":
+        cloud_obj = sky.RunPod()
+    else:
+        cloud_obj = sky.Nebius()
+
     # Update accelerators based on scale (preserve use_spot from YAML)
     existing_resources = list(task.resources)[0] if task.resources else None
     use_spot = existing_resources.use_spot if existing_resources else False
     task.set_resources(
-        sky.Resources(accelerators=accelerators, cloud=sky.Nebius(), use_spot=use_spot)
+        sky.Resources(accelerators=accelerators, cloud=cloud_obj, use_spot=use_spot)
     )
 
     job_name = "wf-dlm-train"

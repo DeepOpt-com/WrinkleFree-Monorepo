@@ -19,11 +19,10 @@ class TestBenchmarkPresets:
 
         assert "bitdistill" in benchmarks
         assert "glue" in benchmarks
-        assert "summarization" in benchmarks
         assert "smoke_test" in benchmarks
 
     def test_bitdistill_has_all_tasks(self):
-        """Test bitdistill preset includes all paper benchmarks."""
+        """Test bitdistill preset includes GLUE subset from BitDistill paper."""
         from wrinklefree_eval.api import list_benchmarks
 
         benchmarks = list_benchmarks()
@@ -32,7 +31,6 @@ class TestBenchmarkPresets:
         assert "mnli" in bitdistill
         assert "qnli" in bitdistill
         assert "sst2" in bitdistill
-        assert "cnn_dailymail_summarization" in bitdistill
 
     def test_smoke_test_is_minimal(self):
         """Test smoke test preset is minimal for fast validation."""
@@ -41,17 +39,18 @@ class TestBenchmarkPresets:
         benchmarks = list_benchmarks()
         smoke = benchmarks["smoke_test"]
 
-        # Should have exactly 2 tasks for quick validation
-        assert len(smoke) == 2
+        # Should have exactly 1 task for quick validation
+        assert len(smoke) == 1
         assert "sst2" in smoke
 
     def test_task_mapping(self):
         """Test task name mapping is correct."""
         from wrinklefree_eval.api import TASK_MAPPING
 
-        assert TASK_MAPPING["mnli"] == "glue_mnli"
-        assert TASK_MAPPING["qnli"] == "glue_qnli"
-        assert TASK_MAPPING["sst2"] == "glue_sst2"
+        # lm-eval uses task names directly now
+        assert TASK_MAPPING["mnli"] == "mnli"
+        assert TASK_MAPPING["qnli"] == "qnli"
+        assert TASK_MAPPING["sst2"] == "sst2"
 
 
 class TestEvaluateFunction:
@@ -65,8 +64,7 @@ class TestEvaluateFunction:
         assert "nonexistent" not in BENCHMARK_PRESETS
 
     @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
-    @patch("wrinklefree_eval.api.lm_eval.tasks.include_path")
-    def test_evaluate_calls_lm_eval(self, mock_include, mock_simple_eval):
+    def test_evaluate_calls_lm_eval(self, mock_simple_eval):
         """Test that evaluate() correctly calls lm_eval."""
         from wrinklefree_eval.api import evaluate
 
@@ -94,8 +92,7 @@ class TestEvaluateFunction:
                "glue_sst2" in call_kwargs.args[0] if call_kwargs.args else True
 
     @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
-    @patch("wrinklefree_eval.api.lm_eval.tasks.include_path")
-    def test_smoke_test_sets_limit(self, mock_include, mock_simple_eval):
+    def test_smoke_test_sets_limit(self, mock_simple_eval):
         """Test that smoke_test=True sets appropriate limit."""
         from wrinklefree_eval.api import evaluate
 
@@ -113,8 +110,7 @@ class TestEvaluateFunction:
         assert call_kwargs.get("limit") == 10
 
     @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
-    @patch("wrinklefree_eval.api.lm_eval.tasks.include_path")
-    def test_custom_limit_overrides_smoke_test(self, mock_include, mock_simple_eval):
+    def test_custom_limit_overrides_smoke_test(self, mock_simple_eval):
         """Test that explicit limit overrides smoke_test default."""
         from wrinklefree_eval.api import evaluate
 
@@ -218,18 +214,17 @@ class TestCustomTasks:
         assert task_file.exists()
 
     def test_task_yaml_valid(self):
-        """Test that task YAML is valid."""
+        """Test that task YAML contains expected fields."""
         from wrinklefree_eval.tasks import TASKS_DIR
-        import yaml
 
         task_file = TASKS_DIR / "cnn_dailymail.yaml"
-        with open(task_file) as f:
-            config = yaml.safe_load(f)
+        content = task_file.read_text()
 
-        assert config["task"] == "cnn_dailymail_summarization"
-        assert config["dataset_path"] == "cnn_dailymail"
-        assert config["output_type"] == "generate_until"
-        assert "metric_list" in config
+        # Check for expected fields (can't use yaml.safe_load due to !function tag)
+        assert "task: cnn_dailymail_summarization" in content
+        assert "dataset_path: cnn_dailymail" in content
+        assert "output_type: generate_until" in content
+        assert "metric_list:" in content
 
 
 class TestTaskUtils:
@@ -341,8 +336,7 @@ class TestWandBLogging:
         assert isinstance(WANDB_AVAILABLE, bool)
 
     @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
-    @patch("wrinklefree_eval.api.lm_eval.tasks.include_path")
-    def test_evaluate_without_wandb(self, mock_include, mock_simple_eval):
+    def test_evaluate_without_wandb(self, mock_simple_eval):
         """Test evaluate works without wandb parameters."""
         from wrinklefree_eval.api import evaluate
 
@@ -359,8 +353,7 @@ class TestWandBLogging:
 
     @patch("wrinklefree_eval.api.WANDB_AVAILABLE", False)
     @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
-    @patch("wrinklefree_eval.api.lm_eval.tasks.include_path")
-    def test_evaluate_wandb_not_installed(self, mock_include, mock_simple_eval):
+    def test_evaluate_wandb_not_installed(self, mock_simple_eval):
         """Test evaluate handles missing wandb gracefully."""
         from wrinklefree_eval.api import evaluate
 
@@ -379,8 +372,7 @@ class TestWandBLogging:
     @patch("wrinklefree_eval.api.WANDB_AVAILABLE", True)
     @patch("wrinklefree_eval.api.wandb")
     @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
-    @patch("wrinklefree_eval.api.lm_eval.tasks.include_path")
-    def test_evaluate_with_wandb(self, mock_include, mock_simple_eval, mock_wandb):
+    def test_evaluate_with_wandb(self, mock_simple_eval, mock_wandb):
         """Test evaluate initializes and logs to wandb."""
         from wrinklefree_eval.api import evaluate
 

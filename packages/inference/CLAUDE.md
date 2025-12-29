@@ -45,7 +45,31 @@ For manual builds, use the safe wrapper:
 ./scripts/build-safe.sh cmake --build build
 ```
 
-## BitNet.cpp Quick Start (Recommended - 1.6x faster)
+## CPU-Only Quick Start (Recommended)
+
+**One-time setup** - run the setup script:
+```bash
+./scripts/setup-cpu.sh
+```
+
+**Start serving**:
+```bash
+# Full stack (server + chat UI)
+./scripts/serve.sh --backend sglang
+
+# Or individual components:
+./scripts/launch_sglang_bitnet.sh  # Server on port 30000
+uv run streamlit run demo/serve_sglang.py --server.port 7860  # Chat UI
+```
+
+**Test API**:
+```bash
+curl http://localhost:30000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+```
+
+## BitNet.cpp Quick Start (Alternative - 1.6x faster)
 
 **Prerequisites**: `clang` compiler required (`sudo apt install clang`)
 
@@ -107,16 +131,16 @@ curl http://localhost:30000/v1/chat/completions \
 
 **Performance**: ~26 tok/s (matches BitNet.cpp, eliminates 49ms Python overhead)
 
-## SGLang Quick Start (Alternative - Slower)
+## SGLang Quick Start (Supports Continuous Batching)
+
+SGLang is the recommended backend for multi-user scenarios due to **continuous batching** support:
+- 1.72x speedup with 4 concurrent requests
+- 5.12x speedup with 8 concurrent requests
+- 71.3 tok/s total throughput with 16 concurrent requests
 
 ```bash
-# Install dependencies
-uv sync
-
-# Build sgl-kernel (one-time)
-cd extern/sglang-bitnet/sgl-kernel
-uv pip install -e . --no-build-isolation
-cd ../../..
+# Install dependencies (use setup script)
+./scripts/setup-cpu.sh
 
 # Start SGLang server
 ./scripts/launch_sglang_bitnet.sh
@@ -128,6 +152,12 @@ uv run streamlit run demo/serve_sglang.py --server.port 7860
 curl http://localhost:30000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+```
+
+### Test Continuous Batching
+```bash
+# Run batching tests (requires running server)
+INFERENCE_URL=http://localhost:30000 uv run pytest tests/test_continuous_batching.py -v
 ```
 
 ## Architecture
@@ -267,7 +297,16 @@ SGLang automatically applies this template when using the OpenAI-compatible `/v1
 
 ## Notes
 
-- **Rust Gateway is recommended** for production (26+ tok/s, self-contained in sglang-bitnet)
+### Backend Selection Guide
+| Backend | Best For | Batching | Speed (single) |
+|---------|----------|----------|----------------|
+| **SGLang** | Multi-user, concurrent requests | Yes (5x speedup) | ~16 tok/s |
+| **Rust Gateway** | Single user, lowest latency | No | ~20 tok/s |
+| **BitNet.cpp** | Single user, max throughput | No | ~26 tok/s |
+
+- **SGLang recommended** for production with multiple users (continuous batching support)
+- **Rust Gateway** for single-user scenarios where latency matters
+- **BitNet.cpp** for maximum single-request throughput
 - **Custom SGLang fork**: We use `extern/sglang-bitnet/` (custom fork with BitNet kernels), NOT upstream sglang
 - **Self-contained build**: The Rust gateway builds llama.cpp from `sglang-bitnet/3rdparty/llama.cpp`, no external BitNet.cpp dependency
 - **Chat template**: Both BitNet.cpp and SGLang support OpenAI-compatible chat API

@@ -6,12 +6,17 @@ These tests catch the gibberish output bugs without requiring a server:
 3. Activation sum correction must account for weight_scale
 
 Run with: uv run pytest tests/test_bitnet_weight_loading.py -v
+
+NOTE: These tests require sglang with GPU support. Skip on CPU-only environments.
 """
 
 import pytest
 import torch
 import numpy as np
 from pathlib import Path
+
+# Skip entire module if sglang is not available or GPU is not present
+pytest.importorskip("sglang.srt.models.bitnet", reason="Requires sglang with GPU support")
 
 
 class TestHFFormatConversion:
