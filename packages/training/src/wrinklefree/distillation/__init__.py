@@ -24,6 +24,9 @@ from wrinklefree.distillation.vllm_teacher import (
     VLLMConfig,
     create_vllm_or_inprocess_teacher,
 )
+from wrinklefree.distillation.teacher_wrapper import (
+    HiddenStateTeacherWrapper,
+)
 
 __all__ = [
     "LogitsDistillationLoss",
@@ -42,4 +45,6 @@ __all__ = [
     "VLLMTeacherWithPrefetch",
     "VLLMConfig",
     "create_vllm_or_inprocess_teacher",
+    # Hidden state teacher for pre_stage_2 distillation
+    "HiddenStateTeacherWrapper",
 ]

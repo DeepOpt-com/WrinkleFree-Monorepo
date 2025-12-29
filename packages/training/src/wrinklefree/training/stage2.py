@@ -1,15 +1,32 @@
-"""Stage 2: Continue Pre-Training - Adapt model to 1.58-bit quantization."""
+"""Stage 2: Continue Pre-Training - Adapt model to 1.58-bit quantization.
+
+This unified stage supports two modes:
+1. Pure LM training (default): pre_stage_2.enabled=false
+2. Distillation mode: pre_stage_2.enabled=true (merges old stage1_9 functionality)
+
+When pre_stage_2 is enabled, the trainer:
+- Loads a teacher model for hidden state extraction
+- Computes layer-wise distillation loss
+- Applies a distillation schedule that ramps down over training
+"""
 
 import logging
+import math
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
-from wrinklefree.distillation import ContinuePretrainLoss
+from wrinklefree.distillation import (
+    ContinuePretrainLoss,
+    HiddenStateTeacherWrapper,
+    LayerwiseDistillationLoss,
+    LayerwiseLossType,
+)
 from wrinklefree.quantization.lambda_warmup import (
     LambdaWarmup,
     set_global_lambda_warmup,
@@ -24,7 +41,18 @@ class Stage2Trainer(Trainer):
     """
     Trainer for Stage 2 continue pre-training.
 
-    Extends base Trainer with token counting for pre-training.
+    Supports two modes:
+    1. Pure LM training (default): Uses ContinuePretrainLoss for next-token prediction
+    2. Pre-stage-2 distillation: Combines layer-wise distillation with LM loss
+
+    Args:
+        model: BitNet student model
+        optimizer: Optimizer instance
+        train_dataloader: Training data loader
+        config: Training configuration (DictConfig)
+        teacher: Optional HiddenStateTeacherWrapper for distillation mode
+        pre_stage_2_config: Optional config for distillation settings
+        **kwargs: Additional arguments for base Trainer
     """
 
     def __init__(
@@ -33,10 +61,34 @@ class Stage2Trainer(Trainer):
         optimizer: torch.optim.Optimizer,
         train_dataloader: DataLoader,
         config: DictConfig,
+        teacher: Optional[HiddenStateTeacherWrapper] = None,
+        pre_stage_2_config: Optional[DictConfig] = None,
         **kwargs,
     ):
-        # Use ContinuePretrainLoss
-        loss_fn = ContinuePretrainLoss()
+        # Determine mode: distillation vs pure LM
+        self.pre_stage_2_enabled = teacher is not None and pre_stage_2_config is not None
+        self.teacher = teacher
+
+        # Setup loss function based on mode
+        if self.pre_stage_2_enabled:
+            # Distillation mode: use LayerwiseDistillationLoss
+            layerwise_cfg = pre_stage_2_config.layerwise
+            loss_type_str = layerwise_cfg.get("loss_type", "mse_normalized")
+            loss_type = LayerwiseLossType(loss_type_str)
+            layer_weights = layerwise_cfg.get("layer_weights", None)
+
+            loss_fn = LayerwiseDistillationLoss(
+                loss_type=loss_type,
+                layer_weights=layer_weights,
+                hidden_size=layerwise_cfg.get("hidden_size"),
+                vocab_size=layerwise_cfg.get("vocab_size"),
+                temperature=layerwise_cfg.get("temperature", 1.0),
+                normalize=layerwise_cfg.get("normalize", True),
+            )
+            logger.info(f"Pre-stage-2 mode: loss_type={loss_type_str}, layer_weights={layer_weights}")
+        else:
+            # Pure LM mode: use ContinuePretrainLoss
+            loss_fn = ContinuePretrainLoss()
 
         super().__init__(
             model=model,
@@ -73,6 +125,27 @@ class Stage2Trainer(Trainer):
             # Ensure full quantization when warmup not enabled
             set_global_lambda_warmup(None)
 
+        # Pre-stage-2 distillation schedule settings
+        if self.pre_stage_2_enabled:
+            schedule_config = pre_stage_2_config.get("distill_schedule", None)
+            if schedule_config is not None and getattr(schedule_config, "enabled", False):
+                self.distill_schedule_enabled = True
+                self.distill_schedule_type = getattr(schedule_config, "type", "cosine")
+                self.distill_initial_weight = getattr(schedule_config, "initial_weight", 0.5)
+                self.distill_final_weight = getattr(schedule_config, "final_weight", 0.0)
+                self.distill_warmup_steps = getattr(schedule_config, "warmup_steps", 0)
+                logger.info(
+                    f"Distillation schedule enabled: type={self.distill_schedule_type}, "
+                    f"initial={self.distill_initial_weight}, final={self.distill_final_weight}, "
+                    f"warmup={self.distill_warmup_steps}"
+                )
+            else:
+                self.distill_schedule_enabled = False
+                # Use fixed LM loss weight from layerwise config
+                self.lm_loss_weight = pre_stage_2_config.layerwise.get("lm_loss_weight", 0.5)
+        else:
+            self.distill_schedule_enabled = False
+
         # Track influence-aware optimizer
         self.has_influence = self._check_influence_optimizer()
         if self.has_influence:
@@ -96,6 +169,46 @@ class Stage2Trainer(Trainer):
             logger.warning(f"Failed to get mixture weights: {e}")
 
         return None
+
+    def _get_current_distill_weight(self) -> float:
+        """
+        Get current distillation weight based on schedule.
+
+        Returns a value between 0.0 and 1.0 representing the distillation weight.
+        This weight is applied as: loss = distill_weight * distill_loss + (1 - distill_weight) * lm_loss
+        """
+        if not self.pre_stage_2_enabled:
+            return 0.0  # No distillation in pure LM mode
+
+        if not self.distill_schedule_enabled:
+            # Use fixed weight from lm_loss_weight config
+            return 1.0 - getattr(self, "lm_loss_weight", 0.5)
+
+        # Handle warmup: keep initial weight constant
+        if self.global_step < self.distill_warmup_steps:
+            return self.distill_initial_weight
+
+        # Calculate progress (0 to 1) after warmup
+        effective_step = self.global_step - self.distill_warmup_steps
+        total_decay_steps = max(self.max_steps - self.distill_warmup_steps, 1)
+        progress = min(effective_step / total_decay_steps, 1.0)
+
+        # Apply schedule
+        if self.distill_schedule_type == "linear":
+            # Linear decay from initial to final
+            weight = self.distill_initial_weight + progress * (
+                self.distill_final_weight - self.distill_initial_weight
+            )
+        elif self.distill_schedule_type == "cosine":
+            # Cosine decay: smooth transition, slower at endpoints
+            weight = self.distill_final_weight + 0.5 * (
+                self.distill_initial_weight - self.distill_final_weight
+            ) * (1 + math.cos(math.pi * progress))
+        else:
+            # Fallback to initial weight
+            weight = self.distill_initial_weight
+
+        return weight
 
     def train(self) -> dict[str, float]:
         """Training loop with token counting.
@@ -233,6 +346,19 @@ class Stage2Trainer(Trainer):
                         if self.lambda_warmup is not None:
                             wandb_log["train/lambda"] = self.lambda_warmup.lambda_val
 
+                        # Log distillation metrics if in pre_stage_2 mode
+                        if self.pre_stage_2_enabled:
+                            if "distill_loss" in last_loss_dict:
+                                wandb_log["train/distill_loss"] = last_loss_dict["distill_loss"].item()
+                            if "lm_loss" in last_loss_dict:
+                                wandb_log["train/lm_loss"] = last_loss_dict["lm_loss"].item()
+                            if "mean_layer_loss" in last_loss_dict:
+                                wandb_log["train/mean_layer_loss"] = last_loss_dict["mean_layer_loss"].item()
+                            # Log distillation schedule
+                            current_distill_weight = self._get_current_distill_weight()
+                            wandb_log["schedule/distill_weight"] = current_distill_weight
+                            wandb_log["schedule/lm_weight"] = 1.0 - current_distill_weight
+
                         # Log mixture weights if using influence-aware optimizer
                         if self.has_influence:
                             mixture_weights = self._get_mixture_weights()
@@ -277,11 +403,23 @@ class Stage2Trainer(Trainer):
         return final_metrics
 
     def _forward_step(self, batch: dict) -> dict[str, torch.Tensor]:
-        """Forward step with token tracking."""
+        """Forward step with token tracking.
+
+        Handles both modes:
+        - Pure LM: uses ContinuePretrainLoss
+        - Pre-stage-2: combines layer-wise distillation with LM loss
+        """
         # Track tokens
         batch_tokens = batch["input_ids"].numel()
         self.tokens_processed += batch_tokens
 
+        if self.pre_stage_2_enabled:
+            return self._forward_step_distillation(batch)
+        else:
+            return self._forward_step_lm(batch)
+
+    def _forward_step_lm(self, batch: dict) -> dict[str, torch.Tensor]:
+        """Pure LM forward step (default mode)."""
         # Forward pass through model (with position_ids for sequence packing)
         outputs = self.model(
             input_ids=batch["input_ids"],
@@ -304,6 +442,100 @@ class Stage2Trainer(Trainer):
 
         return loss_dict
 
+    def _forward_step_distillation(self, batch: dict) -> dict[str, torch.Tensor]:
+        """Pre-stage-2 forward step with hidden state distillation + LM loss."""
+        # Get teacher hidden states and logits
+        teacher_outputs = self.teacher(
+            input_ids=batch["input_ids"],
+            attention_mask=batch.get("attention_mask"),
+        )
+
+        # Get student hidden states and logits
+        student_outputs = self.model(
+            input_ids=batch["input_ids"],
+            attention_mask=batch.get("attention_mask"),
+            output_hidden_states=True,
+        )
+
+        # Extract hidden states (skip embedding layer at index 0)
+        student_hidden = list(student_outputs["hidden_states"])[1:]
+        teacher_hidden = list(teacher_outputs["hidden_states"])[1:]
+
+        # Compute layerwise distillation loss
+        loss_dict = self.loss_fn(
+            student_hidden_states=student_hidden,
+            teacher_hidden_states=teacher_hidden,
+            attention_mask=batch.get("attention_mask"),
+        )
+
+        # Get scheduled distillation weight
+        distill_weight = self._get_current_distill_weight()
+        lm_weight = 1.0 - distill_weight
+
+        # Combine with LM loss if using scheduled weights
+        if lm_weight > 0 and "labels" in batch:
+            # Get logits
+            if isinstance(student_outputs, dict):
+                student_logits = student_outputs["logits"]
+            elif hasattr(student_outputs, "logits"):
+                student_logits = student_outputs.logits
+            else:
+                student_logits = student_outputs[0]
+
+            if isinstance(teacher_outputs, dict):
+                teacher_logits = teacher_outputs["logits"]
+            elif hasattr(teacher_outputs, "logits"):
+                teacher_logits = teacher_outputs.logits
+            else:
+                teacher_logits = teacher_outputs[0]
+
+            labels = batch["labels"]
+
+            # Shift for next-token prediction
+            shift_student = student_logits[..., :-1, :].contiguous()
+            shift_teacher = teacher_logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+
+            # Cross-entropy loss against ground truth
+            ce_loss = F.cross_entropy(
+                shift_student.view(-1, shift_student.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+
+            # KL divergence from teacher logits (soft distillation)
+            temperature = 2.0
+            kl_loss = F.kl_div(
+                F.log_softmax(shift_student / temperature, dim=-1).view(-1, shift_student.size(-1)),
+                F.softmax(shift_teacher.detach() / temperature, dim=-1).view(-1, shift_teacher.size(-1)),
+                reduction="batchmean",
+            ) * (temperature ** 2)
+
+            # Combined LM loss: 0.5 CE + 0.5 KL
+            lm_loss = 0.5 * ce_loss + 0.5 * kl_loss
+
+            # Combine hidden state distill + LM losses using scheduled weights
+            distill_loss = loss_dict["loss"]
+            combined_loss = distill_weight * distill_loss + lm_weight * lm_loss
+            loss_dict["loss"] = combined_loss
+            loss_dict["distill_loss"] = distill_loss.detach()
+            loss_dict["lm_loss"] = lm_loss.detach()
+            loss_dict["ce_loss"] = ce_loss.detach()
+            loss_dict["kl_loss"] = kl_loss.detach()
+            loss_dict["distill_weight"] = torch.tensor(distill_weight, device=batch["input_ids"].device)
+
+            # Compute perplexity from CE loss
+            ppl = torch.exp(torch.clamp(ce_loss.detach(), max=10.0))
+            loss_dict["perplexity"] = ppl
+        else:
+            # Pure distillation (no LM loss)
+            loss_dict["perplexity"] = torch.tensor(0.0)
+
+        # Add tracking metrics
+        loss_dict["tokens_processed"] = torch.tensor(float(self.tokens_processed), device=batch["input_ids"].device)
+
+        return loss_dict
+
 
 def run_stage2(
     model: nn.Module,
@@ -314,9 +546,14 @@ def run_stage2(
     probe_dataloader: Optional[DataLoader] = None,
     run_manager: Optional[Any] = None,
     experiment_name: Optional[str] = None,
+    teacher_model_name: Optional[str] = None,
 ) -> nn.Module:
     """
     Run Stage 2: Continue pre-training to adapt weight distributions.
+
+    Supports two modes:
+    1. Pure LM training (default): pre_stage_2.enabled=false
+    2. Distillation mode: pre_stage_2.enabled=true (merges old stage1_9 functionality)
 
     Args:
         model: BitNet model from Stage 1
@@ -327,15 +564,56 @@ def run_stage2(
         resume_from: Optional checkpoint to resume from
         run_manager: Optional RunManager for GCS checkpoint uploads
         experiment_name: Name for GCS checkpoint path (e.g., "bitdistill_smollm2_135m")
+        teacher_model_name: Optional teacher model name for pre_stage_2 mode.
+            If not provided, uses config.model.teacher.pretrained when pre_stage_2.enabled=true.
 
     Returns:
         Trained model
     """
-    logger.info("Stage 2: Starting continue pre-training")
+    # Check if pre_stage_2 mode is enabled
+    pre_stage_2_config = getattr(config.training, "pre_stage_2", None)
+    pre_stage_2_enabled = pre_stage_2_config is not None and getattr(pre_stage_2_config, "enabled", False)
+
+    if pre_stage_2_enabled:
+        logger.info("=" * 60)
+        logger.info("Stage 2: Starting with pre_stage_2 mode (distillation enabled)")
+        logger.info("=" * 60)
+    else:
+        logger.info("Stage 2: Starting continue pre-training (pure LM mode)")
 
     # Setup distributed
     rank, local_rank, world_size = setup_distributed()
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+
+    # Load teacher model if pre_stage_2 is enabled
+    teacher = None
+    if pre_stage_2_enabled:
+        # Get teacher model name from argument or config
+        if teacher_model_name is None:
+            # Try to get from model.teacher.pretrained config
+            if hasattr(config, "model") and hasattr(config.model, "teacher"):
+                teacher_model_name = getattr(config.model.teacher, "pretrained", None)
+            # Fallback to model.pretrained_name (same as original model)
+            if teacher_model_name is None and hasattr(config, "model"):
+                teacher_model_name = getattr(config.model, "pretrained_name", None)
+
+        if teacher_model_name is None:
+            raise ValueError(
+                "pre_stage_2.enabled=true but no teacher model specified. "
+                "Set model.teacher.pretrained in config or pass teacher_model_name argument."
+            )
+
+        # Get teacher loading settings
+        teacher_cfg = pre_stage_2_config.get("teacher", {})
+        teacher = HiddenStateTeacherWrapper(
+            model_name_or_path=teacher_model_name,
+            device=device,
+            load_in_fp16=teacher_cfg.get("fp16", True),
+            offload_to_cpu=teacher_cfg.get("offload_to_cpu", False),
+            load_in_4bit=teacher_cfg.get("load_in_4bit", False),
+            use_flash_attention=teacher_cfg.get("use_flash_attention", False),
+        )
+        logger.info(f"Teacher model loaded: {teacher_model_name}")
 
     # Move model to device with uniform dtype (required for FSDP)
     # FSDP requires all tensors to have the same dtype before wrapping
@@ -534,12 +812,15 @@ def run_stage2(
     )
 
     # Create trainer (pass full config for run naming and wandb logging)
+    # Pass teacher and pre_stage_2_config if in distillation mode
     trainer = Stage2Trainer(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
         train_dataloader=train_dataloader,
         config=config,
+        teacher=teacher if pre_stage_2_enabled else None,
+        pre_stage_2_config=pre_stage_2_config if pre_stage_2_enabled else None,
         device=device,
         rank=rank,
         world_size=world_size,

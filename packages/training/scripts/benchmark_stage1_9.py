@@ -72,7 +72,7 @@ class Stage19BenchmarkRunner:
             student_model = self._build_student_model().to(self.device)
 
             # Build teacher model
-            from wrinklefree.training.stage1_9 import HiddenStateTeacherWrapper
+            from wrinklefree.distillation import HiddenStateTeacherWrapper
             teacher = HiddenStateTeacherWrapper(
                 model_name_or_path=self.model_name,
                 device=self.device,
@@ -110,15 +110,22 @@ class Stage19BenchmarkRunner:
                 "total_tokens": self.runner_config.total_tokens,
             })
 
-            # Create trainer
-            from wrinklefree.training.stage1_9 import Stage19Trainer
-            trainer = Stage19Trainer(
+            # Create trainer (Stage19Trainer merged into Stage2Trainer)
+            from wrinklefree.training.stage2 import Stage2Trainer
+            # Convert layerwise_config to pre_stage_2 format
+            pre_stage_2_config = OmegaConf.create({
+                "enabled": True,
+                "teacher": {"fp16": True, "offload_to_cpu": False, "load_in_4bit": False},
+                "layerwise": layerwise_config,
+                "distill_schedule": {"enabled": False},
+            })
+            trainer = Stage2Trainer(
                 model=student_model,
-                teacher=teacher,
                 optimizer=optimizer,
                 train_dataloader=dataloader,
                 config=config,
-                layerwise_config=layerwise_config,
+                teacher=teacher,
+                pre_stage_2_config=pre_stage_2_config,
                 device=self.device,
                 rank=0,
                 world_size=1,
