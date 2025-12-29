@@ -111,6 +111,7 @@ class InfluenceAwareOptimizer(Optimizer):
 
     def _update_mixture_weights(self):
         """Update dataset mixture weights based on influence."""
+        import gc
         import time
         try:
             if self.rank == 0:
@@ -132,10 +133,12 @@ class InfluenceAwareOptimizer(Optimizer):
                 print()
 
             # Refresh probe cache with current model state
-            # Clear CUDA cache first to avoid OOM during gradient computation
+            # Clear CUDA cache and run garbage collection to avoid OOM
             import torch
+            gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
 
             if self.rank == 0:
                 print(f"Refreshing probe cache with current model state...")
@@ -178,6 +181,11 @@ class InfluenceAwareOptimizer(Optimizer):
                 print("="*80)
                 print()
 
+            # Clean up GPU memory after influence update
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         except Exception as e:
             if self.rank == 0:
                 print(f"\n[ERROR] Failed to update mixture weights at step {self.step_count}: {e}")
@@ -185,6 +193,10 @@ class InfluenceAwareOptimizer(Optimizer):
                 traceback.print_exc()
                 print("="*80)
                 print()
+            # Still clean up memory on error
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def get_parameter_groups(

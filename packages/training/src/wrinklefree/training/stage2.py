@@ -198,14 +198,15 @@ class Stage2Trainer(Trainer):
             num_accumulated += 1
 
             # Optimizer step
+            grad_norm = None
             if num_accumulated >= self.gradient_accumulation_steps:
                 # Gradient clipping (FSDP-aware)
                 if self.gradient_clipping > 0:
                     # For FSDP models, use the FSDP clip_grad_norm_ method
                     if hasattr(self.model, "clip_grad_norm_"):
-                        self.model.clip_grad_norm_(self.gradient_clipping)
+                        grad_norm = self.model.clip_grad_norm_(self.gradient_clipping)
                     else:
-                        torch.nn.utils.clip_grad_norm_(
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
                             self.model.parameters(),
                             self.gradient_clipping,
                         )
@@ -258,6 +259,11 @@ class Stage2Trainer(Trainer):
                             "train/step": self.global_step,
                             "train/tokens_processed": self.tokens_processed,
                         }
+                        # Log gradient norm
+                        if grad_norm is not None:
+                            gn = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
+                            wandb_log["train/grad_norm"] = gn
+                            wandb_log["train/grad_clipped"] = 1.0 if gn > self.gradient_clipping else 0.0
                         # Log lambda if warmup is active
                         if self.lambda_warmup is not None:
                             wandb_log["train/lambda"] = self.lambda_warmup.lambda_val

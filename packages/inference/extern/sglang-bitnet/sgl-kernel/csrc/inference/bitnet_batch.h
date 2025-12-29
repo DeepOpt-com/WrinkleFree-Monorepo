@@ -66,11 +66,20 @@ typedef enum {
 /// Per-sequence information (returned by query functions)
 typedef struct {
     bitnet_seq_id seq_id;
-    BitNetSeqState state;
+    bool is_active;
     int32_t position;           ///< Current position in sequence
     int32_t prompt_len;         ///< Original prompt length
     int32_t generated_count;    ///< Tokens generated so far
 } BitNetSeqInfo;
+
+/// Sampling parameters for batch API
+typedef struct {
+    float temperature;          ///< Temperature (0 = greedy)
+    float top_p;                ///< Top-p sampling
+    float top_k;                ///< Top-k sampling (0 = disabled)
+    float repetition_penalty;   ///< Repetition penalty
+    int32_t max_tokens;         ///< Maximum tokens to generate
+} BitNetSamplingParams;
 
 // =============================================================================
 // Batch Engine Lifecycle
@@ -228,7 +237,49 @@ const float* bitnet_get_logits_ith(
 int32_t bitnet_batch_sample(
     BitNetBatchEngine* engine,
     int32_t batch_idx,
-    const SamplingParams* params
+    const BitNetSamplingParams* params
+);
+
+// =============================================================================
+// Tokenization
+// =============================================================================
+
+/**
+ * Tokenize text to token IDs.
+ *
+ * @param engine Batch engine
+ * @param text Input text
+ * @param text_len Length of text (-1 for null-terminated)
+ * @param tokens Output token array
+ * @param n_tokens_max Maximum tokens to output
+ * @param add_special Add special tokens (BOS, etc.)
+ * @return Number of tokens, or negative on error
+ */
+int32_t bitnet_tokenize(
+    BitNetBatchEngine* engine,
+    const char* text,
+    int32_t text_len,
+    int32_t* tokens,
+    int32_t n_tokens_max,
+    bool add_special
+);
+
+/**
+ * Detokenize token IDs to text.
+ *
+ * @param engine Batch engine
+ * @param tokens Input token array
+ * @param n_tokens Number of tokens
+ * @param text Output text buffer
+ * @param text_len_max Maximum text length
+ * @return Length of output text, or negative on error
+ */
+int32_t bitnet_detokenize(
+    BitNetBatchEngine* engine,
+    const int32_t* tokens,
+    int32_t n_tokens,
+    char* text,
+    int32_t text_len_max
 );
 
 // =============================================================================
@@ -307,14 +358,44 @@ void bitnet_kv_cache_clear(BitNetBatchEngine* engine);
 int32_t bitnet_batch_eos_token(BitNetBatchEngine* engine);
 
 /**
+ * Check if token is end-of-generation token.
+ */
+bool bitnet_batch_is_eos(BitNetBatchEngine* engine, int32_t token);
+
+/**
  * Get vocabulary size.
  */
 int32_t bitnet_batch_vocab_size(BitNetBatchEngine* engine);
 
 /**
+ * Get context length.
+ */
+int32_t bitnet_batch_n_ctx(BitNetBatchEngine* engine);
+
+/**
+ * Get embedding dimension.
+ */
+int32_t bitnet_batch_n_embd(BitNetBatchEngine* engine);
+
+/**
+ * Get maximum number of concurrent sequences.
+ */
+int32_t bitnet_batch_max_sequences(BitNetBatchEngine* engine);
+
+/**
+ * Get number of currently active sequences.
+ */
+int32_t bitnet_batch_active_sequences(BitNetBatchEngine* engine);
+
+/**
  * Get maximum context length per sequence.
  */
 int32_t bitnet_batch_max_ctx_per_seq(BitNetBatchEngine* engine);
+
+/**
+ * Get last error message.
+ */
+const char* bitnet_batch_get_error(void);
 
 #ifdef __cplusplus
 }

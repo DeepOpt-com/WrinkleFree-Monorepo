@@ -5,10 +5,9 @@
 
 use super::batch_ffi::{
     self, BitNetBatch as CBatch, BitNetBatchConfig, BitNetBatchEngine as CEngine,
-    BitNetSeqId, BitNetSeqInfo, BitNetSeqState, CSamplingParams,
+    BitNetSeqId, BitNetSeqInfo, BitNetSamplingParams,
 };
-use std::ffi::CString;
-use std::ptr;
+use std::ffi::{CString, CStr};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -45,7 +44,7 @@ pub enum BatchError {
 pub struct BatchSamplingParams {
     pub temperature: f32,
     pub top_p: f32,
-    pub top_k: i32,
+    pub top_k: f32,
     pub repetition_penalty: f32,
     pub max_tokens: i32,
 }
@@ -55,16 +54,16 @@ impl Default for BatchSamplingParams {
         Self {
             temperature: 0.7,
             top_p: 0.9,
-            top_k: 0,
+            top_k: 0.0,
             repetition_penalty: 1.0,
             max_tokens: 256,
         }
     }
 }
 
-impl From<&BatchSamplingParams> for CSamplingParams {
+impl From<&BatchSamplingParams> for BitNetSamplingParams {
     fn from(params: &BatchSamplingParams) -> Self {
-        CSamplingParams {
+        BitNetSamplingParams {
             temperature: params.temperature,
             top_p: params.top_p,
             top_k: params.top_k,
@@ -112,30 +111,10 @@ impl From<&BatchConfig> for BitNetBatchConfig {
 #[derive(Debug, Clone)]
 pub struct SequenceInfo {
     pub seq_id: i32,
-    pub state: SequenceState,
+    pub is_active: bool,
     pub position: i32,
     pub prompt_len: i32,
     pub generated_count: i32,
-}
-
-/// Sequence state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SequenceState {
-    Idle,
-    Prefilling,
-    Decoding,
-    Finished,
-}
-
-impl From<BitNetSeqState> for SequenceState {
-    fn from(state: BitNetSeqState) -> Self {
-        match state {
-            BitNetSeqState::Idle => SequenceState::Idle,
-            BitNetSeqState::Prefilling => SequenceState::Prefilling,
-            BitNetSeqState::Decoding => SequenceState::Decoding,
-            BitNetSeqState::Finished => SequenceState::Finished,
-        }
-    }
 }
 
 /// A batch of tokens for inference
@@ -296,7 +275,7 @@ impl NativeBatchEngine {
 
         Ok(SequenceInfo {
             seq_id: info.seq_id,
-            state: info.state.into(),
+            is_active: info.is_active,
             position: info.position,
             prompt_len: info.prompt_len,
             generated_count: info.generated_count,
@@ -352,7 +331,7 @@ impl NativeBatchEngine {
         batch_idx: i32,
         params: &BatchSamplingParams,
     ) -> Result<i32, BatchError> {
-        let c_params = CSamplingParams::from(params);
+        let c_params = BitNetSamplingParams::from(params);
         let token = unsafe { batch_ffi::bitnet_batch_sample(self.engine, batch_idx, &c_params) };
 
         if token < 0 {
@@ -421,14 +400,100 @@ impl NativeBatchEngine {
         unsafe { batch_ffi::bitnet_batch_eos_token(self.engine) }
     }
 
+    /// Check if token is end-of-generation
+    pub fn is_eos(&self, token: i32) -> bool {
+        unsafe { batch_ffi::bitnet_batch_is_eos(self.engine, token) }
+    }
+
     /// Get vocabulary size
     pub fn vocab_size(&self) -> i32 {
         unsafe { batch_ffi::bitnet_batch_vocab_size(self.engine) }
     }
 
+    /// Get context length
+    pub fn n_ctx(&self) -> i32 {
+        unsafe { batch_ffi::bitnet_batch_n_ctx(self.engine) }
+    }
+
+    /// Get embedding dimension
+    pub fn n_embd(&self) -> i32 {
+        unsafe { batch_ffi::bitnet_batch_n_embd(self.engine) }
+    }
+
+    /// Get maximum number of concurrent sequences
+    pub fn max_sequences(&self) -> i32 {
+        unsafe { batch_ffi::bitnet_batch_max_sequences(self.engine) }
+    }
+
+    /// Get number of currently active sequences
+    pub fn active_sequences(&self) -> i32 {
+        unsafe { batch_ffi::bitnet_batch_active_sequences(self.engine) }
+    }
+
     /// Get maximum context length per sequence
     pub fn max_ctx_per_seq(&self) -> i32 {
         unsafe { batch_ffi::bitnet_batch_max_ctx_per_seq(self.engine) }
+    }
+
+    // ==========================================================================
+    // Tokenization
+    // ==========================================================================
+
+    /// Tokenize text to token IDs
+    ///
+    /// Returns a vector of token IDs. If add_special is true, special tokens
+    /// (like BOS) will be added.
+    pub fn tokenize(&self, text: &str, add_special: bool) -> Result<Vec<i32>, BatchError> {
+        let c_text = CString::new(text).map_err(|_| BatchError::InvalidModelPath)?;
+
+        // First call to get token count
+        let mut tokens = vec![0i32; 8192]; // Max reasonable prompt size
+        let n_tokens = unsafe {
+            batch_ffi::bitnet_tokenize(
+                self.engine,
+                c_text.as_ptr(),
+                text.len() as i32,
+                tokens.as_mut_ptr(),
+                tokens.len() as i32,
+                add_special,
+            )
+        };
+
+        if n_tokens < 0 {
+            return Err(BatchError::DecodeFailed("Tokenization failed".to_string()));
+        }
+
+        tokens.truncate(n_tokens as usize);
+        Ok(tokens)
+    }
+
+    /// Detokenize token IDs to text
+    ///
+    /// Returns the decoded text string.
+    pub fn detokenize(&self, tokens: &[i32]) -> Result<String, BatchError> {
+        let mut buffer = vec![0u8; 8192];
+        let len = unsafe {
+            batch_ffi::bitnet_detokenize(
+                self.engine,
+                tokens.as_ptr(),
+                tokens.len() as i32,
+                buffer.as_mut_ptr() as *mut i8,
+                buffer.len() as i32,
+            )
+        };
+
+        if len < 0 {
+            return Err(BatchError::DecodeFailed("Detokenization failed".to_string()));
+        }
+
+        buffer.truncate(len as usize);
+        String::from_utf8(buffer)
+            .map_err(|_| BatchError::DecodeFailed("Invalid UTF-8 in detokenized text".to_string()))
+    }
+
+    /// Detokenize a single token to text
+    pub fn token_to_piece(&self, token: i32) -> Result<String, BatchError> {
+        self.detokenize(&[token])
     }
 }
 

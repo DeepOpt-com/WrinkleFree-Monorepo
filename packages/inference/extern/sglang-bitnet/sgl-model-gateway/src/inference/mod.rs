@@ -37,9 +37,11 @@ pub use batch_engine::{
     BatchSamplingParams,
     NativeBatchEngine,
     SequenceInfo,
-    SequenceState,
 };
 pub use batch_ffi::BitNetSeqId;
+
+// Re-export SequenceState from sequence module for backward compatibility
+pub use sequence::SequenceState;
 
 // Scheduler API
 pub use scheduler::{BatchScheduler, SchedulerConfig, SchedulerHandle, SchedulerStats};

@@ -97,25 +97,28 @@ def estimate_starting_batch_size(model_name: str, stage: str) -> int:
             else:
                 return 16
     elif "4b" in model_name.lower() or "qwen3" in model_name.lower():
-        # 4B model - more conservative
+        # 4B model - conservative for single GPU training
+        # Qwen3-4B is ~16GB in BF16, optimizer states add ~32-48GB
+        # Total: ~64-80GB, leaving minimal headroom on H100
         if is_distillation:
             # Stage 1.9/distillation loads teacher + student = 2x memory
-            # Qwen3-4B: ~8GB per model × 2 = 16GB base
+            # Qwen3-4B: ~16GB per model × 2 = 32GB base
             # Plus optimizer states, activations, gradients - very memory heavy
             if vram_gb >= 70:
-                return 4  # Very conservative for 80GB (8 OOM'd)
+                return 2  # Very conservative for 80GB
             elif vram_gb >= 35:
-                return 2
+                return 1
             else:
                 return 1
         else:
             # Stage 2/3 - only student model
+            # batch=32 OOMs on single H100, batch=8 is safe with influence updates
             if vram_gb >= 70:
-                return 32
+                return 8  # Reduced from 32 - single GPU needs headroom for influence
             elif vram_gb >= 35:
-                return 8
-            else:
                 return 4
+            else:
+                return 2
     else:
         # Unknown model - be conservative
         return 8

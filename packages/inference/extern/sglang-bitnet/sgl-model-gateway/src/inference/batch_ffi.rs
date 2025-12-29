@@ -58,7 +58,7 @@ pub enum BitNetSeqState {
 #[derive(Debug, Clone)]
 pub struct BitNetSeqInfo {
     pub seq_id: BitNetSeqId,
-    pub state: BitNetSeqState,
+    pub is_active: bool,
     pub position: i32,
     pub prompt_len: i32,
     pub generated_count: i32,
@@ -68,7 +68,7 @@ impl Default for BitNetSeqInfo {
     fn default() -> Self {
         Self {
             seq_id: -1,
-            state: BitNetSeqState::Idle,
+            is_active: false,
             position: 0,
             prompt_len: 0,
             generated_count: 0,
@@ -76,28 +76,31 @@ impl Default for BitNetSeqInfo {
     }
 }
 
-/// Sampling parameters (reused from single-sequence API)
+/// Sampling parameters (matches BitNetSamplingParams in C++)
 #[repr(C)]
 #[derive(Debug, Clone)]
-pub struct CSamplingParams {
+pub struct BitNetSamplingParams {
     pub temperature: f32,
     pub top_p: f32,
-    pub top_k: i32,
+    pub top_k: f32,
     pub repetition_penalty: f32,
     pub max_tokens: i32,
 }
 
-impl Default for CSamplingParams {
+impl Default for BitNetSamplingParams {
     fn default() -> Self {
         Self {
             temperature: 0.7,
             top_p: 0.9,
-            top_k: 0,
+            top_k: 0.0,
             repetition_penalty: 1.0,
             max_tokens: 256,
         }
     }
 }
+
+/// Legacy alias for CSamplingParams
+pub type CSamplingParams = BitNetSamplingParams;
 
 // Link to the C++ library
 #[link(name = "sgl_kernel_inference")]
@@ -184,7 +187,7 @@ extern "C" {
     pub fn bitnet_batch_sample(
         engine: *mut BitNetBatchEngine,
         batch_idx: i32,
-        params: *const CSamplingParams,
+        params: *const BitNetSamplingParams,
     ) -> i32;
 
     // ==========================================================================
@@ -230,9 +233,50 @@ extern "C" {
     /// Get EOS token ID
     pub fn bitnet_batch_eos_token(engine: *mut BitNetBatchEngine) -> i32;
 
+    /// Check if token is end-of-generation
+    pub fn bitnet_batch_is_eos(engine: *mut BitNetBatchEngine, token: i32) -> bool;
+
     /// Get vocabulary size
     pub fn bitnet_batch_vocab_size(engine: *mut BitNetBatchEngine) -> i32;
 
+    /// Get context length
+    pub fn bitnet_batch_n_ctx(engine: *mut BitNetBatchEngine) -> i32;
+
+    /// Get embedding dimension
+    pub fn bitnet_batch_n_embd(engine: *mut BitNetBatchEngine) -> i32;
+
+    /// Get maximum number of concurrent sequences
+    pub fn bitnet_batch_max_sequences(engine: *mut BitNetBatchEngine) -> i32;
+
+    /// Get number of currently active sequences
+    pub fn bitnet_batch_active_sequences(engine: *mut BitNetBatchEngine) -> i32;
+
     /// Get maximum context length per sequence
     pub fn bitnet_batch_max_ctx_per_seq(engine: *mut BitNetBatchEngine) -> i32;
+
+    /// Get last error message
+    pub fn bitnet_batch_get_error() -> *const c_char;
+
+    // ==========================================================================
+    // Tokenization
+    // ==========================================================================
+
+    /// Tokenize text to token IDs
+    pub fn bitnet_tokenize(
+        engine: *mut BitNetBatchEngine,
+        text: *const c_char,
+        text_len: i32,
+        tokens: *mut i32,
+        n_tokens_max: i32,
+        add_special: bool,
+    ) -> i32;
+
+    /// Detokenize token IDs to text
+    pub fn bitnet_detokenize(
+        engine: *mut BitNetBatchEngine,
+        tokens: *const i32,
+        n_tokens: i32,
+        text: *mut c_char,
+        text_len_max: i32,
+    ) -> i32;
 }

@@ -62,42 +62,42 @@ probe:
     web_edu:
       path: HuggingFaceFW/fineweb-edu
       subset: sample-10BT
-      samples: 200
+      samples: 34  # Reduced for memory efficiency
       text_column: text
       split: train
 
     code:
       path: nick007x/github-code-2025
       subset: null
-      samples: 200
+      samples: 33
       text_column: content
       split: train
 
     math:
       path: HuggingFaceTB/finemath
       subset: finemath-3plus
-      samples: 200
+      samples: 33
       text_column: text
       split: train
 
     dclm:
       path: mlfoundations/dclm-baseline-1.0-parquet
       subset: null
-      samples: 200
+      samples: 33
       text_column: text
       split: train
 
     diverse:
       path: HuggingFaceFW/fineweb
       subset: sample-10BT
-      samples: 200
+      samples: 33
       text_column: text
       split: train
 
     reasoning:
       path: PleIAs/SYNTH
       subset: null
-      samples: 200
+      samples: 34
       text_column:
         - query
         - synthetic_reasoning
@@ -105,7 +105,7 @@ probe:
       text_separator: "\n\n"
       split: train
 
-  total_samples: 1200
+  total_samples: 200  # Reduced from 1200 to prevent OOM during influence updates
   streaming: true
 
 # Preprocessing settings

@@ -65,6 +65,9 @@ class DataInfCalculator:
         This should be called once before computing influences.
         The cached gradients are used for all subsequent influence calculations.
 
+        Note: Gradients are stored on CPU to save GPU memory. They are moved
+        to GPU only when computing influence scores.
+
         Args:
             probe_dataloader: DataLoader for probe set samples
             show_progress: Whether to show progress bar
@@ -82,10 +85,11 @@ class DataInfCalculator:
 
             # Compute gradients for each sample in batch
             batch_grads = self.gradient_extractor.compute_batch_gradients(batch)
-            all_grads.append(batch_grads)
+            # Move to CPU immediately to save GPU memory
+            all_grads.append(batch_grads.cpu())
 
-        # Concatenate all gradients
-        self._probe_gradients = torch.cat(all_grads, dim=0)
+        # Concatenate all gradients (on CPU to save GPU memory)
+        self._probe_gradients = torch.cat(all_grads, dim=0)  # Now on CPU
         self._probe_grad_norms_sq = torch.sum(self._probe_gradients ** 2, dim=1)
         self._avg_probe_gradient = self._probe_gradients.mean(dim=0)
         self._num_probe_samples = self._probe_gradients.size(0)
@@ -119,16 +123,17 @@ class DataInfCalculator:
                 "Probe gradients not cached. Call cache_probe_gradients first."
             )
 
-        # Move to same device
-        device = self._probe_gradients.device
-        train_gradient = train_gradient.to(device)
+        # Move probe gradients to same device as train_gradient for computation
+        # (probe gradients are stored on CPU to save GPU memory)
+        device = train_gradient.device
+        probe_grads = self._probe_gradients.to(device)
 
         # Compute gradient norm squared
         train_grad_norm_sq = torch.sum(train_gradient ** 2)
 
         # Compute dot products with all probe gradients
         # probe_gradients: [N_probe, D], train_gradient: [D]
-        grad_alignment = torch.mv(self._probe_gradients, train_gradient)
+        grad_alignment = torch.mv(probe_grads, train_gradient)
 
         # DataInf influence formula
         # I = <g_train, g_probe> / (lambda + ||g_train||^2)
@@ -155,11 +160,13 @@ class DataInfCalculator:
                 "Probe gradients not cached. Call cache_probe_gradients first."
             )
 
-        device = self._avg_probe_gradient.device
-        train_gradient = train_gradient.to(device)
+        # Move avg probe gradient to same device as train_gradient
+        # (stored on CPU to save GPU memory)
+        device = train_gradient.device
+        avg_probe_grad = self._avg_probe_gradient.to(device)
 
         train_grad_norm_sq = torch.sum(train_gradient ** 2)
-        grad_alignment = torch.dot(self._avg_probe_gradient, train_gradient)
+        grad_alignment = torch.dot(avg_probe_grad, train_gradient)
         influence = grad_alignment / (self.config.lambda_reg + train_grad_norm_sq)
 
         return influence.item()
@@ -213,9 +220,12 @@ class DataInfCalculator:
         # Compute gradient norms
         train_grad_norms_sq = torch.sum(train_gradients ** 2, dim=1)
 
+        # Move avg probe gradient to GPU for computation (stored on CPU)
+        avg_probe_grad = self._avg_probe_gradient.to(device)
+
         # Compute alignment with average probe gradient
         # train_gradients: [B, D], avg_probe_gradient: [D]
-        grad_alignments = torch.mv(train_gradients, self._avg_probe_gradient.to(device))
+        grad_alignments = torch.mv(train_gradients, avg_probe_grad)
 
         # DataInf formula
         influences = grad_alignments / (self.config.lambda_reg + train_grad_norms_sq)

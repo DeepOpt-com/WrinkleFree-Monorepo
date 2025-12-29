@@ -17,22 +17,26 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 | `wf serve` | `inference` | Model serving |
 | `wf eval` | `eval` | Model evaluation |
 
-**Running from monorepo root**:
+**Running commands**:
 ```bash
-# All wf commands should be run from monorepo root
+# IMPORTANT: wf commands must be run from packages/deployer directory
+# (train.yaml uses relative paths that require this)
+cd packages/deployer
+source credentials/.env
 uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2
 ```
 
 ## Quick Reference
 
-**Important:** Run all commands with `uv run` from the monorepo root.
+**Important:** Run all `wf` commands from `packages/deployer` directory.
 
 ```bash
-# Set up credentials first
-source packages/deployer/credentials/.env
+# Set up credentials and run from deployer directory
+cd packages/deployer
+source credentials/.env
 
-# Launch training (run from monorepo root)
-uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --cloud runpod
+# Launch training
+uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --cloud nebius
 
 # With specific scale (4x H100)
 uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --scale large

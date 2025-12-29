@@ -130,9 +130,8 @@ impl From<SchedulerStats> for StatsResponse {
 /// Batch router state
 pub struct BatchRouterState {
     pub scheduler_handle: SchedulerHandle,
+    pub engine: Arc<NativeBatchEngine>,
     pub model_name: String,
-    // For simple tokenization (placeholder)
-    // In production, use a proper tokenizer
 }
 
 /// Batch router for continuous batching
@@ -168,16 +167,17 @@ impl BatchRouter {
         let model_name = self.model_name.clone();
 
         // Create scheduler
-        let (mut scheduler, handle) = BatchScheduler::new(config, engine);
+        let (mut scheduler, handle) = BatchScheduler::new(config, engine.clone());
 
         // Start scheduler task
         let scheduler_handle = tokio::spawn(async move {
             scheduler.run().await;
         });
 
-        // Create router state
+        // Create router state with engine reference for tokenization
         let state = Arc::new(BatchRouterState {
             scheduler_handle: handle,
+            engine,
             model_name,
         });
 
@@ -191,28 +191,23 @@ impl BatchRouter {
     }
 }
 
-/// Simple tokenization (placeholder)
-/// In production, use HuggingFace tokenizers or similar
-fn simple_tokenize(text: &str) -> Vec<i32> {
-    // Very naive tokenization - just split on whitespace and hash
-    text.split_whitespace()
-        .map(|word| {
-            let mut hash: i32 = 0;
-            for byte in word.bytes() {
-                hash = hash.wrapping_mul(31).wrapping_add(byte as i32);
-            }
-            hash.abs() % 152064 // vocab size
-        })
-        .collect()
-}
-
-/// Format messages into a prompt
+/// Format messages into a prompt using BitNet chat template
+/// Template: "Role: content<|eot_id|>"
 fn format_messages(messages: &[ChatMessage]) -> String {
     messages
         .iter()
-        .map(|m| format!("{}: {}", m.role, m.content))
+        .map(|m| {
+            let role = match m.role.to_lowercase().as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                _ => &m.role,
+            };
+            format!("{}: {}<|eot_id|>", role, m.content)
+        })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("")
+        + "Assistant:"
 }
 
 /// Handle chat completions
@@ -222,9 +217,26 @@ async fn handle_chat_completions(
 ) -> Response {
     let request_id = generate_request_id();
 
-    // Format and tokenize prompt
+    // Format prompt using chat template
     let prompt = format_messages(&request.messages);
-    let input_ids = simple_tokenize(&prompt);
+
+    // Tokenize using the engine's tokenizer (llama.cpp)
+    let input_ids = match state.engine.tokenize(&prompt, true) {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("Tokenization failed: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!("Tokenization failed: {}", e),
+                        "type": "invalid_request_error"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
 
     debug!(
         "Request {}: {} input tokens, stream={}",
@@ -237,7 +249,7 @@ async fn handle_chat_completions(
     let params = BatchSamplingParams {
         temperature: request.temperature,
         top_p: request.top_p,
-        top_k: 0,
+        top_k: 0.0,
         repetition_penalty: 1.0,
         max_tokens: request.max_tokens,
     };

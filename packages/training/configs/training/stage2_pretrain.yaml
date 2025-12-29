@@ -32,7 +32,7 @@ packing:
 # Optimization (AdamW for stable training)
 optimizer:
   type: adamw
-  lr: 2e-4  # Conservative LR for stable convergence
+  lr: 1e-4  # Reduced from 2e-4 to stabilize training (prevent spiky loss)
   weight_decay: 0.01
   betas: [0.9, 0.95]
 
