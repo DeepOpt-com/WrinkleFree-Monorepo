@@ -382,6 +382,7 @@ def train(
     auto_batch_size: bool = True,  # Enable dynamic batch probing
     resume: bool = True,  # Auto-resume from GCS checkpoint if available
     seed: int = 42,
+    early_stopping_cfg: dict | None = None,  # Early stopping config from Hydra
 ):
     """Run Fast-dLLM v2 SFT training."""
     set_seed(seed)
@@ -605,8 +606,8 @@ def train(
         except Exception as e:
             logger.warning(f"Failed to load optimizer state: {e}")
 
-    # Early stopping setup (disabled by default, can be enabled via Hydra config override)
-    early_stop_cfg = {}
+    # Early stopping setup
+    early_stop_cfg = early_stopping_cfg or {}
     early_stopper = PlateauEarlyStopping(
         patience=early_stop_cfg.get("patience", 5),
         min_delta=early_stop_cfg.get("min_delta", 0.01),
@@ -833,6 +834,7 @@ def main(cfg: DictConfig) -> None:
         warmup_ratio=cfg.conversion.scheduler.get("warmup_ratio", DEFAULT_WARMUP_RATIO),
         scheduler_type=cfg.conversion.scheduler.get("type", "constant"),
         seed=cfg.get("seed", 42),
+        early_stopping_cfg=OmegaConf.to_container(cfg.conversion.get("early_stopping", {})),
     )
 
     logger.info(f"Training complete!")
