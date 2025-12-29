@@ -320,11 +320,20 @@ class BenchmarkRunner:
         else:
             # Run Stage 1 conversion on-the-fly
             logger.info(f"No Stage 1 checkpoint, converting {self.model_name} to BitNet on-the-fly")
+            from transformers import AutoConfig
+
             from wrinklefree.training.stage1 import run_stage1
+
+            # Get model dimensions from HuggingFace config
+            hf_config = AutoConfig.from_pretrained(self.model_name)
+            hidden_size = hf_config.hidden_size
+            intermediate_size = hf_config.intermediate_size
 
             model, _ = run_stage1(
                 pretrained_model_name=self.model_name,
                 output_dir=Path("./outputs/stage1_checkpoint"),
+                hidden_size=hidden_size,
+                intermediate_size=intermediate_size,
             )
             return model
 
@@ -353,9 +362,9 @@ class BenchmarkRunner:
 
         if influence_enabled:
             # Use MixedDataset with influence-based data selection
-            from wrinklefree.data.mixed_dataset import create_mixed_dataloader
+            from wrinklefree.data import create_mixed_dataloader
 
-            return create_mixed_dataloader(
+            dataloader, _ = create_mixed_dataloader(
                 sources=[
                     {"path": "HuggingFaceFW/fineweb-edu", "name": "fineweb-edu", "subset": "sample-10BT", "weight": 0.7},
                     {"path": "allenai/c4", "name": "c4-en", "subset": "en", "weight": 0.3},
@@ -365,6 +374,7 @@ class BenchmarkRunner:
                 max_length=self.runner_config.sequence_length,
                 num_workers=self.runner_config.num_workers,
             )
+            return dataloader
         else:
             # Simple pretrain dataloader without influence
             from wrinklefree.data.pretrain_dataset import create_pretrain_dataloader

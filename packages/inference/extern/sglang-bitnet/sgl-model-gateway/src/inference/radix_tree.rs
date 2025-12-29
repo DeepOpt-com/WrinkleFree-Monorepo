@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn test_node_creation() {
         let node = RadixTreeNode::new(vec![1, 2, 3], 0, 0, 3, 1);
-        assert_eq!(node.tokens, vec![1, 2, 3]);
+        assert_eq!(node.tokens.as_slice(), &[1, 2, 3]);
         assert_eq!(node.kv_seq_id.load(Ordering::Relaxed), 0);
         assert_eq!(node.prefix_len.load(Ordering::Relaxed), 3);
         assert!(!node.is_root());

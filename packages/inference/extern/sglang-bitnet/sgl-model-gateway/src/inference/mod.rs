@@ -26,6 +26,8 @@ mod sequence;
 mod scheduler;
 pub mod radix_tree;
 pub mod radix_cache;
+mod dlm_config;
+mod dlm_scheduler;
 
 // Single-sequence API
 pub use engine::NativeEngine;
@@ -54,3 +56,7 @@ pub use sequence::{
 // RadixCache API (prefix caching for KV cache reuse)
 pub use radix_cache::{RadixCache, RadixCacheConfig, EvictionPolicy, MatchResult, RadixCacheStats};
 pub use radix_tree::{RadixTreeNode, TokenVec};
+
+// DLM (Diffusion LLM) API - Fast-dLLM v2 block diffusion inference
+pub use dlm_config::DlmConfig;
+pub use dlm_scheduler::{DlmScheduler, DlmSchedulerConfig, DlmSchedulerHandle, DlmSchedulerStats, softmax, argmax};

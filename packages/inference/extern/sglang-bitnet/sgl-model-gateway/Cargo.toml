@@ -45,6 +45,11 @@ name = "batch_server"
 path = "src/bin/batch_server.rs"
 required-features = ["native-inference"]
 
+[[bin]]
+name = "dlm_server"
+path = "src/bin/dlm_server.rs"
+required-features = ["native-inference"]
+
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 axum = { version = "0.8.6", features = ["macros", "ws", "tracing"] }
