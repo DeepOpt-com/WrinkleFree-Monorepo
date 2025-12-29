@@ -90,7 +90,7 @@ activation_sparsity:
 
 # Checkpointing
 checkpoint:
-  save_interval: 2500
+  save_interval: 1000
   keep_last_n: 3
   save_optimizer: true
 
