@@ -37,10 +37,10 @@ sources:
     text_column: text
     streaming: true
 
-  - name: slimpajama
-    path: cerebras/SlimPajama-627B
-    subset: null
-    weight: 0.135  # 13.5% curated diversity
+  - name: fineweb
+    path: HuggingFaceFW/fineweb
+    subset: sample-10BT
+    weight: 0.135  # 13.5% diverse web content
     text_column: text
     streaming: true
 
@@ -88,8 +88,8 @@ probe:
       split: train
 
     diverse:
-      path: cerebras/SlimPajama-627B
-      subset: null
+      path: HuggingFaceFW/fineweb
+      subset: sample-10BT
       samples: 200
       text_column: text
       split: train

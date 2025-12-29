@@ -1,34 +1,30 @@
 # Diffusion Fine-tuning Configuration
 #
 # Training settings for converting BitNet to DLM.
-# Based on Fast-dLLM v2 recipe (~1B tokens).
+# Based on Fast-dLLM v2 official training script.
 
 stage: finetune
 
-# Training parameters (~1B tokens per Fast-dLLM v2)
-total_tokens: 1_000_000_000
-max_seq_length: 512
-batch_size: 32
-gradient_accumulation_steps: 4
+# Training parameters - MATCHING OFFICIAL FAST-DLLM V2 SCRIPT
+# Official: seq=512, batch=1 per device, 1 epoch
+total_tokens: 1_000_000_000       # ~1B tokens (paper claims ~1B fine-tuning)
+max_seq_length: 512               # Official script uses 512
+batch_size: 8                     # Will be auto-probed for H100
+gradient_accumulation_steps: 16   # Effective batch = 8 * 16 = 128
 
-# Effective batch size: 130 * 4 * 512 = 266,240 tokens/step
-# Steps for 1B tokens: ~3,757 steps
-# Larger batch = better H100 utilization + smoother loss
+# Effective batch size: 8 * 16 * 512 = 65,536 tokens/step
+# Steps for 1B tokens: ~15,258 steps
 
-# Optimizer: MuonClip (Muon for internals, AdamW for embeddings/norms)
-# From Kimi K2 (arXiv:2507.20534)
+# Optimizer: AdamW (default)
 optimizer:
   type: adamw
-  lr_muon: 1.0e-5    # Halved from 2e-5 for stability
-  lr_adam: 1.0e-5    # Same (unused, kept for compatibility)
+  lr: 2.0e-5         # Official: 2e-5
   weight_decay: 0.01
   betas: [0.9, 0.95]
-  ns_steps: 5        # Newton-Schulz iterations
-  qk_clip: 100.0     # Attention score clipping threshold
 
 scheduler:
-  type: cosine
-  warmup_steps: 1000
+  type: constant     # Official: constant_with_warmup
+  warmup_ratio: 0.03 # Official: 3% warmup
   min_lr_ratio: 0.1
 
 # Gradient clipping
@@ -60,5 +56,5 @@ logging:
 # Compute settings
 compute:
   dtype: bfloat16
-  compile_model: false  # Enable for PyTorch 2.0+ speedup
-  gradient_checkpointing: true
+  compile_model: true   # PyTorch 2.0+ speedup (~15-20% faster)
+  gradient_checkpointing: true  # Reduces memory, allows larger batch

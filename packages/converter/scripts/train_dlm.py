@@ -54,8 +54,8 @@ logger = logging.getLogger(__name__)
 
 # Fast-dLLM v2 constants
 MASK_TOKEN = "|<MASK>|"
-MAX_SEQ_LENGTH = 512
-WARMUP_RATIO = 0.03
+DEFAULT_SEQ_LENGTH = 512  # Official script uses 512
+DEFAULT_WARMUP_RATIO = 0.03  # Official: 3% warmup
 GCS_UPLOAD_INTERVAL = 1000  # Upload to GCS every N steps
 BATCH_PROBE_REDUCTION = 0.8  # Reduce batch by 20% on OOM
 
@@ -369,15 +369,14 @@ def collate_fn(batch):
 def train(
     model_path: str,
     output_dir: str,
-    total_tokens: int = 1_000_000_000,
+    total_tokens: int = 1_000_000_000,  # Official: ~1B tokens
     block_size: int = 32,
-    learning_rate: float = 2e-5,  # Unused - kept for compatibility
-    lr_muon: float = 5e-4,  # MuonClip LR for 2D+ weights
-    lr_adam: float = 2.5e-5,  # MuonClip LR for embeddings/norms
-    batch_size: int = 4,
-    gradient_accumulation_steps: int = 16,
-    warmup_steps: int | None = None,  # If None, uses 3% of total steps
-    scheduler_type: str = "cosine",  # "cosine" or "constant"
+    learning_rate: float = 2e-5,  # Official: 2e-5
+    max_seq_length: int = DEFAULT_SEQ_LENGTH,  # Official: 512
+    batch_size: int = 8,
+    gradient_accumulation_steps: int = 16,  # Effective batch ~128
+    warmup_ratio: float = DEFAULT_WARMUP_RATIO,  # Official: 3%
+    scheduler_type: str = "constant",  # Official: constant_with_warmup
     auto_batch_size: bool = True,  # Enable dynamic batch probing
     resume: bool = True,  # Auto-resume from GCS checkpoint if available
     seed: int = 42,
@@ -448,7 +447,7 @@ def train(
                 "learning_rate": learning_rate,
                 "batch_size": batch_size,
                 "gradient_accumulation_steps": gradient_accumulation_steps,
-                "max_seq_length": MAX_SEQ_LENGTH,
+                "max_seq_length": max_seq_length,
                 "training_method": "fast-dllm-v2-sft",
                 "resume_step": resume_step,
             },
@@ -507,7 +506,7 @@ def train(
         logger.info(f"Auto-probing batch size (VRAM={vram_gb:.1f}GB, starting={starting_batch})")
 
         model.zero_grad()  # Clear any stale gradients
-        optimal_batch = probe_batch_size(model, tokenizer, starting_batch, MAX_SEQ_LENGTH)
+        optimal_batch = probe_batch_size(model, tokenizer, starting_batch, max_seq_length)
 
         if optimal_batch > batch_size:
             # Scale up batch, reduce grad_accum to keep effective batch constant
@@ -520,13 +519,19 @@ def train(
             logger.info(f"Keeping original batch_size={batch_size} (optimal={optimal_batch})")
 
     # Calculate training steps
-    tokens_per_step = batch_size * gradient_accumulation_steps * MAX_SEQ_LENGTH
+    tokens_per_step = batch_size * gradient_accumulation_steps * max_seq_length
     total_steps = total_tokens // tokens_per_step
-    # Use config warmup_steps if provided, otherwise fallback to 3% of total steps
-    actual_warmup_steps = warmup_steps if warmup_steps is not None else int(total_steps * WARMUP_RATIO)
 
-    logger.info(f"Training for {total_steps} steps ({tokens_per_step} tokens/step)")
-    logger.info(f"Warmup steps: {actual_warmup_steps} (scheduler: {scheduler_type})")
+    # Calculate warmup steps from ratio (Official: 3%)
+    # Skip warmup if resuming from checkpoint
+    if resume_step > 0:
+        actual_warmup_steps = 0  # No warmup when resuming
+        logger.info("Skipping warmup (resuming from checkpoint)")
+    else:
+        actual_warmup_steps = int(total_steps * warmup_ratio)
+
+    logger.info(f"Training for {total_steps} steps ({tokens_per_step:,} tokens/step)")
+    logger.info(f"Warmup steps: {actual_warmup_steps} ({warmup_ratio*100:.0f}% of total, scheduler: {scheduler_type})")
 
     # Load training data
     logger.info("Loading training data (Llama-Nemotron-Post-Training-Dataset)")
@@ -548,7 +553,7 @@ def train(
         logger.info(f"Skip completed in {time.time() - start_time:.2f}s")
 
     tokenized_dataset = ConversationDataset(
-        dataset, tokenizer, MAX_SEQ_LENGTH, block_size, mask_id, pad_id
+        dataset, tokenizer, max_seq_length, block_size, mask_id, pad_id
     )
     # Continue counting from where we left off
     tokenized_dataset.raw_samples_seen = resume_raw_samples
@@ -564,8 +569,6 @@ def train(
     # Setup optimizer (AdamW per Fast-dLLM v2 paper)
     from torch.optim import AdamW
 
-    # Use single learning rate for all params (Fast-dLLM v2 uses 2e-5)
-    learning_rate = lr_muon  # Reuse this param for the LR
     optimizer = AdamW(model.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.01)
     logger.info(f"Using AdamW optimizer (lr={learning_rate})")
 
@@ -648,7 +651,7 @@ def train(
 
             # Calculate step time and throughput
             step_time = time.time() - step_start_time
-            tokens_this_step = batch_size * gradient_accumulation_steps * MAX_SEQ_LENGTH
+            tokens_this_step = batch_size * gradient_accumulation_steps * max_seq_length
             tokens_per_sec = tokens_this_step / step_time if step_time > 0 else 0
             step_start_time = time.time()
 
@@ -734,7 +737,7 @@ def train(
         "total_tokens_trained": tokens_seen,
         "training_loss": best_loss,
         "training_method": "fast-dllm-v2-sft",
-        "max_seq_length": MAX_SEQ_LENGTH,
+        "max_seq_length": max_seq_length,
     }
     with open(final_output / "dlm_config.json", "w") as f:
         json.dump(dlm_config, f, indent=2)
@@ -780,12 +783,12 @@ def main(cfg: DictConfig) -> None:
         output_dir=str(output_dir),
         total_tokens=cfg.conversion.total_tokens,
         block_size=cfg.model.block_size,
-        lr_muon=cfg.conversion.optimizer.lr_muon,
-        lr_adam=cfg.conversion.optimizer.lr_adam,
+        learning_rate=cfg.conversion.optimizer.lr,
+        max_seq_length=cfg.conversion.get("max_seq_length", DEFAULT_SEQ_LENGTH),
         batch_size=cfg.conversion.batch_size,
         gradient_accumulation_steps=cfg.conversion.gradient_accumulation_steps,
-        warmup_steps=cfg.conversion.scheduler.get("warmup_steps"),
-        scheduler_type=cfg.conversion.scheduler.get("type", "cosine"),
+        warmup_ratio=cfg.conversion.scheduler.get("warmup_ratio", DEFAULT_WARMUP_RATIO),
+        scheduler_type=cfg.conversion.scheduler.get("type", "constant"),
         seed=cfg.get("seed", 42),
     )
 
