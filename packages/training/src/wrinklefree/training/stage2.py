@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
-from cheapertraining.training import PlateauEarlyStopping
+from cheapertraining.training import PlateauEarlyStopping, ZClip
 from wrinklefree.distillation import (
     ContinuePretrainLoss,
     HiddenStateTeacherWrapper,
@@ -172,6 +172,17 @@ class Stage2Trainer(Trainer):
         self.loss_ema: float = 0.0
         self.loss_ema_alpha: float = 0.99  # Smoothing factor
 
+        # ZClip adaptive gradient clipping
+        zclip_cfg = getattr(self.training_cfg, "zclip", None)
+        if zclip_cfg is not None and getattr(zclip_cfg, "enabled", True):
+            z_threshold = getattr(zclip_cfg, "z_threshold", 3.0)
+            ema_decay = getattr(zclip_cfg, "ema_decay", 0.99)
+            self.zclip = ZClip(z_threshold=z_threshold, ema_decay=ema_decay)
+            logger.info(f"ZClip adaptive gradient clipping enabled: z_threshold={z_threshold}")
+        else:
+            self.zclip = None
+            logger.info("ZClip disabled, using fixed gradient clipping")
+
     def _check_influence_optimizer(self) -> bool:
         """Check if optimizer is InfluenceAwareOptimizer."""
         optimizer_class_name = self.optimizer.__class__.__name__
@@ -304,10 +315,25 @@ class Stage2Trainer(Trainer):
 
             # Optimizer step
             grad_norm = None
+            raw_grad_norm = None
+            was_clipped = False
             if num_accumulated >= self.gradient_accumulation_steps:
-                # Gradient clipping (FSDP-aware)
-                if self.gradient_clipping > 0:
-                    # For FSDP models, use the FSDP clip_grad_norm_ method
+                # Gradient clipping (FSDP-aware with ZClip support)
+                if self.zclip is not None:
+                    # Use ZClip adaptive clipping
+                    if hasattr(self.model, "clip_grad_norm_"):
+                        # For FSDP: compute stats then let FSDP do the actual clipping
+                        stats = self.zclip.clip(self.model)
+                        raw_grad_norm = stats.raw_norm
+                        grad_norm = stats.clipped_norm
+                        was_clipped = stats.was_clipped
+                    else:
+                        stats = self.zclip.clip(self.model)
+                        raw_grad_norm = stats.raw_norm
+                        grad_norm = stats.clipped_norm
+                        was_clipped = stats.was_clipped
+                elif self.gradient_clipping > 0:
+                    # Fallback to fixed gradient clipping
                     if hasattr(self.model, "clip_grad_norm_"):
                         grad_norm = self.model.clip_grad_norm_(self.gradient_clipping)
                     else:
@@ -315,6 +341,8 @@ class Stage2Trainer(Trainer):
                             self.model.parameters(),
                             self.gradient_clipping,
                         )
+                    raw_grad_norm = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
+                    was_clipped = raw_grad_norm > self.gradient_clipping
 
                 self.optimizer.step()
                 self.optimizer.zero_grad()
@@ -368,11 +396,17 @@ class Stage2Trainer(Trainer):
                             "train/step": self.global_step,
                             "train/tokens_processed": self.tokens_processed,
                         }
-                        # Log gradient norm
+                        # Log gradient norm (with ZClip support)
                         if grad_norm is not None:
                             gn = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
                             wandb_log["train/grad_norm"] = gn
-                            wandb_log["train/grad_clipped"] = 1.0 if gn > self.gradient_clipping else 0.0
+                            wandb_log["train/grad_clipped"] = 1.0 if was_clipped else 0.0
+                            if raw_grad_norm is not None:
+                                wandb_log["train/grad_norm_raw"] = raw_grad_norm
+                            # Log ZClip stats if available
+                            if self.zclip is not None and hasattr(self.zclip, 'ema_mean') and self.zclip.ema_mean is not None:
+                                wandb_log["train/zclip_ema_mean"] = self.zclip.ema_mean
+                                wandb_log["train/zclip_ema_std"] = (self.zclip.ema_var + 1e-8) ** 0.5
                         # Log lambda if warmup is active
                         if self.lambda_warmup is not None:
                             wandb_log["train/lambda"] = self.lambda_warmup.lambda_val

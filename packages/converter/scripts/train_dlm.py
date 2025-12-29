@@ -45,7 +45,7 @@ from transformers import (
 )
 from tqdm import tqdm
 
-from cheapertraining.training import PlateauEarlyStopping
+from cheapertraining.training import PlateauEarlyStopping, ZClip
 
 # Try to import wrinklefree for quantization control (BitNet integration)
 try:
@@ -70,62 +70,6 @@ DEFAULT_SEQ_LENGTH = 512  # Official script uses 512
 DEFAULT_WARMUP_RATIO = 0.03  # Official: 3% warmup
 GCS_UPLOAD_INTERVAL = 1000  # Upload to GCS every N steps
 BATCH_PROBE_REDUCTION = 0.8  # Reduce batch by 20% on OOM
-
-
-class ZClip:
-    """Adaptive gradient clipping using z-score anomaly detection.
-
-    Dynamically adjusts clipping threshold based on gradient norm statistics.
-    Detects and clips gradient spikes that exceed z_threshold standard deviations
-    from the running mean.
-
-    Reference: arXiv:2504.02507 (ZClip: Adaptive Spike Mitigation for LLM Pre-Training)
-    """
-
-    def __init__(self, z_threshold: float = 3.0, ema_decay: float = 0.99):
-        self.z_threshold = z_threshold
-        self.ema_decay = ema_decay
-        self.ema_mean = None
-        self.ema_var = None
-
-    def clip(self, model) -> tuple[float, float]:
-        """Clip gradients and return (raw_norm, clipped_norm).
-
-        Args:
-            model: PyTorch model with gradients computed
-
-        Returns:
-            Tuple of (raw gradient norm, clipped gradient norm)
-        """
-        # Compute raw gradient norm
-        params_with_grad = [p for p in model.parameters() if p.grad is not None]
-        if not params_with_grad:
-            return 0.0, 0.0
-
-        raw_norm = torch.nn.utils.clip_grad_norm_(params_with_grad, float("inf"))
-        raw_norm_val = raw_norm.item() if hasattr(raw_norm, "item") else raw_norm
-
-        # Initialize EMA on first call
-        if self.ema_mean is None:
-            self.ema_mean = raw_norm_val
-            self.ema_var = 0.0
-            return raw_norm_val, raw_norm_val
-
-        # Update EMA statistics
-        self.ema_mean = self.ema_decay * self.ema_mean + (1 - self.ema_decay) * raw_norm_val
-        self.ema_var = self.ema_decay * self.ema_var + (1 - self.ema_decay) * (raw_norm_val - self.ema_mean) ** 2
-
-        # Z-score anomaly detection
-        std = (self.ema_var + 1e-8) ** 0.5
-        z_score = (raw_norm_val - self.ema_mean) / std
-
-        if z_score > self.z_threshold:
-            # Clip to threshold
-            clip_val = self.ema_mean + self.z_threshold * std
-            torch.nn.utils.clip_grad_norm_(params_with_grad, clip_val)
-            return raw_norm_val, clip_val
-
-        return raw_norm_val, raw_norm_val
 
 
 def set_seed(seed: int):
@@ -853,7 +797,9 @@ def train(
 
         if accum_count >= gradient_accumulation_steps:
             # Adaptive gradient clipping with ZClip (replaces fixed clip_grad_norm_)
-            raw_grad_norm, clipped_grad_norm = zclip.clip(model)
+            zclip_stats = zclip.clip(model)
+            raw_grad_norm = zclip_stats.raw_norm
+            clipped_grad_norm = zclip_stats.clipped_norm
             grad_norm = clipped_grad_norm  # For logging compatibility
 
             optimizer.step()
