@@ -295,9 +295,6 @@ impl BatchScheduler {
         let max_tokens = self.config.max_batch_size;
         let max_prefill = max_tokens - self.config.min_decode_budget;
 
-        // Track batch indices for logits
-        let mut batch_idx = 0;
-
         // Priority 1: Prefilling sequences (chunked)
         let seq_ids: Vec<BitNetSeqId> = self.sequences.keys().copied().collect();
 
@@ -323,13 +320,13 @@ impl BatchScheduler {
 
                     // Only output logits for last token of prefill
                     self.batch.add(token, pos, *seq_id, is_last);
+                    tokens_added += 1;
 
                     if is_last {
-                        state.batch_idx = Some(batch_idx);
-                        batch_idx += 1;
+                        // Store the ACTUAL batch position (0-indexed) where logits=true
+                        // llama.cpp's llama_get_logits_ith expects the batch position
+                        state.batch_idx = Some((tokens_added - 1) as i32);
                     }
-
-                    tokens_added += 1;
                 }
 
                 // Update position
@@ -348,14 +345,20 @@ impl BatchScheduler {
                 continue;
             }
 
+            // Skip if already processed in prefill phase (just transitioned to decode)
+            // This can happen when prefill exhausts all tokens and transitions mid-batch
+            if state.batch_idx.is_some() {
+                continue;
+            }
+
             let token = state.last_token;
             let pos = state.position;
 
             self.batch.add(token, pos, *seq_id, true);
-            state.batch_idx = Some(batch_idx);
-            batch_idx += 1;
-
             tokens_added += 1;
+
+            // Store the ACTUAL batch position where logits=true
+            state.batch_idx = Some((tokens_added - 1) as i32);
         }
 
         tokens_added
@@ -440,13 +443,20 @@ impl BatchScheduler {
                     self.radix_cache.dec_lock_ref(prefix_node);
                 }
 
-                // Clear KV cache for this sequence
-                // Note: We keep the KV cache if it was inserted into RadixCache,
-                // but we need to clear the sequence-specific association
-                self.engine.kv_cache_seq_rm(seq_id, -1, -1);
-
-                // Free slot
-                self.engine.free_sequence(seq_id);
+                // If we cached tokens, keep the KV cache and sequence slot alive
+                // for future prefix reuse. Otherwise, free everything.
+                if newly_cached == 0 {
+                    // No new tokens cached - safe to remove KV cache and free slot
+                    self.engine.kv_cache_seq_rm(seq_id, -1, -1);
+                    self.engine.free_sequence(seq_id);
+                } else {
+                    // Tokens were cached - keep KV cache for prefix reuse
+                    // Don't free the sequence slot to prevent seq_id conflicts
+                    debug!(
+                        "Keeping seq {} KV cache for prefix reuse ({} tokens)",
+                        seq_id, newly_cached
+                    );
+                }
 
                 // Decode all tokens to text using engine's tokenizer
                 let text = self
