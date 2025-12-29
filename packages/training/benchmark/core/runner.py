@@ -68,6 +68,7 @@ class RunnerConfig:
     dtype: str = "float32"
     target_memory_gb: float = 35.0  # Target memory usage for all trials (lower due to large model)
     memory_buffer: float = 0.85  # Use 85% of target to leave headroom
+    num_workers: int = 0  # Dataloader workers (0 for single-process)
 
 
 class BenchmarkRunner:
@@ -362,7 +363,7 @@ class BenchmarkRunner:
                 tokenizer=self.tokenizer,
                 batch_size=batch_size,
                 max_length=self.runner_config.sequence_length,
-                num_workers=2,
+                num_workers=self.runner_config.num_workers,
             )
         else:
             # Simple pretrain dataloader without influence
@@ -374,7 +375,7 @@ class BenchmarkRunner:
                 tokenizer=self.tokenizer,
                 batch_size=batch_size,
                 max_length=self.runner_config.sequence_length,
-                num_workers=2,
+                num_workers=self.runner_config.num_workers,
                 seed=42,
                 packed=True,
             )

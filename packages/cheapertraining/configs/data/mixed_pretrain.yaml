@@ -6,6 +6,10 @@
 
 name: mixed_pretrain
 
+# Shuffle buffer size - larger = better mixing but more memory
+# 50000 recommended for 5+ sources to ensure proper domain mixing
+shuffle_buffer_size: 50000
+
 # Multiple data sources with initial weights (adjusted by influence remixing)
 # Web + Code + Math + Reasoning + Diversity mix for influence remixing
 sources:
@@ -19,14 +23,14 @@ sources:
   - name: fineweb_edu
     path: HuggingFaceFW/fineweb-edu
     subset: sample-10BT
-    weight: 0.30  # 30% educational content
+    weight: 0.35  # 35% educational content (increased from 30% - high quality)
     text_column: text
     streaming: true
 
   - name: github_code
     path: nick007x/github-code-2025  # MIT licensed, 2025 curated code
     subset: null
-    weight: 0.15  # 15% code
+    weight: 0.10  # 10% code (reduced from 15% - code datasets are noisy)
     text_column: content
     streaming: true
 

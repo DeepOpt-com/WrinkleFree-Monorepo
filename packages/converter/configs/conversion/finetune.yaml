@@ -6,14 +6,14 @@
 stage: finetune
 
 # Training parameters - MATCHING OFFICIAL FAST-DLLM V2 SCRIPT
-# Official: seq=512, batch=1 per device, 1 epoch
+# Official: batch=256, seq=2048, LR=2e-5
 total_tokens: 1_000_000_000       # ~1B tokens (paper claims ~1B fine-tuning)
-max_seq_length: 512               # Official script uses 512
-batch_size: 8                     # Will be auto-probed for H100
-gradient_accumulation_steps: 16   # Effective batch = 8 * 16 = 128
+max_seq_length: 512               # Official script uses 2048, we use 512
+batch_size: 8                     # Per-device batch size
+gradient_accumulation_steps: 32   # Effective batch = 8 * 32 = 256 (matches paper)
 
-# Effective batch size: 8 * 16 * 512 = 65,536 tokens/step
-# Steps for 1B tokens: ~15,258 steps
+# Effective batch size: 8 * 32 * 512 = 131,072 tokens/step
+# Steps for 1B tokens: ~7,629 steps
 
 # Optimizer: AdamW (default)
 optimizer:
@@ -27,8 +27,13 @@ scheduler:
   warmup_ratio: 0.03 # Official: 3% warmup
   min_lr_ratio: 0.1
 
-# Gradient clipping
+# Gradient clipping (ZClip adaptive clipping is enabled by default)
 max_grad_norm: 1.0
+
+# BitNet stability settings
+# Lambda warmup gradually increases quantization strength from 0 to 1
+# Recommended: 5-10% of total steps, or 100-500 steps
+quantization_warmup_steps: 500  # 0 = disabled (full quantization from start)
 
 # Diffusion training settings
 diffusion:
