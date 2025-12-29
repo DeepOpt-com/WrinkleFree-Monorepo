@@ -411,19 +411,37 @@ impl DlmScheduler {
 
                 self.batch.clear();
                 let logit_positions: Vec<usize>;
+                // Track whether we used compact batch (only masked tokens) vs full batch
+                let use_compact_batch: bool;
 
                 if use_cached && first_token_unmasked {
                     // DualCache hit: Only compute for remaining masked positions
+                    // Clear KV cache for just the masked positions we're recomputing
+                    for i in start_idx..end_idx {
+                        if block_tokens[i] == mask_id {
+                            let pos = block_start_pos + i as i32;
+                            self.engine.kv_cache_seq_rm(seq_id, pos, pos + 1);
+                        }
+                    }
+
                     logit_positions = (start_idx..end_idx)
                         .filter(|&i| block_tokens[i] == mask_id)
                         .collect();
 
+                    // Compact batch: only add masked tokens
                     for &i in &logit_positions {
                         let pos = block_start_pos + i as i32;
                         self.batch.add(block_tokens[i], pos, seq_id, true);
                     }
+                    use_compact_batch = true;
                 } else {
-                    // Full block forward - compute all and update cache
+                    // Full block forward - clear entire block's KV cache first
+                    // This is critical: llama.cpp KV cache doesn't expect re-computation
+                    // at the same positions without clearing first
+                    let block_end_pos = block_start_pos + block_size as i32;
+                    self.engine.kv_cache_seq_rm(seq_id, block_start_pos, block_end_pos);
+
+                    // Full batch: add all block tokens
                     for (i, &token) in block_tokens.iter().enumerate() {
                         let pos = block_start_pos + i as i32;
                         let need_logits = i >= start_idx && i < end_idx && token == mask_id;
@@ -433,6 +451,7 @@ impl DlmScheduler {
                     logit_positions = (start_idx..end_idx)
                         .filter(|&i| block_tokens[i] == mask_id)
                         .collect();
+                    use_compact_batch = false;
 
                     // Update DualCache
                     let kv_end_pos = block_start_pos + block_size as i32;
@@ -451,8 +470,17 @@ impl DlmScheduler {
                 // Process masked positions with confidence thresholding
                 let mut candidates: Vec<(usize, i32, f32)> = Vec::new();
 
-                for (batch_idx, &block_idx) in logit_positions.iter().enumerate() {
-                    if let Some(logits) = self.engine.get_logits(batch_idx as i32) {
+                for (enum_idx, &block_idx) in logit_positions.iter().enumerate() {
+                    // Determine batch index based on batch type:
+                    // - Compact batch: sequential indices (0, 1, 2...)
+                    // - Full batch: block indices (actual position in the 32-token block)
+                    let batch_idx = if use_compact_batch {
+                        enum_idx as i32
+                    } else {
+                        block_idx as i32
+                    };
+
+                    if let Some(logits) = self.engine.get_logits(batch_idx) {
                         let probs = softmax(logits);
                         let token_id = argmax(logits);
                         let confidence = probs[token_id as usize];

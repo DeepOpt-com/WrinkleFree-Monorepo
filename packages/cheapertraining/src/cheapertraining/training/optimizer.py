@@ -339,6 +339,9 @@ def create_optimizer(
                 )
                 enable_clipping = False
 
+        # NOTE: muon-clip has a bug where writer is only created if log_dir is empty!
+        # See: if not muon_config.log_dir : self.writer = SummaryWriter(...)
+        # So we pass empty string to create the writer, otherwise flush_metrics() crashes
         config = MuonConfig(
             lr=learning_rate,
             muon_beta=momentum,
@@ -349,7 +352,7 @@ def create_optimizer(
             enable_clipping=enable_clipping,
             clipping_threshold=kwargs.get("clipping_threshold", 50.0),
             clipping_alpha=kwargs.get("clipping_alpha", 0.5),
-            log_dir="",  # Empty string to initialize TensorBoard writer (workaround for muon-clip bug)
+            log_dir="",  # Empty string triggers writer creation (muon-clip bug workaround)
         )
         return MuonClip(model, model_config, config)
 

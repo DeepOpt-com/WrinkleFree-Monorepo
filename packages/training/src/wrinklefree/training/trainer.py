@@ -666,6 +666,11 @@ def create_optimizer(
                     )
                     enable_clipping = False
 
+            # Get log_dir from kwargs, default to /tmp if not provided
+            log_dir = kwargs.get("log_dir", "/tmp/muon_logs")
+            import os
+            os.makedirs(log_dir, exist_ok=True)
+
             config = MuonConfig(
                 lr=learning_rate,
                 muon_beta=kwargs.get("momentum", 0.95),
@@ -676,7 +681,7 @@ def create_optimizer(
                 enable_clipping=enable_clipping,
                 clipping_threshold=kwargs.get("clipping_threshold", 50.0),
                 clipping_alpha=kwargs.get("clipping_alpha", 0.5),
-                log_dir="",  # Empty string to initialize TensorBoard writer (workaround for muon-clip bug)
+                log_dir=log_dir,  # Valid log dir for MuonClip TensorBoard writer
             )
             logger.info(
                 f"Using MuonClip optimizer (Muon + QK-clipping={'enabled' if enable_clipping else 'disabled'})"

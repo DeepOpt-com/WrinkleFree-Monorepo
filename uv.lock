@@ -4509,7 +4509,7 @@ wheels = [
 [[package]]
 name = "muon-clip"
 version = "1.0"
-source = { git = "https://github.com/GAD-cell/muon-clip#c314d59331347d5eb6cc0a56d98738269fe84f57" }
+source = { git = "https://github.com/GAD-cell/muon-clip.git?rev=main#c314d59331347d5eb6cc0a56d98738269fe84f57" }
 dependencies = [
     { name = "accelerate" },
     { name = "deepspeed" },
@@ -9874,6 +9874,10 @@ provides-extras = ["dev", "torch", "benchmark", "convert"]
 name = "wrinklefree-workspace"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "muon-clip" },
+    { name = "muon-optimizer" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -9884,6 +9888,10 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [
+    { name = "muon-clip", git = "https://github.com/GAD-cell/muon-clip.git?rev=main" },
+    { name = "muon-optimizer", specifier = ">=0.1.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [

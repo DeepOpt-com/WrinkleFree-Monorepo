@@ -825,7 +825,9 @@ def run_stage2(
         model,
         learning_rate=config.training.optimizer.lr,
         weight_decay=config.training.optimizer.weight_decay,
-        use_8bit=config.training.optimizer.type == "adamw_8bit",
+        optimizer_type=config.training.optimizer.type,  # Pass optimizer type from config
+        model_config=model.config if hasattr(model, "config") else None,  # For MuonClip QK-clipping
+        log_dir=str(output_dir / "optimizer_logs"),  # MuonClip needs valid log dir
     )
 
     # Influence-based data selection (optional)
