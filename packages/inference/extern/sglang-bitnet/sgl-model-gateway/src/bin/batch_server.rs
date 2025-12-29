@@ -8,6 +8,10 @@
 //!   cargo run --release --features native-inference --bin batch_server -- \
 //!     --model-path /path/to/model.gguf --port 30000
 
+// Use mimalloc as the global allocator for better performance
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::net::SocketAddr;
 
 use axum::{routing::get, Router};

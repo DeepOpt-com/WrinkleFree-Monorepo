@@ -87,6 +87,8 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 ulid = "1.2.1"
 parking_lot = "0.12.4"
 rayon = "1.10"
+mimalloc = { version = "0.1", default-features = false }  # Fast allocator
+smallvec = { version = "1.13", features = ["union"] }      # Inline small vectors
 thiserror = "2.0.12"
 regex = "1.10"
 memchr = "2.7"  # SIMD-optimized byte pattern searching
@@ -192,10 +194,11 @@ harness = false
 path = "benches/tree_benchmark.rs"
 
 [profile.release]
-opt-level = "z"     # Optimize for size
-lto = "fat"         # Full LTO for smaller binaries
+opt-level = 3       # Optimize for speed
+lto = "fat"         # Full LTO for maximum optimization
 codegen-units = 1   # Better optimization, slower compile
 strip = true        # Strip debug symbols
+panic = "abort"     # Faster panic handling, smaller binary
 
 [profile.ci]
 inherits = "release"
@@ -223,3 +226,7 @@ codegen-units = 1
 [profile.dev-opt]
 inherits = "dev"
 opt-level = 1
+
+[profile.bench]
+inherits = "release"
+# Use: RUSTFLAGS="-C target-cpu=native" cargo build --profile bench --features native-inference

@@ -10,6 +10,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
+use smallvec::SmallVec;
+
+/// Token storage type - SmallVec inlines up to 8 tokens to avoid heap allocation.
+/// Most radix tree nodes have short edge labels (1-5 tokens), so this avoids
+/// heap allocation for the majority of nodes.
+pub type TokenVec = SmallVec<[i32; 8]>;
 
 /// Get current time in milliseconds for LRU tracking.
 #[inline]
@@ -29,7 +35,8 @@ pub fn current_time_ms() -> u64 {
 pub struct RadixTreeNode {
     /// Token IDs stored at this node (the "edge label" in radix tree terms).
     /// For the root node, this is empty.
-    pub tokens: Vec<i32>,
+    /// Uses SmallVec to inline up to 8 tokens, avoiding heap allocation for most nodes.
+    pub tokens: TokenVec,
 
     /// Children indexed by first token of their edge label.
     /// Using HashMap for O(1) lookup instead of linear scan.
@@ -63,14 +70,14 @@ pub struct RadixTreeNode {
 impl RadixTreeNode {
     /// Create a new tree node.
     pub fn new(
-        tokens: Vec<i32>,
+        tokens: impl Into<TokenVec>,
         kv_seq_id: i32,
         kv_start_pos: i32,
         prefix_len: usize,
         node_id: u64,
     ) -> Self {
         Self {
-            tokens,
+            tokens: tokens.into(),
             children: RwLock::new(HashMap::new()),
             parent: RwLock::new(None),
             kv_seq_id: AtomicI32::new(kv_seq_id),

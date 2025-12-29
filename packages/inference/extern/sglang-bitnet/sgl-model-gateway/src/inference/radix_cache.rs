@@ -11,7 +11,7 @@
 //! - HashMap for O(1) child lookup
 //! - Minimal allocations in match_prefix hot path
 
-use super::radix_tree::{common_prefix_len, current_time_ms, RadixTreeNode};
+use super::radix_tree::{common_prefix_len, current_time_ms, RadixTreeNode, TokenVec};
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -329,7 +329,7 @@ impl RadixCache {
                 }
             } else {
                 // No existing child - create new node with remaining tokens
-                let remaining: Vec<i32> = tokens[token_idx..].to_vec();
+                let remaining: TokenVec = tokens[token_idx..].into();
                 let remaining_len = remaining.len();
 
                 let new_node = Arc::new(RadixTreeNode::new(
@@ -375,15 +375,16 @@ impl RadixCache {
     ) -> (Arc<RadixTreeNode>, Arc<RadixTreeNode>) {
         debug_assert!(split_pos > 0 && split_pos < child.tokens.len());
 
-        let upper_tokens: Vec<i32> = child.tokens[..split_pos].to_vec();
-        let lower_tokens: Vec<i32> = child.tokens[split_pos..].to_vec();
+        // Use SmallVec to avoid heap allocation for short token sequences
+        let upper_tokens: TokenVec = child.tokens[..split_pos].into();
+        let lower_tokens: TokenVec = child.tokens[split_pos..].into();
 
         let child_start_pos = child.kv_start_pos.load(Ordering::Acquire);
         let child_prefix_len = child.prefix_len.load(Ordering::Acquire);
 
         // Create upper node (takes the common prefix)
         let upper = Arc::new(RadixTreeNode::new(
-            upper_tokens.clone(),
+            upper_tokens,
             child.kv_seq_id.load(Ordering::Acquire),
             child_start_pos,
             child_start_pos as usize + split_pos,
@@ -392,7 +393,7 @@ impl RadixCache {
 
         // Create lower node (takes the suffix)
         let lower = Arc::new(RadixTreeNode::new(
-            lower_tokens.clone(),
+            lower_tokens,
             child.kv_seq_id.load(Ordering::Acquire),
             child_start_pos + split_pos as i32,
             child_prefix_len,

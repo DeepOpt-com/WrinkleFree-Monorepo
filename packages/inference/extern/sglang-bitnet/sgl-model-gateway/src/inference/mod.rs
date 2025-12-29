@@ -53,4 +53,4 @@ pub use sequence::{
 
 // RadixCache API (prefix caching for KV cache reuse)
 pub use radix_cache::{RadixCache, RadixCacheConfig, EvictionPolicy, MatchResult, RadixCacheStats};
-pub use radix_tree::RadixTreeNode;
+pub use radix_tree::{RadixTreeNode, TokenVec};
