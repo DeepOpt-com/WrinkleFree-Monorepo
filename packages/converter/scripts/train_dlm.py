@@ -593,6 +593,12 @@ def train(
     running_loss = 0.0
     best_loss = resume_state.get("best_loss", float("inf")) if resume_state else float("inf")
 
+    # Stability tracking
+    loss_ema = None
+    loss_ema_alpha = 0.99  # EMA decay factor
+    prev_loss = None
+    step_start_time = None
+
     logger.info("Starting training loop")
     pbar = tqdm(total=total_steps, initial=step, desc="Training (SFT)")
 
@@ -600,6 +606,9 @@ def train(
     accum_count = 0
 
     while step < total_steps:
+        if step_start_time is None:
+            step_start_time = time.time()
+
         try:
             batch = next(data_iter)
         except StopIteration:
@@ -624,7 +633,8 @@ def train(
         accum_count += 1
 
         if accum_count >= gradient_accumulation_steps:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # Capture gradient norm before clipping
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
@@ -636,6 +646,22 @@ def train(
             if avg_loss < best_loss:
                 best_loss = avg_loss
 
+            # Calculate step time and throughput
+            step_time = time.time() - step_start_time
+            tokens_this_step = batch_size * gradient_accumulation_steps * MAX_SEQ_LENGTH
+            tokens_per_sec = tokens_this_step / step_time if step_time > 0 else 0
+            step_start_time = time.time()
+
+            # Update loss EMA for stability tracking
+            if loss_ema is None:
+                loss_ema = avg_loss
+            else:
+                loss_ema = loss_ema_alpha * loss_ema + (1 - loss_ema_alpha) * avg_loss
+
+            # Detect loss spikes (>2x previous loss)
+            loss_spike = 1 if (prev_loss is not None and avg_loss > 2.0 * prev_loss) else 0
+            prev_loss = avg_loss
+
             pbar.update(1)
             pbar.set_postfix({
                 "loss": f"{avg_loss:.4f}",
@@ -645,10 +671,21 @@ def train(
 
             if use_wandb:
                 wandb.log({
+                    # Core metrics
                     "train/loss": avg_loss,
                     "train/tokens": tokens_seen,
                     "train/lr": scheduler.get_last_lr()[0],
                     "train/step": step,
+                    # Stability metrics
+                    "train/grad_norm": grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm,
+                    "train/loss_ema": loss_ema,
+                    "train/loss_spike": loss_spike,
+                    # Throughput metrics
+                    "train/tokens_per_second": tokens_per_sec,
+                    "train/step_time": step_time,
+                    # System metrics
+                    "system/gpu_memory_allocated_gb": torch.cuda.memory_allocated() / 1e9,
+                    "system/gpu_memory_reserved_gb": torch.cuda.memory_reserved() / 1e9,
                 })
 
             running_loss = 0.0
