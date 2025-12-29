@@ -249,3 +249,76 @@ class TestTinyModelPlateau:
         assert stopped_at is not None, f"Should have stopped. Final loss: {loss.item():.6f}, wait: {es.wait}"
         assert stopped_at < 200, f"Should plateau quickly on trivial task, stopped at {stopped_at}"
         assert es.stopped_early is True
+
+    @pytest.mark.skipif(
+        not pytest.importorskip("torch", reason="PyTorch required"),
+        reason="PyTorch not available"
+    )
+    def test_tiny_model_plateau_with_wandb(self):
+        """Train tiny model with WandB - triggers real alert email."""
+        import os
+        import torch
+        import torch.nn as nn
+
+        # Skip if no WandB API key
+        if not os.environ.get("WANDB_API_KEY"):
+            pytest.skip("WANDB_API_KEY not set - skipping WandB integration test")
+
+        import wandb
+
+        # Initialize WandB run
+        wandb.init(
+            project="wrinklefree-tests",
+            name="early-stopping-test",
+            tags=["test", "early-stopping"],
+            config={"test": "plateau_detection"},
+        )
+
+        try:
+            # Tiny model: 2-layer MLP (~1K params)
+            model = nn.Sequential(
+                nn.Linear(8, 16),
+                nn.ReLU(),
+                nn.Linear(16, 8),
+            )
+
+            # Trivial task: identity
+            torch.manual_seed(42)
+            X = torch.randn(32, 8)
+            y = X.clone()
+
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
+            criterion = nn.MSELoss()
+
+            es = PlateauEarlyStopping(
+                patience=10,
+                min_delta=1e-6,
+                min_evals=20,
+                enabled=True,
+                rank=0,
+            )
+
+            stopped_at = None
+            for step in range(500):
+                optimizer.zero_grad()
+                pred = model(X)
+                loss = criterion(pred, y)
+                loss.backward()
+                optimizer.step()
+
+                # Log to WandB
+                wandb.log({"train/loss": loss.item()}, step=step)
+
+                if es.check(loss.item(), step):
+                    stopped_at = step
+                    break
+
+            assert stopped_at is not None, "Should have triggered early stopping"
+            assert es.stopped_early is True
+
+            # Verify WandB summary was set
+            assert wandb.run.summary.get("early_stopped") is True
+            assert wandb.run.summary.get("plateau_loss") is not None
+
+        finally:
+            wandb.finish()
