@@ -31,6 +31,8 @@ workdir: ../converter
 # Mount GCS credentials for checkpoint upload
 # Note: On GCP, VMs use IAM automatically. This is for non-GCP clouds.
 file_mounts:
+  # CheaperTraining library for PlateauEarlyStopping
+  ~/cheapertraining: ../cheapertraining
   ~/.config/gcloud/application_default_credentials.json: ~/.config/gcloud/application_default_credentials.json
 
 envs:
@@ -61,20 +63,31 @@ setup: |
   fi
   export PATH="$HOME/.local/bin:$PATH"
 
-  # Install dependencies
-  uv sync
+  # Create venv and install dependencies
+  uv venv .venv
+  source .venv/bin/activate
+
+  # Remove workspace source (only works in monorepo context)
+  sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
+
+  # Install CheaperTraining first (dependency for PlateauEarlyStopping)
+  uv pip install -e ~/cheapertraining
+
+  # Install converter package
+  uv pip install -e .
 
   # Verify GPU setup
-  uv run python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
+  python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
 
   # Verify GCS credentials (on GCP, IAM is used; on other clouds, ADC file is used)
   echo "Testing GCS access..."
-  uv run python -c "from google.cloud import storage; client = storage.Client(); bucket = client.bucket('${GCS_BUCKET}'); print(f'GCS bucket access: {bucket.exists()}')" || echo "GCS check failed (may work via IAM on GCP)..."
+  python -c "from google.cloud import storage; client = storage.Client(); bucket = client.bucket('${GCS_BUCKET}'); print(f'GCS bucket access: {bucket.exists()}')" || echo "GCS check failed (may work via IAM on GCP)..."
 
 run: |
   set -e
   cd ~/sky_workdir
   export PATH="$HOME/.local/bin:$PATH"
+  source .venv/bin/activate
 
   echo "=============================================="
   echo "Fast-dLLM v2 SFT Training (Hydra)"
@@ -84,7 +97,7 @@ run: |
   echo "=============================================="
 
   # Build Hydra command
-  HYDRA_CMD="uv run python scripts/train_dlm.py model=${MODEL}"
+  HYDRA_CMD="python scripts/train_dlm.py model=${MODEL}"
 
   # Add source path if provided
   if [ -n "${SOURCE_PATH}" ]; then

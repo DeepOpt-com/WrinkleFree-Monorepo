@@ -1,3 +1,6 @@
 [submodule "extern/BitNet"]
 	path = extern/BitNet
 	url = https://github.com/microsoft/BitNet.git
+[submodule "extern/runpod-dev"]
+	path = extern/runpod-dev
+	url = git@github.com:DeepOpt-com/runpod-dev.git

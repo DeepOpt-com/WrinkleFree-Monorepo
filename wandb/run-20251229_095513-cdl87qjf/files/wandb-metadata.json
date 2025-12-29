@@ -1,0 +1,45 @@
+{
+  "os":  "Linux-6.8.0-90-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.12.12",
+  "startedAt":  "2025-12-29T14:55:13.955809Z",
+  "args":  [
+    "packages/cheapertraining/tests/unit/test_early_stopping.py::TestTinyModelPlateau::test_tiny_model_plateau_with_wandb",
+    "-v",
+    "-s"
+  ],
+  "program":  "/home/lev/code/WrinkleFreeDev/.venv/bin/pytest",
+  "codePath":  ".venv/bin/pytest",
+  "codePathLocal":  ".venv/bin/pytest",
+  "git":  {
+    "remote":  "git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git",
+    "commit":  "53b25c92f32b4d68a7c1e3f066dd8dd88a8556a0"
+  },
+  "email":  "levstamb@gmail.com",
+  "root":  "/home/lev/code/WrinkleFreeDev",
+  "host":  "lev-B650M-C-Y1",
+  "executable":  "/home/lev/code/WrinkleFreeDev/.venv/bin/python3",
+  "cpu_count":  8,
+  "cpu_count_logical":  16,
+  "gpu":  "NVIDIA GeForce RTX 3060 Ti",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "982820896768",
+      "used":  "831412690944"
+    }
+  },
+  "memory":  {
+    "total":  "15863517184"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 3060 Ti",
+      "memoryTotal":  "8589934592",
+      "cudaCores":  4864,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-92cc2110-34e7-0ed8-b90b-53e0994f5494"
+    }
+  ],
+  "cudaVersion":  "12.9",
+  "writerId":  "nzeh9ho3hhv9im0ugdm0j8964452u87j"
+}

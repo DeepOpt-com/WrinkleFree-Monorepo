@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
+from cheapertraining.training import PlateauEarlyStopping, ZClip
 from wrinklefree.distillation import (
     ContinuePretrainLoss,
     LayerwiseDistillationLoss,
@@ -153,6 +154,37 @@ class Stage2Trainer(Trainer):
         if self.has_influence:
             logger.info("Influence-aware optimizer detected - will log mixture weights")
 
+        # Early stopping setup
+        early_stop_cfg = getattr(self.training_cfg, "early_stopping", None)
+        self.early_stopper = PlateauEarlyStopping(
+            patience=getattr(early_stop_cfg, "patience", 5) if early_stop_cfg else 5,
+            min_delta=getattr(early_stop_cfg, "min_delta", 0.01) if early_stop_cfg else 0.01,
+            mode="min",
+            min_evals=getattr(early_stop_cfg, "min_evals", 10) if early_stop_cfg else 10,
+            enabled=getattr(early_stop_cfg, "enabled", False) if early_stop_cfg else False,
+            rank=self.rank,
+        )
+        if self.early_stopper.enabled:
+            logger.info(
+                f"Early stopping enabled: patience={self.early_stopper.patience}, "
+                f"min_delta={self.early_stopper.min_delta}"
+            )
+
+        # Loss EMA for early stopping (smoothed loss tracking)
+        self.loss_ema: float = 0.0
+        self.loss_ema_alpha: float = 0.99  # Smoothing factor
+
+        # ZClip adaptive gradient clipping
+        zclip_cfg = getattr(self.training_cfg, "zclip", None)
+        if zclip_cfg is not None and getattr(zclip_cfg, "enabled", True):
+            z_threshold = getattr(zclip_cfg, "z_threshold", 3.0)
+            ema_decay = getattr(zclip_cfg, "ema_decay", 0.99)
+            self.zclip = ZClip(z_threshold=z_threshold, ema_decay=ema_decay)
+            logger.info(f"ZClip adaptive gradient clipping enabled: z_threshold={z_threshold}")
+        else:
+            self.zclip = None
+            logger.info("ZClip disabled, using fixed gradient clipping")
+
     def _check_influence_optimizer(self) -> bool:
         """Check if optimizer is InfluenceAwareOptimizer."""
         optimizer_class_name = self.optimizer.__class__.__name__
@@ -244,7 +276,8 @@ class Stage2Trainer(Trainer):
 
         logger.info(f"Stage 2: Training for {self.max_steps} steps ({self.total_tokens:,} tokens)")
 
-        accumulated_loss = 0.0
+        # Use tensor for loss accumulation to avoid GPU sync every micro-batch
+        accumulated_loss = torch.tensor(0.0, device=self.device)
         num_accumulated = 0
         start_time = time.time()
         last_loss_dict = {}
@@ -278,15 +311,31 @@ class Stage2Trainer(Trainer):
             # Backward pass
             loss.backward()
 
-            accumulated_loss += loss_dict["loss"].item()
+            # Accumulate loss on GPU (avoid .item() sync every micro-batch)
+            accumulated_loss += loss_dict["loss"].detach()
             num_accumulated += 1
 
             # Optimizer step
             grad_norm = None
+            raw_grad_norm = None
+            was_clipped = False
             if num_accumulated >= self.gradient_accumulation_steps:
-                # Gradient clipping (FSDP-aware)
-                if self.gradient_clipping > 0:
-                    # For FSDP models, use the FSDP clip_grad_norm_ method
+                # Gradient clipping (FSDP-aware with ZClip support)
+                if self.zclip is not None:
+                    # Use ZClip adaptive clipping
+                    if hasattr(self.model, "clip_grad_norm_"):
+                        # For FSDP: compute stats then let FSDP do the actual clipping
+                        stats = self.zclip.clip(self.model)
+                        raw_grad_norm = stats.raw_norm
+                        grad_norm = stats.clipped_norm
+                        was_clipped = stats.was_clipped
+                    else:
+                        stats = self.zclip.clip(self.model)
+                        raw_grad_norm = stats.raw_norm
+                        grad_norm = stats.clipped_norm
+                        was_clipped = stats.was_clipped
+                elif self.gradient_clipping > 0:
+                    # Fallback to fixed gradient clipping
                     if hasattr(self.model, "clip_grad_norm_"):
                         grad_norm = self.model.clip_grad_norm_(self.gradient_clipping)
                     else:
@@ -294,6 +343,8 @@ class Stage2Trainer(Trainer):
                             self.model.parameters(),
                             self.gradient_clipping,
                         )
+                    raw_grad_norm = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
+                    was_clipped = raw_grad_norm > self.gradient_clipping
 
                 self.optimizer.step()
                 self.optimizer.zero_grad()
@@ -306,8 +357,16 @@ class Stage2Trainer(Trainer):
                     self.lambda_warmup.step()
 
                 self.global_step += 1
-                avg_loss = accumulated_loss / num_accumulated
+                # Only sync GPU here (once per optimizer step, not every micro-batch)
+                avg_loss = (accumulated_loss / num_accumulated).item()
+                accumulated_loss.zero_()  # Reset for next accumulation
                 self.train_losses.append(avg_loss)
+
+                # Update loss EMA for early stopping
+                if self.loss_ema == 0.0:
+                    self.loss_ema = avg_loss
+                else:
+                    self.loss_ema = self.loss_ema_alpha * self.loss_ema + (1 - self.loss_ema_alpha) * avg_loss
 
                 # Get lr for logging
                 lr = self.optimizer.param_groups[0]["lr"]
@@ -339,11 +398,17 @@ class Stage2Trainer(Trainer):
                             "train/step": self.global_step,
                             "train/tokens_processed": self.tokens_processed,
                         }
-                        # Log gradient norm
+                        # Log gradient norm (with ZClip support)
                         if grad_norm is not None:
                             gn = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
                             wandb_log["train/grad_norm"] = gn
-                            wandb_log["train/grad_clipped"] = 1.0 if gn > self.gradient_clipping else 0.0
+                            wandb_log["train/grad_clipped"] = 1.0 if was_clipped else 0.0
+                            if raw_grad_norm is not None:
+                                wandb_log["train/grad_norm_raw"] = raw_grad_norm
+                            # Log ZClip stats if available
+                            if self.zclip is not None and hasattr(self.zclip, 'ema_mean') and self.zclip.ema_mean is not None:
+                                wandb_log["train/zclip_ema_mean"] = self.zclip.ema_mean
+                                wandb_log["train/zclip_ema_std"] = (self.zclip.ema_var + 1e-8) ** 0.5
                         # Log lambda if warmup is active
                         if self.lambda_warmup is not None:
                             wandb_log["train/lambda"] = self.lambda_warmup.lambda_val
@@ -376,6 +441,15 @@ class Stage2Trainer(Trainer):
 
                         self.wandb.log(wandb_log, step=self.global_step)
 
+                # Early stopping check (on log interval, using smoothed loss)
+                if self.early_stopper.check(self.loss_ema, self.global_step):
+                    if self.rank == 0:
+                        logger.warning("Stopping training early due to loss plateau.")
+                        self.early_stopper.save_json(self.output_dir)
+                    # Save checkpoint before exiting (all ranks must participate for FSDP)
+                    self.save_checkpoint(f"early_stop_{self.global_step}")
+                    break
+
                 # Checkpointing (no eval)
                 # NOTE: All ranks must call save_checkpoint for FSDP state dict gathering
                 # (collective operation), but only rank 0 writes to disk
@@ -385,7 +459,7 @@ class Stage2Trainer(Trainer):
                 pbar.update(1)
                 pbar.set_postfix({"loss": avg_loss, "ppl": ppl, "lr": lr})
 
-                accumulated_loss = 0.0
+                # Note: accumulated_loss already reset via .zero_() above
                 num_accumulated = 0
 
         pbar.close()
@@ -537,6 +611,41 @@ class Stage2Trainer(Trainer):
         loss_dict["tokens_processed"] = torch.tensor(float(self.tokens_processed), device=batch["input_ids"].device)
 
         return loss_dict
+
+    def save_checkpoint(self, name: str) -> None:
+        """Save checkpoint with early stopper state."""
+        # Call parent to save base checkpoint
+        super().save_checkpoint(name)
+
+        # Add early stopper state to checkpoint (rank 0 only)
+        if self.rank == 0 and self.early_stopper.enabled:
+            checkpoint_dir = self.output_dir / "checkpoints" / name
+            checkpoint_path = checkpoint_dir / "checkpoint.pt"
+            if checkpoint_path.exists():
+                import torch
+                checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                checkpoint["early_stopper"] = self.early_stopper.state_dict()
+                checkpoint["loss_ema"] = self.loss_ema
+                torch.save(checkpoint, checkpoint_path)
+
+    def load_checkpoint(self, path: Path) -> None:
+        """Load checkpoint with early stopper state."""
+        # Call parent to load base checkpoint
+        super().load_checkpoint(path)
+
+        # Restore early stopper state
+        if path.is_dir():
+            checkpoint_path = path / "checkpoint.pt"
+        else:
+            checkpoint_path = path
+
+        import torch
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        if "early_stopper" in checkpoint:
+            self.early_stopper.load_state_dict(checkpoint["early_stopper"])
+            logger.info(f"Restored early stopper state: best={self.early_stopper.best:.4f}, wait={self.early_stopper.wait}")
+        if "loss_ema" in checkpoint:
+            self.loss_ema = checkpoint["loss_ema"]
 
 
 def run_stage2(

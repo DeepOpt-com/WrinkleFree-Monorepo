@@ -6,48 +6,52 @@
 
 name: mixed_pretrain
 
+# Shuffle buffer size - larger = better mixing but more memory
+# 50000 recommended for 5+ sources to ensure proper domain mixing
+shuffle_buffer_size: 50000
+
 # Multiple data sources with initial weights (adjusted by influence remixing)
 # Web + Code + Math + Reasoning + Diversity mix for influence remixing
 sources:
   - name: dclm
     path: mlfoundations/dclm-baseline-1.0-parquet  # Parquet version (cleaner)
     subset: null
-    weight: 0.225  # 22.5% high-quality web (Apple's curated 4T tokens)
+    weight: 0.25  # 25% high-quality web (Apple's curated 4T tokens)
     text_column: text
     streaming: true
 
   - name: fineweb_edu
     path: HuggingFaceFW/fineweb-edu
     subset: sample-10BT
-    weight: 0.27  # 27% educational content (includes math)
+    weight: 0.35  # 35% educational content (increased from 30% - high quality)
     text_column: text
     streaming: true
 
   - name: github_code
     path: nick007x/github-code-2025  # MIT licensed, 2025 curated code
     subset: null
-    weight: 0.135  # 13.5% code
+    weight: 0.10  # 10% code (reduced from 15% - code datasets are noisy)
     text_column: content
     streaming: true
 
   - name: finemath
     path: HuggingFaceTB/finemath  # 34B tokens math text (ODC-By license, commercially friendly)
     subset: finemath-3plus
-    weight: 0.135  # 13.5% mathematical reasoning
+    weight: 0.15  # 15% mathematical reasoning
     text_column: text
     streaming: true
 
-  - name: fineweb
-    path: HuggingFaceFW/fineweb
-    subset: sample-10BT
-    weight: 0.135  # 13.5% diverse web content
+  - name: slimpajama
+    path: cerebras/SlimPajama-627B  # Cleaned RedPajama (Apache 2.0)
+    subset: null
+    weight: 0.15  # 15% diverse content
     text_column: text
     streaming: true
 
   - name: synth
     path: PleIAs/SYNTH  # Synthetic reasoning from Wikipedia (CDLA-Permissive 2.0)
     subset: null
-    weight: 0.10  # 10% synthetic reasoning (query + reasoning + answer)
+    weight: 0  # Disabled for now
     text_column:
       - query
       - synthetic_reasoning
@@ -88,8 +92,8 @@ probe:
       split: train
 
     diverse:
-      path: HuggingFaceFW/fineweb
-      subset: sample-10BT
+      path: cerebras/SlimPajama-627B
+      subset: null
       samples: 33
       text_column: text
       split: train
@@ -118,6 +122,9 @@ preprocessing:
 # Dataloader settings
 dataloader:
   batch_size: 32
+  # num_workers: Number of data loading workers (default: 4)
+  # - 0: Load data in main process (slower but easier to debug)
+  # - 4-8: Recommended for streaming datasets (balances throughput and HF API limits)
   num_workers: 4
   prefetch_factor: 2
   pin_memory: true

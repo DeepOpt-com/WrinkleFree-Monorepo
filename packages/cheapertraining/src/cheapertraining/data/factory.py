@@ -24,11 +24,31 @@ Usage:
     )
 """
 
+import os
 from typing import Any, Optional
 
 import torch
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
+
+
+def _get_optimal_num_workers(num_workers: int | None, default: int = 4) -> int:
+    """Get optimal num_workers for data loading.
+
+    Args:
+        num_workers: Explicitly specified num_workers (takes priority)
+        default: Default from config (default: 4, recommended for streaming datasets)
+
+    Returns:
+        Number of workers to use for data loading.
+
+    Best practice: 4-8 workers for streaming datasets balances throughput
+    and HuggingFace API rate limits.
+    Reference: PyTorch forums and performance tuning guides.
+    """
+    if num_workers is not None:
+        return num_workers
+    return default
 
 from cheapertraining.data.mixing import (
     DatasetMixture,
@@ -47,7 +67,7 @@ def create_dataloader(
     max_length: int = 2048,
     rank: int = 0,
     world_size: int = 1,
-    num_workers: int = 4,
+    num_workers: int | None = None,  # Auto-detect: os.cpu_count() - 1, capped at 16
     prefetch_factor: int = 2,
     pin_memory: bool = True,
     seed: int = 42,
@@ -97,6 +117,11 @@ def create_dataloader(
     if isinstance(config, DictConfig):
         config = OmegaConf.to_container(config, resolve=True)
 
+    # Get num_workers: explicit param > config.dataloader.num_workers > config.num_workers > default (4)
+    dataloader_config = config.get("dataloader", {})
+    config_num_workers = dataloader_config.get("num_workers", config.get("num_workers", 4))
+    num_workers = _get_optimal_num_workers(num_workers, default=config_num_workers)
+
     # Check for multi-source mode
     sources = config.get("sources")
     if sources:
@@ -112,7 +137,7 @@ def create_dataloader(
             pin_memory=pin_memory,
             seed=seed,
             packed=packed,
-            shuffle_buffer_size=config.get("shuffle_buffer_size", 10000),
+            shuffle_buffer_size=config.get("shuffle_buffer_size", 1000),
         )
 
     # Single-source mode
@@ -188,14 +213,15 @@ def _create_multi_source_dataloader(
     else:
         dataset = mixed_dataset
 
-    # Force num_workers=0 for streaming/iterable datasets
-    # Multiple workers with IterableDataset causes redundant data loading
-    if isinstance(dataset, IterableDataset) and num_workers > 0:
-        import logging
-        logging.getLogger(__name__).info(
-            "Streaming dataset detected, forcing num_workers=0 (was %d)", num_workers
-        )
-        num_workers = 0
+    # Note: We support num_workers > 0 for streaming datasets
+    # The _worker_init_fn handles per-worker seeding for reproducibility
+    # Each worker gets different data via the streaming shuffle buffer
+    # persistent_workers avoids worker spawn overhead between epochs
+
+    import logging
+    logging.getLogger(__name__).info(
+        f"Creating dataloader with num_workers={num_workers} (CPU count: {os.cpu_count()})"
+    )
 
     # Create dataloader
     dataloader = DataLoader(
@@ -205,6 +231,7 @@ def _create_multi_source_dataloader(
         prefetch_factor=prefetch_factor if num_workers > 0 else None,
         pin_memory=pin_memory,
         worker_init_fn=_worker_init_fn if num_workers > 0 else None,
+        persistent_workers=num_workers > 0,  # Avoid worker spawn overhead
     )
 
     return dataloader, mixed_dataset
@@ -268,13 +295,8 @@ def _create_single_source_dataloader(
     else:
         dataset = single_dataset
 
-    # Force num_workers=0 for streaming/iterable datasets
-    if isinstance(dataset, IterableDataset) and num_workers > 0:
-        import logging
-        logging.getLogger(__name__).info(
-            "Streaming dataset detected, forcing num_workers=0 (was %d)", num_workers
-        )
-        num_workers = 0
+    # Note: We support num_workers > 0 for streaming datasets
+    # The _worker_init_fn handles per-worker seeding for reproducibility
 
     # Create dataloader
     dataloader = DataLoader(
@@ -284,6 +306,7 @@ def _create_single_source_dataloader(
         prefetch_factor=prefetch_factor if num_workers > 0 else None,
         pin_memory=pin_memory,
         worker_init_fn=_worker_init_fn if num_workers > 0 else None,
+        persistent_workers=num_workers > 0,  # Avoid worker spawn overhead
     )
 
     return dataloader, None

@@ -110,6 +110,90 @@ class TestMixedDataset:
         assert abs(dataset.normalized_weights[0].item() - 0.4) < 1e-6
         assert abs(dataset.normalized_weights[1].item() - 0.6) < 1e-6
 
+    def test_sampling_follows_weights(self):
+        """Verify samples are drawn according to weights (statistical test)."""
+        mixtures = [
+            DatasetMixture(name="a", weight=0.7, path="test/a"),
+            DatasetMixture(name="b", weight=0.3, path="test/b"),
+        ]
+        dataset = MixedDataset(mixtures=mixtures, streaming=False, seed=42)
+
+        # Mock datasets with enough samples to test distribution
+        dataset._datasets = [
+            [{"text": f"from_a_{i}"} for i in range(1000)],
+            [{"text": f"from_b_{i}"} for i in range(1000)],
+        ]
+        dataset._iterators = [iter(d) for d in dataset._datasets]
+
+        # Draw samples
+        counts = {"a": 0, "b": 0}
+        for i, sample in enumerate(dataset):
+            if i >= 1000:
+                break
+            counts[sample["source"]] += 1
+
+        # Verify distribution (allow 5% tolerance for statistical variance)
+        total = counts["a"] + counts["b"]
+        observed_a = counts["a"] / total
+        observed_b = counts["b"] / total
+        assert abs(observed_a - 0.7) < 0.05, f"Expected ~70% from 'a', got {observed_a*100:.1f}%"
+        assert abs(observed_b - 0.3) < 0.05, f"Expected ~30% from 'b', got {observed_b*100:.1f}%"
+
+    def test_exhausted_dataset_not_reused(self):
+        """Verify exhausted datasets are excluded, not restarted."""
+        mixtures = [
+            DatasetMixture(name="small", weight=0.5, path="test/small"),
+            DatasetMixture(name="large", weight=0.5, path="test/large"),
+        ]
+        dataset = MixedDataset(mixtures=mixtures, streaming=False, seed=42)
+
+        # Small dataset has only 10 samples, large has 100
+        dataset._datasets = [
+            [{"text": f"small_{i}"} for i in range(10)],
+            [{"text": f"large_{i}"} for i in range(100)],
+        ]
+        dataset._iterators = [iter(d) for d in dataset._datasets]
+
+        # Collect all samples
+        all_samples = list(dataset)
+
+        # Verify small dataset wasn't reused
+        small_count = sum(1 for s in all_samples if s["source"] == "small")
+        large_count = sum(1 for s in all_samples if s["source"] == "large")
+
+        # Small should have exactly 10 (its full size, not more)
+        assert small_count == 10, f"Small dataset should have exactly 10 samples, got {small_count}"
+
+        # Large should have 100 (its full size)
+        assert large_count == 100, f"Large dataset should have exactly 100 samples, got {large_count}"
+
+        # Total should be 110 (sum of both dataset sizes)
+        assert len(all_samples) == 110, f"Total samples should be 110, got {len(all_samples)}"
+
+    def test_get_sampling_stats(self):
+        """Test that sampling stats are tracked correctly."""
+        mixtures = [
+            DatasetMixture(name="a", weight=0.5, path="test/a"),
+            DatasetMixture(name="b", weight=0.5, path="test/b"),
+        ]
+        dataset = MixedDataset(mixtures=mixtures, streaming=False, seed=42)
+
+        dataset._datasets = [
+            [{"text": "a1"}, {"text": "a2"}],
+            [{"text": "b1"}, {"text": "b2"}, {"text": "b3"}],
+        ]
+        dataset._iterators = [iter(d) for d in dataset._datasets]
+
+        # Consume all samples
+        samples = list(dataset)
+
+        stats = dataset.get_sampling_stats()
+        assert stats["total_samples"] == 5
+        assert stats["counts"]["a"] == 2
+        assert stats["counts"]["b"] == 3
+        assert "a" in stats["exhausted"]
+        assert "b" in stats["exhausted"]
+
     def test_update_weights_from_influence(self):
         """Test dynamic weight update from influence scores."""
         mixtures = [

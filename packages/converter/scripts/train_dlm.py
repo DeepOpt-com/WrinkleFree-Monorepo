@@ -45,12 +45,24 @@ from transformers import (
 )
 from tqdm import tqdm
 
+from cheapertraining.training import PlateauEarlyStopping, ZClip
+
+# Try to import wrinklefree for quantization control (BitNet integration)
+try:
+    from wrinklefree.quantization.lambda_warmup import LambdaWarmup, set_global_lambda_warmup
+    HAS_WRINKLEFREE = True
+except ImportError:
+    HAS_WRINKLEFREE = False
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+if not HAS_WRINKLEFREE:
+    logger.warning("Could not import wrinklefree. Quantization warmup will be disabled (lambda=1.0).")
 
 # Fast-dLLM v2 constants
 MASK_TOKEN = "|<MASK>|"
@@ -358,6 +370,75 @@ class ConversationDataset(IterableDataset):
             }
 
 
+class TextDataset(IterableDataset):
+    """Simple text dataset for pretraining-style loss (loss on all tokens).
+
+    Used for cleaner signal with datasets like FineWeb-Edu that don't have
+    conversation structure. Loss is computed on all tokens (no masking).
+    """
+
+    def __init__(self, hf_dataset, tokenizer, max_length, block_size, mask_id, pad_id):
+        self.dataset = hf_dataset
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.block_size = block_size
+        self.mask_id = mask_id
+        self.pad_id = pad_id
+        self.raw_samples_seen = 0
+
+    def __iter__(self):
+        for example in self.dataset:
+            self.raw_samples_seen += 1
+            # FineWeb-Edu format: just "text" field
+            text = example.get("text", "")
+            if not text or len(text) < 50:  # Skip very short texts
+                continue
+
+            # Tokenize
+            tokens = self.tokenizer(text, add_special_tokens=True, truncation=False)["input_ids"]
+
+            if len(tokens) < 10:
+                continue
+
+            # Truncate to max_length, leaving room for block padding
+            max_content = self.max_length - self.block_size
+            if len(tokens) > max_content:
+                tokens = tokens[:max_content]
+
+            # Pad to block_size multiple with mask_id (Fast-dLLM v2 requirement)
+            content_len = len(tokens)
+            pad_len = (self.block_size - content_len % self.block_size) % self.block_size
+            if pad_len > 0:
+                tokens = tokens + [self.mask_id] * pad_len
+
+            # Ensure we don't exceed max_length after padding
+            if len(tokens) > self.max_length:
+                tokens = tokens[:self.max_length]
+
+            seq_len = len(tokens)
+
+            # Labels: loss on all tokens (shifted by 1 in model forward)
+            labels = tokens.copy()
+
+            # Pad to max_length with pad token (no loss on padding)
+            final_pad = self.max_length - seq_len
+            if final_pad > 0:
+                tokens = tokens + [self.pad_id] * final_pad
+                labels = labels + [-100] * final_pad
+
+            attention_mask = [1] * seq_len + [0] * final_pad
+
+            assert len(tokens) == self.max_length
+            assert len(labels) == self.max_length
+            assert len(attention_mask) == self.max_length
+
+            yield {
+                "input_ids": torch.tensor(tokens),
+                "attention_mask": torch.tensor(attention_mask),
+                "labels": torch.tensor(labels),
+            }
+
+
 def collate_fn(batch):
     return {
         "input_ids": torch.stack([x["input_ids"] for x in batch]),
@@ -380,6 +461,8 @@ def train(
     auto_batch_size: bool = True,  # Enable dynamic batch probing
     resume: bool = True,  # Auto-resume from GCS checkpoint if available
     seed: int = 42,
+    early_stopping_cfg: dict | None = None,  # Early stopping config from Hydra
+    quantization_warmup_steps: int = 0,  # Lambda warmup for BitNet (0 = disabled)
 ):
     """Run Fast-dLLM v2 SFT training."""
     set_seed(seed)
@@ -405,7 +488,7 @@ def train(
                 # Load trainer state if available
                 state_path = local_resume_dir / "trainer_state.pt"
                 if state_path.exists():
-                    resume_state = torch.load(state_path)
+                    resume_state = torch.load(state_path, weights_only=False)
                     resume_step = resume_state.get("step", 0)
                     resume_tokens = resume_state.get("tokens_seen", 0)
                     resume_raw_samples = resume_state.get("raw_samples_seen", 0)
@@ -483,6 +566,24 @@ def train(
     mask_id = tokenizer.encode(MASK_TOKEN, add_special_tokens=False)[0]
     logger.info(f"Mask token ID: {mask_id}")
 
+    # === SMART INITIALIZATION (Fix for BitNet Instability) ===
+    # Initialize mask token embedding to mean of existing vocabulary.
+    # Random initialization creates activation outliers that break BitNet's
+    # per-token quantization (scale = 127 / max(|x|)), causing loss spikes.
+    input_embeddings = model.get_input_embeddings()
+    if input_embeddings is not None and input_embeddings.weight.shape[0] > 1:
+        with torch.no_grad():
+            if mask_id < input_embeddings.weight.shape[0]:
+                # Calculate mean of all tokens except the new one (if it's last)
+                limit_idx = input_embeddings.weight.shape[0] - 1 if mask_id == input_embeddings.weight.shape[0] - 1 else None
+                mean_embedding = input_embeddings.weight[:limit_idx].mean(dim=0)
+                input_embeddings.weight[mask_id] = mean_embedding
+                logger.info(f"Initialized {MASK_TOKEN} embedding to mean of vocab (norm={mean_embedding.norm().item():.2f})")
+            else:
+                logger.warning(f"Mask token ID {mask_id} out of embedding range, skipping smart initialization")
+    else:
+        logger.warning("Could not access input embeddings for smart initialization")
+
     # 2. Set bd_size in model config
     model.config.bd_size = block_size
     logger.info(f"Set bd_size = {block_size} in model config")
@@ -533,7 +634,8 @@ def train(
     logger.info(f"Training for {total_steps} steps ({tokens_per_step:,} tokens/step)")
     logger.info(f"Warmup steps: {actual_warmup_steps} ({warmup_ratio*100:.0f}% of total, scheduler: {scheduler_type})")
 
-    # Load training data
+    # Load training data - NVIDIA Llama-Nemotron (per Fast-dLLM v2 paper)
+    # Uses SFT with response-only loss, MASK padding only on response tokens
     logger.info("Loading training data (Llama-Nemotron-Post-Training-Dataset)")
     splits = ["code", "math", "science", "chat", "safety"]
     datasets_list = [
@@ -545,17 +647,18 @@ def train(
     # Deterministic shuffle for reproducibility
     dataset = dataset.shuffle(seed=seed, buffer_size=10000)
 
-    # Fast-forward dataset if resuming (skip raw samples BEFORE tokenization)
+    # NOTE: We don't skip samples on resume because:
+    # 1. interleave_datasets + shuffle + skip has unreliable behavior
+    # 2. The shuffle buffer (10K) makes exact position restoration impossible
+    # 3. Training on some duplicate data is acceptable - model weights are restored
+    # The training loop will start from resume_step, so progress is maintained.
     if resume_raw_samples > 0:
-        logger.info(f"Skipping {resume_raw_samples:,} raw samples for resume...")
-        start_time = time.time()
-        dataset = dataset.skip(resume_raw_samples)
-        logger.info(f"Skip completed in {time.time() - start_time:.2f}s")
+        logger.info(f"Resuming from step {resume_step} (not skipping samples - shuffle buffer makes exact restore impossible)")
 
     tokenized_dataset = ConversationDataset(
         dataset, tokenizer, max_seq_length, block_size, mask_id, pad_id
     )
-    # Continue counting from where we left off
+    # Track cumulative samples across runs (for checkpoint metadata)
     tokenized_dataset.raw_samples_seen = resume_raw_samples
 
     dataloader = DataLoader(
@@ -585,9 +688,66 @@ def train(
         try:
             optimizer.load_state_dict(resume_state["optimizer"])
             scheduler.load_state_dict(resume_state["scheduler"])
+
+            # Reset LR to config value (checkpoint may have different LR)
+            old_lr = optimizer.param_groups[0]["lr"]
+            if old_lr != learning_rate:
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = learning_rate
+                    if "initial_lr" in param_group:
+                        param_group["initial_lr"] = learning_rate
+                logger.info(f"Reset LR from checkpoint value {old_lr} to config value {learning_rate}")
+
+            # Update scheduler's base_lrs to match config LR
+            if hasattr(scheduler, "base_lrs"):
+                scheduler.base_lrs = [learning_rate] * len(scheduler.base_lrs)
+
             logger.info("Loaded optimizer and scheduler state from checkpoint")
         except Exception as e:
             logger.warning(f"Failed to load optimizer state: {e}")
+
+    # Early stopping setup
+    early_stop_cfg = early_stopping_cfg or {}
+    early_stopper = PlateauEarlyStopping(
+        patience=early_stop_cfg.get("patience", 5),
+        min_delta=early_stop_cfg.get("min_delta", 0.01),
+        mode="min",
+        min_evals=early_stop_cfg.get("min_evals", 10),
+        enabled=early_stop_cfg.get("enabled", False),
+        rank=0,
+    )
+    if early_stopper.enabled:
+        logger.info(
+            f"Early stopping enabled: patience={early_stopper.patience}, "
+            f"min_delta={early_stopper.min_delta}"
+        )
+
+    # === BITNET STABILITY SETUP ===
+    # Lambda warmup for gradual quantization
+    lambda_warmup_scheduler = None
+    if HAS_WRINKLEFREE and quantization_warmup_steps > 0:
+        logger.info(f"Initializing quantization warmup: {quantization_warmup_steps} steps")
+        lambda_warmup_scheduler = LambdaWarmup(
+            warmup_steps=quantization_warmup_steps,
+            min_lambda=0.0,
+            max_lambda=1.0,
+            schedule="linear",
+        )
+        set_global_lambda_warmup(lambda_warmup_scheduler)
+
+        # If resuming, fast-forward warmup to match step
+        if resume_step > 0:
+            for _ in range(min(resume_step, quantization_warmup_steps)):
+                lambda_warmup_scheduler.step()
+            logger.info(f"Fast-forwarded lambda warmup to step {resume_step} (lambda={lambda_warmup_scheduler.lambda_val:.3f})")
+    elif HAS_WRINKLEFREE:
+        # Ensure full quantization if no warmup requested
+        set_global_lambda_warmup(None)
+        logger.info("Quantization warmup disabled (lambda=1.0)")
+
+    # ZClip for adaptive gradient clipping
+    zclip = ZClip(z_threshold=3.0, ema_decay=0.99)
+    logger.info("ZClip adaptive gradient clipping enabled (z_threshold=3.0)")
 
     # Training loop
     model.train()
@@ -636,10 +796,19 @@ def train(
         accum_count += 1
 
         if accum_count >= gradient_accumulation_steps:
-            # Capture gradient norm before clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # Adaptive gradient clipping with ZClip (replaces fixed clip_grad_norm_)
+            zclip_stats = zclip.clip(model)
+            raw_grad_norm = zclip_stats.raw_norm
+            clipped_grad_norm = zclip_stats.clipped_norm
+            grad_norm = clipped_grad_norm  # For logging compatibility
+
             optimizer.step()
             scheduler.step()
+
+            # Step lambda warmup for gradual quantization
+            if lambda_warmup_scheduler is not None:
+                lambda_warmup_scheduler.step()
+
             optimizer.zero_grad()
 
             step += 1
@@ -673,16 +842,22 @@ def train(
             })
 
             if use_wandb:
+                # Get current lambda value for quantization tracking
+                current_lambda = lambda_warmup_scheduler.lambda_val if lambda_warmup_scheduler else 1.0
+
                 wandb.log({
                     # Core metrics
                     "train/loss": avg_loss,
                     "train/tokens": tokens_seen,
                     "train/lr": scheduler.get_last_lr()[0],
                     "train/step": step,
-                    # Stability metrics
-                    "train/grad_norm": grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm,
+                    # Stability metrics (ZClip + quantization)
+                    "train/grad_norm_raw": raw_grad_norm,
+                    "train/grad_norm_clipped": clipped_grad_norm,
+                    "train/grad_norm": grad_norm,  # For backward compatibility
                     "train/loss_ema": loss_ema,
                     "train/loss_spike": loss_spike,
+                    "train/lambda": current_lambda,  # Quantization lambda
                     # Throughput metrics
                     "train/tokens_per_second": tokens_per_sec,
                     "train/step_time": step_time,
@@ -692,6 +867,17 @@ def train(
                 })
 
             running_loss = 0.0
+
+            # Early stopping check (using smoothed loss)
+            if early_stopper.check(loss_ema, step):
+                logger.warning("Stopping training early due to loss plateau.")
+                early_stopper.save_json(final_output)
+                # Save final checkpoint before exiting
+                checkpoint_dir = final_output / "checkpoint-early-stop"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                model.save_pretrained(checkpoint_dir)
+                tokenizer.save_pretrained(checkpoint_dir)
+                break
 
             # Save checkpoint every 1000 steps
             if step % GCS_UPLOAD_INTERVAL == 0:
@@ -790,6 +976,8 @@ def main(cfg: DictConfig) -> None:
         warmup_ratio=cfg.conversion.scheduler.get("warmup_ratio", DEFAULT_WARMUP_RATIO),
         scheduler_type=cfg.conversion.scheduler.get("type", "constant"),
         seed=cfg.get("seed", 42),
+        early_stopping_cfg=OmegaConf.to_container(cfg.conversion.get("early_stopping", {})),
+        quantization_warmup_steps=cfg.conversion.get("quantization_warmup_steps", 0),
     )
 
     logger.info(f"Training complete!")

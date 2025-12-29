@@ -209,17 +209,13 @@ class Trainer:
                     from wrinklefree.training.run_naming import generate_run_name
                     run_name = generate_run_name(config)
 
-                # Initialize wandb with async uploads for faster training
-                # This prevents blocking on network I/O during log calls
+                # Initialize wandb - it handles async uploads internally
                 wandb.init(
                     project=project,
                     entity=entity,
                     name=run_name,
                     tags=list(tags) if tags else [],
                     config=dict(config) if config else {},
-                    settings=wandb.Settings(
-                        _async_upload_concurrency_limit=4,  # Parallel uploads
-                    ),
                 )
                 self.wandb_enabled = True
                 logger.info(f"WandB initialized: project={project}, entity={entity}")
