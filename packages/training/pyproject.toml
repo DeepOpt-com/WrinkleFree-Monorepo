@@ -27,6 +27,7 @@ dependencies = [
     "google-cloud-storage>=2.14.0", # GCS checkpoint uploads
     "torchao>=0.7.0", # TorchAO for FP8 training (DeepSeek-V3 style)
     "cheapertraining", # Unified data layer (install: pip install -e ../WrinkleFree-CheaperTraining)
+    "muon-clip",
 ]
 
 [project.optional-dependencies]
@@ -111,3 +112,4 @@ directory = "htmlcov"
 
 [tool.uv.sources]
 cheapertraining = { workspace = true }
+muon-clip = { git = "https://github.com/GAD-cell/muon-clip" }
