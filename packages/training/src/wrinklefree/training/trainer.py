@@ -551,8 +551,20 @@ class Trainer:
         else:
             self.model.load_state_dict(checkpoint["model_state_dict"])
 
-        # Load optimizer state
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        # Load optimizer state (skip if RESUME_OPTIMIZER=false or optimizer type changed)
+        skip_optimizer = os.environ.get("RESUME_OPTIMIZER", "true").lower() == "false"
+        if skip_optimizer:
+            if self.rank == 0:
+                logger.info("Skipping optimizer state load (RESUME_OPTIMIZER=false)")
+        elif "optimizer_state_dict" in checkpoint:
+            try:
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            except ValueError as e:
+                if "doesn't match the size" in str(e):
+                    if self.rank == 0:
+                        logger.warning(f"Optimizer state mismatch (likely different optimizer type), skipping: {e}")
+                else:
+                    raise
 
         # Reset learning rate to config value (checkpoint may have different LR)
         config_lr = None
@@ -577,9 +589,13 @@ class Trainer:
                 if self.rank == 0:
                     logger.info(f"Reset LR from checkpoint value {old_lr} to config value {config_lr}")
 
-        # Load scheduler state
-        if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
-            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        # Load scheduler state (skip if switching optimizers)
+        if self.scheduler is not None and "scheduler_state_dict" in checkpoint and not skip_optimizer:
+            try:
+                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            except Exception as e:
+                if self.rank == 0:
+                    logger.warning(f"Failed to load scheduler state, starting fresh: {e}")
             # Also reset scheduler's base_lrs if we changed the LR
             # Must handle SequentialLR by updating sub-schedulers
             if config_lr is not None:

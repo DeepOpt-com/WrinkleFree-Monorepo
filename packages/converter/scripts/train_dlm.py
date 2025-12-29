@@ -46,6 +46,7 @@ from transformers import (
 from tqdm import tqdm
 
 from cheapertraining.training import PlateauEarlyStopping, ZClip
+from cheapertraining.training.optimizer import create_optimizer
 
 # Try to import wrinklefree for quantization control (BitNet integration)
 try:
@@ -70,6 +71,47 @@ DEFAULT_SEQ_LENGTH = 512  # Official script uses 512
 DEFAULT_WARMUP_RATIO = 0.03  # Official: 3% warmup
 GCS_UPLOAD_INTERVAL = 1000  # Upload to GCS every N steps
 BATCH_PROBE_REDUCTION = 0.8  # Reduce batch by 20% on OOM
+
+# ChatML special tokens (Qwen3 style)
+IM_START = "<|im_start|>"
+IM_END = "<|im_end|>"
+
+
+def format_chatml(messages: list[dict], add_generation_prompt: bool = False) -> str:
+    """Format messages in ChatML without Qwen3's thinking tags.
+
+    Qwen3's default template adds <think></think> to every assistant response,
+    wasting 4 tokens per response. This function formats clean ChatML:
+
+        <|im_start|>system
+        {system}<|im_end|>
+        <|im_start|>user
+        {user}<|im_end|>
+        <|im_start|>assistant
+        {response}<|im_end|>
+
+    Args:
+        messages: List of {"role": str, "content": str} dicts
+        add_generation_prompt: If True, append "<|im_start|>assistant\n"
+
+    Returns:
+        Formatted ChatML string (no trailing newline after final <|im_end|>)
+    """
+    parts = []
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+        parts.append(f"{IM_START}{role}\n{content}{IM_END}\n")
+
+    text = "".join(parts)
+
+    if add_generation_prompt:
+        text += f"{IM_START}assistant\n"
+    else:
+        # Remove trailing newline (we want to end on <|im_end|>, not \n)
+        text = text.rstrip("\n")
+
+    return text
 
 
 def set_seed(seed: int):
@@ -302,18 +344,12 @@ class ConversationDataset(IterableDataset):
                 messages = [{"role": "system", "content": system}] + list(messages)
             messages = list(messages) + [{"role": "assistant", "content": output}]
 
-            # Apply chat template to get full text
-            try:
-                full_text = self.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=False
-                )
-                # Get prompt-only text (without assistant response)
-                prompt_messages = messages[:-1]
-                prompt_text = self.tokenizer.apply_chat_template(
-                    prompt_messages, tokenize=False, add_generation_prompt=True
-                )
-            except Exception:
-                continue  # Skip if chat template fails
+            # Format in ChatML (without Qwen3's thinking tags)
+            # Full text ends with <|im_end|> (no trailing newline)
+            # Prompt ends with <|im_start|>assistant\n (with newline)
+            full_text = format_chatml(messages, add_generation_prompt=False)
+            prompt_messages = messages[:-1]
+            prompt_text = format_chatml(prompt_messages, add_generation_prompt=True)
 
             # Tokenize both
             full_ids = self.tokenizer(full_text, add_special_tokens=False)["input_ids"]
@@ -452,7 +488,7 @@ def train(
     output_dir: str,
     total_tokens: int = 1_000_000_000,  # Official: ~1B tokens
     block_size: int = 32,
-    learning_rate: float = 2e-5,  # Official: 2e-5
+    learning_rate: float = 1e-3,  # MuonClip default (50x higher than AdamW)
     max_seq_length: int = DEFAULT_SEQ_LENGTH,  # Official: 512
     batch_size: int = 8,
     gradient_accumulation_steps: int = 16,  # Effective batch ~128
@@ -463,6 +499,7 @@ def train(
     seed: int = 42,
     early_stopping_cfg: dict | None = None,  # Early stopping config from Hydra
     quantization_warmup_steps: int = 0,  # Lambda warmup for BitNet (0 = disabled)
+    optimizer_cfg: dict | None = None,  # Optimizer config (type, momentum, etc.)
 ):
     """Run Fast-dLLM v2 SFT training."""
     set_seed(seed)
@@ -636,16 +673,27 @@ def train(
 
     # Load training data - NVIDIA Llama-Nemotron (per Fast-dLLM v2 paper)
     # Uses SFT with response-only loss, MASK padding only on response tokens
+    # CURRICULUM: First 25% chat-only, then mixed (all splits)
     logger.info("Loading training data (Llama-Nemotron-Post-Training-Dataset)")
-    splits = ["code", "math", "science", "chat", "safety"]
-    datasets_list = [
-        load_dataset("nvidia/Llama-Nemotron-Post-Training-Dataset", split=s, streaming=True)
-        for s in splits
-    ]
-    dataset = interleave_datasets(datasets_list, seed=seed)
 
-    # Deterministic shuffle for reproducibility
-    dataset = dataset.shuffle(seed=seed, buffer_size=10000)
+    # Calculate curriculum switch point
+    curriculum_switch_step = int(total_steps * 0.25)
+    logger.info(f"Curriculum: chat-only for steps 0-{curriculum_switch_step}, mixed for {curriculum_switch_step}-{total_steps}")
+
+    # Phase 1: Chat-only dataset (first 25%)
+    chat_dataset = load_dataset("nvidia/Llama-Nemotron-Post-Training-Dataset", split="chat", streaming=True)
+    chat_dataset = chat_dataset.shuffle(seed=seed, buffer_size=10000)
+    chat_tokenized = ConversationDataset(chat_dataset, tokenizer, max_seq_length, block_size, mask_id, pad_id)
+
+    # Phase 2: Mixed dataset (all splits, remaining 75%)
+    all_splits = ["code", "math", "science", "chat", "safety"]
+    mixed_datasets = [
+        load_dataset("nvidia/Llama-Nemotron-Post-Training-Dataset", split=s, streaming=True)
+        for s in all_splits
+    ]
+    mixed_dataset = interleave_datasets(mixed_datasets, seed=seed)
+    mixed_dataset = mixed_dataset.shuffle(seed=seed, buffer_size=10000)
+    mixed_tokenized = ConversationDataset(mixed_dataset, tokenizer, max_seq_length, block_size, mask_id, pad_id)
 
     # NOTE: We don't skip samples on resume because:
     # 1. interleave_datasets + shuffle + skip has unreliable behavior
@@ -655,9 +703,16 @@ def train(
     if resume_raw_samples > 0:
         logger.info(f"Resuming from step {resume_step} (not skipping samples - shuffle buffer makes exact restore impossible)")
 
-    tokenized_dataset = ConversationDataset(
-        dataset, tokenizer, max_seq_length, block_size, mask_id, pad_id
-    )
+    # Start with appropriate dataset based on resume step
+    if resume_step < curriculum_switch_step:
+        logger.info(f"Starting with chat-only dataset (phase 1)")
+        tokenized_dataset = chat_tokenized
+        current_phase = 1
+    else:
+        logger.info(f"Starting with mixed dataset (phase 2, resumed past switch point)")
+        tokenized_dataset = mixed_tokenized
+        current_phase = 2
+
     # Track cumulative samples across runs (for checkpoint metadata)
     tokenized_dataset.raw_samples_seen = resume_raw_samples
 
@@ -669,11 +724,22 @@ def train(
     )
     data_iter = iter(dataloader)
 
-    # Setup optimizer (AdamW per Fast-dLLM v2 paper)
-    from torch.optim import AdamW
+    # Setup optimizer (MuonClip default, supports AdamW fallback)
+    opt_cfg = optimizer_cfg or {}
+    optimizer_type = opt_cfg.get("type", "muonclip")
 
-    optimizer = AdamW(model.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.01)
-    logger.info(f"Using AdamW optimizer (lr={learning_rate})")
+    optimizer = create_optimizer(
+        model,
+        optimizer_type=optimizer_type,
+        learning_rate=learning_rate,
+        weight_decay=opt_cfg.get("weight_decay", 0.01),
+        betas=tuple(opt_cfg.get("betas", [0.9, 0.95])),
+        momentum=opt_cfg.get("momentum", 0.95),
+        enable_clipping=opt_cfg.get("enable_clipping", True),
+        clipping_threshold=opt_cfg.get("clipping_threshold", 50.0),
+        model_config=model.config,
+    )
+    logger.info(f"Using {optimizer_type} optimizer (lr={learning_rate})")
 
     # Create scheduler based on config
     if scheduler_type == "cosine":
@@ -814,6 +880,20 @@ def train(
             step += 1
             accum_count = 0
 
+            # Curriculum switch: chat-only -> mixed at 25%
+            if current_phase == 1 and step >= curriculum_switch_step:
+                logger.info(f"Step {step}: Switching from chat-only to mixed dataset (phase 2)")
+                tokenized_dataset = mixed_tokenized
+                tokenized_dataset.raw_samples_seen = chat_tokenized.raw_samples_seen
+                dataloader = DataLoader(
+                    tokenized_dataset,
+                    batch_size=batch_size,
+                    collate_fn=collate_fn,
+                    num_workers=0,
+                )
+                data_iter = iter(dataloader)
+                current_phase = 2
+
             avg_loss = running_loss
             if avg_loss < best_loss:
                 best_loss = avg_loss
@@ -851,6 +931,8 @@ def train(
                     "train/tokens": tokens_seen,
                     "train/lr": scheduler.get_last_lr()[0],
                     "train/step": step,
+                    # Curriculum tracking (1=chat-only, 2=mixed)
+                    "train/curriculum_phase": current_phase,
                     # Stability metrics (ZClip + quantization)
                     "train/grad_norm_raw": raw_grad_norm,
                     "train/grad_norm_clipped": clipped_grad_norm,
@@ -978,6 +1060,7 @@ def main(cfg: DictConfig) -> None:
         seed=cfg.get("seed", 42),
         early_stopping_cfg=OmegaConf.to_container(cfg.conversion.get("early_stopping", {})),
         quantization_warmup_steps=cfg.conversion.get("quantization_warmup_steps", 0),
+        optimizer_cfg=OmegaConf.to_container(cfg.conversion.optimizer),
     )
 
     logger.info(f"Training complete!")
