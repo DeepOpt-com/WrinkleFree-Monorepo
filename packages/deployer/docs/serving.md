@@ -43,7 +43,7 @@ WrinkleFree-Deployer uses a **spillover architecture** to minimize inference cos
 
 1. **Install dependencies**:
    ```bash
-   cd WrinkleFree-Deployer
+   cd packages/deployer
    uv sync
    ```
 
@@ -63,7 +63,7 @@ WrinkleFree-Deployer uses a **spillover architecture** to minimize inference cos
 3. **Get a model file** (GGUF format):
    ```bash
    # Option 1: Use a model you trained
-   cp ../WrinkleFree-1.58Quant/outputs/model.gguf models/
+   cp ../training/outputs/model.gguf models/
 
    # Option 2: Download test model
    ./scripts/download_test_model.sh

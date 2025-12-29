@@ -120,7 +120,7 @@ Training can be run on cloud GPUs via SkyPilot (configured in `WrinkleFree-Deplo
 **Important**: Use **on-demand** instances (not spot) for smoke tests and time-sensitive runs. Spot H100:4 instances are often unavailable on RunPod.
 
 ```bash
-cd ../WrinkleFree-Deployer
+cd ../deployer
 
 # Load credentials
 source credentials/.env
@@ -399,7 +399,7 @@ uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain \
   data.config_name=fineweb  # Use CheaperTraining's fineweb.yaml
 ```
 
-**Available configs** (in `WrinkleFree-CheaperTraining/configs/data/`):
+**Available configs** (in `packages/cheapertraining/configs/data/`):
 - `mixed_pretrain` - Multi-source with influence (default, recommended)
 - `fineweb` - Single-source FineWeb-Edu (no influence)
 - `downstream` - SFT/finetuning tasks (Stage 3)

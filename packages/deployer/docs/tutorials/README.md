@@ -26,7 +26,7 @@ Before starting any tutorial:
 
 1. **Clone and install:**
    ```bash
-   cd WrinkleFree-Deployer
+   cd packages/deployer
    uv sync
    ```
 

@@ -30,13 +30,15 @@ The training pipeline consists of five sequential stages:
 ### Software Setup
 
 ```bash
-# Clone and install
-git clone https://github.com/WrinkleFree/WrinkleFree-CheaperTraining.git
-cd WrinkleFree-CheaperTraining
-uv sync
+# Clone the monorepo
+git clone git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
+cd WrinkleFree-Monorepo
 
-# Or with pip
-pip install -e .
+# Install all packages
+uv sync --all-packages
+
+# Or install just this package
+uv sync --package cheapertraining
 ```
 
 ## Experiment 1: Pretrain Phase 1

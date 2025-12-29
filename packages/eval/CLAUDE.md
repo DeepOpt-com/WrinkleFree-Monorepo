@@ -60,7 +60,7 @@ For optimized inference, use WrinkleFree-Inference-Engine:
 
 ### Start Inference Server
 ```bash
-cd ../WrinkleFree-Inference-Engine
+cd ../inference
 
 # Serve model
 uv run wrinklefree-inference serve -m model.gguf -c 4096 --port 8080
@@ -78,8 +78,8 @@ uv run python scripts/run_eval.py --use-bitnet
 ### Remote Inference (RunPod)
 ```bash
 # Deploy to RunPod via WrinkleFree-Deployer
-cd ../WrinkleFree-Deployer
-sky launch ../WrinkleFree-Inference-Engine/skypilot/runpod_cpu.yaml
+cd ../deployer
+sky launch ../inference/skypilot/runpod_cpu.yaml
 
 # Get endpoint
 ENDPOINT=$(sky status inference-engine --endpoint 8080)

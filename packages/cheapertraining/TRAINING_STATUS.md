@@ -103,7 +103,7 @@ Step 20: loss=12.04, lr=4.00e-05, grad_norm=1.96, acc=0.0000, ppl=169839
 
 ### Basic Training (140M model)
 ```bash
-cd /root/WrinkleFree-CheaperTraining
+cd /root/WrinkleFree-Monorepo/packages/cheapertraining
 uv run python scripts/train.py \
   model=mobilellm_140m \
   training=pretrain_phase1 \

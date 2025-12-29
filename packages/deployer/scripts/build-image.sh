@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and push WrinkleFree training Docker image to GCR
+# Build and push WrinkleFree training Docker image to Google Artifact Registry (GAR)
 #
 # Usage:
 #   ./scripts/build-image.sh           # Build and push with auto-generated tag
@@ -9,7 +9,9 @@
 set -e
 
 PROJECT_ID="wrinklefree-481904"
-IMAGE_NAME="gcr.io/${PROJECT_ID}/wf-train"
+GAR_REGION="us"
+GAR_REPO="wf-train"
+IMAGE_NAME="${GAR_REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/wf-train"
 
 # Parse arguments
 NO_PUSH=false
@@ -32,11 +34,12 @@ else
     TAG=$(date +%Y%m%d)-$(git rev-parse --short HEAD 2>/dev/null || echo "local")
 fi
 
-# Navigate to monorepo root (parent of WrinkleFree-Deployer)
+# Navigate to deployer directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
 echo "Building WrinkleFree training image..."
+echo "  Registry: Google Artifact Registry (GAR)"
 echo "  Image: ${IMAGE_NAME}:${TAG}"
 echo "  Context: $(pwd)"
 
@@ -62,26 +65,27 @@ if [ "$NO_PUSH" = true ]; then
     exit 0
 fi
 
-# Push to GCR
+# Push to GAR
 echo ""
-echo "Pushing to GCR..."
+echo "Pushing to Google Artifact Registry..."
 
 # Check if authenticated
 if ! gcloud auth print-access-token &>/dev/null; then
     echo "Error: Not authenticated with GCP. Run:"
     echo "  gcloud auth login"
-    echo "  gcloud auth configure-docker"
+    echo "  gcloud auth configure-docker ${GAR_REGION}-docker.pkg.dev"
     exit 1
 fi
+
+# Configure Docker for GAR (idempotent)
+gcloud auth configure-docker ${GAR_REGION}-docker.pkg.dev --quiet
 
 docker push "${IMAGE_NAME}:${TAG}"
 docker push "${IMAGE_NAME}:latest"
 
 echo ""
-echo "Successfully pushed:"
+echo "Successfully pushed to GAR:"
 echo "  ${IMAGE_NAME}:${TAG}"
 echo "  ${IMAGE_NAME}:latest"
 echo ""
-echo "Update train.yaml to use this image:"
-echo "  resources:"
-echo "    image_id: docker:${IMAGE_NAME}:${TAG}"
+echo "Your SkyPilot YAMLs are already configured to use this image."

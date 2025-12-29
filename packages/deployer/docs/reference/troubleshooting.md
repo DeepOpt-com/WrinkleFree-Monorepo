@@ -514,4 +514,4 @@ cat skypilot/service.yaml
 - **SkyPilot Documentation:** https://docs.skypilot.co
 - **SkyPilot GitHub Issues:** https://github.com/skypilot-org/skypilot/issues
 - **SkyPilot Slack:** https://slack.skypilot.co
-- **This Project:** https://github.com/your-org/WrinkleFree-Deployer/issues
+- **This Project:** https://github.com/your-org/packages/deployer/issues

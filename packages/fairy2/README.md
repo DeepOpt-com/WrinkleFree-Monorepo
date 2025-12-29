@@ -17,15 +17,15 @@ WrinkleFree-Fairy2 implements the [Fairy2i paper](https://arxiv.org/abs/2512.029
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/DeepOpt-com/WrinkleFree-Fairy2.git
-cd WrinkleFree-Fairy2
+# Clone the monorepo
+git clone git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
+cd WrinkleFree-Monorepo
 
-# Install with uv (recommended)
-uv sync
+# Install all packages
+uv sync --all-packages
 
-# Or with pip
-pip install -e .
+# Or install just fairy2
+uv sync --package wrinklefree-fairy2
 ```
 
 ## Quick Start
@@ -160,7 +160,7 @@ Integration with WrinkleFree-Deployer for SkyPilot-based cloud training:
 
 ```bash
 # Via CLI
-cd ../WrinkleFree-Deployer
+cd ../deployer
 wf fairy2 -m smollm2_135m --mode w2
 
 # Via Python
@@ -182,7 +182,7 @@ uv run python -m wrinklefree_eval \
 ## Project Structure
 
 ```
-WrinkleFree-Fairy2/
+packages/fairy2/
 ├── src/fairy2/
 │   ├── models/
 │   │   ├── widely_linear.py    # Real-to-complex conversion

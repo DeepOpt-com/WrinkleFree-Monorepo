@@ -12,7 +12,7 @@ Clean evaluation harness for BitDistill models. Evaluates quantized LLMs on the 
 ## Installation
 
 ```bash
-cd WrinkleFree-Eval
+cd packages/eval
 uv sync
 ```
 
@@ -120,7 +120,7 @@ Built on [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-har
 Run evaluations on remote GPUs using WrinkleFree-Deployer:
 
 ```bash
-cd ../WrinkleFree-Deployer
+cd ../deployer
 
 # Evaluate HuggingFace model
 sky launch skypilot/eval.yaml \
@@ -134,7 +134,7 @@ sky launch skypilot/eval.yaml \
   --env WANDB_PROJECT=wrinklefree
 ```
 
-See [WrinkleFree-Deployer](../WrinkleFree-Deployer) for full deployment documentation.
+See [WrinkleFree-Deployer](../deployer) for full deployment documentation.
 
 ## Optional Dependencies
 

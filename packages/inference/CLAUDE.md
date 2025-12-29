@@ -156,7 +156,7 @@ legacy/                                    # Archived code (see legacy/README.md
 
 ### Deploy to cloud
 ```bash
-cd ../WrinkleFree-Deployer
+cd ../deployer
 # GCP C3D (production)
 sky launch skypilot/inference/gcp_c3d.yaml -y --cluster ie-c3d
 # RunPod (development)

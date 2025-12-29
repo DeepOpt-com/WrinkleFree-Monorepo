@@ -5,9 +5,9 @@ Train 1.58-bit LLMs in 5 minutes.
 ## 1. Install
 
 ```bash
-git clone https://github.com/your-org/WrinkleFree-Deployer
-cd WrinkleFree-Deployer
-uv sync
+git clone git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
+cd WrinkleFree-Monorepo
+uv sync --all-packages
 ```
 
 ## 2. Set Credentials
@@ -93,7 +93,7 @@ wf logs wf-dlm-train
 ### Local Development
 
 ```bash
-cd ../WrinkleFree-DLM-Converter
+cd ../converter
 uv sync
 
 # Run training locally (uses Hydra configs)
@@ -117,7 +117,7 @@ tokenizer = AutoTokenizer.from_pretrained("outputs/dlm/qwen3_4b")
 outputs = batch_sample(model, tokenizer, prompts=["Hello!"], block_size=32)
 ```
 
-See [WrinkleFree-DLM-Converter](../../WrinkleFree-DLM-Converter/README.md) for full documentation.
+See [WrinkleFree-DLM-Converter](../../converter/README.md) for full documentation.
 
 ## Next Steps
 

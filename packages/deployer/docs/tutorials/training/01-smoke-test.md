@@ -56,7 +56,7 @@ The smoke test uses **SmolLM2-135M**, a tiny model that fits easily in memory an
 
 ```bash
 # Navigate to the deployer directory
-cd WrinkleFree-Deployer
+cd packages/deployer
 
 # Launch the smoke test
 sky launch skypilot/smoke_test.yaml -y --cluster smoke-test

@@ -21,12 +21,12 @@ For API reference, see [API Documentation](docs/api/index.md).
 ## Installation
 
 ```bash
-# Clone with BitNet submodule
-git clone --recurse-submodules https://github.com/yourrepo/WrinkleFree-1.58Quant.git
-cd WrinkleFree-1.58Quant
+# Clone the monorepo
+git clone --recurse-submodules git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
+cd WrinkleFree-Monorepo
 
-# Install dependencies
-uv sync
+# Install all packages
+uv sync --all-packages
 
 # Install with dev dependencies
 uv sync --all-extras

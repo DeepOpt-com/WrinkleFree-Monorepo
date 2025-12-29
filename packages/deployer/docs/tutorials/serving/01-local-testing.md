@@ -36,7 +36,7 @@ We'll use SmolLM2-135M - a tiny model perfect for testing.
 mkdir -p models/test
 
 # Option A: If you have a model from training
-cp ../WrinkleFree-1.58Quant/outputs/model.gguf models/test/smollm2-135m.gguf
+cp ../training/outputs/model.gguf models/test/smollm2-135m.gguf
 
 # Option B: Download a test model
 ./scripts/download_test_model.sh

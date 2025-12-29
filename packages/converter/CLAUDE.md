@@ -8,11 +8,11 @@ Convert BitNet 1.58-bit models to Diffusion LLMs (DLMs) for faster parallel infe
 
 ```bash
 # Via Deployer CLI (recommended)
-cd ../WrinkleFree-Deployer
+cd ../deployer
 wf dlm -m qwen3_4b -s hf://org/checkpoint
 
 # Or run locally with Hydra
-cd ../WrinkleFree-DLM-Converter
+cd ../converter
 uv run python scripts/train_dlm.py model=qwen3_4b source.path=hf://org/checkpoint
 
 # With overrides
@@ -98,7 +98,7 @@ Training runs on Nebius via SkyPilot using the `wf` CLI:
 
 ```bash
 # From WrinkleFree-Deployer directory
-cd ../WrinkleFree-Deployer
+cd ../deployer
 
 # Launch DLM training
 wf dlm -m qwen3_4b -s hf://org/checkpoint

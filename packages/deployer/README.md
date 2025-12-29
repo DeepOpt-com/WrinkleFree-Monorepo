@@ -21,7 +21,7 @@ That's it. See [Getting Started](docs/getting-started.md) for more.
 
 ## What This Does
 
-This is a **launcher**, not a training framework. The training code lives in [WrinkleFree-1.58Quant](../WrinkleFree-1.58Quant/).
+This is a **launcher**, not a training framework. The training code lives in [WrinkleFree-1.58Quant](../training/).
 
 We just:
 1. Launch training jobs on SkyPilot (Nebius, RunPod, GCP, AWS)
@@ -97,7 +97,7 @@ run_id = train("qwen3_4b", stage=1.9, scale="xlarge")  # 8x H100
 
 ## Configuration
 
-Configs live in `WrinkleFree-1.58Quant/configs/`. Override any value:
+Configs live in `packages/training/configs/`. Override any value:
 
 ```bash
 uv run wf train -m qwen3_4b -s 1.9 training.lr=1e-4

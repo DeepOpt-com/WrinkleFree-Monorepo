@@ -14,15 +14,12 @@ This library implements a commercially usable version of the [Fast-dLLM](https:/
 ## Installation
 
 ```bash
-# Clone the repository
-git clone git@github.com:DeepOpt-com/WrinkleFree-DLM-Converter.git
-cd WrinkleFree-DLM-Converter
+# Clone the monorepo
+git clone --recurse-submodules git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
+cd WrinkleFree-Monorepo
 
-# Initialize submodules
-git submodule update --init
-
-# Install with uv
-uv sync
+# Install all packages
+uv sync --all-packages
 ```
 
 ## Quick Start

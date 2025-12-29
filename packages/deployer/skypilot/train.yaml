@@ -1,7 +1,11 @@
 # WrinkleFree Training Job
 #
 # Launch training as a managed job (auto-restart on preemption):
-#   sky jobs launch train.yaml -e MODEL=qwen3_4b -e STAGE=2
+#   source credentials/.env
+#   sky jobs launch train.yaml --secret WANDB_API_KEY --secret SKYPILOT_DOCKER_PASSWORD
+#
+# Or use the CLI (auto-prepares secrets):
+#   wf train -m qwen3_4b -s 2 --cloud nebius
 #
 # Monitor:
 #   sky jobs queue
@@ -10,12 +14,11 @@
 # Cancel:
 #   sky jobs cancel <job_id>
 
-name: wrinklefree-train  # Dynamic name set by CLI
+name: wrinklefree-train
 
 resources:
-  # TODO: Re-enable Docker image once GCR auth on Nebius is fixed
-  # See: https://github.com/DeepOpt-com/WrinkleFree-Deployer/issues/8
-  # image_id: docker:gcr.io/wrinklefree-481904/wf-train:latest
+  # Docker image from Google Artifact Registry (GAR)
+  image_id: docker:us-docker.pkg.dev/wrinklefree-481904/wf-train/wf-train:latest
   accelerators: H100:1  # Override from core.py based on scale
   use_spot: false  # On-demand for stability (spot keeps getting preempted)
   disk_size: 200  # GB - enough for checkpoints and model weights
@@ -24,12 +27,13 @@ resources:
   job_recovery:
     max_restarts_on_errors: 3  # Handle NCCL timeouts, driver issues
 
-# Sync local training code to cluster
-workdir: ../WrinkleFree-1.58Quant
+# Sync local training code to cluster (monorepo paths)
+workdir: ../training
 
-# Sync CheaperTraining library to match pyproject.toml's expected path
+# Mount dependencies and credentials
 file_mounts:
-  ~/WrinkleFree-CheaperTraining: ../WrinkleFree-CheaperTraining
+  # CheaperTraining library for influence-based training
+  ~/cheapertraining: ../cheapertraining
   # GCP credentials for GCS checkpointing
   ~/.config/gcloud/application_default_credentials.json: ~/.config/gcloud/application_default_credentials.json
 
@@ -40,40 +44,37 @@ envs:
 
   # Weights & Biases tracking
   WANDB_PROJECT: wrinklefree
-  WANDB_API_KEY: b95b2998e7ecb4a69680f83796f01a38672baf4a
+
+  # Docker registry auth for pulling from GAR on non-GCP clouds
+  SKYPILOT_DOCKER_USERNAME: _json_key
+  SKYPILOT_DOCKER_SERVER: us-docker.pkg.dev
+
+# Secrets are passed via --secret flag and redacted from logs/dashboard
+secrets:
+  WANDB_API_KEY: null           # Required - get from wandb.ai/authorize
+  SKYPILOT_DOCKER_PASSWORD: null  # GCP service account JSON for Docker auth
+  HF_TOKEN: null                # Optional - for gated HuggingFace models
 
 setup: |
   set -e
   cd ~/sky_workdir
 
-  # Install uv if not present
-  if ! command -v uv &> /dev/null; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
-  fi
+  # Base dependencies are pre-installed in the Docker image
+  source /app/.venv/bin/activate
 
-  # Create venv and install dependencies
-  uv venv .venv
-  source .venv/bin/activate
+  # Install wrinklefree training package (editable)
+  pip install -e . --no-deps
 
-  # Install all dependencies (this takes ~5-10 min without Docker cache)
-  uv pip install -e .
-  uv pip install -e ~/WrinkleFree-CheaperTraining
+  # Install CheaperTraining for influence-based training
+  pip install -e ~/cheapertraining --no-deps
+
+  # Verify GPU setup
+  python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
 
 run: |
   set -e
   cd ~/sky_workdir
-
-  # Activate the venv created in setup
-  source .venv/bin/activate
-
-  # Install gcloud for GCS access (if not present)
-  if ! command -v gcloud &> /dev/null; then
-    echo "Installing gcloud CLI..."
-    curl -sSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar -xz -C $HOME
-    $HOME/google-cloud-sdk/install.sh --quiet --path-update=false
-    export PATH="$HOME/google-cloud-sdk/bin:$PATH"
-  fi
+  source /app/.venv/bin/activate
 
   # Determine training config based on stage
   case $STAGE in

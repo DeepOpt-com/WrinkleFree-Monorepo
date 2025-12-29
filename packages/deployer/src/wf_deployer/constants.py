@@ -15,6 +15,22 @@ from enum import Enum
 from typing import Final
 
 # =============================================================================
+# Docker Image Configuration (Google Artifact Registry)
+# =============================================================================
+
+GCP_PROJECT_ID: Final[str] = "wrinklefree-481904"
+"""GCP project ID for cloud resources."""
+
+GAR_REGION: Final[str] = "us"
+"""Google Artifact Registry region."""
+
+GAR_REPO: Final[str] = "wf-train"
+"""Google Artifact Registry repository name."""
+
+DOCKER_IMAGE: Final[str] = f"{GAR_REGION}-docker.pkg.dev/{GCP_PROJECT_ID}/{GAR_REPO}/wf-train:latest"
+"""Docker image URL in Google Artifact Registry."""
+
+# =============================================================================
 # Repository URLs
 # =============================================================================
 

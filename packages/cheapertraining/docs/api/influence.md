@@ -258,7 +258,7 @@ probe_set:
 ## Integration with 1.58Quant Stage 2
 
 ```python
-# In WrinkleFree-1.58Quant/src/wrinklefree/training/stage2.py
+# In packages/training/src/wrinklefree/training/stage2.py
 
 from cheapertraining import (
     DataInfCalculator,

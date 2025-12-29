@@ -4,7 +4,7 @@ Efficient LLM training library implementing the [MobileLLM-R1](https://arxiv.org
 
 ## Overview
 
-CheaperTraining provides a complete training pipeline for language models from pretraining through post-training, optimized for efficiency at scale (up to 671B parameters). It serves as the continued pre-training foundation for the sister [WrinkleFree-1.58Quant](../WrinkleFree-1.58Quant) BitNet fine-tuning library.
+CheaperTraining provides a complete training pipeline for language models from pretraining through post-training, optimized for efficiency at scale (up to 671B parameters). It serves as the continued pre-training foundation for the sister [WrinkleFree-1.58Quant](../training) BitNet fine-tuning library.
 
 ## Features
 
@@ -51,7 +51,7 @@ cheapertraining-train \
 ## Project Structure
 
 ```
-WrinkleFree-CheaperTraining/
+packages/cheapertraining/
 ├── src/cheapertraining/          # Main source code
 │   ├── models/                   # Model architecture
 │   │   ├── config.py                # MobileLLM configs (140M-671B)

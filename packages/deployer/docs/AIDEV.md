@@ -17,7 +17,7 @@ WrinkleFree-Deployer (This Repo - Launcher)
     │       └─ Runs: python scripts/train.py
     │
     └─► SkyPilot Backend
-            ├─ Mounts: ../WrinkleFree-1.58Quant (workdir)
+            ├─ Mounts: ../training (workdir)
             └─ Runs: uv run python scripts/train.py
 ```
 
@@ -107,7 +107,7 @@ This is a **hard failure** - training aborts if wrong GPU allocated. The return 
 
 ## 5. Stage-to-Config Mapping
 
-Training stages map to Hydra config files in `WrinkleFree-1.58Quant/configs/training/`:
+Training stages map to Hydra config files in `packages/training/configs/training/`:
 
 | Stage | Config | Purpose |
 |-------|--------|---------|
@@ -175,7 +175,7 @@ RuntimeError: GPU MISMATCH: Requested H100 but got Tesla T4. Aborting.
        "new_model": "medium",  # or appropriate scale
    }
    ```
-2. Ensure model config exists in `WrinkleFree-1.58Quant/configs/model/`
+2. Ensure model config exists in `packages/training/configs/model/`
 
 ### Adding New Constants
 1. Add to `src/wf_deployer/constants.py`

@@ -63,7 +63,7 @@ This happens automatically via the training script.
 ### Option 1: Via WrinkleFree-Deployer CLI
 
 ```bash
-cd WrinkleFree-Deployer
+cd packages/deployer
 
 # Launch Fairy2 training (returns immediately)
 wf fairy2 -m smollm2_135m --mode w2
@@ -98,7 +98,7 @@ run_id = train_fairy2(
 ### Option 3: Direct SkyPilot
 
 ```bash
-cd WrinkleFree-Fairy2
+cd packages/fairy2
 
 # Launch directly with SkyPilot
 sky launch skypilot/fairy2_train.yaml \

@@ -1,9 +1,9 @@
-# Nebius Smoke Test - Quick validation with 1x H100
+# RunPod Smoke Test - Quick validation with GPU
 #
 # Launch:
 #   source credentials/.env
-#   export SKYPILOT_DOCKER_PASSWORD=$(cat credentials/gcp-service-account.json)
-#   sky launch skypilot/smoke_test_nebius.yaml -y --secret WANDB_API_KEY --secret SKYPILOT_DOCKER_PASSWORD
+#   export SKYPILOT_DOCKER_PASSWORD=$(cat credentials/gcp-service-account.json | base64 -w0)
+#   sky launch skypilot/smoke_test_runpod.yaml -y --secret WANDB_API_KEY --secret SKYPILOT_DOCKER_PASSWORD
 #
 # Monitor:
 #   sky logs <cluster_name>
@@ -11,14 +11,14 @@
 # Down:
 #   sky down <cluster_name> -y
 
-name: wf-smoke-nebius
+name: wf-smoke-runpod
 
 resources:
   # Docker image from Google Artifact Registry (GAR)
   image_id: docker:us-docker.pkg.dev/wrinklefree-481904/wf-train/wf-train:latest
-  cloud: nebius
-  accelerators: H100:1  # Single GPU for smoke test
-  use_spot: false  # On-demand for reliability
+  cloud: runpod
+  accelerators: H100:1
+  use_spot: false
   disk_size: 100
   disk_tier: best
 
@@ -40,14 +40,14 @@ envs:
   # GCS credentials (mounted file)
   GOOGLE_APPLICATION_CREDENTIALS: /gcs-creds/gcp-service-account.json
 
-  # Docker registry auth for pulling from GAR on non-GCP clouds
-  SKYPILOT_DOCKER_USERNAME: _json_key
+  # Docker registry auth - RunPod requires BASE64 encoded credentials
+  SKYPILOT_DOCKER_USERNAME: _json_key_base64
   SKYPILOT_DOCKER_SERVER: us-docker.pkg.dev
 
 # Secrets are passed via --secret flag and redacted from logs/dashboard
 secrets:
   WANDB_API_KEY: null
-  SKYPILOT_DOCKER_PASSWORD: null  # GCP service account JSON
+  SKYPILOT_DOCKER_PASSWORD: null  # Base64-encoded GCP service account JSON
 
 setup: |
   set -e
@@ -75,7 +75,7 @@ run: |
   source /app/.venv/bin/activate
 
   echo "=============================================="
-  echo "WrinkleFree Smoke Test - Nebius 1x H100"
+  echo "WrinkleFree Smoke Test - RunPod 1x H100"
   echo "Model: ${MODEL}"
   echo "W&B Project: ${WANDB_PROJECT}"
   echo "=============================================="

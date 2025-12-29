@@ -83,7 +83,7 @@ modal secret create wandb-api-key WANDB_API_KEY=<your-key>
 modal secret create huggingface-token HF_TOKEN=<your-token>
 
 # Install WrinkleFree-Deployer
-cd WrinkleFree-Deployer
+cd packages/deployer
 uv sync
 ```
 
@@ -184,7 +184,7 @@ uv run wf train -m qwen3_4b -s 1.9 --skip-recovery
 
 ```bash
 # Navigate to the deployer directory
-cd WrinkleFree-Deployer
+cd packages/deployer
 
 # Stage 2: Continue Pretrain (most common)
 sky jobs launch skypilot/train.yaml \
@@ -600,7 +600,7 @@ sky show-gpus --region us-east-1
 
 ```bash
 # Reduce batch size or model size
-# Edit config in WrinkleFree-1.58Quant/configs/training/stage2_pretrain.yaml
+# Edit config in packages/training/configs/training/stage2_pretrain.yaml
 
 # Or use more GPUs
 sky jobs launch skypilot/train.yaml \

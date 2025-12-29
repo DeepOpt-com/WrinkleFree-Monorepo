@@ -362,7 +362,7 @@ curl http://Desktop:30000/v1/chat/completions -H "Content-Type: application/json
 ssh Desktop ".venv/bin/python scripts/benchmark_decode.py --mode cpp"
 
 # Phase 3: BitNet.cpp
-ssh Desktop "cd /home/lev/code/WrinkleFree/WrinkleFree-Inference-Engine/extern/BitNet && \
+ssh Desktop "cd /home/lev/code/WrinkleFree/packages/inference/extern/BitNet && \
   ./build/bin/llama-server -m models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf --port 8080 &"
 sleep 5
 curl http://Desktop:8080/v1/chat/completions -H "Content-Type: application/json" \

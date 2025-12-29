@@ -60,7 +60,7 @@ Containers for serving 1.58-bit quantized models.
 ### Build
 
 ```bash
-cd WrinkleFree-Deployer
+cd packages/deployer
 
 # BitNet (1.58-bit optimized for CPU)
 docker build -f docker/Dockerfile.bitnet -t wrinklefree-bitnet .

@@ -6,14 +6,14 @@ Welcome to the WrinkleFree-Fairy2 documentation.
 
 ```bash
 # Install
-cd WrinkleFree-Fairy2
+cd packages/fairy2
 uv sync
 
 # Run smoke test (local, ~5 min)
 uv run python scripts/smoke_test.py --model smollm2_135m --mode w2 --steps 10
 
 # Deploy training to cloud (requires SkyPilot + credentials)
-cd ../WrinkleFree-Deployer
+cd ../deployer
 wf fairy2 -m smollm2_135m --mode w2
 ```
 

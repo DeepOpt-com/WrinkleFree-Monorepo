@@ -107,7 +107,7 @@ uv run python scripts/validate_kv_cache.py --url http://localhost:30000
 
 ## Cloud Deployment
 
-See [WrinkleFree-Deployer](../WrinkleFree-Deployer) for SkyPilot configurations:
+See [WrinkleFree-Deployer](../deployer) for SkyPilot configurations:
 
 ```bash
 # GCP C3D (recommended)

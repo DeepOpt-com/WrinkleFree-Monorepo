@@ -1075,13 +1075,13 @@ curl https://sdk.cloud.google.com | bash
 source ~/.bashrc
 
 # Launch workers
-cd WrinkleFree-Deployer
+cd packages/deployer
 ./scripts/launch_parallel_ax.sh 5
 ```
 
 **Option 2: Run locally without parallel workers**
 ```bash
-cd WrinkleFree-1.58Quant
+cd packages/training
 uv run python scripts/run_sequential_benchmark.py
 ```
 

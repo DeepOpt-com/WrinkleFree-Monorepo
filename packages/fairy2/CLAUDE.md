@@ -107,7 +107,7 @@ uv run python scripts/train.py gcs.enabled=true gcs.bucket=wrinklefree-checkpoin
 Training via WrinkleFree-Deployer:
 
 ```bash
-cd ../WrinkleFree-Deployer
+cd ../deployer
 
 # Launch Fairy2 training
 wf fairy2 -m smollm2_135m --mode w2
