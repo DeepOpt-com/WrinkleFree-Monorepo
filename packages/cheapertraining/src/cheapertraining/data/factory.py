@@ -36,14 +36,14 @@ def _get_optimal_num_workers(num_workers: int | None) -> int:
     """Get optimal num_workers for data loading.
 
     Best practice: Use max available CPUs minus 1 (for main process),
-    capped at 16 (diminishing returns beyond that for most workloads).
+    capped at 8 (prevents HuggingFace API rate limiting with streaming datasets).
     Reference: PyTorch forums and performance tuning guides.
     """
     if num_workers is not None:
         return num_workers
     cpu_count = os.cpu_count() or 4
-    # Leave 1 CPU for main process, cap at 16
-    return min(max(1, cpu_count - 1), 16)
+    # Leave 1 CPU for main process, cap at 8 to avoid HF API rate limits
+    return min(max(1, cpu_count - 1), 8)
 
 from cheapertraining.data.mixing import (
     DatasetMixture,
