@@ -19,13 +19,17 @@ resources:
   accelerators: A40:1
   use_spot: false  # On-demand for reliable evals
   disk_tier: best
-  cloud: runpod
+  # cloud: runpod  # Commented out - use --infra to specify cloud
 
 # Sync eval code to cluster (monorepo structure)
 workdir: /home/lev/code/WrinkleFreeDev/packages/eval
 
 # Note: For GCS model paths (gs://...), use Nebius with --infra nebius --gpus L40S:1
 # RunPod doesn't support GCS file_mounts. For HuggingFace models, RunPod works fine.
+
+# GCP credentials for GCS access (required for gs:// model paths)
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDev/packages/deployer/credentials/gcp-service-account.json
 
 envs:
   # Model configuration (override with -e)
@@ -38,12 +42,12 @@ envs:
   USE_DLM: "false"
   MC_ITERATIONS: "128"
 
-  # GCP credentials for GCS access (set by cloud provider if available)
-  GOOGLE_APPLICATION_CREDENTIALS: ""
+  # GCP credentials for GCS access
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
 
-  # Results storage
-  OUTPUT_BUCKET: wrinklefree-results
-  OUTPUT_PREFIX: eval-results
+  # Results storage (disabled - bucket doesn't exist)
+  OUTPUT_BUCKET: ""
+  OUTPUT_PREFIX: ""
 
   # Weights & Biases (optional - leave empty to disable)
   WANDB_PROJECT: ""
@@ -67,6 +71,11 @@ setup: |
   # hf_transfer is now in base dependencies for fast HF downloads
   uv sync --extra wandb --extra gcs
 
+  # Authenticate gsutil with GCP service account (for GCS model access)
+  if [ -f /tmp/gcp-creds.json ]; then
+    gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json 2>/dev/null || true
+  fi
+
 run: |
   set -e
   cd ~/sky_workdir
@@ -86,9 +95,18 @@ run: |
   EVAL_MODEL_PATH="$MODEL_PATH"
   if [[ "$MODEL_PATH" == gs://* ]]; then
     echo "Downloading model from GCS..."
+
+    # Authenticate gsutil if credentials available
+    if [ -f /tmp/gcp-creds.json ]; then
+      echo "Authenticating with GCP service account..."
+      gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+    fi
+
     LOCAL_MODEL_DIR="/tmp/model"
     mkdir -p $LOCAL_MODEL_DIR
-    gsutil -m cp -r "$MODEL_PATH/*" $LOCAL_MODEL_DIR/
+    # Remove trailing slash from path if present
+    GCS_PATH="${MODEL_PATH%/}"
+    gsutil -m cp -r "$GCS_PATH/*" $LOCAL_MODEL_DIR/
     EVAL_MODEL_PATH=$LOCAL_MODEL_DIR
     echo "Model downloaded to $EVAL_MODEL_PATH"
   fi

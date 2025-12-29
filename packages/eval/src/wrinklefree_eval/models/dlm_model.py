@@ -14,6 +14,7 @@ https://arxiv.org/abs/2509.26328
 """
 
 from typing import Any, Optional, Union
+from pathlib import Path
 import logging
 
 import torch
@@ -81,6 +82,23 @@ class DLMEvalHarness(LM):
         self.torch_dtype = dtype_map.get(dtype, torch.bfloat16)
 
         logger.info(f"Loading DLM model from {pretrained}")
+
+        # Handle local checkpoints with auto_map pointing to missing custom code
+        # Transformers 4.45+ has native BitNet support, so we can remove auto_map
+        # to use the built-in implementation instead of searching for missing files
+        pretrained_path = Path(pretrained) if not pretrained.startswith("hf://") else None
+        if pretrained_path and pretrained_path.is_dir():
+            config_file = pretrained_path / "config.json"
+            if config_file.exists():
+                import json
+                with open(config_file) as f:
+                    config = json.load(f)
+                # Remove auto_map if present - use native transformers BitNet support
+                if "auto_map" in config and config.get("model_type") == "bitnet":
+                    logger.info("Removing auto_map from config.json to use native transformers BitNet support")
+                    del config["auto_map"]
+                    with open(config_file, "w") as f:
+                        json.dump(config, f, indent=2)
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
