@@ -533,160 +533,189 @@ def main(cfg: DictConfig) -> None:
                 probe_dataloader = next(iter(probe_dataloaders.values()))
                 logger.info(f"Created {len(probe_dataloaders)} probe dataloaders for influence")
 
-            # Load model from stage 1 or stage 1.9 (local, Hub, or GCS)
-            cache_dir = output_dir / ".hub_cache"
+            # ============================================================
+            # CHECKPOINT LOADING STRATEGY:
+            # 1. Check for explicit resume checkpoint FIRST
+            # 2. If resuming, just create model architecture (skip stage1_9 download!)
+            # 3. If not resuming, load stage1_9 weights as starting point
+            # ============================================================
 
-            # Try stage 1.9 first (if available), then fall back to stage 1
-            print(f"[DEBUG Stage 2] Looking for Stage 1.9 checkpoint...")
-            print(f"[DEBUG Stage 2] gcs_bucket={gcs_bucket}, gcs_prefix=checkpoints/{cfg.experiment_name}")
-            stage1_9_path = get_or_download_checkpoint(
-                local_path=output_dir / "stage1_9_checkpoint",
-                hub_repo_id=hub_repo_id,
-                stage="stage1_9_checkpoint",
-                cache_dir=cache_dir,
-                gcs_bucket=gcs_bucket,
-                gcs_prefix=f"checkpoints/{cfg.experiment_name}",
-            )
-            print(f"[DEBUG Stage 2] stage1_9_path={stage1_9_path}")
-
-            if stage1_9_path:
-                # Load from stage 1.9 checkpoint
-                logger.info(f"Loading from Stage 1.9 checkpoint: {stage1_9_path}")
-                # Try multiple possible checkpoint paths
-                possible_paths = [
-                    stage1_9_path / "checkpoint.pt",
-                    stage1_9_path / "checkpoints" / "final" / "checkpoint.pt",
-                    stage1_9_path / "checkpoints" / "latest" / "checkpoint.pt",
-                ]
-                checkpoint_file = None
-                for path in possible_paths:
-                    logger.info(f"  Checking path: {path} exists={path.exists()}")
-                    if path.exists():
-                        checkpoint_file = path
-                        logger.info(f"  Found checkpoint at: {checkpoint_file}")
-                        break
-                if checkpoint_file:
-                    print(f"[DEBUG Stage 2] Loading checkpoint from: {checkpoint_file}")
-                    checkpoint = torch.load(checkpoint_file, map_location="cpu")
-                    from wrinklefree.training.stage1 import convert_model_to_bitnet
-
-                    model = AutoModelForCausalLM.from_pretrained(
-                        cfg.model.teacher.pretrained,
-                        torch_dtype=torch.bfloat16,
-                        trust_remote_code=True,
-                    )
-                    model = convert_model_to_bitnet(
-                        model,
-                        hidden_size=cfg.model.hidden_size,
-                        intermediate_size=cfg.model.intermediate_size,
-                    )
-                    state_dict = checkpoint.get("model_state_dict", checkpoint)
-                    # Cast state_dict tensors to bfloat16 before loading (handles tied weights correctly)
-                    state_dict = {k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in state_dict.items()}
-                    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-                    print(f"[DEBUG Stage 2] ✓ Loaded Stage 1.9 checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
-                    logger.info(f"Loaded Stage 1.9 checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
-                    # Ensure model is bfloat16 after loading checkpoint
-                    model = model.to(torch.bfloat16)
-                else:
-                    print(f"[DEBUG Stage 2] ✗ Stage 1.9 checkpoint dir exists but no checkpoint.pt found!")
-                    logger.warning(f"Stage 1.9 checkpoint dir exists but no checkpoint.pt found!")
-                    stage1_9_path = None  # Fall back to stage 1
-
-            if not stage1_9_path:
-                print(f"[DEBUG Stage 2] Falling back to Stage 1 checkpoint...")
-                # Try stage 1
-                logger.info("Falling back to Stage 1 checkpoint...")
-                stage1_path = get_or_download_checkpoint(
-                    local_path=output_dir / "stage1_checkpoint",
-                    hub_repo_id=hub_repo_id,
-                    stage="stage1_checkpoint",
-                    cache_dir=cache_dir,
-                    gcs_bucket=gcs_bucket,
-                    gcs_prefix=f"checkpoints/{cfg.experiment_name}",
-                )
-
-                if stage1_path:
-                    from safetensors.torch import load_file
-                    from wrinklefree.training.stage1 import convert_model_to_bitnet
-
-                    # Load base HuggingFace model
-                    logger.info(f"Loading base model from {cfg.model.teacher.pretrained}")
-                    model = AutoModelForCausalLM.from_pretrained(
-                        cfg.model.teacher.pretrained,
-                        torch_dtype=torch.bfloat16,
-                        trust_remote_code=True,
-                    )
-
-                    # Convert to BitNet (adds SubLN + BitLinear)
-                    logger.info("Converting to BitNet architecture...")
-                    model = convert_model_to_bitnet(
-                        model,
-                        hidden_size=cfg.model.hidden_size,
-                        intermediate_size=cfg.model.intermediate_size,
-                    )
-
-                    # Load Stage 1 weights
-                    logger.info(f"Loading Stage 1 weights from {stage1_path}")
-                    safetensors_path = stage1_path / "model.safetensors"
-                    if not safetensors_path.exists():
-                        safetensors_path = stage1_path / "checkpoint.pt"
-                    if safetensors_path.suffix == ".safetensors":
-                        state_dict = load_file(safetensors_path)
-                    else:
-                        ckpt = torch.load(safetensors_path, map_location="cpu")
-                        state_dict = ckpt.get("model_state_dict", ckpt)
-                    # Cast state_dict tensors to bfloat16 before loading (handles tied weights correctly)
-                    state_dict = {k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in state_dict.items()}
-                    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-                    logger.info(f"Loaded Stage 1 checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
-                    # Ensure model is bfloat16 after loading checkpoint
-                    model = model.to(torch.bfloat16)
-                else:
-                    logger.warning("No prior checkpoint found, running stage 1 first")
-                    stage1_local_path = output_dir / "stage1_checkpoint"
-                    model, tokenizer = run_stage1(
-                        pretrained_model_name=cfg.model.teacher.pretrained,
-                        output_dir=stage1_local_path,
-                        hidden_size=cfg.model.hidden_size,
-                        intermediate_size=cfg.model.intermediate_size,
-                    )
-
-            # Check for resume checkpoint
-            # Priority: RESUME_CHECKPOINT env var > cfg.resume.checkpoint_path
-            resume_from = None
+            # Check for resume checkpoint FIRST (before downloading anything)
             resume_checkpoint_env = os.environ.get("RESUME_CHECKPOINT")
             resume_checkpoint_cfg = cfg.get("resume", {}).get("checkpoint_path")
-            print(f"[RESUME DEBUG] RESUME_CHECKPOINT env = {resume_checkpoint_env}")
-            print(f"[RESUME DEBUG] cfg.resume.checkpoint_path = {resume_checkpoint_cfg}")
-            logger.info(f"[DEBUG] RESUME_CHECKPOINT env = {resume_checkpoint_env}")
-            logger.info(f"[DEBUG] cfg.resume.checkpoint_path = {resume_checkpoint_cfg}")
             resume_checkpoint = resume_checkpoint_env or resume_checkpoint_cfg
+            resume_from = None
+
             if resume_checkpoint:
                 resume_path = str(resume_checkpoint)
+                print(f"[RESUME] Found resume checkpoint: {resume_path}")
+                logger.info(f"Found resume checkpoint: {resume_path}")
+
+                # Download from GCS if needed
                 if resume_path.startswith("gs://"):
-                    # Download from GCS
-                    logger.info(f"Downloading resume checkpoint from GCS: {resume_path}")
+                    print(f"[RESUME] Downloading from GCS...")
                     import subprocess
                     local_resume_dir = output_dir / ".resume_cache"
                     local_resume_dir.mkdir(parents=True, exist_ok=True)
                     local_resume_file = local_resume_dir / "checkpoint.pt"
+
                     result = subprocess.run(
                         ["gcloud", "storage", "cp", resume_path, str(local_resume_file)],
                         capture_output=True, text=True
                     )
                     if result.returncode == 0 and local_resume_file.exists():
                         resume_from = local_resume_file
-                        logger.info(f"Downloaded checkpoint to {resume_from}")
+                        print(f"[RESUME] ✓ Downloaded to: {resume_from}")
+                        logger.info(f"Downloaded resume checkpoint to {resume_from}")
                     else:
+                        print(f"[RESUME] ✗ Download failed: {result.stderr}")
                         logger.error(f"Failed to download checkpoint: {result.stderr}")
                         raise RuntimeError(f"Failed to download resume checkpoint from {resume_path}")
                 else:
-                    # Local path
                     resume_from = Path(resume_path)
                     if not resume_from.exists():
                         raise FileNotFoundError(f"Resume checkpoint not found: {resume_from}")
-                logger.info(f"Will resume from checkpoint: {resume_from}")
+                    print(f"[RESUME] Using local checkpoint: {resume_from}")
+
+                # When resuming, just create model architecture (weights will be loaded from resume checkpoint)
+                print(f"[RESUME] Creating model architecture (skipping stage1_9 download)...")
+                from wrinklefree.training.stage1 import convert_model_to_bitnet
+
+                model = AutoModelForCausalLM.from_pretrained(
+                    cfg.model.teacher.pretrained,
+                    torch_dtype=torch.bfloat16,
+                    trust_remote_code=True,
+                )
+                model = convert_model_to_bitnet(
+                    model,
+                    hidden_size=cfg.model.hidden_size,
+                    intermediate_size=cfg.model.intermediate_size,
+                )
+                model = model.to(torch.bfloat16)
+                print(f"[RESUME] ✓ Model architecture created, will load weights from resume checkpoint")
+
+            else:
+                # No resume checkpoint - load from stage1_9 or stage1
+                print(f"[STAGE2] No resume checkpoint, loading from stage1_9...")
+
+                # Load model from stage 1 or stage 1.9 (local, Hub, or GCS)
+                cache_dir = output_dir / ".hub_cache"
+
+                # Try stage 1.9 first (if available), then fall back to stage 1
+                print(f"[DEBUG Stage 2] Looking for Stage 1.9 checkpoint...")
+                print(f"[DEBUG Stage 2] gcs_bucket={gcs_bucket}, gcs_prefix=checkpoints/{cfg.experiment_name}")
+                stage1_9_path = get_or_download_checkpoint(
+                    local_path=output_dir / "stage1_9_checkpoint",
+                    hub_repo_id=hub_repo_id,
+                    stage="stage1_9_checkpoint",
+                    cache_dir=cache_dir,
+                    gcs_bucket=gcs_bucket,
+                    gcs_prefix=f"checkpoints/{cfg.experiment_name}",
+                )
+                print(f"[DEBUG Stage 2] stage1_9_path={stage1_9_path}")
+
+                if stage1_9_path:
+                    # Load from stage 1.9 checkpoint
+                    logger.info(f"Loading from Stage 1.9 checkpoint: {stage1_9_path}")
+                    # Try multiple possible checkpoint paths
+                    possible_paths = [
+                        stage1_9_path / "checkpoint.pt",
+                        stage1_9_path / "checkpoints" / "final" / "checkpoint.pt",
+                        stage1_9_path / "checkpoints" / "latest" / "checkpoint.pt",
+                    ]
+                    checkpoint_file = None
+                    for path in possible_paths:
+                        logger.info(f"  Checking path: {path} exists={path.exists()}")
+                        if path.exists():
+                            checkpoint_file = path
+                            logger.info(f"  Found checkpoint at: {checkpoint_file}")
+                            break
+                    if checkpoint_file:
+                        print(f"[DEBUG Stage 2] Loading checkpoint from: {checkpoint_file}")
+                        checkpoint = torch.load(checkpoint_file, map_location="cpu")
+                        from wrinklefree.training.stage1 import convert_model_to_bitnet
+
+                        model = AutoModelForCausalLM.from_pretrained(
+                            cfg.model.teacher.pretrained,
+                            torch_dtype=torch.bfloat16,
+                            trust_remote_code=True,
+                        )
+                        model = convert_model_to_bitnet(
+                            model,
+                            hidden_size=cfg.model.hidden_size,
+                            intermediate_size=cfg.model.intermediate_size,
+                        )
+                        state_dict = checkpoint.get("model_state_dict", checkpoint)
+                        # Cast state_dict tensors to bfloat16 before loading (handles tied weights correctly)
+                        state_dict = {k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in state_dict.items()}
+                        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+                        print(f"[DEBUG Stage 2] ✓ Loaded Stage 1.9 checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
+                        logger.info(f"Loaded Stage 1.9 checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
+                        # Ensure model is bfloat16 after loading checkpoint
+                        model = model.to(torch.bfloat16)
+                    else:
+                        print(f"[DEBUG Stage 2] ✗ Stage 1.9 checkpoint dir exists but no checkpoint.pt found!")
+                        logger.warning(f"Stage 1.9 checkpoint dir exists but no checkpoint.pt found!")
+                        stage1_9_path = None  # Fall back to stage 1
+
+                if not stage1_9_path:
+                    print(f"[DEBUG Stage 2] Falling back to Stage 1 checkpoint...")
+                    # Try stage 1
+                    logger.info("Falling back to Stage 1 checkpoint...")
+                    stage1_path = get_or_download_checkpoint(
+                        local_path=output_dir / "stage1_checkpoint",
+                        hub_repo_id=hub_repo_id,
+                        stage="stage1_checkpoint",
+                        cache_dir=cache_dir,
+                        gcs_bucket=gcs_bucket,
+                        gcs_prefix=f"checkpoints/{cfg.experiment_name}",
+                    )
+
+                    if stage1_path:
+                        from safetensors.torch import load_file
+                        from wrinklefree.training.stage1 import convert_model_to_bitnet
+
+                        # Load base HuggingFace model
+                        logger.info(f"Loading base model from {cfg.model.teacher.pretrained}")
+                        model = AutoModelForCausalLM.from_pretrained(
+                            cfg.model.teacher.pretrained,
+                            torch_dtype=torch.bfloat16,
+                            trust_remote_code=True,
+                        )
+
+                        # Convert to BitNet (adds SubLN + BitLinear)
+                        logger.info("Converting to BitNet architecture...")
+                        model = convert_model_to_bitnet(
+                            model,
+                            hidden_size=cfg.model.hidden_size,
+                            intermediate_size=cfg.model.intermediate_size,
+                        )
+
+                        # Load Stage 1 weights
+                        logger.info(f"Loading Stage 1 weights from {stage1_path}")
+                        safetensors_path = stage1_path / "model.safetensors"
+                        if not safetensors_path.exists():
+                            safetensors_path = stage1_path / "checkpoint.pt"
+                        if safetensors_path.suffix == ".safetensors":
+                            state_dict = load_file(safetensors_path)
+                        else:
+                            ckpt = torch.load(safetensors_path, map_location="cpu")
+                            state_dict = ckpt.get("model_state_dict", ckpt)
+                        # Cast state_dict tensors to bfloat16 before loading (handles tied weights correctly)
+                        state_dict = {k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in state_dict.items()}
+                        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+                        logger.info(f"Loaded Stage 1 checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
+                        # Ensure model is bfloat16 after loading checkpoint
+                        model = model.to(torch.bfloat16)
+                    else:
+                        logger.warning("No prior checkpoint found, running stage 1 first")
+                        stage1_local_path = output_dir / "stage1_checkpoint"
+                        model, tokenizer = run_stage1(
+                            pretrained_model_name=cfg.model.teacher.pretrained,
+                            output_dir=stage1_local_path,
+                            hidden_size=cfg.model.hidden_size,
+                            intermediate_size=cfg.model.intermediate_size,
+                        )
 
             # Run stage 2
             model = run_stage2(
