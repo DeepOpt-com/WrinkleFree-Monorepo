@@ -19,7 +19,7 @@ sources:
   - name: fineweb_edu
     path: HuggingFaceFW/fineweb-edu
     subset: sample-10BT
-    weight: 0.45  # 45% educational content (includes fineweb share)
+    weight: 0.30  # 30% educational content
     text_column: text
     streaming: true
 
@@ -40,7 +40,7 @@ sources:
   - name: fineweb
     path: HuggingFaceFW/fineweb
     subset: sample-10BT
-    weight: 0  # Disabled - merged into fineweb_edu
+    weight: 0.15  # 15% diverse web content
     text_column: text
     streaming: true
 

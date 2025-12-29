@@ -32,18 +32,23 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
 
 
-def _get_optimal_num_workers(num_workers: int | None) -> int:
+def _get_optimal_num_workers(num_workers: int | None, default: int = 4) -> int:
     """Get optimal num_workers for data loading.
 
-    Best practice: Use max available CPUs minus 1 (for main process),
-    capped at 8 (prevents HuggingFace API rate limiting with streaming datasets).
+    Args:
+        num_workers: Explicitly specified num_workers (takes priority)
+        default: Default from config (default: 4, recommended for streaming datasets)
+
+    Returns:
+        Number of workers to use for data loading.
+
+    Best practice: 4-8 workers for streaming datasets balances throughput
+    and HuggingFace API rate limits.
     Reference: PyTorch forums and performance tuning guides.
     """
     if num_workers is not None:
         return num_workers
-    cpu_count = os.cpu_count() or 4
-    # Leave 1 CPU for main process, cap at 8 to avoid HF API rate limits
-    return min(max(1, cpu_count - 1), 8)
+    return default
 
 from cheapertraining.data.mixing import (
     DatasetMixture,
@@ -112,8 +117,10 @@ def create_dataloader(
     if isinstance(config, DictConfig):
         config = OmegaConf.to_container(config, resolve=True)
 
-    # Auto-detect optimal num_workers if not specified
-    num_workers = _get_optimal_num_workers(num_workers)
+    # Get num_workers: explicit param > config.dataloader.num_workers > config.num_workers > default (4)
+    dataloader_config = config.get("dataloader", {})
+    config_num_workers = dataloader_config.get("num_workers", config.get("num_workers", 4))
+    num_workers = _get_optimal_num_workers(num_workers, default=config_num_workers)
 
     # Check for multi-source mode
     sources = config.get("sources")
@@ -130,7 +137,7 @@ def create_dataloader(
             pin_memory=pin_memory,
             seed=seed,
             packed=packed,
-            shuffle_buffer_size=config.get("shuffle_buffer_size", 10000),
+            shuffle_buffer_size=config.get("shuffle_buffer_size", 1000),
         )
 
     # Single-source mode
