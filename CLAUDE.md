@@ -66,4 +66,7 @@ chmod +x /tmp/serve.sh && /tmp/serve.sh'
 
 Desktop is configured in `~/.ssh/config`. Current IP: `192.168.1.217`
 
-## FAIL LOUDLY INSTEAD OF FALLBACKS FOR MOST CODE
+## Other Notes
+- FAIL LOUDLY INSTEAD OF FALLBACKS FOR MOST CODE
+- DO NOT LAUNCH GPU INSTANCES ON GCP! Just Nebius and RunPod for now.
+
