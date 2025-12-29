@@ -37,10 +37,10 @@ sources:
     text_column: text
     streaming: true
 
-  - name: fineweb
-    path: HuggingFaceFW/fineweb
-    subset: sample-10BT
-    weight: 0.15  # 15% diverse web content
+  - name: dolma
+    path: allenai/dolma  # AI2's open pretraining corpus (ODC-By license)
+    subset: v1_7
+    weight: 0.15  # 15% diverse content
     text_column: text
     streaming: true
 
@@ -88,8 +88,8 @@ probe:
       split: train
 
     diverse:
-      path: HuggingFaceFW/fineweb
-      subset: sample-10BT
+      path: allenai/dolma
+      subset: v1_7
       samples: 33
       text_column: text
       split: train
