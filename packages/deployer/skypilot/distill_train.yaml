@@ -81,18 +81,30 @@ setup: |
   # This allows pip install to work without the full monorepo
   sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
 
-  # Download and install cheapertraining (dependency for data loading)
-  # The package is uploaded to GCS alongside workdir
-  echo "Downloading cheapertraining from GCS..."
+  # Download and install dependencies from GCS
+  echo "Downloading dependencies from GCS..."
+
+  # CheaperTraining (data loading)
   mkdir -p ~/cheapertraining
   gsutil -m cp -r gs://${GCS_BUCKET}/packages/cheapertraining/* ~/cheapertraining/ || {
-    echo "cheapertraining not in GCS, skipping (limited features)"
+    echo "WARNING: cheapertraining not in GCS"
   }
-
-  # Install cheapertraining if available
   if [ -f ~/cheapertraining/pyproject.toml ]; then
     echo "Installing cheapertraining..."
     pushd ~/cheapertraining
+    sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
+    uv pip install -e .
+    popd
+  fi
+
+  # WrinkleFree Training (for BitNet model loading)
+  mkdir -p ~/training
+  gsutil -m cp -r gs://${GCS_BUCKET}/packages/training/* ~/training/ || {
+    echo "WARNING: training package not in GCS"
+  }
+  if [ -f ~/training/pyproject.toml ]; then
+    echo "Installing wrinklefree training..."
+    pushd ~/training
     sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
     uv pip install -e .
     popd
@@ -109,7 +121,7 @@ setup: |
   python -c "from google.cloud import storage; client = storage.Client(); bucket = client.bucket('${GCS_BUCKET}'); print(f'GCS bucket access: {bucket.exists()}')" || echo "GCS check failed (may work via IAM on GCP)..."
 
 run: |
-  set -e
+  set -eo pipefail
   cd ~/sky_workdir
   export PATH="$HOME/.local/bin:$PATH"
   source .venv/bin/activate
@@ -137,32 +149,38 @@ run: |
   OUTPUT_DIR="./outputs/distill/${MODEL}"
   mkdir -p ${OUTPUT_DIR}
 
-  # Build Hydra command
-  # The distill.py script is inside the package structure
-  HYDRA_CMD="python src/distillation/scripts/distill.py"
-  HYDRA_CMD="${HYDRA_CMD} student.checkpoint_path=${STUDENT_CHECKPOINT}"
-  HYDRA_CMD="${HYDRA_CMD} distillation=${DISTILLATION_CONFIG}"
-  HYDRA_CMD="${HYDRA_CMD} training.output_dir=${OUTPUT_DIR}"
-
-  # Add teacher model if specified
+  # Build command args (no eval for security)
+  TEACHER_ARG=""
   if [ -n "${TEACHER_MODEL}" ]; then
-    HYDRA_CMD="${HYDRA_CMD} teacher.model_name=${TEACHER_MODEL}"
+    TEACHER_ARG="teacher.model_name=${TEACHER_MODEL}"
   fi
 
-  # Add any additional overrides
-  if [ -n "${HYDRA_OVERRIDES}" ]; then
-    HYDRA_CMD="${HYDRA_CMD} ${HYDRA_OVERRIDES}"
-  fi
+  echo "Running distillation..."
+  echo "  Checkpoint: ${STUDENT_CHECKPOINT}"
+  echo "  Config: ${DISTILLATION_CONFIG}"
+  echo "  Output: ${OUTPUT_DIR}"
+  echo "  Teacher: ${TEACHER_MODEL:-'(same as student)'}"
+  echo "  Overrides: ${HYDRA_OVERRIDES:-'(none)'}"
 
-  echo "Running: ${HYDRA_CMD}"
-  eval ${HYDRA_CMD}
+  # Execute directly (no eval for security)
+  python -m distillation.scripts.distill \
+    student.checkpoint_path="${STUDENT_CHECKPOINT}" \
+    distillation="${DISTILLATION_CONFIG}" \
+    output_dir="${OUTPUT_DIR}" \
+    ${TEACHER_ARG} \
+    ${HYDRA_OVERRIDES:-}
 
-  # Upload to GCS using gsutil
+  # Upload to GCS using gsutil (fail on error to avoid silent data loss)
   echo ""
   echo "Uploading to GCS..."
   if [ -d "${OUTPUT_DIR}" ]; then
-    gsutil -m cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/distill/${MODEL}/ || echo "gsutil failed, trying gcloud storage..."
-    gcloud storage cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/distill/${MODEL}/ || echo "Upload failed"
+    gsutil -m cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/distill/${MODEL}/ || {
+      echo "gsutil failed, trying gcloud storage..."
+      gcloud storage cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/distill/${MODEL}/ || {
+        echo "ERROR: GCS upload failed!"
+        exit 1
+      }
+    }
   else
     echo "Warning: Output directory ${OUTPUT_DIR} not found"
   fi

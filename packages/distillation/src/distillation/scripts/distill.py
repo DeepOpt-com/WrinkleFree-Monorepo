@@ -24,8 +24,9 @@ Usage:
 
 import logging
 import os
+import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import hydra
 import torch
@@ -34,8 +35,35 @@ from omegaconf import DictConfig, OmegaConf
 logger = logging.getLogger(__name__)
 
 
+def download_from_gcs(gcs_path: str) -> Path:
+    """Download a file from GCS to a local temp file."""
+    from google.cloud import storage
+
+    # Parse gs://bucket/path
+    if not gcs_path.startswith("gs://"):
+        raise ValueError(f"Not a GCS path: {gcs_path}")
+
+    path_without_scheme = gcs_path[5:]  # Remove "gs://"
+    bucket_name = path_without_scheme.split("/")[0]
+    blob_path = "/".join(path_without_scheme.split("/")[1:])
+
+    logger.info(f"Downloading from GCS: gs://{bucket_name}/{blob_path}")
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_path)
+
+    # Download to temp file
+    temp_dir = tempfile.mkdtemp()
+    local_path = Path(temp_dir) / Path(blob_path).name
+    blob.download_to_filename(str(local_path))
+
+    logger.info(f"Downloaded to: {local_path}")
+    return local_path
+
+
 def load_student_model(
-    checkpoint_path: Path,
+    checkpoint_path: Union[Path, str],
     device: torch.device,
     use_flash_attention: bool = True,
 ) -> tuple:
@@ -43,7 +71,7 @@ def load_student_model(
     Load student model from checkpoint.
 
     Args:
-        checkpoint_path: Path to checkpoint file
+        checkpoint_path: Path to checkpoint file (local or gs://)
         device: Device to load model on
         use_flash_attention: Whether to use flash attention
 
@@ -51,6 +79,10 @@ def load_student_model(
         Tuple of (model, original_teacher_name)
     """
     logger.info(f"Loading student model from {checkpoint_path}")
+
+    # Handle GCS paths
+    if isinstance(checkpoint_path, str) and checkpoint_path.startswith("gs://"):
+        checkpoint_path = download_from_gcs(checkpoint_path)
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
@@ -262,7 +294,7 @@ def run_distillation(
     logger.info(f"Distillation complete: {metrics}")
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main entry point for distillation training."""
     # Log config
@@ -275,9 +307,14 @@ def main(cfg: DictConfig) -> None:
             "Usage: python scripts/distill.py student.checkpoint_path=path/to/checkpoint.pt"
         )
 
-    checkpoint_path = Path(cfg.student.checkpoint_path)
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    checkpoint_path_str = cfg.student.checkpoint_path
+    # Handle GCS paths (gs://) - don't validate locally
+    if checkpoint_path_str.startswith("gs://"):
+        checkpoint_path = checkpoint_path_str  # Keep as string for GCS
+    else:
+        checkpoint_path = Path(checkpoint_path_str)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

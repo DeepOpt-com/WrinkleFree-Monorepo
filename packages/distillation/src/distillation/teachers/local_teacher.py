@@ -21,6 +21,7 @@ class LocalTeacher(nn.Module):
         device: Device to load model on
         load_in_fp16: Load in BF16 for memory efficiency
         offload_to_cpu: Offload to CPU between forward passes
+        load_in_4bit: Load in 4-bit NF4 quantization for memory efficiency
         use_eager_attention: Use eager attention instead of SDPA/Flash
             (required for attention distillation, as SDPA doesn't return attention weights)
     """
@@ -31,6 +32,7 @@ class LocalTeacher(nn.Module):
         device: torch.device,
         load_in_fp16: bool = True,
         offload_to_cpu: bool = False,
+        load_in_4bit: bool = False,
         use_eager_attention: bool = True,
     ):
         super().__init__()
@@ -39,17 +41,37 @@ class LocalTeacher(nn.Module):
 
         dtype = torch.bfloat16 if load_in_fp16 else torch.float32
 
+        # Build model loading kwargs
+        model_kwargs = {
+            "torch_dtype": dtype,
+            "trust_remote_code": True,
+        }
+
+        # Add 4-bit quantization if requested
+        if load_in_4bit:
+            try:
+                from transformers import BitsAndBytesConfig
+
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                )
+                model_kwargs["quantization_config"] = bnb_config
+                logger.info("Using 4-bit NF4 quantization for teacher")
+            except ImportError:
+                logger.warning("bitsandbytes not available, falling back to BF16")
+
         # Use eager attention if attention distillation is needed
         # SDPA/Flash attention doesn't return attention weights
-        attn_impl = "eager" if use_eager_attention else None
         if use_eager_attention:
+            model_kwargs["attn_implementation"] = "eager"
             logger.info("Using eager attention for teacher (required for attention distillation)")
 
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
-            torch_dtype=dtype,
-            trust_remote_code=True,
-            attn_implementation=attn_impl,
+            **model_kwargs,
         )
 
         # Freeze teacher
