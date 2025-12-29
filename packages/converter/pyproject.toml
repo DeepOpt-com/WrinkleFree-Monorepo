@@ -20,6 +20,9 @@ classifiers = [
 ]
 
 dependencies = [
+    # Workspace dependencies
+    "cheapertraining",
+
     # Core ML
     "torch>=2.5.0",
     "setuptools",  # Required for BitNet model loading (torch cpp extension)
@@ -66,6 +69,9 @@ wf-dlm = "wf_dlm_converter.cli:main"
 [project.urls]
 Repository = "https://github.com/DeepOpt-com/WrinkleFree-DLM-Converter"
 Documentation = "https://github.com/DeepOpt-com/WrinkleFree-DLM-Converter#readme"
+
+[tool.uv.sources]
+cheapertraining = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
