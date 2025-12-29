@@ -56,8 +56,9 @@ set(BITNET_SOURCES
     bitnet_gemv.cpp
 )
 
-# Build as static library
+# Build as static library with PIC for shared library linking
 add_library(sgl_kernel_bitnet STATIC ${BITNET_SOURCES})
+set_property(TARGET sgl_kernel_bitnet PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(sgl_kernel_bitnet PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}

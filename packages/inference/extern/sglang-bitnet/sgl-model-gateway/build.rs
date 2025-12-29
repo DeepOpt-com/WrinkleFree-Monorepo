@@ -137,6 +137,7 @@ fn build_cpp_inference_engine() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("cargo:rerun-if-changed=../sgl-kernel/csrc/inference/llama_engine.cpp");
     println!("cargo:rerun-if-changed=../sgl-kernel/csrc/inference/kv_cache.cpp");
+    println!("cargo:rerun-if-changed=../sgl-kernel/csrc/inference/bitnet_batch.cpp");
 
     let kernel_dir = PathBuf::from("../sgl-kernel/csrc");
 
@@ -165,7 +166,8 @@ fn build_cpp_inference_engine() -> Result<(), Box<dyn std::error::Error>> {
         .include(&llama_include)
         .include(&ggml_include)
         .file(kernel_dir.join("inference/llama_engine.cpp"))
-        .file(kernel_dir.join("inference/kv_cache.cpp"));
+        .file(kernel_dir.join("inference/kv_cache.cpp"))
+        .file(kernel_dir.join("inference/bitnet_batch.cpp"));
 
     // Determine SIMD flags based on target architecture
     let target = std::env::var("TARGET").unwrap_or_default();

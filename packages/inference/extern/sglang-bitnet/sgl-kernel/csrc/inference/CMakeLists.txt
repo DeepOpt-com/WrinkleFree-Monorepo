@@ -52,6 +52,7 @@ endif()
 # Source files
 set(INFERENCE_SOURCES
     bitnet_engine.cpp
+    bitnet_batch.cpp
     kv_cache.cpp
 )
 
@@ -89,4 +90,4 @@ install(TARGETS sgl_kernel_inference sgl_kernel_inference_static
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin
 )
-install(FILES bitnet_engine.h kv_cache.h DESTINATION include/sgl_kernel/inference)
+install(FILES bitnet_engine.h bitnet_batch.h kv_cache.h DESTINATION include/sgl_kernel/inference)
