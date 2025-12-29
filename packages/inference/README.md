@@ -1,12 +1,18 @@
 # WrinkleFree Inference Engine
 
+> Part of [WrinkleFree Monorepo](https://github.com/DeepOpt-com/WrinkleFree-Monorepo) - Serving layer for 1.58-bit quantized LLMs.
+
 Serving layer for 1.58-bit quantized LLMs using **SGLang-BitNet** with native SIMD kernels (AVX2/AVX512).
 
 ## Quick Start
 
 ```bash
+# Clone the monorepo
+git clone --recurse-submodules git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
+cd WrinkleFree-Monorepo/packages/inference
+
 # Install dependencies
-uv sync
+uv sync --all-packages
 
 # Build sgl-kernel (one-time setup)
 cd extern/sglang-bitnet/sgl-kernel

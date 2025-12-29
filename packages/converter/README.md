@@ -1,5 +1,7 @@
 # WrinkleFree DLM Converter
 
+> Part of [WrinkleFree Monorepo](https://github.com/DeepOpt-com/WrinkleFree-Monorepo) - DLM format conversion.
+
 Convert BitNet 1.58-bit quantized models to Diffusion Language Models (DLMs) for faster parallel inference.
 
 ## Overview

@@ -12,6 +12,22 @@ WrinkleFree-Fairy2 implements the Fairy2i paper (arxiv:2512.02901) for complex-v
 - **Distributed**: FSDP for multi-GPU
 - **License**: Apache 2.0 (commercially friendly)
 
+## Monorepo Integration
+
+This package is part of the WrinkleFree monorepo and depends on:
+- **cheapertraining**: Shared data loading utilities
+
+**Related packages**:
+| Package | Relationship |
+|---------|--------------|
+| `cheapertraining` | Data loading (shared library) |
+| `deployer` | Cloud deployment (`wf fairy2` command) |
+
+**Running from monorepo root**:
+```bash
+uv run --package wrinklefree-fairy2 python packages/fairy2/scripts/train.py model=smollm2_135m training=fairy2_w2
+```
+
 ## Key Concepts
 
 ### Fairy2i Algorithm (3 Components)

@@ -9,6 +9,30 @@ WrinkleFree Inference Engine is a serving layer for 1.58-bit quantized LLMs:
 - **Frontend**: Streamlit chat UI with SSE streaming
 - **Deployment**: Via WrinkleFree-Deployer (GCP C3D, H3, RunPod)
 
+## Monorepo Integration
+
+This package is part of the WrinkleFree monorepo.
+
+**Related packages**:
+| Package | Relationship |
+|---------|--------------|
+| `training` | Produces models to serve |
+| `deployer` | Cloud deployment orchestration |
+| `eval` | Uses inference for benchmarks |
+
+**External submodules**:
+- `extern/sglang-bitnet/` - SGLang fork with BitNet support
+- `extern/BitNet/` (at monorepo root) - Microsoft BitNet.cpp
+
+**Running from monorepo root**:
+```bash
+# Start server
+uv run --package wrinklefree-inference python packages/inference/scripts/launch_sglang_bitnet.sh
+
+# Run Streamlit UI
+uv run --package wrinklefree-inference streamlit run packages/inference/demo/serve_sglang.py
+```
+
 ## Build & Server Throttling (IMPORTANT)
 
 All launch scripts have **hard-coded CPU limits** to prevent system freeze:

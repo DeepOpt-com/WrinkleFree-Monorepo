@@ -4,19 +4,32 @@ Convert BitNet 1.58-bit models to Diffusion LLMs (DLMs) for faster parallel infe
 
 **For detailed documentation, see `docs/`.**
 
+## Monorepo Integration
+
+This package is part of the WrinkleFree monorepo.
+
+**Related packages**:
+| Package | Relationship |
+|---------|--------------|
+| `training` | Produces models to convert |
+| `deployer` | Cloud deployment (`wf dlm` command) |
+
+**Running from monorepo root**:
+```bash
+uv run --package wf_dlm_converter python packages/converter/scripts/train_dlm.py model=qwen3_4b source.path=hf://org/checkpoint
+```
+
 ## Quick Reference
 
 ```bash
 # Via Deployer CLI (recommended)
-cd ../deployer
-wf dlm -m qwen3_4b -s hf://org/checkpoint
+uv run --package wrinklefree-deployer wf dlm -m qwen3_4b -s hf://org/checkpoint
 
-# Or run locally with Hydra
-cd ../converter
-uv run python scripts/train_dlm.py model=qwen3_4b source.path=hf://org/checkpoint
+# Or run locally with Hydra (from monorepo root)
+uv run --package wf_dlm_converter python packages/converter/scripts/train_dlm.py model=qwen3_4b source.path=hf://org/checkpoint
 
 # With overrides
-uv run python scripts/train_dlm.py model=smollm2_135m conversion.total_tokens=100000000
+uv run --package wf_dlm_converter python packages/converter/scripts/train_dlm.py model=smollm2_135m conversion.total_tokens=100000000
 ```
 
 ## Key Files

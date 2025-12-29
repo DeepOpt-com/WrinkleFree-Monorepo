@@ -1,10 +1,16 @@
 # WrinkleFree Deployer
 
+> Part of [WrinkleFree Monorepo](https://github.com/DeepOpt-com/WrinkleFree-Monorepo) - Cloud deployment orchestrator.
+
 **Simple launcher for training 1.58-bit LLMs.**
 
 ```bash
-# Install
-uv sync
+# Clone the monorepo
+git clone --recurse-submodules git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
+cd WrinkleFree-Monorepo
+
+# Install all packages
+uv sync --all-packages
 
 # Set credentials
 cp .env.example .env  # Add WANDB_API_KEY

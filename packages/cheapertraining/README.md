@@ -1,10 +1,12 @@
 # CheaperTraining
 
+> Part of [WrinkleFree Monorepo](https://github.com/DeepOpt-com/WrinkleFree-Monorepo) - Shared library for data loading and influence-based optimization.
+
 Efficient LLM training library implementing the [MobileLLM-R1](https://arxiv.org/abs/2509.24945) training methodology. This is a **clean room implementation** based solely on the paper description, designed for commercial use.
 
 ## Overview
 
-CheaperTraining provides a complete training pipeline for language models from pretraining through post-training, optimized for efficiency at scale (up to 671B parameters). It serves as the continued pre-training foundation for the sister [WrinkleFree-1.58Quant](../training) BitNet fine-tuning library.
+CheaperTraining provides a complete training pipeline for language models from pretraining through post-training, optimized for efficiency at scale (up to 671B parameters). It serves as the continued pre-training foundation for the [training](../training) package's BitNet fine-tuning library.
 
 ## Features
 
@@ -17,11 +19,15 @@ CheaperTraining provides a complete training pipeline for language models from p
 ## Installation
 
 ```bash
-# Using uv (recommended)
-uv sync
+# Clone the monorepo
+git clone --recurse-submodules git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
+cd WrinkleFree-Monorepo
 
-# Or with pip
-pip install -e .
+# Install all packages
+uv sync --all-packages
+
+# Or install just this package
+uv sync --package cheapertraining
 ```
 
 ## Quick Start

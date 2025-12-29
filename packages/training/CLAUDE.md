@@ -6,11 +6,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 WrinkleFree is a repository for training and serving 1.58-bit (ternary) LLM models using:
 - **Training**: BitDistill approach from arxiv.org/abs/2510.13998
-- **Serving**: microsoft/BitNet as git submodule (at meta-repo root: ../extern/BitNet)
+- **Serving**: microsoft/BitNet as git submodule (at monorepo root: `extern/BitNet`)
 - **Config**: Hydra
 - **Package management**: uv
 - **Distributed**: FSDP for single/multi-GPU
 - **Precision**: bfloat16 for training stability
+
+## Monorepo Integration
+
+This package is part of the WrinkleFree monorepo and depends on:
+- **cheapertraining**: Shared data loading and influence functions
+
+**Related packages**:
+| Package | Relationship |
+|---------|--------------|
+| `cheapertraining` | Data loading, influence optimization |
+| `deployer` | Cloud deployment (launches training jobs) |
+| `converter` | Converts trained models to DLM format |
+| `inference` | Serves trained models |
+| `eval` | Evaluates trained models |
+
+**Running from monorepo root**:
+```bash
+uv run --package wrinklefree python packages/training/scripts/train.py model=smollm2_135m training=stage2_pretrain
+```
 
 ## Quick Start
 

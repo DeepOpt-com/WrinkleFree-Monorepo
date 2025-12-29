@@ -1,5 +1,7 @@
 # WrinkleFree-Eval
 
+> Part of [WrinkleFree Monorepo](https://github.com/DeepOpt-com/WrinkleFree-Monorepo) - Evaluation harness for quantized LLMs.
+
 Clean evaluation harness for BitDistill models. Evaluates quantized LLMs on the benchmarks from the [BitDistill paper](https://arxiv.org/abs/2510.13998).
 
 ## Benchmarks
@@ -12,8 +14,12 @@ Clean evaluation harness for BitDistill models. Evaluates quantized LLMs on the 
 ## Installation
 
 ```bash
-cd packages/eval
-uv sync
+# Clone the monorepo
+git clone --recurse-submodules git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
+cd WrinkleFree-Monorepo
+
+# Install all packages
+uv sync --all-packages
 ```
 
 ## Quick Start

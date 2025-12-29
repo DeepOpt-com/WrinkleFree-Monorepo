@@ -11,6 +11,22 @@ WrinkleFree-Eval is the evaluation framework for WrinkleFree BitNet models:
 - **Config**: Hydra
 - **Package management**: uv
 
+## Monorepo Integration
+
+This package is part of the WrinkleFree monorepo.
+
+**Related packages**:
+| Package | Relationship |
+|---------|--------------|
+| `training` | Produces models to evaluate |
+| `inference` | Provides optimized inference backend |
+| `deployer` | Cloud deployment for batch evaluation |
+
+**Running from monorepo root**:
+```bash
+uv run --package wrinklefree_eval python packages/eval/scripts/run_eval.py model_path=path/to/model benchmark=bitdistill
+```
+
 ## Quick Start
 
 ```bash

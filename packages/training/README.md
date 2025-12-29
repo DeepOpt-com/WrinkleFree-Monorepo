@@ -1,5 +1,7 @@
 # WrinkleFree-1.58Quant
 
+> Part of [WrinkleFree Monorepo](https://github.com/DeepOpt-com/WrinkleFree-Monorepo) - 1.58-bit quantization training.
+
 BitNet 1.58-bit LLM training and serving framework implementing the [BitDistill](https://arxiv.org/abs/2510.13998) approach.
 
 ## Overview

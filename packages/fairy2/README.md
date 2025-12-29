@@ -1,5 +1,7 @@
 # WrinkleFree-Fairy2
 
+> Part of [WrinkleFree Monorepo](https://github.com/DeepOpt-com/WrinkleFree-Monorepo) - Complex-valued quantization.
+
 Complex-valued LLM quantization with Fairy2i - achieving effective 2-bit precision with weights in {+1, -1, +i, -i}.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)

@@ -39,8 +39,29 @@ uv run pytest
 
 ## Shared Dependencies
 
-- `cheapertraining` is imported by: training, fairy2
-- Use `workspace = true` in `[tool.uv.sources]` for inter-package deps
+`cheapertraining` is the shared library imported by other packages:
+
+```
+cheapertraining (library)
+    │
+    ├──► training (wrinklefree)
+    │       Uses: cheapertraining.data, cheapertraining.influence
+    │
+    └──► fairy2
+            Uses: cheapertraining.data
+```
+
+**Adding workspace dependencies**:
+```toml
+# In pyproject.toml
+[project]
+dependencies = ["cheapertraining"]
+
+[tool.uv.sources]
+cheapertraining = { workspace = true }
+```
+
+**Important**: Changes to cheapertraining affect training and fairy2 - test both after modifications.
 
 ## GCP Configuration
 
@@ -77,3 +98,29 @@ Desktop IP: `192.168.1.217` (configured in `~/.ssh/config`)
 - FAIL LOUDLY INSTEAD OF FALLBACKS
 - DO NOT LAUNCH GPU INSTANCES ON GCP - use Nebius and RunPod
 - Each package has its own CLAUDE.md with package-specific guidance
+
+## Troubleshooting
+
+### Package not found
+```bash
+uv sync --all-packages --reinstall
+```
+
+### Import errors between packages
+Ensure workspace sources are configured:
+```toml
+[tool.uv.sources]
+cheapertraining = { workspace = true }
+```
+
+### Submodule issues
+```bash
+git submodule update --init --recursive
+```
+
+## Documentation
+
+- [Quick Start](docs/quick-start.md) - Installation and first steps
+- [Architecture](docs/architecture.md) - System design and package relationships
+- [Dependencies](docs/dependencies.md) - Dependency graph and version constraints
+- [Development](docs/development.md) - Contributing and CI/CD
