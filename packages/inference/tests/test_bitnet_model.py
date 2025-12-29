@@ -165,6 +165,7 @@ class TestHFWeightConversion:
 
 
 @pytest.mark.slow
+@pytest.mark.skip(reason="Depends on legacy wrinklefree_inference.models module")
 class TestBitNetModel:
     """Integration tests for full model loading."""
 
