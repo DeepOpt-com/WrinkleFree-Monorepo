@@ -83,6 +83,17 @@ def main():
         default=None,
         help="W&B run display name",
     )
+    parser.add_argument(
+        "--use-dlm",
+        action="store_true",
+        help="Use DLM (diffusion) evaluation mode with Monte Carlo masking",
+    )
+    parser.add_argument(
+        "--mc-iterations",
+        type=int,
+        default=128,
+        help="Monte Carlo iterations for DLM loglikelihood (default: 128)",
+    )
 
     args = parser.parse_args()
 
@@ -105,6 +116,8 @@ def main():
     print(f"Device: {args.device}, Dtype: {args.dtype}")
     if args.smoke_test:
         print("Mode: Smoke test (10 samples)")
+    if args.use_dlm:
+        print(f"Mode: DLM (diffusion) evaluation (MC iterations: {args.mc_iterations})")
     print()
 
     results = evaluate(
@@ -116,6 +129,8 @@ def main():
         limit=args.limit,
         smoke_test=args.smoke_test,
         output_dir=args.output_dir,
+        use_dlm=args.use_dlm,
+        mc_iterations=args.mc_iterations,
         wandb_project=args.wandb_project,
         wandb_run_id=args.wandb_run_id,
         wandb_run_name=args.wandb_run_name,

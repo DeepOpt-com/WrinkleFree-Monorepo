@@ -37,10 +37,13 @@ uv sync
 uv run python scripts/run_eval.py --smoke-test
 
 # Run full BitDistill benchmark
-uv run python scripts/run_eval.py model_path=path/to/model benchmark=bitdistill
+uv run python scripts/run_eval.py --model-path path/to/model --benchmark bitdistill
 
 # Use optimized BitNet inference (requires running server)
 INFERENCE_URL=http://localhost:8080 uv run python scripts/run_eval.py --use-bitnet
+
+# Evaluate DLM (diffusion) models with Monte Carlo masking
+uv run python scripts/run_eval.py --model-path path/to/dlm-checkpoint --use-dlm --mc-iterations 128
 ```
 
 ## Evaluation API
@@ -61,6 +64,15 @@ results = evaluate(
 
 # Smoke test
 results = evaluate("path/to/model", smoke_test=True)
+
+# DLM (diffusion) model evaluation
+# Uses Monte Carlo masking for loglikelihood computation
+results = evaluate(
+    "path/to/dlm-checkpoint",
+    benchmark="bitdistill",
+    use_dlm=True,
+    mc_iterations=128,  # Monte Carlo iterations (default: 128)
+)
 ```
 
 ### Available Benchmarks
@@ -102,6 +114,26 @@ ENDPOINT=$(sky status inference-engine --endpoint 8080)
 
 # Run eval against remote server
 INFERENCE_URL=$ENDPOINT uv run python scripts/run_eval.py --use-bitnet
+```
+
+### Remote Evaluation via SkyPilot
+```bash
+cd ../deployer
+
+# Evaluate standard model
+sky jobs launch skypilot/eval.yaml \
+  -e MODEL_PATH=microsoft/BitNet-b1.58-2B-4T \
+  -e BENCHMARK=bitdistill
+
+# Evaluate DLM (diffusion) checkpoint from GCS
+sky jobs launch skypilot/eval.yaml \
+  -e MODEL_PATH=gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-5000/ \
+  -e BENCHMARK=bitdistill \
+  -e USE_DLM=true
+
+# Monitor
+sky jobs queue
+sky jobs logs <job_id>
 ```
 
 ## Architecture

@@ -6,6 +6,9 @@
 # Launch as managed job (with spot recovery):
 #   sky jobs launch skypilot/eval.yaml -e MODEL_PATH=gs://bucket/checkpoint -e BENCHMARK=bitdistill
 #
+# For DLM (diffusion) models:
+#   sky jobs launch skypilot/eval.yaml -e MODEL_PATH=gs://wrinklefree-checkpoints/dlm/... -e USE_DLM=true
+#
 # Monitor:
 #   sky jobs queue
 #   sky jobs logs <job_id>
@@ -13,19 +16,16 @@
 name: wrinklefree-eval
 
 resources:
-  accelerators: RTX4090:1
-  use_spot: true
+  accelerators: A40:1
+  use_spot: false  # On-demand for reliable evals
   disk_tier: best
   cloud: runpod
-  job_recovery:
-    max_restarts_on_errors: 2
 
-# Sync eval code to cluster
-workdir: /home/lev/code/WrinkleFree/WrinkleFree-Eval
+# Sync eval code to cluster (monorepo structure)
+workdir: /home/lev/code/WrinkleFreeDev/packages/eval
 
-# Mount checkpoint bucket for reading models and writing results
-file_mounts:
-  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+# Note: For GCS model paths (gs://...), use Nebius with --infra nebius --gpus L40S:1
+# RunPod doesn't support GCS file_mounts. For HuggingFace models, RunPod works fine.
 
 envs:
   # Model configuration (override with -e)
@@ -34,17 +34,21 @@ envs:
   DTYPE: bfloat16
   BATCH_SIZE: auto
 
-  # GCP credentials for GCS access
-  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  # DLM (diffusion) model evaluation
+  USE_DLM: "false"
+  MC_ITERATIONS: "128"
+
+  # GCP credentials for GCS access (set by cloud provider if available)
+  GOOGLE_APPLICATION_CREDENTIALS: ""
 
   # Results storage
-  OUTPUT_BUCKET: ${OUTPUT_BUCKET:-wrinklefree-results}
-  OUTPUT_PREFIX: ${OUTPUT_PREFIX:-eval-results}
+  OUTPUT_BUCKET: wrinklefree-results
+  OUTPUT_PREFIX: eval-results
 
-  # Weights & Biases (optional)
-  WANDB_PROJECT: ${WANDB_PROJECT:-}
-  WANDB_RUN_ID: ${WANDB_RUN_ID:-eval-${SKYPILOT_TASK_ID}}
-  WANDB_API_KEY: ${WANDB_API_KEY:-}
+  # Weights & Biases (optional - leave empty to disable)
+  WANDB_PROJECT: ""
+  WANDB_RUN_ID: ""
+  WANDB_API_KEY: ""
 
   # Enable fast HF downloads
   HF_HUB_ENABLE_HF_TRANSFER: "1"
@@ -59,11 +63,9 @@ setup: |
     source $HOME/.local/bin/env
   fi
 
-  # Install dependencies (including optional wandb)
-  uv sync --extra wandb
-
-  # Install gcsfs for GCS model loading
-  uv pip install gcsfs
+  # Install dependencies (including optional wandb and gcs for GCS access)
+  # hf_transfer is now in base dependencies for fast HF downloads
+  uv sync --extra wandb --extra gcs
 
 run: |
   set -e
@@ -104,6 +106,12 @@ run: |
     EVAL_CMD="$EVAL_CMD --smoke-test"
   fi
 
+  # Add DLM evaluation mode for diffusion models
+  if [ "$USE_DLM" = "true" ]; then
+    echo "[Eval] Using DLM (diffusion) evaluation mode"
+    EVAL_CMD="$EVAL_CMD --use-dlm --mc-iterations $MC_ITERATIONS"
+  fi
+
   # Add W&B logging if configured
   if [ -n "$WANDB_PROJECT" ]; then
     EVAL_CMD="$EVAL_CMD --wandb-project $WANDB_PROJECT"
@@ -119,8 +127,8 @@ run: |
   echo ""
   echo "[Eval] Evaluation complete!"
 
-  # Upload results to GCS
-  if [ -n "$OUTPUT_BUCKET" ]; then
+  # Upload results to GCS (if credentials available)
+  if [ -n "$OUTPUT_BUCKET" ] && [ -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
     echo ""
     echo "[Upload] Uploading results to gs://$OUTPUT_BUCKET/$OUTPUT_PREFIX/"
 
@@ -133,6 +141,10 @@ run: |
     fi
 
     echo "[Upload] Results uploaded!"
+  elif [ -n "$OUTPUT_BUCKET" ]; then
+    echo ""
+    echo "[Upload] Skipping GCS upload - credentials not available"
+    echo "[Upload] Results are saved locally at: $OUTPUT_DIR"
   fi
 
   echo ""

@@ -42,9 +42,14 @@ results = evaluate("path/to/model", benchmark="glue")
 results = evaluate("path/to/model", benchmark="bitdistill",
                    wandb_project="my-project")
 
+# DLM (diffusion) model evaluation
+# For Fast-dLLM v2 trained models, use Monte Carlo masking
+results = evaluate("path/to/dlm-checkpoint", benchmark="bitdistill",
+                   use_dlm=True, mc_iterations=128)
+
 # Access results
-print(results["glue_sst2"]["acc"])           # 0.92
-print(results["cnn_dailymail_summarization"]["rouge1"])  # 0.45
+print(results["sst2"]["acc"])  # 0.92
+print(results["mnli"]["acc"])  # 0.85
 ```
 
 ### CLI with Hydra
@@ -59,6 +64,13 @@ uv run python -m wrinklefree_eval \
 uv run python -m wrinklefree_eval \
     model_path=path/to/checkpoint \
     benchmark=smoke_test
+
+# DLM (diffusion) model evaluation
+uv run python scripts/run_eval.py \
+    --model-path path/to/dlm-checkpoint \
+    --benchmark bitdistill \
+    --use-dlm \
+    --mc-iterations 128
 
 # GLUE only with custom settings
 uv run python -m wrinklefree_eval \
@@ -129,15 +141,26 @@ Run evaluations on remote GPUs using WrinkleFree-Deployer:
 cd ../deployer
 
 # Evaluate HuggingFace model
-sky launch skypilot/eval.yaml \
-  --env MODEL_PATH=HuggingFaceTB/SmolLM2-135M \
-  --env BENCHMARK=smoke_test
+sky jobs launch skypilot/eval.yaml \
+  -e MODEL_PATH=HuggingFaceTB/SmolLM2-135M \
+  -e BENCHMARK=smoke_test
 
 # Evaluate GCS checkpoint with W&B logging
-sky launch skypilot/eval.yaml \
-  --env MODEL_PATH=gs://bucket/checkpoint \
-  --env BENCHMARK=bitdistill \
-  --env WANDB_PROJECT=wrinklefree
+sky jobs launch skypilot/eval.yaml \
+  -e MODEL_PATH=gs://bucket/checkpoint \
+  -e BENCHMARK=bitdistill \
+  -e WANDB_PROJECT=wrinklefree
+
+# Evaluate DLM (diffusion) model with Monte Carlo masking
+sky jobs launch skypilot/eval.yaml \
+  -e MODEL_PATH=gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-5000/ \
+  -e BENCHMARK=bitdistill \
+  -e USE_DLM=true \
+  -e MC_ITERATIONS=128
+
+# Monitor jobs
+sky jobs queue
+sky jobs logs <job_id>
 ```
 
 See [WrinkleFree-Deployer](../deployer) for full deployment documentation.
