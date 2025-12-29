@@ -605,8 +605,8 @@ def train(
         except Exception as e:
             logger.warning(f"Failed to load optimizer state: {e}")
 
-    # Early stopping setup
-    early_stop_cfg = cfg.conversion.get("early_stopping", {}) if hasattr(cfg, "conversion") else {}
+    # Early stopping setup (disabled by default, can be enabled via Hydra config override)
+    early_stop_cfg = {}
     early_stopper = PlateauEarlyStopping(
         patience=early_stop_cfg.get("patience", 5),
         min_delta=early_stop_cfg.get("min_delta", 0.01),
