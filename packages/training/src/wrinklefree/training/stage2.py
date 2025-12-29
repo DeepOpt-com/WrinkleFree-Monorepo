@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
+from cheapertraining.training import PlateauEarlyStopping
 from wrinklefree.distillation import (
     ContinuePretrainLoss,
     HiddenStateTeacherWrapper,
@@ -150,6 +151,26 @@ class Stage2Trainer(Trainer):
         self.has_influence = self._check_influence_optimizer()
         if self.has_influence:
             logger.info("Influence-aware optimizer detected - will log mixture weights")
+
+        # Early stopping setup
+        early_stop_cfg = getattr(self.training_cfg, "early_stopping", None)
+        self.early_stopper = PlateauEarlyStopping(
+            patience=getattr(early_stop_cfg, "patience", 5) if early_stop_cfg else 5,
+            min_delta=getattr(early_stop_cfg, "min_delta", 0.01) if early_stop_cfg else 0.01,
+            mode="min",
+            min_evals=getattr(early_stop_cfg, "min_evals", 10) if early_stop_cfg else 10,
+            enabled=getattr(early_stop_cfg, "enabled", False) if early_stop_cfg else False,
+            rank=self.rank,
+        )
+        if self.early_stopper.enabled:
+            logger.info(
+                f"Early stopping enabled: patience={self.early_stopper.patience}, "
+                f"min_delta={self.early_stopper.min_delta}"
+            )
+
+        # Loss EMA for early stopping (smoothed loss tracking)
+        self.loss_ema: float = 0.0
+        self.loss_ema_alpha: float = 0.99  # Smoothing factor
 
     def _check_influence_optimizer(self) -> bool:
         """Check if optimizer is InfluenceAwareOptimizer."""
@@ -307,6 +328,12 @@ class Stage2Trainer(Trainer):
                 avg_loss = accumulated_loss / num_accumulated
                 self.train_losses.append(avg_loss)
 
+                # Update loss EMA for early stopping
+                if self.loss_ema == 0.0:
+                    self.loss_ema = avg_loss
+                else:
+                    self.loss_ema = self.loss_ema_alpha * self.loss_ema + (1 - self.loss_ema_alpha) * avg_loss
+
                 # Get lr for logging
                 lr = self.optimizer.param_groups[0]["lr"]
 
@@ -373,6 +400,15 @@ class Stage2Trainer(Trainer):
                                         wandb_log["influence/num_updates"] = max(0, num_updates)
 
                         self.wandb.log(wandb_log, step=self.global_step)
+
+                # Early stopping check (on log interval, using smoothed loss)
+                if self.early_stopper.check(self.loss_ema, self.global_step):
+                    if self.rank == 0:
+                        logger.warning("Stopping training early due to loss plateau.")
+                        self.early_stopper.save_json(self.output_dir)
+                    # Save checkpoint before exiting (all ranks must participate for FSDP)
+                    self.save_checkpoint(f"early_stop_{self.global_step}")
+                    break
 
                 # Checkpointing (no eval)
                 # NOTE: All ranks must call save_checkpoint for FSDP state dict gathering
@@ -535,6 +571,41 @@ class Stage2Trainer(Trainer):
         loss_dict["tokens_processed"] = torch.tensor(float(self.tokens_processed), device=batch["input_ids"].device)
 
         return loss_dict
+
+    def save_checkpoint(self, name: str) -> None:
+        """Save checkpoint with early stopper state."""
+        # Call parent to save base checkpoint
+        super().save_checkpoint(name)
+
+        # Add early stopper state to checkpoint (rank 0 only)
+        if self.rank == 0 and self.early_stopper.enabled:
+            checkpoint_dir = self.output_dir / "checkpoints" / name
+            checkpoint_path = checkpoint_dir / "checkpoint.pt"
+            if checkpoint_path.exists():
+                import torch
+                checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                checkpoint["early_stopper"] = self.early_stopper.state_dict()
+                checkpoint["loss_ema"] = self.loss_ema
+                torch.save(checkpoint, checkpoint_path)
+
+    def load_checkpoint(self, path: Path) -> None:
+        """Load checkpoint with early stopper state."""
+        # Call parent to load base checkpoint
+        super().load_checkpoint(path)
+
+        # Restore early stopper state
+        if path.is_dir():
+            checkpoint_path = path / "checkpoint.pt"
+        else:
+            checkpoint_path = path
+
+        import torch
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        if "early_stopper" in checkpoint:
+            self.early_stopper.load_state_dict(checkpoint["early_stopper"])
+            logger.info(f"Restored early stopper state: best={self.early_stopper.best:.4f}, wait={self.early_stopper.wait}")
+        if "loss_ema" in checkpoint:
+            self.loss_ema = checkpoint["loss_ema"]
 
 
 def run_stage2(

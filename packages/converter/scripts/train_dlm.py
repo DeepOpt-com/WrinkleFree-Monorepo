@@ -45,6 +45,8 @@ from transformers import (
 )
 from tqdm import tqdm
 
+from cheapertraining.training import PlateauEarlyStopping
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -589,6 +591,22 @@ def train(
         except Exception as e:
             logger.warning(f"Failed to load optimizer state: {e}")
 
+    # Early stopping setup
+    early_stop_cfg = cfg.conversion.get("early_stopping", {}) if hasattr(cfg, "conversion") else {}
+    early_stopper = PlateauEarlyStopping(
+        patience=early_stop_cfg.get("patience", 5),
+        min_delta=early_stop_cfg.get("min_delta", 0.01),
+        mode="min",
+        min_evals=early_stop_cfg.get("min_evals", 10),
+        enabled=early_stop_cfg.get("enabled", False),
+        rank=0,
+    )
+    if early_stopper.enabled:
+        logger.info(
+            f"Early stopping enabled: patience={early_stopper.patience}, "
+            f"min_delta={early_stopper.min_delta}"
+        )
+
     # Training loop
     model.train()
     tokens_seen = resume_tokens
@@ -692,6 +710,17 @@ def train(
                 })
 
             running_loss = 0.0
+
+            # Early stopping check (using smoothed loss)
+            if early_stopper.check(loss_ema, step):
+                logger.warning("Stopping training early due to loss plateau.")
+                early_stopper.save_json(final_output)
+                # Save final checkpoint before exiting
+                checkpoint_dir = final_output / "checkpoint-early-stop"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                model.save_pretrained(checkpoint_dir)
+                tokenizer.save_pretrained(checkpoint_dir)
+                break
 
             # Save checkpoint every 1000 steps
             if step % GCS_UPLOAD_INTERVAL == 0:

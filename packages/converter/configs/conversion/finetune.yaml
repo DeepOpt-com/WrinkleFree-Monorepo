@@ -53,6 +53,13 @@ logging:
     project: wrinklefree-dlm
     tags: [dlm, conversion, finetune]
 
+# Early stopping: stops training if loss plateaus
+early_stopping:
+  enabled: false  # Enable to stop on plateau
+  patience: 5     # Stop after N consecutive checks without improvement
+  min_delta: 0.01 # Minimum loss improvement to count as "better"
+  min_evals: 10   # Don't stop before this many checks
+
 # Compute settings
 compute:
   dtype: bfloat16
