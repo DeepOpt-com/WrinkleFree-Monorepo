@@ -32,7 +32,7 @@ packing:
 # Optimization (AdamW for stable training)
 optimizer:
   type: adamw
-  lr: 5e-5  # Reduced from 1e-4 for more stable convergence
+  lr: 2e-4  # Higher LR for faster convergence
   weight_decay: 0.01
   betas: [0.9, 0.95]
 
