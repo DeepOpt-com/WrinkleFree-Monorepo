@@ -19,7 +19,9 @@ gradient_accumulation_steps: 32   # Effective batch = 12 * 32 = 384
 # Reference: https://github.com/GAD-cell/muon-clip
 optimizer:
   type: muonclip
-  lr: 1.0e-3         # Muon uses 50x higher LR than AdamW
+  lr: 1.0e-3           # Muon LR for hidden weights (50x higher than AdamW)
+  lr_adam: 2.0e-5      # Adam LR for embed/head/bias/norm (standard AdamW LR)
+  unified_lr: false    # Use separate LRs for Muon vs Adam params
   weight_decay: 0.01
   betas: [0.9, 0.95]
   momentum: 0.95
@@ -28,7 +30,7 @@ optimizer:
 
 scheduler:
   type: constant     # Official: constant_with_warmup
-  warmup_ratio: 0.03 # Official: 3% warmup
+  warmup_ratio: 0.0  # Disabled - Muon is inherently stable
   min_lr_ratio: 0.1
 
 # Gradient clipping (ZClip adaptive clipping is enabled by default)

@@ -741,6 +741,8 @@ def train(
     if optimizer_type == "muonclip":
         optimizer_kwargs["enable_clipping"] = opt_cfg.get("enable_clipping", True)
         optimizer_kwargs["clipping_threshold"] = opt_cfg.get("clipping_threshold", 50.0)
+        optimizer_kwargs["unified_lr"] = opt_cfg.get("unified_lr", True)
+        optimizer_kwargs["lr_adam"] = opt_cfg.get("lr_adam", learning_rate * 0.1)
 
         # Ensure model config has head_dim for QK-clipping
         if not hasattr(model.config, "head_dim"):
@@ -755,7 +757,10 @@ def train(
         optimizer_kwargs["log_dir"] = str(optimizer_log_dir)
 
     optimizer = create_optimizer(model, optimizer_type=optimizer_type, **optimizer_kwargs)
-    logger.info(f"Using {optimizer_type} optimizer (lr={learning_rate})")
+    if optimizer_type == "muonclip" and not opt_cfg.get("unified_lr", True):
+        logger.info(f"Using {optimizer_type} optimizer (lr_muon={learning_rate}, lr_adam={optimizer_kwargs['lr_adam']})")
+    else:
+        logger.info(f"Using {optimizer_type} optimizer (lr={learning_rate})")
 
     # Create scheduler based on config
     if scheduler_type == "cosine":
@@ -931,21 +936,38 @@ def train(
             prev_loss = avg_loss
 
             pbar.update(1)
-            pbar.set_postfix({
-                "loss": f"{avg_loss:.4f}",
-                "tokens": f"{tokens_seen:,}",
-                "lr": f"{scheduler.get_last_lr()[0]:.2e}",
-            })
+            # Show both LRs if we have multiple param groups (MuonClip)
+            all_lrs = scheduler.get_last_lr()
+            if len(all_lrs) > 1:
+                pbar.set_postfix({
+                    "loss": f"{avg_loss:.4f}",
+                    "tokens": f"{tokens_seen:,}",
+                    "lr_muon": f"{all_lrs[1]:.2e}",
+                    "lr_adam": f"{all_lrs[0]:.2e}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{avg_loss:.4f}",
+                    "tokens": f"{tokens_seen:,}",
+                    "lr": f"{all_lrs[0]:.2e}",
+                })
 
             if use_wandb:
                 # Get current lambda value for quantization tracking
                 current_lambda = lambda_warmup_scheduler.lambda_val if lambda_warmup_scheduler else 1.0
 
+                # Get LRs for all param groups
+                all_lrs = scheduler.get_last_lr()
+                lr_adam = all_lrs[0] if len(all_lrs) > 0 else 0
+                lr_muon = all_lrs[1] if len(all_lrs) > 1 else lr_adam
+
                 wandb.log({
                     # Core metrics
                     "train/loss": avg_loss,
                     "train/tokens": tokens_seen,
-                    "train/lr": scheduler.get_last_lr()[0],
+                    "train/lr": lr_adam,  # Primary LR (backward compat)
+                    "train/lr_adam": lr_adam,  # Adam LR for embed/head/norm
+                    "train/lr_muon": lr_muon,  # Muon LR for hidden weights
                     "train/step": step,
                     # Curriculum tracking (1=chat-only, 2=mixed)
                     "train/curriculum_phase": current_phase,

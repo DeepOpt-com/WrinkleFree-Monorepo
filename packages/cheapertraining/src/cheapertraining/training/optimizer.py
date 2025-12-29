@@ -342,8 +342,13 @@ def create_optimizer(
         # NOTE: muon-clip has a bug where writer is only created if log_dir is empty!
         # See: if not muon_config.log_dir : self.writer = SummaryWriter(...)
         # So we pass empty string to create the writer, otherwise flush_metrics() crashes
+        unified_lr = kwargs.get("unified_lr", True)
+        lr_adam = kwargs.get("lr_adam", learning_rate * 0.1)  # Default 0.1x for embed/head/norm
         config = MuonConfig(
+            unified_lr=unified_lr,
             lr=learning_rate,
+            lr_muon=learning_rate,
+            lr_adam=lr_adam,
             muon_beta=momentum,
             muon_decay=weight_decay,
             adam_betas=betas,
