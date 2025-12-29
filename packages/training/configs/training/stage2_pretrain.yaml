@@ -29,18 +29,12 @@ fp8:
 packing:
   enabled: true  # Default on for training efficiency
 
-# Optimization (MuonClip: Muon + QK-clipping for training stability)
-# Hyperparams tuned via Ax Bayesian optimization (Trial 4: loss 4.93)
+# Optimization (AdamW for stable training)
 optimizer:
-  type: muonclip
-  lr: 5e-4  # Halved for resume stability (was 1e-3)
-  momentum: 0.95
-  weight_decay: 0.024  # Optimized from 0.1 (Ax sweep)
-  adamw_betas: [0.9, 0.95]  # For embed/head params
-  # QK-clipping settings (Kimi K2 defaults)
-  enable_clipping: true
-  clipping_threshold: 50.0
-  clipping_alpha: 0.5
+  type: adamw
+  lr: 2e-4  # Conservative LR for stable convergence
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
 
 scheduler:
   type: wsd  # Warmup-Stable-Decay (DeepSeek-V3 style)
@@ -53,8 +47,8 @@ scheduler:
 total_tokens: 10_000_000_000  # 10B tokens
 max_steps: null  # Optional: override total_tokens with fixed step count
 max_seq_length: 512  # Reduced for single GPU
-batch_size: 8  # Reduced for single GPU (use gradient_accumulation for larger effective batch)
-gradient_accumulation_steps: 16  # Doubled for resume (was 8); Effective batch = 128
+batch_size: 32  # H100 can handle 32 for qwen3_4b
+gradient_accumulation_steps: 4  # Effective batch = 128 (same as before, but 4x faster)
 gradient_clipping: 1.0
 
 # Loss (no distillation, just LM loss)
