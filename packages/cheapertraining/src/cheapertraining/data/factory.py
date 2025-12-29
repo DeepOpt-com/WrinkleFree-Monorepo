@@ -188,6 +188,15 @@ def _create_multi_source_dataloader(
     else:
         dataset = mixed_dataset
 
+    # Force num_workers=0 for streaming/iterable datasets
+    # Multiple workers with IterableDataset causes redundant data loading
+    if isinstance(dataset, IterableDataset) and num_workers > 0:
+        import logging
+        logging.getLogger(__name__).info(
+            "Streaming dataset detected, forcing num_workers=0 (was %d)", num_workers
+        )
+        num_workers = 0
+
     # Create dataloader
     dataloader = DataLoader(
         dataset,
@@ -258,6 +267,14 @@ def _create_single_source_dataloader(
         )
     else:
         dataset = single_dataset
+
+    # Force num_workers=0 for streaming/iterable datasets
+    if isinstance(dataset, IterableDataset) and num_workers > 0:
+        import logging
+        logging.getLogger(__name__).info(
+            "Streaming dataset detected, forcing num_workers=0 (was %d)", num_workers
+        )
+        num_workers = 0
 
     # Create dataloader
     dataloader = DataLoader(

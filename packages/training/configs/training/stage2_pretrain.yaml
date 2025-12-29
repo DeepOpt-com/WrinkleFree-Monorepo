@@ -32,7 +32,7 @@ packing:
 # Optimization (AdamW for stable training)
 optimizer:
   type: adamw
-  lr: 1e-4  # Reduced from 2e-4 to stabilize training (prevent spiky loss)
+  lr: 5e-5  # Reduced from 1e-4 for more stable convergence
   weight_decay: 0.01
   betas: [0.9, 0.95]
 
@@ -48,7 +48,7 @@ total_tokens: 10_000_000_000  # 10B tokens
 max_steps: null  # Optional: override total_tokens with fixed step count
 max_seq_length: 512  # Reduced for single GPU
 batch_size: 32  # H100 can handle 32 for qwen3_4b
-gradient_accumulation_steps: 4  # Effective batch = 128 (same as before, but 4x faster)
+gradient_accumulation_steps: 8  # Effective batch = 256 (doubled for faster convergence)
 gradient_clipping: 1.0
 
 # Loss (no distillation, just LM loss)
@@ -106,13 +106,21 @@ checkpoint:
 
 # Logging (no eval - all data is unseen in streaming pre-training)
 logging:
-  log_interval: 100
+  log_interval: 10  # Reduced from 100 for faster feedback
   wandb:
     enabled: true
     project: wrinklefree
     entity: null
     name: null  # Override with run name
     tags: [stage2, pretrain]
+
+# Early stopping: stops training if loss plateaus
+# Useful for detecting when distillation/conversion can't improve beyond teacher
+early_stopping:
+  enabled: false  # Enable to stop on plateau
+  patience: 5     # Stop after N consecutive checks without improvement
+  min_delta: 0.01 # Minimum loss improvement to count as "better"
+  min_evals: 10   # Don't stop before this many checks (at log_interval)
 
 # CheaperTraining influence-based data selection
 influence:

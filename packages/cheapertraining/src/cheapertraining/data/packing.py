@@ -42,7 +42,13 @@ def compute_position_ids(input_ids: Tensor, separator_token_id: int) -> Tensor:
 
 
 def compute_position_ids_vectorized(input_ids: Tensor, separator_token_id: int) -> Tensor:
-    """Vectorized version of compute_position_ids (faster for long sequences).
+    """Truly vectorized position ID computation (no Python loops).
+
+    Uses segment-based approach:
+    1. Find segment starts (pos 0 + positions after separators)
+    2. Assign segment IDs via cumsum
+    3. Map each position to its segment's start
+    4. Position within segment = global_pos - segment_start
 
     Args:
         input_ids: Token IDs for the packed sequence [seq_len]
@@ -51,36 +57,31 @@ def compute_position_ids_vectorized(input_ids: Tensor, separator_token_id: int) 
     Returns:
         Position IDs that reset after each separator token [seq_len]
     """
-    # Find separator positions
-    is_separator = (input_ids == separator_token_id)
-
-    # Create cumulative document index (increments after each separator)
-    doc_ids = torch.cumsum(is_separator, dim=0)
-    # Shift by 1 so separators themselves have position of their document's last token
-    doc_ids = torch.cat([torch.zeros(1, dtype=doc_ids.dtype, device=doc_ids.device), doc_ids[:-1]])
-
-    # Create position within each document
-    # For each position, count tokens since last separator
     seq_len = input_ids.size(0)
-    positions = torch.arange(seq_len, device=input_ids.device)
+    if seq_len == 0:
+        return torch.empty(0, dtype=torch.long, device=input_ids.device)
 
-    # Get the position of each separator (or 0 for first doc)
-    separator_positions = torch.where(is_separator)[0]
-    if len(separator_positions) == 0:
-        # No separators - simple sequential positions
-        return positions
+    device = input_ids.device
 
-    # For each position, find the most recent separator position
-    # and subtract it from the current position
-    position_ids = torch.zeros_like(input_ids)
+    # Step 1: Find segment starts (pos 0 + positions after separators)
+    is_separator = input_ids == separator_token_id
+    is_seg_start = torch.zeros(seq_len, dtype=torch.bool, device=device)
+    is_seg_start[0] = True
+    if seq_len > 1:
+        is_seg_start[1:] = is_separator[:-1]  # Position after each separator
 
-    last_sep = -1
-    for i in range(seq_len):
-        if is_separator[i]:
-            position_ids[i] = i - last_sep - 1  # Position of separator itself
-            last_sep = i
-        else:
-            position_ids[i] = i - last_sep - 1
+    # Step 2: Assign segment IDs (cumsum of starts, minus 1 to be 0-indexed)
+    segment_ids = torch.cumsum(is_seg_start.long(), dim=0) - 1
+
+    # Step 3: Find the start position of each segment
+    seg_start_indices = is_seg_start.nonzero(as_tuple=True)[0]
+
+    # Step 4: Map each position to its segment's start position
+    segment_starts = seg_start_indices[segment_ids]
+
+    # Step 5: Position within segment = global position - segment start
+    positions = torch.arange(seq_len, dtype=torch.long, device=device)
+    position_ids = positions - segment_starts
 
     return position_ids
 
