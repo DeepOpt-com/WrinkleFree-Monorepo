@@ -12,42 +12,42 @@ sources:
   - name: dclm
     path: mlfoundations/dclm-baseline-1.0-parquet  # Parquet version (cleaner)
     subset: null
-    weight: 0.225  # 22.5% high-quality web (Apple's curated 4T tokens)
+    weight: 0.25  # 25% high-quality web (Apple's curated 4T tokens)
     text_column: text
     streaming: true
 
   - name: fineweb_edu
     path: HuggingFaceFW/fineweb-edu
     subset: sample-10BT
-    weight: 0.27  # 27% educational content (includes math)
+    weight: 0.45  # 45% educational content (includes fineweb share)
     text_column: text
     streaming: true
 
   - name: github_code
     path: nick007x/github-code-2025  # MIT licensed, 2025 curated code
     subset: null
-    weight: 0.135  # 13.5% code
+    weight: 0.15  # 15% code
     text_column: content
     streaming: true
 
   - name: finemath
     path: HuggingFaceTB/finemath  # 34B tokens math text (ODC-By license, commercially friendly)
     subset: finemath-3plus
-    weight: 0.135  # 13.5% mathematical reasoning
+    weight: 0.15  # 15% mathematical reasoning
     text_column: text
     streaming: true
 
   - name: fineweb
     path: HuggingFaceFW/fineweb
     subset: sample-10BT
-    weight: 0.135  # 13.5% diverse web content
+    weight: 0  # Disabled - merged into fineweb_edu
     text_column: text
     streaming: true
 
   - name: synth
     path: PleIAs/SYNTH  # Synthetic reasoning from Wikipedia (CDLA-Permissive 2.0)
     subset: null
-    weight: 0.10  # 10% synthetic reasoning (query + reasoning + answer)
+    weight: 0  # Disabled for now
     text_column:
       - query
       - synthetic_reasoning
@@ -118,6 +118,9 @@ preprocessing:
 # Dataloader settings
 dataloader:
   batch_size: 32
+  # num_workers: Number of data loading workers (default: 4)
+  # - 0: Load data in main process (slower but easier to debug)
+  # - 4-8: Recommended for streaming datasets (balances throughput and HF API limits)
   num_workers: 4
   prefetch_factor: 2
   pin_memory: true
