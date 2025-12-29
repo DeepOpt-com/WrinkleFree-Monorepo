@@ -569,8 +569,11 @@ class Trainer:
         if config_lr is not None:
             old_lr = self.optimizer.param_groups[0]["lr"]
             if old_lr != config_lr:
+                # Update optimizer LRs (including initial_lr for scheduler compatibility)
                 for param_group in self.optimizer.param_groups:
                     param_group["lr"] = config_lr
+                    if "initial_lr" in param_group:
+                        param_group["initial_lr"] = config_lr
                 if self.rank == 0:
                     logger.info(f"Reset LR from checkpoint value {old_lr} to config value {config_lr}")
 
@@ -578,8 +581,18 @@ class Trainer:
         if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             # Also reset scheduler's base_lrs if we changed the LR
-            if config_lr is not None and hasattr(self.scheduler, "base_lrs"):
-                self.scheduler.base_lrs = [config_lr] * len(self.scheduler.base_lrs)
+            # Must handle SequentialLR by updating sub-schedulers
+            if config_lr is not None:
+                def _update_sched_lr(sched):
+                    if hasattr(sched, "base_lrs"):
+                        sched.base_lrs = [config_lr] * len(sched.base_lrs)
+
+                _update_sched_lr(self.scheduler)
+
+                # Recursively update sub-schedulers (for SequentialLR/ChainedScheduler)
+                if hasattr(self.scheduler, "_schedulers"):
+                    for sub_sched in self.scheduler._schedulers:
+                        _update_sched_lr(sub_sched)
 
         # Load training state
         self.global_step = checkpoint.get("global_step", 0)
