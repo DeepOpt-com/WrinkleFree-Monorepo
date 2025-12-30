@@ -242,6 +242,14 @@ static void bitnet_linear(float* output, const float* input, int8_t* quant_input
     // Quantize input activations to INT8
     quantize_activations_i8(K, quant_input, input, quant_scale);
 
+    // Debug: print quantization info for different sizes
+    static int call_count = 0;
+    if (call_count < 10) {
+        fprintf(stderr, "DEBUG bitnet_linear[%d]: M=%d, K=%d, weight.scale=%.6f, quant_scale=%.6f\n",
+                call_count, M, K, weight.scale, *quant_scale);
+        call_count++;
+    }
+
     // Call GEMV for each output row
     // weight shape: [M, K/4] (packed 2-bit)
     // The scalar fallback already handles {0,1,2} -> {-1,0,1} conversion
@@ -375,18 +383,49 @@ static void mlp_forward(BitNetEngine* engine, int layer_idx, float* hidden, floa
     bitnet_linear(gate.data(), hidden, quant_buf, layer.gate_proj, I, H, &quant_scale);
     bitnet_linear(up.data(), hidden, quant_buf, layer.up_proj, I, H, &quant_scale);
 
+    // Debug MLP internals
+    static int mlp_debug_count = 0;
+    if (mlp_debug_count < 1) {
+        fprintf(stderr, "DEBUG MLP: gate[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                gate[0], gate[1], gate[2], gate[3]);
+        fprintf(stderr, "DEBUG MLP: up[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                up[0], up[1], up[2], up[3]);
+    }
+
     // ReLU²(gate) * up (BitNet uses ReLU² instead of SiLU)
     relu_squared(gate.data(), I);
+
+    if (mlp_debug_count < 1) {
+        fprintf(stderr, "DEBUG MLP: relu²(gate)[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                gate[0], gate[1], gate[2], gate[3]);
+    }
+
     elementwise_mul(mlp_hidden.data(), gate.data(), up.data(), I);
+
+    if (mlp_debug_count < 1) {
+        fprintf(stderr, "DEBUG MLP: gate*up[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                mlp_hidden[0], mlp_hidden[1], mlp_hidden[2], mlp_hidden[3]);
+    }
 
     // Apply ffn_sub_norm before down projection (if available)
     if (!layer.ffn_sub_norm.fp32_data.empty()) {
         rms_norm(mlp_hidden.data(), mlp_hidden.data(),
                  layer.ffn_sub_norm.fp32_data.data(), I, cfg.rms_norm_eps);
+
+        if (mlp_debug_count < 1) {
+            fprintf(stderr, "DEBUG MLP: after ffn_sub_norm[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                    mlp_hidden[0], mlp_hidden[1], mlp_hidden[2], mlp_hidden[3]);
+        }
     }
 
     // Down projection
     bitnet_linear(output, mlp_hidden.data(), quant_buf, layer.down_proj, H, I, &quant_scale);
+
+    if (mlp_debug_count < 1) {
+        fprintf(stderr, "DEBUG MLP: output[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                output[0], output[1], output[2], output[3]);
+        mlp_debug_count++;
+    }
 }
 
 // ============================================================================
@@ -429,6 +468,12 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
         // Self-attention
         attention_forward(engine, l, pos, hidden, attn_out);
 
+        // Debug: print attn output for first layer
+        if (debug_once && l == 0) {
+            fprintf(stderr, "DEBUG: After attn, attn_out[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                    attn_out[0], attn_out[1], attn_out[2], attn_out[3]);
+        }
+
         // Residual connection
         for (int i = 0; i < H; i++) {
             hidden[i] = residual[i] + attn_out[i];
@@ -443,6 +488,12 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
 
         // MLP
         mlp_forward(engine, l, hidden, mlp_out);
+
+        // Debug: print mlp output for first layer
+        if (debug_once && l == 0) {
+            fprintf(stderr, "DEBUG: After mlp, mlp_out[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                    mlp_out[0], mlp_out[1], mlp_out[2], mlp_out[3]);
+        }
 
         // Residual connection
         for (int i = 0; i < H; i++) {
