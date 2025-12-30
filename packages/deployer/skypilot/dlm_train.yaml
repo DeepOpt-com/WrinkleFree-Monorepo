@@ -35,6 +35,10 @@ file_mounts:
   ~/cheapertraining: ../cheapertraining
   /tmp/gcp-adc.json: ~/.config/gcloud/application_default_credentials.json
 
+# W&B tracking (pass via --secret WANDB_API_KEY=...)
+secrets:
+  WANDB_API_KEY: null
+
 envs:
   # Model config name (matches configs/model/*.yaml)
   MODEL: bitnet_2b
