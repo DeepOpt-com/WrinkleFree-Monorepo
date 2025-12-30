@@ -271,25 +271,31 @@ class BitDistillAttentionRelationLoss(nn.Module):
 
         # Student relations
         student_aat = torch.matmul(student_attn, student_attn.transpose(-2, -1))
-        student_R = F.softmax(student_aat / scale, dim=-1)
 
         # Teacher relations
         teacher_aat = torch.matmul(teacher_attn, teacher_attn.transpose(-2, -1))
-        teacher_R = F.softmax(teacher_aat / scale, dim=-1)
 
-        # KL divergence with temperature
-        # KL(teacher || student) = sum(teacher * log(teacher / student))
+        # Compute Softmax (with optional temperature)
+        if self.temperature != 1.0:
+            student_R = F.softmax(student_aat / (scale * self.temperature), dim=-1)
+            teacher_R = F.softmax(teacher_aat / (scale * self.temperature), dim=-1)
+        else:
+            student_R = F.softmax(student_aat / scale, dim=-1)
+            teacher_R = F.softmax(teacher_aat / scale, dim=-1)
+
+        # Handle head count mismatch: Average over heads to get (B, 1, S, S)
+        # This distills the "average" attention structure when architectures differ
+        if student_R.shape[1] != teacher_R.shape[1]:
+            student_R = student_R.mean(dim=1, keepdim=True)
+            teacher_R = teacher_R.mean(dim=1, keepdim=True)
+
+        # Numerical stability
         eps = 1e-10
         student_R = student_R.clamp(min=eps)
         teacher_R = teacher_R.clamp(min=eps)
 
-        if self.temperature != 1.0:
-            # Apply temperature scaling before KL
-            student_R_scaled = F.softmax(student_aat / (scale * self.temperature), dim=-1)
-            teacher_R_scaled = F.softmax(teacher_aat / (scale * self.temperature), dim=-1)
-            kl = teacher_R_scaled * (teacher_R_scaled.log() - student_R_scaled.clamp(min=eps).log())
-        else:
-            kl = teacher_R * (teacher_R.log() - student_R.log())
+        # KL divergence: KL(teacher || student) = sum(teacher * log(teacher / student))
+        kl = teacher_R * (teacher_R.log() - student_R.log())
 
         # Sum over key dimension, mean over batch/head/query
         kl = kl.sum(dim=-1)  # (B, H, S)
