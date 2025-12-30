@@ -803,6 +803,67 @@ def main(cfg: DictConfig) -> None:
                 "       student.checkpoint_path=outputs/stage2/checkpoint.pt"
             )
 
+        elif stage == "unified":
+            # Unified training: auto-convert + continue pretraining with composable objectives
+            logger.info("Running Unified Training (auto-convert + objectives)")
+
+            # Load model - will be auto-converted to BitNet if needed
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            model = AutoModelForCausalLM.from_pretrained(
+                cfg.model.teacher.pretrained,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                cfg.model.teacher.pretrained,
+                trust_remote_code=True,
+            )
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            # Create dataloader
+            config_name = cfg.data.get("config_name", "mixed_pretrain")
+            logger.info(f"Loading data config '{config_name}' from data_handler")
+            train_dataloader, mixed_dataset, probe_dataloaders = create_pretraining_dataloader(
+                tokenizer=tokenizer,
+                batch_size=cfg.training.batch_size,
+                max_length=cfg.training.max_seq_length,
+                config_name=config_name,
+                with_probes=False,
+                world_size=world_size,
+                rank=rank,
+                packed=cfg.training.packing.enabled,
+            )
+
+            # Auto-convert to BitNet if enabled and model isn't already BitNet
+            auto_convert_cfg = getattr(cfg.training, "auto_convert", None)
+            if auto_convert_cfg is not None and getattr(auto_convert_cfg, "enabled", False):
+                from bitnet_arch.conversion import auto_convert_if_needed, is_bitnet_model
+                if not is_bitnet_model(model):
+                    logger.info("Auto-converting model to BitNet...")
+                    exclude_layers = list(getattr(auto_convert_cfg, "exclude_layers", []))
+                    model = auto_convert_if_needed(
+                        model,
+                        hidden_size=model.config.hidden_size,
+                        intermediate_size=model.config.intermediate_size,
+                        exclude_layers=exclude_layers,
+                    )
+                    logger.info("Model converted to BitNet")
+                else:
+                    logger.info("Model is already BitNet, skipping conversion")
+
+            # Run unified training using ContinuedPretrainingTrainer (same as stage2)
+            model = run_stage2(
+                model=model,
+                train_dataloader=train_dataloader,
+                config=cfg,
+                output_dir=output_dir / "unified_checkpoint",
+                run_manager=run_manager,
+            )
+
+            logger.info("Unified training complete!")
+
         else:
             raise ValueError(f"Unknown training stage: {stage}")
 

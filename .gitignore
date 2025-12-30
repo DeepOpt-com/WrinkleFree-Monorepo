@@ -8,9 +8,6 @@ node_modules/
 __pycache__/
 *.pyc
 
-# Claude
-.claude/
-
 # Credentials (keep examples, ignore real creds)
 credentials/*.json
 credentials/.env
