@@ -1,13 +1,68 @@
 """Local teacher model wrappers for in-process distillation."""
 
+import json
 import logging
+import tempfile
+from pathlib import Path
 from typing import Optional
 
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM
+from huggingface_hub import snapshot_download
+from transformers import AutoModelForCausalLM, BitNetForCausalLM, BitNetConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _fix_auto_map_if_needed(model_name_or_path: str) -> str:
+    """Download model and fix auto_map if custom files don't exist.
+
+    Some HuggingFace models (like microsoft/bitnet-b1.58-2B-4T-bf16) have
+    auto_map pointing to custom files (configuration_bitnet.py, modeling_bitnet.py)
+    that don't exist in the repo but are now in transformers core.
+
+    This function downloads the model, checks if auto_map references missing files,
+    and removes auto_map if so to allow using the built-in implementation.
+
+    Returns:
+        Path to the (possibly modified) model directory
+    """
+    # If it's a local path, check and fix in place
+    if Path(model_name_or_path).exists():
+        config_path = Path(model_name_or_path) / "config.json"
+        if config_path.exists():
+            with open(config_path) as f:
+                config = json.load(f)
+            if "auto_map" in config:
+                auto_config = config.get("auto_map", {}).get("AutoConfig", "")
+                if auto_config:
+                    module_file = auto_config.split(".")[0] + ".py"
+                    if not (Path(model_name_or_path) / module_file).exists():
+                        logger.warning(f"auto_map references {module_file} but file not found. Removing auto_map.")
+                        del config["auto_map"]
+                        with open(config_path, "w") as f:
+                            json.dump(config, f, indent=2)
+        return model_name_or_path
+
+    # Download from HuggingFace
+    logger.info(f"Downloading model {model_name_or_path} to check auto_map...")
+    cache_dir = snapshot_download(model_name_or_path)
+
+    config_path = Path(cache_dir) / "config.json"
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+        if "auto_map" in config:
+            auto_config = config.get("auto_map", {}).get("AutoConfig", "")
+            if auto_config:
+                module_file = auto_config.split(".")[0] + ".py"
+                if not (Path(cache_dir) / module_file).exists():
+                    logger.warning(f"auto_map references {module_file} but file not found. Removing auto_map.")
+                    del config["auto_map"]
+                    with open(config_path, "w") as f:
+                        json.dump(config, f, indent=2)
+
+    return cache_dir
 
 
 class LocalTeacher(nn.Module):
@@ -38,6 +93,9 @@ class LocalTeacher(nn.Module):
         super().__init__()
 
         logger.info(f"Loading teacher model: {model_name_or_path}")
+
+        # Fix auto_map if it references missing custom files
+        model_path = _fix_auto_map_if_needed(model_name_or_path)
 
         dtype = torch.bfloat16 if load_in_fp16 else torch.float32
 
@@ -70,7 +128,7 @@ class LocalTeacher(nn.Module):
             logger.info("Using eager attention for teacher (required for attention distillation)")
 
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path,
+            model_path,
             **model_kwargs,
         )
 
@@ -155,6 +213,9 @@ class HiddenStateTeacher(nn.Module):
 
         logger.info(f"Loading teacher model for hidden state extraction: {model_name_or_path}")
 
+        # Fix auto_map if it references missing custom files
+        model_path = _fix_auto_map_if_needed(model_name_or_path)
+
         # Use bfloat16 for better training stability (matches student dtype)
         dtype = torch.bfloat16 if load_in_fp16 else torch.float32
 
@@ -186,7 +247,7 @@ class HiddenStateTeacher(nn.Module):
             logger.info("Using Flash Attention 2 for teacher")
 
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path,
+            model_path,
             **model_kwargs,
         )
 
