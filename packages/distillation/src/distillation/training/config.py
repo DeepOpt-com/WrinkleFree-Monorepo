@@ -37,6 +37,20 @@ class LossConfig:
     use_relation_distill: bool = True  # Use BitDistill A·Aᵀ relations
     distill_layer: int = -1  # Layer for attention distillation (-1 = last)
 
+    # TCS-specific settings (for DLM students)
+    top_k: int = 100  # Number of top tokens for sparse TCS estimation
+    block_size: int = 32  # Block size for block-wise attention matching (bd_size)
+
+
+@dataclass
+class GCSConfig:
+    """Configuration for GCS checkpoint uploads."""
+
+    enabled: bool = True  # Enable GCS uploads
+    bucket: str = "wrinklefree-checkpoints"  # GCS bucket name
+    upload_interval: int = 500  # Upload every N steps
+    keep_n: int = 5  # Keep only N most recent checkpoints
+
 
 @dataclass
 class DistillationConfig:
@@ -44,12 +58,16 @@ class DistillationConfig:
 
     # Student checkpoint
     student_checkpoint_path: str = ""
+    student_type: str = "bitnet"  # "bitnet" or "dlm"
 
     # Teacher configuration
     teacher: TeacherConfig = field(default_factory=TeacherConfig)
 
     # Loss configuration
     loss: LossConfig = field(default_factory=LossConfig)
+
+    # GCS configuration
+    gcs: GCSConfig = field(default_factory=GCSConfig)
 
     # Training hyperparameters
     max_steps: int = 5000
@@ -77,6 +95,7 @@ class DistillationConfig:
     eval_interval: int = 500
     wandb_enabled: bool = True
     wandb_project: str = "wrinklefree-distillation"
+    run_name: str = ""  # WandB run name (auto-generated if empty)
 
     # Influence-based rebalancing
     influence_enabled: bool = True

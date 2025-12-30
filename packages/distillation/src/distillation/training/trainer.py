@@ -1,6 +1,8 @@
 """Distillation trainer for knowledge distillation."""
 
 import logging
+import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -10,7 +12,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from distillation.losses import BitDistillLoss
+from distillation.losses import BitDistillLoss, TCSDistillLoss
 from distillation.teachers.base import BaseTeacher
 from distillation.training.config import DistillationConfig, LossConfig
 
@@ -63,14 +65,31 @@ class DistillationTrainer:
         self.rank = rank
         self.world_size = world_size
 
-        # Create loss function
-        self.loss_fn = BitDistillLoss(
-            lambda_logits=config.loss.lambda_logits,
-            gamma_attention=config.loss.gamma_attention,
-            temperature=config.loss.temperature,
-            use_relation_distill=config.loss.use_relation_distill,
-            distill_layer=config.loss.distill_layer,
-        )
+        # Create loss function based on student type
+        if config.student_type == "dlm":
+            # TCS loss for DLM students (block-wise attention distillation)
+            self.loss_fn = TCSDistillLoss(
+                lambda_tcs=config.loss.lambda_logits,
+                gamma_attention=config.loss.gamma_attention,
+                temperature=config.loss.temperature,
+                top_k=config.loss.top_k,
+                block_size=config.loss.block_size,
+                distill_layer=config.loss.distill_layer,
+            )
+            logger.info(
+                f"Using TCSDistillLoss for DLM student (block_size={config.loss.block_size}, "
+                f"gamma_attention={config.loss.gamma_attention})"
+            )
+        else:
+            # Standard BitDistillLoss for AR models
+            self.loss_fn = BitDistillLoss(
+                lambda_logits=config.loss.lambda_logits,
+                gamma_attention=config.loss.gamma_attention,
+                temperature=config.loss.temperature,
+                use_relation_distill=config.loss.use_relation_distill,
+                distill_layer=config.loss.distill_layer,
+            )
+            logger.info("Using BitDistillLoss for BitNet student")
 
         # Whether to output attentions (only needed if gamma > 0)
         self.output_attentions = config.loss.gamma_attention > 0
@@ -214,6 +233,7 @@ class DistillationTrainer:
         try:
             import wandb as wandb_module
             import os
+            from datetime import datetime
 
             api_key = os.environ.get("WANDB_API_KEY")
             if not api_key:
@@ -221,24 +241,54 @@ class DistillationTrainer:
                 return
 
             self.wandb = wandb_module
+
+            # Generate meaningful run name if not provided
+            run_name = self.config.run_name
+            if not run_name:
+                # Extract model name from checkpoint path
+                checkpoint_path = self.config.student_checkpoint_path
+                if checkpoint_path:
+                    path_parts = checkpoint_path.rstrip('/').split('/')
+                    # Try to find a meaningful model identifier
+                    model_id = "unknown"
+                    for part in reversed(path_parts):
+                        if 'bitnet' in part.lower() or 'dlm' in part.lower() or 'checkpoint' in part.lower():
+                            model_id = part
+                            break
+                        if part and not part.startswith('gs:'):
+                            model_id = part
+                            break
+                else:
+                    model_id = "unknown"
+
+                # Format: {student_type}-{model_id}-{timestamp}
+                timestamp = datetime.now().strftime("%m%d_%H%M")
+                run_name = f"{self.config.student_type}-{model_id}-{timestamp}"
+
             self.wandb.init(
                 project=self.config.wandb_project,
+                name=run_name,
                 config={
+                    "student_type": self.config.student_type,
+                    "student_checkpoint": self.config.student_checkpoint_path,
                     "loss": {
                         "lambda_logits": self.config.loss.lambda_logits,
                         "gamma_attention": self.config.loss.gamma_attention,
                         "temperature": self.config.loss.temperature,
+                        "top_k": self.config.loss.top_k,
+                        "block_size": self.config.loss.block_size,
                     },
                     "training": {
                         "max_steps": self.config.max_steps,
                         "batch_size": self.config.batch_size,
                         "learning_rate": self.config.learning_rate,
                         "gradient_accumulation_steps": self.config.gradient_accumulation_steps,
+                        "optimizer": self.config.optimizer_type,
                     },
                 },
             )
             self.wandb_enabled = True
-            logger.info("WandB initialized")
+            logger.info(f"WandB initialized: {run_name}")
 
         except ImportError:
             logger.warning("wandb not installed, disabling logging")
@@ -258,8 +308,13 @@ class DistillationTrainer:
         accumulated_loss = 0.0
         step_start_time = time.time()
 
+        # max_steps is NUMBER OF OPTIMIZER STEPS
+        # Total forward steps = max_steps * gradient_accumulation_steps
+        total_forward_steps = self.config.max_steps * self.config.gradient_accumulation_steps
+        start_forward_step = self.global_step * self.config.gradient_accumulation_steps
+
         pbar = tqdm(
-            range(self.global_step, self.config.max_steps),
+            range(start_forward_step, total_forward_steps),
             desc="Distilling",
             disable=self.rank != 0,
         )
@@ -405,15 +460,25 @@ class DistillationTrainer:
 
         # Log to wandb
         if self.wandb_enabled:
-            self.wandb.log({
+            log_dict = {
                 "train/loss": accumulated_loss,
                 "train/ce_loss": loss_dict["ce_loss"].item(),
-                "train/logits_distill_loss": loss_dict["logits_distill_loss"].item(),
-                "train/attention_distill_loss": loss_dict["attention_distill_loss"].item(),
                 "train/learning_rate": lr,
                 "train/steps_per_sec": steps_per_sec,
                 "train/epoch": self.epoch,
-            }, step=self.global_step)
+            }
+
+            # Handle both BitDistill and TCS loss keys
+            if "logits_distill_loss" in loss_dict:
+                log_dict["train/logits_distill_loss"] = loss_dict["logits_distill_loss"].item()
+            if "tcs_loss" in loss_dict:
+                log_dict["train/tcs_loss"] = loss_dict["tcs_loss"].item()
+            if "attention_distill_loss" in loss_dict:
+                log_dict["train/attention_distill_loss"] = loss_dict["attention_distill_loss"].item()
+            if "attention_loss" in loss_dict:
+                log_dict["train/attention_loss"] = loss_dict["attention_loss"].item()
+
+            self.wandb.log(log_dict, step=self.global_step)
 
     def _evaluate(self):
         """Run evaluation on eval dataset."""
@@ -487,6 +552,11 @@ class DistillationTrainer:
         # Clean up old checkpoints
         self._cleanup_old_checkpoints()
 
+        # Upload to GCS if configured
+        if self.config.gcs.enabled and self.global_step % self.config.gcs.upload_interval == 0:
+            self._upload_to_gcs(checkpoint_dir, name)
+            self._cleanup_old_gcs_checkpoints()
+
     def _cleanup_old_checkpoints(self):
         """Remove old checkpoints, keeping only the latest N."""
         checkpoints_dir = self.output_dir / "checkpoints"
@@ -505,6 +575,120 @@ class DistillationTrainer:
             import shutil
             shutil.rmtree(old_dir)
             logger.debug(f"Removed old checkpoint: {old_dir}")
+
+    def _upload_to_gcs(self, local_path: Path, checkpoint_name: str) -> bool:
+        """Upload checkpoint to GCS if configured.
+
+        Returns True if upload succeeded, False otherwise.
+        """
+        if not self.config.gcs.enabled:
+            return False
+
+        gcs_bucket = self.config.gcs.bucket
+        experiment_name = Path(self.config.student_checkpoint_path).stem
+
+        gcs_path = f"gs://{gcs_bucket}/distillation/{experiment_name}/{checkpoint_name}/"
+        logger.info(f"Uploading checkpoint to {gcs_path}")
+
+        try:
+            result = subprocess.run(
+                ["gsutil", "-m", "cp", "-r", f"{local_path}/*", gcs_path],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode == 0:
+                logger.info(f"GCS upload complete: {gcs_path}")
+                return True
+            else:
+                logger.warning(f"gsutil failed: {result.stderr}")
+                # Try gcloud storage as fallback
+                result = subprocess.run(
+                    ["gcloud", "storage", "cp", "-r", f"{local_path}/*", gcs_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if result.returncode == 0:
+                    logger.info(f"GCS upload complete (gcloud): {gcs_path}")
+                    return True
+                logger.warning(f"gcloud storage also failed: {result.stderr}")
+                return False
+        except FileNotFoundError:
+            logger.warning("gsutil/gcloud not found, skipping GCS upload")
+            return False
+        except subprocess.TimeoutExpired:
+            logger.warning("GCS upload timed out")
+            return False
+
+    def _cleanup_old_gcs_checkpoints(self):
+        """Delete old checkpoints from GCS, keeping only the N most recent."""
+        if not self.config.gcs.enabled:
+            return
+
+        gcs_bucket = self.config.gcs.bucket
+        keep_n = self.config.gcs.keep_n
+        experiment_name = Path(self.config.student_checkpoint_path).stem
+
+        gcs_prefix = f"gs://{gcs_bucket}/distillation/{experiment_name}/"
+        try:
+            result = subprocess.run(
+                ["gsutil", "ls", "-d", f"{gcs_prefix}step_*"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                result = subprocess.run(
+                    ["gcloud", "storage", "ls", f"{gcs_prefix}step_*"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+
+            if result.returncode != 0 or not result.stdout:
+                return
+
+            checkpoints = result.stdout.strip().split("\n")
+            step_checkpoints = []
+            for cp in checkpoints:
+                cp = cp.rstrip("/")
+                if "step_" in cp:
+                    try:
+                        step = int(cp.split("step_")[-1])
+                        step_checkpoints.append((step, cp))
+                    except ValueError:
+                        continue
+
+            step_checkpoints.sort(key=lambda x: x[0], reverse=True)
+            to_delete = step_checkpoints[keep_n:]
+
+            if not to_delete:
+                return
+
+            logger.info(f"Cleaning up {len(to_delete)} old GCS checkpoints")
+            for step, cp_path in to_delete:
+                try:
+                    delete_path = cp_path if cp_path.endswith("/") else cp_path + "/"
+                    result = subprocess.run(
+                        ["gsutil", "-m", "rm", "-r", delete_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if result.returncode == 0:
+                        logger.debug(f"Deleted old GCS checkpoint: step_{step}")
+                    else:
+                        subprocess.run(
+                            ["gcloud", "storage", "rm", "-r", delete_path],
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to delete GCS checkpoint step_{step}: {e}")
+        except Exception as e:
+            logger.warning(f"GCS cleanup failed: {e}")
 
     def _update_influence_weights(self):
         """Update dataset mixture weights using influence functions."""
