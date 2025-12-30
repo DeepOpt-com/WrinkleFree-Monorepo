@@ -485,9 +485,14 @@ def preprocess_weights_tl1(
     config = ConfigParser()
 
     M, K = w.shape
-    weight = w
-    weight = np.where(np.abs(weight) < 1e-6, 0, weight).astype(np.float32)
-    weight = np.sign(weight)
+    weight = w.astype(np.float32)
+    # BitNet online quantization: round(w / mean_abs(w)).clip(-1, 1)
+    # This produces ~50% zeros, ~25% each of -1 and 1
+    # np.sign() is WRONG - it produces 0% zeros!
+    scale = np.abs(weight).mean()
+    if scale < 1e-8:
+        scale = 1.0
+    weight = np.round(weight / scale).clip(-1, 1)
     weight_num = np.prod(weight.shape)
 
     config.read('include/kernel_config.ini')
@@ -603,9 +608,14 @@ def preprocess_weights_tl2(
     config = ConfigParser()
 
     M, K = w.shape
-    weight = w
-    weight = np.where(np.abs(weight) < 1e-6, 0, weight).astype(np.float32)
-    weight = np.sign(weight)
+    weight = w.astype(np.float32)
+    # BitNet online quantization: round(w / mean_abs(w)).clip(-1, 1)
+    # This produces ~50% zeros, ~25% each of -1 and 1
+    # np.sign() is WRONG - it produces 0% zeros!
+    scale = np.abs(weight).mean()
+    if scale < 1e-8:
+        scale = 1.0
+    weight = np.round(weight / scale).clip(-1, 1)
     weight_num = np.prod(weight.shape)
 
     config.read('include/kernel_config.ini')
@@ -952,7 +962,7 @@ class LlamaModel(Model):
                 raise ValueError(f"Unprocessed experts: {experts}")
 
 
-@Model.register("BitnetForCausalLM")
+@Model.register("BitnetForCausalLM", "BitNetForCausalLM")
 class BitnetModel(Model):
     model_arch = gguf.MODEL_ARCH.BITNET
 
@@ -1027,7 +1037,14 @@ class BitnetModel(Model):
                 data_torch = data_torch.unsqueeze(0).expand((4, *origin_shape)) >> shift
                 data_torch = data_torch & 3
                 data_torch = (data_torch.float() - 1).reshape((origin_shape[0] * 4, *origin_shape[1:]))
-                data_torch = data_torch / scale_map[weight_key].float()
+                # For offline quantization mode, weights are already ternary {-1, 0, 1}
+                # Only dequantize (multiply by scale) for online mode where we need float weights
+                quant_config = self.hparams.get("quantization_config", {})
+                is_offline = quant_config.get("quantization_mode") == "offline"
+                if not is_offline:
+                    # Dequantize: ternary_value * scale = original_value
+                    # MUST multiply by scale (not divide!) to recover float weights
+                    data_torch = data_torch * scale_map[weight_key].float()
 
             # use the first number-like part of the tensor name as the block id
             bid = None

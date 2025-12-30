@@ -54,8 +54,8 @@ scheduler:
 total_tokens: 10_000_000_000  # 10B tokens
 max_steps: null  # Optional: override total_tokens with fixed step count
 max_seq_length: 512  # Reduced for single GPU
-batch_size: 8  # Per-device batch size
-gradient_accumulation_steps: 64  # Effective batch = 512 (increased for stability with MuonClip)
+batch_size: 32  # Increased for H100 efficiency
+gradient_accumulation_steps: 16  # Effective batch = 512 (32 * 16)
 gradient_clipping: 1.0
 
 # Loss (no distillation, just LM loss)

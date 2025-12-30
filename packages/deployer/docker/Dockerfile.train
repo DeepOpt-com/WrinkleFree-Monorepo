@@ -51,7 +51,8 @@ RUN uv pip install \
     "huggingface_hub>=0.20.0" \
     "hf_transfer>=0.1.0" \
     "google-cloud-storage>=2.14.0" \
-    "torchao>=0.7.0"
+    "torchao>=0.7.0" \
+    "flash-attn>=2.5.0" --no-build-isolation
 
 # Enable fast HF downloads
 ENV HF_HUB_ENABLE_HF_TRANSFER=1

@@ -29,7 +29,7 @@ attention_dropout: 0.0
 hidden_act: silu  # Qwen3 uses SiLU
 rms_norm_eps: 1.0e-6
 tie_word_embeddings: true  # Qwen3 4B ties embeddings
-use_flash_attention: false  # Disabled until flash_attn added to Modal image (see issue #8)
+use_flash_attention: true  # Enabled for H100 performance
 
 # Teacher model for distillation (self-distillation)
 teacher:

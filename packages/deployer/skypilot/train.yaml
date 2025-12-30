@@ -75,8 +75,14 @@ setup: |
   # Install CheaperTraining first (dependency of wrinklefree)
   uv pip install -e ~/cheapertraining
 
+  # Install muon-clip from git (removed from pyproject.toml sources by sed above)
+  uv pip install "muon-clip @ git+https://github.com/GAD-cell/muon-clip"
+
   # Install the training package
   uv pip install -e .
+
+  # Note: Flash Attention is handled via PyTorch's native SDPA (scaled_dot_product_attention)
+  # No separate flash-attn package needed - PyTorch 2.2+ includes FlashAttention-2 backend
 
   # Verify GPU setup
   python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
