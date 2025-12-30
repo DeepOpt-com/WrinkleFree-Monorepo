@@ -31,7 +31,7 @@ dependencies = [
     "safetensors>=0.4.0",
     "accelerate>=0.27.0",
     "google-cloud-storage>=2.14.0",
-    "cheapertraining",  # Shared data layer
+    "data-handler",  # Data handling (streaming datasets, packing, influence mixing)
     "muon-clip",  # Muon optimizer with QK-clipping
 ]
 
@@ -91,5 +91,5 @@ dev = [
 ]
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }
+data-handler = { workspace = true }
 muon-clip = { git = "https://github.com/GAD-cell/muon-clip" }

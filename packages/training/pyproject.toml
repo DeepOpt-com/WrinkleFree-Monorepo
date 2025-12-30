@@ -25,7 +25,8 @@ dependencies = [
     "hf_transfer>=0.1.0", # Fast HF downloads
     "google-cloud-storage>=2.14.0", # GCS checkpoint uploads
     "torchao>=0.7.0", # TorchAO for FP8 training (DeepSeek-V3 style)
-    "cheapertraining", # Unified data layer (install: pip install -e ../WrinkleFree-CheaperTraining)
+    "data-handler",  # Data handling (streaming datasets, packing, influence mixing)
+    "bitnet-arch",  # BitNet architecture package (workspace)
     "muon-clip",
 ]
 
@@ -110,5 +111,6 @@ fail_under = 0
 directory = "htmlcov"
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }
+data-handler = { workspace = true }
+bitnet-arch = { workspace = true }
 muon-clip = { git = "https://github.com/GAD-cell/muon-clip" }

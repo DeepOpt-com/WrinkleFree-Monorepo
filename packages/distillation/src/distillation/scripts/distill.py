@@ -202,9 +202,9 @@ def run_distillation(
         offload_to_cpu=cfg.teacher.offload_to_cpu,
     )
 
-    # Create dataloaders from cheapertraining
+    # Create dataloaders from data_handler
     try:
-        from cheapertraining.data import create_dataloader, load_data_config
+        from data_handler.data import create_dataloader, load_data_config
         from transformers import AutoTokenizer
 
         # Load tokenizer from teacher

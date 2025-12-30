@@ -21,7 +21,7 @@ classifiers = [
 
 dependencies = [
     # Workspace dependencies
-    "cheapertraining",
+    "data-handler",
 
     # Core ML
     "torch>=2.5.0",
@@ -72,7 +72,7 @@ Repository = "https://github.com/DeepOpt-com/WrinkleFree-DLM-Converter"
 Documentation = "https://github.com/DeepOpt-com/WrinkleFree-DLM-Converter#readme"
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }
+data-handler = { workspace = true }
 # Note: muon-clip is installed separately in SkyPilot YAML since it's not on PyPI
 # muon-clip = { git = "https://github.com/GAD-cell/muon-clip.git", branch = "main" }
 

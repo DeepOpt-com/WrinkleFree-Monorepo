@@ -45,8 +45,8 @@ from transformers import (
 )
 from tqdm import tqdm
 
-from cheapertraining.training import PlateauEarlyStopping, ZClip
-from cheapertraining.training.optimizer import create_optimizer
+from data_handler.training import PlateauEarlyStopping, ZClip
+from data_handler.training.optimizer import create_optimizer
 
 # Try to import wrinklefree for quantization control (BitNet integration)
 try:

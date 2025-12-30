@@ -15,9 +15,9 @@ Install cheapertraining:
 
 import warnings
 
-# Try to import from cheapertraining (preferred)
+# Try to import from data_handler (preferred)
 try:
-    from cheapertraining.data import (
+    from data_handler.data import (
         # High-level API (RECOMMENDED)
         create_pretraining_dataloader,
         load_data_config,
@@ -33,7 +33,7 @@ try:
         batch_tokenize,
         compute_position_ids,
     )
-    from cheapertraining.influence import (
+    from data_handler.influence import (
         InfluenceTracker,
         create_influence_tracker,
     )
@@ -271,7 +271,7 @@ __all__ = [
     "create_pretraining_dataloader",
     "load_data_config",
     "list_available_configs",
-    # Lower-level API (from cheapertraining when available)
+    # Lower-level API (from data_handler when available)
     "create_dataloader",
     "create_probe_dataloaders",
     "InfluenceTracker",

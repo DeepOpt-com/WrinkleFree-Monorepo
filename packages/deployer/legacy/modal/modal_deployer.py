@@ -370,7 +370,7 @@ def run_training(
     # Verify GPU allocation before starting (fails fast if wrong GPU)
     gpu_info = verify_gpu_allocation(GPU_TYPE)
 
-    # 1. Install cheapertraining dependency first
+    # 1. Install data_handler dependency first
     cheaper_dir = Path("/app/WrinkleFree-CheaperTraining")
     if not cheaper_dir.exists():
         cheaper_url = REPO_CHEAPER_TRAINING
@@ -383,7 +383,7 @@ def run_training(
             ["git", "clone", "--depth=1", cheaper_clone_url, str(cheaper_dir)],
             check=True,
         )
-        print("[Modal] Installing cheapertraining...")
+        print("[Modal] Installing data_handler...")
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-e", str(cheaper_dir)],
             check=True,

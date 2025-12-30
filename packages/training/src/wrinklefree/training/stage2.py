@@ -1,13 +1,14 @@
-"""Stage 2: Continue Pre-Training - Adapt model to 1.58-bit quantization.
+"""Continued Pre-Training - Adapt model to 1.58-bit quantization.
 
-This unified stage supports two modes:
-1. Pure LM training (default): pre_stage_2.enabled=false
-2. Distillation mode: pre_stage_2.enabled=true (merges old stage1_9 functionality)
+Unified training with composable objectives:
+- ContinuePretrainObjective: Cross-entropy language modeling (default)
+- LayerwiseDistillationObjective: Hidden state alignment with teacher
+- DLMObjective: Block-wise masked language modeling (future)
 
-When pre_stage_2 is enabled, the trainer:
-- Loads a teacher model for hidden state extraction
-- Computes layer-wise distillation loss
-- Applies a distillation schedule that ramps down over training
+Supports:
+- On-the-fly BitNet conversion via bitnet_arch
+- Curriculum-based training with phase transitions
+- Additive objectives with configurable weights
 """
 
 import logging
@@ -21,7 +22,19 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
-from cheapertraining.training import PlateauEarlyStopping, ZClip
+from data_handler.training import PlateauEarlyStopping, ZClip
+
+# Architecture package for on-the-fly conversion
+from bitnet_arch.conversion import auto_convert_if_needed, is_bitnet_model
+from bitnet_arch.quantization import LambdaWarmup, set_global_lambda_warmup
+
+# Objectives system for composable training
+from wrinklefree.objectives import (
+    ObjectiveManager,
+    create_objective_manager,
+)
+
+# Legacy imports for backward compatibility
 from wrinklefree.distillation import (
     ContinuePretrainLoss,
     LayerwiseDistillationLoss,
@@ -30,31 +43,29 @@ from wrinklefree.distillation import (
 
 # HiddenStateTeacher moved to distillation package (for layer-wise distillation)
 from distillation.teachers import HiddenStateTeacher
-from wrinklefree.quantization.lambda_warmup import (
-    LambdaWarmup,
-    set_global_lambda_warmup,
-)
 from wrinklefree.training.fsdp_wrapper import setup_distributed, wrap_model_fsdp
 from wrinklefree.training.trainer import Trainer, create_optimizer, create_scheduler
 
 logger = logging.getLogger(__name__)
 
 
-class Stage2Trainer(Trainer):
+class ContinuedPretrainingTrainer(Trainer):
     """
-    Trainer for Stage 2 continue pre-training.
+    Unified trainer for continued pre-training with composable objectives.
 
-    Supports two modes:
-    1. Pure LM training (default): Uses ContinuePretrainLoss for next-token prediction
-    2. Pre-stage-2 distillation: Combines layer-wise distillation with LM loss
+    Supports:
+    1. Pure LM training (default): ContinuePretrainObjective
+    2. Layerwise distillation: LayerwiseDistillationObjective
+    3. Multi-objective training via ObjectiveManager with weighted combination
+    4. Curriculum-based training with phase transitions
 
     Args:
-        model: BitNet student model
+        model: BitNet student model (or model to be converted on-the-fly)
         optimizer: Optimizer instance
         train_dataloader: Training data loader
         config: Training configuration (DictConfig)
-        teacher: Optional HiddenStateTeacher for distillation mode
-        pre_stage_2_config: Optional config for distillation settings
+        objective_manager: Optional ObjectiveManager for composable objectives
+        teacher: Optional HiddenStateTeacher for distillation objectives
         **kwargs: Additional arguments for base Trainer
     """
 
@@ -64,18 +75,27 @@ class Stage2Trainer(Trainer):
         optimizer: torch.optim.Optimizer,
         train_dataloader: DataLoader,
         config: DictConfig,
+        objective_manager: Optional[ObjectiveManager] = None,
         teacher: Optional[HiddenStateTeacher] = None,
         pre_stage_2_config: Optional[DictConfig] = None,
         next_phase_loader_future: Optional[Any] = None,  # concurrent.futures.Future
         switch_step: Optional[int] = None,
         **kwargs,
     ):
-        # Determine mode: distillation vs pure LM
+        # Store objective manager (new unified approach)
+        self.objective_manager = objective_manager
+        self.use_objective_manager = objective_manager is not None
+
+        # Determine mode: distillation vs pure LM (legacy support)
         self.pre_stage_2_enabled = teacher is not None and pre_stage_2_config is not None
         self.teacher = teacher
 
         # Setup loss function based on mode
-        if self.pre_stage_2_enabled:
+        if self.use_objective_manager:
+            # New unified approach: use ObjectiveManager
+            loss_fn = None  # Objectives handle loss computation
+            logger.info(f"Using ObjectiveManager with {len(objective_manager.objectives)} objectives")
+        elif self.pre_stage_2_enabled:
             # Distillation mode: use LayerwiseDistillationLoss
             layerwise_cfg = pre_stage_2_config.layerwise
             loss_type_str = layerwise_cfg.get("loss_type", "mse_normalized")
@@ -765,6 +785,22 @@ def run_stage2(
         )
         logger.info(f"Teacher model loaded: {teacher_model_name}")
 
+    # On-the-fly BitNet conversion if model is not already BitNet
+    auto_convert_cfg = getattr(config.training, "auto_convert", None)
+    if auto_convert_cfg is not None and getattr(auto_convert_cfg, "enabled", False):
+        if not is_bitnet_model(model):
+            logger.info("Model is not BitNet, converting on-the-fly...")
+            exclude_layers = list(getattr(auto_convert_cfg, "exclude_layers", []))
+            model = auto_convert_if_needed(
+                model,
+                hidden_size=config.model.hidden_size,
+                intermediate_size=config.model.intermediate_size,
+                exclude_layers=exclude_layers,
+            )
+            logger.info("On-the-fly BitNet conversion complete")
+        else:
+            logger.info("Model already contains BitLinear layers, skipping conversion")
+
     # Move model to device with uniform dtype (required for FSDP)
     # FSDP requires all tensors to have the same dtype before wrapping
     model = model.to(device=device, dtype=torch.bfloat16)
@@ -877,7 +913,7 @@ def run_stage2(
     if influence_enabled:
         try:
             # Lazy import - only when influence is enabled
-            from cheapertraining import (
+            from data_handler import (
                 MixtureWeightCalculator,
                 InfluenceAwareOptimizer,
                 InfluenceConfig,
@@ -978,14 +1014,27 @@ def run_stage2(
         decay_type=decay_type,
     )
 
+    # Create ObjectiveManager if using unified config
+    objective_manager = None
+    if hasattr(config.training, "objectives"):
+        # Calculate max_steps for curriculum
+        tokens_per_step = (
+            config.training.batch_size
+            * config.training.max_seq_length
+            * config.training.gradient_accumulation_steps
+            * world_size
+        )
+        total_steps = config.training.total_tokens // tokens_per_step
+        objective_manager = create_objective_manager(config.training, total_steps)
+
     # Create trainer (pass full config for run naming and wandb logging)
-    # Pass teacher and pre_stage_2_config if in distillation mode
-    trainer = Stage2Trainer(
+    trainer = ContinuedPretrainingTrainer(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
         train_dataloader=train_dataloader,
         config=config,
+        objective_manager=objective_manager,
         teacher=teacher if pre_stage_2_enabled else None,
         pre_stage_2_config=pre_stage_2_config if pre_stage_2_enabled else None,
         device=device,
@@ -993,7 +1042,7 @@ def run_stage2(
         world_size=world_size,
         run_manager=run_manager,
         experiment_name=experiment_name,
-        stage="stage2",
+        stage="continued_pretraining",
         next_phase_loader_future=next_phase_loader_future,
         switch_step=switch_step,
     )

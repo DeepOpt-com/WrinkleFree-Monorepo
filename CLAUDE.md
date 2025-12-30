@@ -6,10 +6,10 @@ Monorepo for 1.58-bit quantized LLM research using uv workspaces.
 
 | Package | Type | Purpose |
 |---------|------|---------|
-| `packages/training` | App | 1.58-bit training pipeline (BitDistill stages 1-2) |
-| `packages/distillation` | App | Knowledge distillation (Stage 3) |
-| `packages/cheapertraining` | Lib | Shared data layer & utilities |
-| `packages/fairy2` | App | Complex-valued quantization (Fairy2i) |
+| `packages/training` | App | 1.58-bit training pipeline (BitDistill) |
+| `packages/distillation` | App | Knowledge distillation |
+| `packages/architecture` | Lib | BitNet layers (BitLinear, SubLN) & model conversion |
+| `packages/data_handler` | Lib | Shared data layer & utilities |
 | `packages/inference` | App | Serving layer (sglang-bitnet) |
 | `packages/eval` | App | Model evaluation (lm-eval) |
 | `packages/deployer` | App | Cloud deployment (Modal/SkyPilot) |
@@ -40,32 +40,35 @@ uv run pytest
 
 ## Shared Dependencies
 
-`cheapertraining` is the shared library imported by other packages:
+`data_handler` is the shared data library, `architecture` provides BitNet components:
 
 ```
-cheapertraining (library)
+data_handler (library)
     │
     ├──► training (wrinklefree)
-    │       Uses: cheapertraining.data, cheapertraining.influence
+    │       Uses: data_handler.data, data_handler.influence
     │
-    ├──► distillation (wrinklefree-distillation)
-    │       Uses: cheapertraining.data, cheapertraining.influence
+    └──► distillation (wrinklefree-distillation)
+            Uses: data_handler.data, data_handler.influence
+
+architecture (library)
     │
-    └──► fairy2
-            Uses: cheapertraining.data
+    └──► training (wrinklefree)
+            Uses: bitnet_arch.layers, bitnet_arch.conversion
 ```
 
 **Adding workspace dependencies**:
 ```toml
 # In pyproject.toml
 [project]
-dependencies = ["cheapertraining"]
+dependencies = ["data-handler", "bitnet-arch"]
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }
+data-handler = { workspace = true }
+bitnet-arch = { workspace = true }
 ```
 
-**Important**: Changes to cheapertraining affect training and fairy2 - test both after modifications.
+**Important**: Changes to data_handler affect training and distillation - test both after modifications.
 
 ## GCP Configuration
 
@@ -182,7 +185,8 @@ uv sync --all-packages --reinstall
 Ensure workspace sources are configured:
 ```toml
 [tool.uv.sources]
-cheapertraining = { workspace = true }
+data-handler = { workspace = true }
+bitnet-arch = { workspace = true }
 ```
 
 ### Submodule issues

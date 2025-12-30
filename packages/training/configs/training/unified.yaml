@@ -1,0 +1,150 @@
+# Unified Training Configuration
+# Combines continue pre-training with optional layerwise distillation and DLM
+# Replaces separate stage1, stage1.9, stage2 with a single composable config
+
+stage: unified
+
+# Auto-convert: Converts model to BitNet on-the-fly if not already converted
+auto_convert:
+  enabled: true
+  exclude_layers:
+    - embed_tokens
+    - lm_head
+    - embed_positions
+
+# torch.compile for 2.9x training speedup
+torch_compile:
+  enabled: true
+  mode: default
+
+# FP8 GEMM acceleration (H100/H200 only, auto-fallback to BF16)
+fp8:
+  enabled: true
+  recipe: rowwise
+  accumulator_dtype: bfloat16
+  min_gemm_size: 512
+  exclude_patterns:
+    - embed_tokens
+    - lm_head
+    - norm
+    - subln
+
+# Sequence packing
+packing:
+  enabled: true
+
+# Optimization (MuonClip for BitNet stability)
+optimizer:
+  type: muonclip
+  lr_muon: 0.005  # Muon LR for hidden weights
+  lr_adam: 5e-5   # AdamW LR for embeddings, norms, lm_head
+  weight_decay: 0.0
+  momentum: 0.95
+  enable_clipping: true
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
+
+scheduler:
+  type: wsd  # Warmup-Stable-Decay
+  warmup_steps: 550
+  decay_ratio: 0.2
+  decay_type: linear
+  min_lr_ratio: 0.0
+
+# Training parameters
+total_tokens: 10_000_000_000  # 10B tokens
+max_steps: null
+max_seq_length: 512
+batch_size: 32
+gradient_accumulation_steps: 16
+gradient_clipping: 1.0
+
+# Lambda warmup for gradual quantization
+lambda_warmup:
+  enabled: true
+  warmup_steps: 500
+  schedule: linear
+
+# === OBJECTIVES SYSTEM ===
+# Composable objectives with Hydra-configurable weights
+# Each objective can be enabled/disabled and weighted independently
+objectives:
+  continue_pretrain:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+  layerwise_distill:
+    enabled: false  # Enable for distillation
+    weight: 0.5
+    loss_type: mse_normalized
+    layer_weights: progressive
+    normalize: true
+
+# === CURRICULUM SCHEDULE ===
+# Phase-based training with objective weight transitions
+curriculum:
+  enabled: true
+  interpolation: linear  # or "cosine"
+  phases:
+    # Phase 1: Pure continue pretraining on high-quality data (first 20%)
+    - name: warmup
+      end_ratio: 0.2
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0
+
+    # Phase 2: Main training on mixed data (20% - 90%)
+    - name: main
+      end_ratio: 0.9
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 1.0
+
+    # Phase 3: SFT phase (last 10%)
+    - name: sft
+      end_ratio: 1.0
+      data_config: downstream
+      objectives:
+        continue_pretrain: 1.0
+
+# Teacher model (only loaded if an objective requires_teacher)
+teacher:
+  fp16: true
+  offload_to_cpu: false
+  load_in_4bit: false
+  use_flash_attention: false
+
+# Checkpointing
+checkpoint:
+  save_interval: 200
+  keep_last_n: 5
+  save_optimizer: true
+
+# Logging with enhanced metrics
+logging:
+  log_interval: 10
+  wandb:
+    enabled: true
+    project: wrinklefree
+    entity: null
+    name: null
+    tags: [unified, bitnet]
+
+# Early stopping
+early_stopping:
+  enabled: false
+  patience: 5
+  min_delta: 0.01
+  min_evals: 10
+
+# CheaperTraining influence-based data selection
+influence:
+  enabled: true
+  update_interval: 1000
+  learning_rate: 0.2
+  config:
+    lambda_val: 0.1
+    gamma_val: 0.1
+    temperature: 1.0

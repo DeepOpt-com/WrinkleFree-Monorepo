@@ -1,0 +1,23 @@
+[project]
+name = "bitnet-arch"
+version = "0.1.0"
+description = "BitNet architecture library - 1.58-bit quantized components"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4.0",
+    "transformers>=4.45.0",
+    "safetensors>=0.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=7.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bitnet_arch"]

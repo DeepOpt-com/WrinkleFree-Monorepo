@@ -1,5 +1,10 @@
 """Training utilities for BitNet models.
 
+Unified training with composable objectives:
+- ContinuedPretrainingTrainer: Main trainer class (replaces Stage2Trainer)
+- ObjectiveManager: Combines multiple objectives with configurable weights
+- On-the-fly BitNet conversion via bitnet_arch
+
 NOTE: Stage 3 distillation has been moved to the separate `distillation` package.
 For Stage 3, use:
     uv run --package wrinklefree-distillation python scripts/distill.py \
@@ -17,8 +22,10 @@ from wrinklefree.training.fsdp_wrapper import (
     wrap_model_fsdp,
 )
 from wrinklefree.training.stage1 import convert_model_to_bitnet, run_stage1
-# Stage19Trainer merged into Stage2Trainer
-from wrinklefree.training.stage2 import Stage2Trainer, run_stage2
+# ContinuedPretrainingTrainer is the new name for Stage2Trainer
+from wrinklefree.training.stage2 import ContinuedPretrainingTrainer, run_stage2
+# Backward compatibility alias
+Stage2Trainer = ContinuedPretrainingTrainer
 # Backward compatibility: run_stage1_9 is deprecated, use run_stage2 with pre_stage_2.enabled=true
 from wrinklefree.training.stage1_9 import run_stage1_9  # Deprecated wrapper
 from wrinklefree.training.trainer import (
@@ -43,13 +50,14 @@ __all__ = [
     "create_optimizer",
     "create_scheduler",
     "download_checkpoint_from_gcs",
-    # Stage 1
+    # Stage 1: BitNet conversion (legacy - prefer bitnet_arch.auto_convert_if_needed)
     "convert_model_to_bitnet",
     "run_stage1",
     # Stage 1.9: Layer-wise distillation (deprecated - use run_stage2 with pre_stage_2.enabled=true)
     "run_stage1_9",  # Deprecated wrapper for backward compatibility
-    # Stage 2
-    "Stage2Trainer",
+    # Continued Pre-training (unified trainer)
+    "ContinuedPretrainingTrainer",
+    "Stage2Trainer",  # Backward compatibility alias
     "run_stage2",
     # Stage 3: Moved to distillation package
     # Use: uv run --package wrinklefree-distillation python scripts/distill.py

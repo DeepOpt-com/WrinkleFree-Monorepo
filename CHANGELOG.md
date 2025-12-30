@@ -5,12 +5,25 @@ All notable changes to the WrinkleFree monorepo.
 ## [Unreleased]
 
 ### Added
-- Root documentation: `docs/architecture.md`, `docs/quick-start.md`, `docs/dependencies.md`, `docs/development.md`
-- Monorepo integration sections in all package CLAUDE.md files
-- `packages/cheapertraining/CLAUDE.md` (was missing)
-- "Part of WrinkleFree Monorepo" notes in all package READMEs
+- `packages/architecture/` - New package for BitNet layers (BitLinear, SubLN) and model conversion
+- `packages/training/src/wrinklefree/objectives/` - Composable objectives system with curriculum scheduling
+- `packages/training/configs/training/unified.yaml` - Unified training config with auto-convert support
+- On-the-fly BitNet conversion (no separate stage1 step needed)
 
 ### Changed
+- Renamed `cheapertraining` to `data_handler` (import as `data_handler`, package name `data-handler`)
+- Renamed `Stage2Trainer` to `ContinuedPretrainingTrainer` (backward-compatible alias preserved)
+- Training package now imports from `bitnet_arch` for BitNet components
+
+### Removed
+- `packages/fairy2/` - Complex-valued quantization package (Fairy2i)
+- `packages/deployer/skypilot/fairy2_*.yaml` - SkyPilot configs for fairy2
+
+### Previous Changes
+- Root documentation: `docs/architecture.md`, `docs/quick-start.md`, `docs/dependencies.md`, `docs/development.md`
+- Monorepo integration sections in all package CLAUDE.md files
+- `packages/data_handler/CLAUDE.md` (was missing)
+- "Part of WrinkleFree Monorepo" notes in all package READMEs
 - Updated all documentation to use monorepo paths (`packages/*`)
 - Standardized clone instructions across all READMEs
 - Expanded `packages/deployer/CLAUDE.md` with troubleshooting

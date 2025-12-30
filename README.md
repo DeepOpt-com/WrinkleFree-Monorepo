@@ -25,8 +25,9 @@ uv run --package wrinklefree python packages/training/scripts/train.py model=smo
 WrinkleFree-Monorepo/
 ├── packages/
 │   ├── training/          # 1.58-bit training (BitDistill) - App
-│   ├── cheapertraining/   # Shared data layer & utilities - Library
-│   ├── fairy2/            # Complex-valued quantization - App
+│   ├── architecture/      # BitNet layers & conversion - Library
+│   ├── data_handler/      # Shared data layer & utilities - Library
+│   ├── distillation/      # Knowledge distillation - App
 │   ├── inference/         # Serving (sglang-bitnet) - App
 │   ├── eval/              # Model evaluation - App
 │   ├── deployer/          # Cloud deployment (Modal/SkyPilot) - App
@@ -42,8 +43,9 @@ WrinkleFree-Monorepo/
 | Package | Purpose | Key Entry |
 |---------|---------|-----------|
 | `training` | 1.58-bit quantization training pipeline (BitDistill) | `scripts/train.py` |
-| `cheapertraining` | Data loading, influence functions, mixture optimization | Imported as library |
-| `fairy2` | Complex-valued neural network quantization | `scripts/train.py` |
+| `architecture` | BitNet layers (BitLinear, SubLN) & model conversion | Imported as library |
+| `data_handler` | Data loading, influence functions, mixture optimization | Imported as library |
+| `distillation` | Knowledge distillation for quantized models | `scripts/distill.py` |
 | `inference` | Model serving with sglang-bitnet | `demo/serve_sglang.py` |
 | `eval` | GLUE, CNN/DailyMail benchmarks | `scripts/evaluate.py` |
 | `deployer` | SkyPilot/Modal cloud deployment | `wf` CLI |
@@ -70,15 +72,19 @@ uv run --package wrinklefree pytest packages/training/tests/
 
 ## Shared Dependencies
 
-`cheapertraining` is a shared library imported by:
+`data_handler` is a shared library imported by:
 - `training` - for data loading and influence-based optimization
-- `fairy2` - for data loading utilities
+- `distillation` - for data loading utilities
+
+`architecture` provides BitNet components to:
+- `training` - BitLinear layers, SubLN, model conversion
 
 Use workspace dependencies:
 ```toml
 # In pyproject.toml
 [tool.uv.sources]
-cheapertraining = { workspace = true }
+data-handler = { workspace = true }
+bitnet-arch = { workspace = true }
 ```
 
 ## Documentation

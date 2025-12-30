@@ -32,7 +32,7 @@ workdir: ../converter
 # Note: On GCP, VMs use IAM automatically. This is for non-GCP clouds.
 file_mounts:
   # CheaperTraining library for PlateauEarlyStopping
-  ~/cheapertraining: ../cheapertraining
+  ~/data_handler: ../data_handler
   /tmp/gcp-adc.json: ~/.config/gcloud/application_default_credentials.json
 
 envs:
@@ -86,7 +86,7 @@ setup: |
   sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
 
   # Install CheaperTraining first (dependency for PlateauEarlyStopping)
-  uv pip install -e ~/cheapertraining
+  uv pip install -e ~/data_handler
 
   # Install converter package
   uv pip install -e .

@@ -12,8 +12,7 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 | Command | Package | Description |
 |---------|---------|-------------|
 | `wf train` | `training` | 1.58-bit quantization training |
-| `wf distill` | `distillation` | Knowledge distillation (BitDistill) |
-| `wf fairy2` | `fairy2` | Complex-valued quantization |
+| `wf distill` | `distillation` | Knowledge distillation |
 | `wf dlm` | `converter` | DLM format conversion |
 | `wf serve` | `inference` | Model serving |
 | `wf eval` | `eval` | Model evaluation |

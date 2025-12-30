@@ -1,0 +1,13 @@
+# Layer-wise Distillation Objective (Stage 1.9)
+# Aligns student hidden states with teacher at each layer
+enabled: false  # Off by default (only enable for distillation)
+weight: 0.5
+
+# Loss type: mse_normalized (recommended), mse, inner_product
+loss_type: mse_normalized
+
+# Per-layer weights: null (uniform), "progressive", "exponential", or custom list
+layer_weights: progressive
+
+# L2 normalize hidden states before computing loss
+normalize: true

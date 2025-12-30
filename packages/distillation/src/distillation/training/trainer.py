@@ -48,7 +48,7 @@ class DistillationTrainer:
         train_dataloader: DataLoader,
         config: DistillationConfig,
         eval_dataloader: Optional[DataLoader] = None,
-        mixed_dataset: Optional[Any] = None,  # MixedDataset from cheapertraining
+        mixed_dataset: Optional[Any] = None,  # MixedDataset from data_handler
         device: torch.device = torch.device("cuda"),
         rank: int = 0,
         world_size: int = 1,
@@ -512,7 +512,7 @@ class DistillationTrainer:
             return
 
         try:
-            from cheapertraining.influence import InfluenceDistillation
+            from data_handler.influence import InfluenceDistillation
 
             logger.info("Computing influence-based mixture weights...")
 
