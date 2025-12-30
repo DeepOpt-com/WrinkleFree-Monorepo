@@ -33,7 +33,6 @@ from wrinklefree.quantization.lambda_warmup import (
     set_global_lambda_warmup,
 )
 from wrinklefree.training.fsdp_wrapper import setup_distributed, wrap_model_fsdp
-from wrinklefree.training.tensor_parallel import setup_2d_parallel
 from wrinklefree.training.trainer import Trainer, create_optimizer, create_scheduler
 
 logger = logging.getLogger(__name__)
@@ -827,37 +826,20 @@ def run_stage2(
             **compile_options,
         )
 
-    # Wrap with distributed training (FSDP or TP+FSDP2)
+    # Wrap with FSDP for distributed training
+    # Note: Tensor Parallelism was removed - DeepSeek v3 research shows TP is
+    # inefficient for training due to NVLink bandwidth limits. Use FSDP instead.
+    # See: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/4
     if world_size > 1:
         from wrinklefree.models import BitNetDecoderLayer
 
-        # Check if using tensor parallelism
-        dist_strategy = getattr(config.distributed, "strategy", "fsdp")
-        tp_config = getattr(config.distributed, "tensor_parallel", None)
-        use_tp = (
-            dist_strategy == "tp_fsdp"
-            or (tp_config is not None and getattr(tp_config, "enabled", False))
+        model = wrap_model_fsdp(
+            model,
+            transformer_layer_cls=BitNetDecoderLayer,
+            sharding_strategy=config.distributed.fsdp.sharding_strategy,
+            mixed_precision=config.distributed.fsdp.mixed_precision.enabled,
+            activation_checkpointing=config.distributed.fsdp.activation_checkpointing.enabled,
         )
-
-        if use_tp:
-            # 2D parallelism: Tensor Parallel + FSDP2
-            tp_size = getattr(tp_config, "tp_size", 0) if tp_config else 0
-            logger.info(f"Using 2D parallelism: TP+FSDP2 (tp_size={tp_size})")
-            model, device_mesh = setup_2d_parallel(
-                model,
-                tp_size=tp_size,
-                mixed_precision=config.distributed.fsdp.mixed_precision.enabled,
-                activation_checkpointing=config.distributed.fsdp.activation_checkpointing.enabled,
-            )
-        else:
-            # Standard FSDP1
-            model = wrap_model_fsdp(
-                model,
-                transformer_layer_cls=BitNetDecoderLayer,
-                sharding_strategy=config.distributed.fsdp.sharding_strategy,
-                mixed_precision=config.distributed.fsdp.mixed_precision.enabled,
-                activation_checkpointing=config.distributed.fsdp.activation_checkpointing.enabled,
-            )
 
     # Create optimizer and scheduler
     opt_cfg = config.training.optimizer
