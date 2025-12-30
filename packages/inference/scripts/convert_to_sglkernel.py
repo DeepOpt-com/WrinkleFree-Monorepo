@@ -52,9 +52,8 @@ def pack_ternary_sglkernel(weights: torch.Tensor) -> tuple[torch.Tensor, float]:
     """
     Quantize and pack weights for sgl-kernel format.
 
-    sgl-kernel expects:
-    - Shape: [M, K/4] where M=out_features, K=in_features
-    - 4 ternary values packed per byte along K dimension
+    Uses SEQUENTIAL packing (4 consecutive weights per byte):
+    - byte[i] = w[4*i] | (w[4*i+1] << 2) | (w[4*i+2] << 4) | (w[4*i+3] << 6)
     - Encoding: 00=-1, 01=0, 10=+1 (offset by 1 from {-1,0,1})
 
     Args:
@@ -66,8 +65,8 @@ def pack_ternary_sglkernel(weights: torch.Tensor) -> tuple[torch.Tensor, float]:
     """
     M, K = weights.shape
 
-    # K must be multiple of 128 for sgl-kernel
-    assert K % QK_I2_S == 0, f"K ({K}) must be multiple of {QK_I2_S}"
+    # K must be multiple of 4 for packing
+    assert K % 4 == 0, f"K ({K}) must be multiple of 4"
 
     # Convert to float32 for computation
     w = weights.float()
@@ -84,13 +83,18 @@ def pack_ternary_sglkernel(weights: torch.Tensor) -> tuple[torch.Tensor, float]:
     # Shift to unsigned: {-1, 0, 1} -> {0, 1, 2}
     w_unsigned = (w_quant + 1).to(torch.uint8)
 
-    # Pack 4 values per byte along K dimension
-    # Byte layout: [v0, v1, v2, v3] -> (v3 << 6) | (v2 << 4) | (v1 << 2) | v0
+    # SEQUENTIAL packing: 4 consecutive weights per byte
     K_packed = K // 4
     packed = torch.zeros(M, K_packed, dtype=torch.uint8)
 
-    for i in range(4):
-        packed |= (w_unsigned[:, i::4] << (i * 2))
+    for byte_idx in range(K_packed):
+        k = byte_idx * 4
+        packed[:, byte_idx] = (
+            (w_unsigned[:, k] << 0) |
+            (w_unsigned[:, k + 1] << 2) |
+            (w_unsigned[:, k + 2] << 4) |
+            (w_unsigned[:, k + 3] << 6)
+        )
 
     return packed, scale
 
