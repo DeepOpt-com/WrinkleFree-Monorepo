@@ -17,35 +17,6 @@ from distillation.training.config import DistillationConfig, LossConfig
 logger = logging.getLogger(__name__)
 
 
-class _CombinedOptimizer(torch.optim.Optimizer):
-    """Wrapper that combines two optimizers (Muon + AdamW) into one interface."""
-
-    def __init__(self, opt1: torch.optim.Optimizer, opt2: torch.optim.Optimizer):
-        # Initialize base Optimizer with combined param_groups
-        self.opt1 = opt1
-        self.opt2 = opt2
-        # Use a dummy defaults dict - actual params managed by child optimizers
-        defaults = {"lr": opt1.defaults.get("lr", 0.001)}
-        super().__init__(opt1.param_groups + opt2.param_groups, defaults)
-
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            loss = closure()
-        self.opt1.step()
-        self.opt2.step()
-        return loss
-
-    def zero_grad(self, set_to_none: bool = True):
-        self.opt1.zero_grad(set_to_none=set_to_none)
-        self.opt2.zero_grad(set_to_none=set_to_none)
-
-    def state_dict(self):
-        return {"opt1": self.opt1.state_dict(), "opt2": self.opt2.state_dict()}
-
-    def load_state_dict(self, state_dict):
-        self.opt1.load_state_dict(state_dict["opt1"])
-        self.opt2.load_state_dict(state_dict["opt2"])
 
 
 class DistillationTrainer:
@@ -141,46 +112,23 @@ class DistillationTrainer:
         optimizer_type = self.config.optimizer_type.lower()
 
         if optimizer_type == "muonclip" or optimizer_type == "muon":
-            try:
-                from muon import Muon
+            from distillation.training.muon_clip import MuonClip, get_muon_param_groups
 
-                # Separate params: Muon for 2D+ params, AdamW for 1D (bias, norm)
-                muon_params = []
-                adamw_params = []
+            # Use the local MuonClip implementation (doesn't require distributed training)
+            param_groups = get_muon_param_groups(
+                self.student,
+                lr_muon=self.config.learning_rate,
+                lr_adam=self.config.learning_rate * 0.1,  # 10x lower LR for adam params
+                weight_decay=self.config.weight_decay,
+            )
 
-                for name, param in self.student.named_parameters():
-                    if not param.requires_grad:
-                        continue
-                    if param.ndim >= 2:
-                        muon_params.append(param)
-                    else:
-                        adamw_params.append(param)
+            logger.info(
+                f"Using MuonClip optimizer: "
+                f"{len(param_groups[0]['params'])} params with Muon, "
+                f"{len(param_groups[1]['params'])} params with AdamW"
+            )
 
-                logger.info(
-                    f"Using Muon optimizer: {len(muon_params)} params with Muon, "
-                    f"{len(adamw_params)} params with AdamW"
-                )
-
-                # Create combined optimizer using param groups
-                # Muon handles 2D params, AdamW handles 1D params
-                muon_opt = Muon(
-                    muon_params,
-                    lr=self.config.learning_rate,
-                    momentum=0.95,
-                    weight_decay=self.config.weight_decay,
-                )
-                adamw_opt = torch.optim.AdamW(
-                    adamw_params,
-                    lr=self.config.learning_rate,
-                    betas=(0.9, 0.95),
-                    weight_decay=0.0,  # No weight decay on 1D params
-                )
-
-                # Return a wrapper that steps both
-                return _CombinedOptimizer(muon_opt, adamw_opt)
-            except ImportError:
-                logger.warning("muon-optimizer not available, falling back to AdamW")
-                optimizer_type = "adamw"
+            return MuonClip(param_groups)
 
         if optimizer_type == "adamw_8bit":
             try:
