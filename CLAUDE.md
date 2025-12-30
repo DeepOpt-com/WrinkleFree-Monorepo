@@ -72,7 +72,7 @@ cheapertraining = { workspace = true }
 
 ## Remote Sync (gpucloud-dev)
 
-The `gpucloud-dev` tool (in `extern/gpucloud-dev`) handles all sync operations:
+The `gpucloud-dev` tool (in `extern/gpucloud-dev/`) handles all sync operations:
 
 ```bash
 # Sync to RunPod instance

@@ -10,7 +10,6 @@
 #include "bitnet_engine.h"
 #include "kv_cache.h"
 #include "sglkernel_loader.h"
-#include "../bitnet/bitnet_gemv.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -22,6 +21,41 @@
 #include <random>
 #include <algorithm>
 #include <stdexcept>
+
+// Use SIMD kernels when available
+#ifdef USE_SIMD_KERNELS
+#include "bitnet_gemv.h"
+#else
+// Scalar fallback for standalone testing (no SIMD)
+namespace sgl_kernel { namespace bitnet {
+    inline void quantize_activations_i8(int K, int8_t* out, const float* input, float* scale) {
+        float max_val = 0.0f;
+        for (int i = 0; i < K; i++) {
+            float abs_val = std::abs(input[i]);
+            if (abs_val > max_val) max_val = abs_val;
+        }
+        *scale = max_val / 127.0f;
+        float inv_scale = (max_val > 0) ? 127.0f / max_val : 0.0f;
+        for (int i = 0; i < K; i++) {
+            int val = static_cast<int>(std::round(input[i] * inv_scale));
+            out[i] = static_cast<int8_t>(std::max(-127, std::min(127, val)));
+        }
+    }
+
+    inline void bitnet_vec_dot_i2_i8(int K, float* out, const uint8_t* packed_weights, const int8_t* quant_input) {
+        int sum = 0;
+        int K_packed = K / 4;
+        for (int k = 0; k < K_packed; k++) {
+            uint8_t packed = packed_weights[k];
+            for (int i = 0; i < 4; i++) {
+                int w = static_cast<int>((packed >> (i * 2)) & 0x03) - 1;
+                sum += w * static_cast<int>(quant_input[k * 4 + i]);
+            }
+        }
+        *out = static_cast<float>(sum);
+    }
+}}
+#endif
 
 // Thread-local error message
 static thread_local std::string g_last_error;
@@ -67,6 +101,10 @@ struct LayerWeights {
     // Norms
     WeightTensor input_layernorm;
     WeightTensor post_attention_layernorm;
+
+    // SubLN (sub-layer normalization)
+    WeightTensor attn_sub_norm;  // Applied after attn output, before O proj
+    WeightTensor ffn_sub_norm;   // Applied after gate*up, before down proj
 };
 
 // Engine implementation
@@ -119,10 +157,18 @@ static void rms_norm(float* output, const float* input, const float* weight,
     }
 }
 
-// SiLU activation
+// SiLU activation (not used for SubLN models)
 static void silu(float* x, int n) {
     for (int i = 0; i < n; i++) {
         x[i] = x[i] / (1.0f + std::exp(-x[i]));
+    }
+}
+
+// ReLU² activation: relu(x)^2 (used in BitNet/SubLN models)
+static void relu_squared(float* x, int n) {
+    for (int i = 0; i < n; i++) {
+        if (x[i] < 0.0f) x[i] = 0.0f;
+        x[i] = x[i] * x[i];
     }
 }
 
@@ -235,7 +281,7 @@ static void embed_lookup(float* output, const float* embed_table,
 }
 
 // ============================================================================
-// Attention Forward
+// Attention Forward (with GQA and SubLN support)
 // ============================================================================
 
 static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
@@ -247,35 +293,39 @@ static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
     const int heads = cfg.num_attention_heads;
     const int head_dim = cfg.head_dim;
     const int kv_heads = cfg.num_key_value_heads;
+    const int kv_dim = kv_heads * head_dim;  // K and V dimension (smaller for GQA)
+    const int heads_per_kv = heads / kv_heads;  // How many Q heads share each KV head
 
-    std::vector<float> q(H), k(H), v(H);
+    std::vector<float> q(H), k(kv_dim), v(kv_dim);
     int8_t* quant_buf = engine->quant_buffer.data();
     float quant_scale;
 
-    // Q, K, V projections (BitNet linear)
+    // Q projection: hidden_size -> hidden_size
     bitnet_linear(q.data(), hidden, quant_buf, layer.q_proj, H, H, &quant_scale);
-    bitnet_linear(k.data(), hidden, quant_buf, layer.k_proj, H, H, &quant_scale);
-    bitnet_linear(v.data(), hidden, quant_buf, layer.v_proj, H, H, &quant_scale);
+    // K, V projections: hidden_size -> kv_dim (GQA)
+    bitnet_linear(k.data(), hidden, quant_buf, layer.k_proj, kv_dim, H, &quant_scale);
+    bitnet_linear(v.data(), hidden, quant_buf, layer.v_proj, kv_dim, H, &quant_scale);
 
-    // Store K, V in cache
+    // Store K, V in cache (only kv_dim per position)
     float* k_cache = kv_cache_get_key(engine->kv_cache.get(), layer_idx);
     float* v_cache = kv_cache_get_value(engine->kv_cache.get(), layer_idx);
 
-    // Copy to position in cache
-    std::memcpy(k_cache + pos * heads * head_dim, k.data(), H * sizeof(float));
-    std::memcpy(v_cache + pos * heads * head_dim, v.data(), H * sizeof(float));
+    // Copy to position in cache (note: using kv_dim, not H)
+    std::memcpy(k_cache + pos * kv_dim, k.data(), kv_dim * sizeof(float));
+    std::memcpy(v_cache + pos * kv_dim, v.data(), kv_dim * sizeof(float));
 
-    // Multi-head attention
+    // Multi-head attention with GQA
     std::vector<float> attn_out(H, 0.0f);
     const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
     for (int h = 0; h < heads; h++) {
         const float* q_head = q.data() + h * head_dim;
+        const int kv_h = h / heads_per_kv;  // Which KV head this Q head uses
 
         // Compute attention scores for all positions up to pos
         std::vector<float> scores(pos + 1);
         for (int p = 0; p <= pos; p++) {
-            const float* k_p = k_cache + p * heads * head_dim + h * head_dim;
+            const float* k_p = k_cache + p * kv_dim + kv_h * head_dim;
             float score = 0.0f;
             for (int d = 0; d < head_dim; d++) {
                 score += q_head[d] * k_p[d];
@@ -289,11 +339,17 @@ static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
         // Weighted sum of values
         float* out_head = attn_out.data() + h * head_dim;
         for (int p = 0; p <= pos; p++) {
-            const float* v_p = v_cache + p * heads * head_dim + h * head_dim;
+            const float* v_p = v_cache + p * kv_dim + kv_h * head_dim;
             for (int d = 0; d < head_dim; d++) {
                 out_head[d] += scores[p] * v_p[d];
             }
         }
+    }
+
+    // Apply attn_sub_norm before O projection (if available)
+    if (!layer.attn_sub_norm.fp32_data.empty()) {
+        rms_norm(attn_out.data(), attn_out.data(),
+                 layer.attn_sub_norm.fp32_data.data(), H, cfg.rms_norm_eps);
     }
 
     // Output projection
@@ -301,7 +357,7 @@ static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
 }
 
 // ============================================================================
-// MLP Forward
+// MLP Forward (with ReLU² and SubLN support)
 // ============================================================================
 
 static void mlp_forward(BitNetEngine* engine, int layer_idx, float* hidden, float* output) {
@@ -311,7 +367,7 @@ static void mlp_forward(BitNetEngine* engine, int layer_idx, float* hidden, floa
     const int H = cfg.hidden_size;
     const int I = cfg.intermediate_size;
 
-    std::vector<float> gate(I), up(I);
+    std::vector<float> gate(I), up(I), mlp_hidden(I);
     int8_t* quant_buf = engine->quant_buffer.data();
     float quant_scale;
 
@@ -319,12 +375,18 @@ static void mlp_forward(BitNetEngine* engine, int layer_idx, float* hidden, floa
     bitnet_linear(gate.data(), hidden, quant_buf, layer.gate_proj, I, H, &quant_scale);
     bitnet_linear(up.data(), hidden, quant_buf, layer.up_proj, I, H, &quant_scale);
 
-    // SiLU(gate) * up
-    silu(gate.data(), I);
-    elementwise_mul(gate.data(), gate.data(), up.data(), I);
+    // ReLU²(gate) * up (BitNet uses ReLU² instead of SiLU)
+    relu_squared(gate.data(), I);
+    elementwise_mul(mlp_hidden.data(), gate.data(), up.data(), I);
+
+    // Apply ffn_sub_norm before down projection (if available)
+    if (!layer.ffn_sub_norm.fp32_data.empty()) {
+        rms_norm(mlp_hidden.data(), mlp_hidden.data(),
+                 layer.ffn_sub_norm.fp32_data.data(), I, cfg.rms_norm_eps);
+    }
 
     // Down projection
-    bitnet_linear(output, gate.data(), quant_buf, layer.down_proj, H, I, &quant_scale);
+    bitnet_linear(output, mlp_hidden.data(), quant_buf, layer.down_proj, H, I, &quant_scale);
 }
 
 // ============================================================================
@@ -472,9 +534,15 @@ static bool load_model(BitNetEngine* engine, const char* model_path) {
         return false;
     }
 
-    // Load lm_head
-    if (!load_weight_tensor(loader, "lm_head.weight", engine->lm_head)) {
-        return false;
+    // Load lm_head (may be tied to embed_tokens)
+    if (loader.get_tensor_info("lm_head.weight")) {
+        if (!load_weight_tensor(loader, "lm_head.weight", engine->lm_head)) {
+            return false;
+        }
+    } else {
+        // Tied embeddings: reuse embed_tokens for lm_head
+        // Note: lm_head will use the same data as embed_tokens
+        engine->lm_head = engine->embed_tokens;
     }
 
     // Load layer weights
@@ -497,6 +565,14 @@ static bool load_model(BitNetEngine* engine, const char* model_path) {
         // Norms (fp32)
         if (!load_weight_tensor(loader, prefix + "input_layernorm.weight", layer.input_layernorm)) return false;
         if (!load_weight_tensor(loader, prefix + "post_attention_layernorm.weight", layer.post_attention_layernorm)) return false;
+
+        // SubLN norms (optional - only present in SubLN models)
+        if (loader.get_tensor_info(prefix + "self_attn.attn_sub_norm.weight")) {
+            load_weight_tensor(loader, prefix + "self_attn.attn_sub_norm.weight", layer.attn_sub_norm);
+        }
+        if (loader.get_tensor_info(prefix + "mlp.ffn_sub_norm.weight")) {
+            load_weight_tensor(loader, prefix + "mlp.ffn_sub_norm.weight", layer.ffn_sub_norm);
+        }
     }
 
     return true;
@@ -530,9 +606,9 @@ BitNetEngine* bitnet_engine_create(const char* model_path, const BitNetConfig* c
             }
         }
 
-        // Create KV cache with dimensions from loaded model
+        // Create KV cache with dimensions from loaded model (use kv_heads for GQA)
         engine->kv_cache.reset(
-            kv_cache_create(cfg.num_hidden_layers, cfg.num_attention_heads,
+            kv_cache_create(cfg.num_hidden_layers, cfg.num_key_value_heads,
                            cfg.head_dim, cfg.max_position_embeddings)
         );
         if (!engine->kv_cache) {
