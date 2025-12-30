@@ -187,6 +187,8 @@ async fn main() {
     let mut block_size: usize = 32;
     let mut threshold: f32 = 0.95;
     let mut small_block_size: usize = 8;
+    let mut mask_token_id: Option<i32> = None;
+    let mut force_unmask: bool = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -231,6 +233,10 @@ async fn main() {
                     .unwrap_or(small_block_size);
                 i += 2;
             }
+            "--mask-token-id" => {
+                mask_token_id = args.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
             "--help" => {
                 println!("DLM Server - Fast-dLLM v2 Block Diffusion Inference");
                 println!();
@@ -244,6 +250,7 @@ async fn main() {
                 println!("  --block-size N           Block size for parallel decode (default: 32)");
                 println!("  --threshold F            Confidence threshold 0-1 (default: 0.95)");
                 println!("  --small-block-size N     Sub-block size (default: 8)");
+                println!("  --mask-token-id ID       Override mask token ID (for benchmarking non-DLM models)");
                 println!("  --help                   Show this help");
                 return;
             }
@@ -279,21 +286,34 @@ async fn main() {
         info!("Model loaded: vocab_size={}", engine.vocab_size());
 
         // Detect or configure DLM
-        let dlm_config = match DlmConfig::detect(&engine) {
-            Some(mut config) => {
-                info!(
-                    "Detected DLM model: mask_token_id={}",
-                    config.mask_token_id
-                );
-                config.block_size = block_size;
-                config.threshold = threshold;
-                config.small_block_size = small_block_size;
-                config
-            }
-            None => {
-                error!("Model does not appear to be DLM-trained (no mask token found)");
-                error!("Ensure the model was trained with Fast-dLLM v2 and has |<MASK>| token");
-                std::process::exit(1);
+        let dlm_config = if let Some(manual_mask_id) = mask_token_id {
+            // Manual mask token ID provided - use it directly
+            info!(
+                "Using manual mask_token_id={} (benchmark mode)",
+                manual_mask_id
+            );
+            DlmConfig::new(manual_mask_id)
+                .with_block_size(block_size)
+                .with_threshold(threshold)
+                .with_small_block_size(small_block_size)
+        } else {
+            // Auto-detect DLM model
+            match DlmConfig::detect(&engine) {
+                Some(mut config) => {
+                    info!(
+                        "Detected DLM model: mask_token_id={}",
+                        config.mask_token_id
+                    );
+                    config.block_size = block_size;
+                    config.threshold = threshold;
+                    config.small_block_size = small_block_size;
+                    config
+                }
+                None => {
+                    error!("Model does not appear to be DLM-trained (no mask token found)");
+                    error!("Use --mask-token-id to manually specify a mask token for benchmarking");
+                    std::process::exit(1);
+                }
             }
         };
 
