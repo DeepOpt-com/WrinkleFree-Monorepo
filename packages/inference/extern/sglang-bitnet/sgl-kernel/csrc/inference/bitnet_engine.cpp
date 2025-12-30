@@ -21,6 +21,12 @@
 #include <random>
 #include <algorithm>
 #include <stdexcept>
+#include <omp.h>
+
+// SIMD intrinsics for optimized fp32_linear
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 
 // Use SIMD kernels when available
 #ifdef USE_SIMD_KERNELS
@@ -42,14 +48,33 @@ namespace sgl_kernel { namespace bitnet {
         }
     }
 
+    // SIMD-compatible block-interleaved unpacking
+    // Block size: 128 elements = 32 packed bytes
+    // byte[j].bits[6:7] = weight for activation[j+0]
+    // byte[j].bits[4:5] = weight for activation[j+32]
+    // byte[j].bits[2:3] = weight for activation[j+64]
+    // byte[j].bits[0:1] = weight for activation[j+96]
     inline void bitnet_vec_dot_i2_i8(int K, float* out, const uint8_t* packed_weights, const int8_t* quant_input) {
+        constexpr int QK_BLOCK = 128;  // Block size for SIMD packing
         int sum = 0;
-        int K_packed = K / 4;
-        for (int k = 0; k < K_packed; k++) {
-            uint8_t packed = packed_weights[k];
-            for (int i = 0; i < 4; i++) {
-                int w = static_cast<int>((packed >> (i * 2)) & 0x03) - 1;
-                sum += w * static_cast<int>(quant_input[k * 4 + i]);
+        int num_blocks = K / QK_BLOCK;
+
+        for (int block = 0; block < num_blocks; block++) {
+            int base_w = block * 32;   // 32 packed bytes per 128-element block
+            int base_a = block * 128;  // 128 activations per block
+
+            for (int j = 0; j < 32; j++) {
+                uint8_t packed = packed_weights[base_w + j];
+                // Extract 4 weights from positions j, j+32, j+64, j+96 within block
+                int w0 = static_cast<int>((packed >> 6) & 0x03) - 1;  // bits 6-7 → activation[j+0]
+                int w1 = static_cast<int>((packed >> 4) & 0x03) - 1;  // bits 4-5 → activation[j+32]
+                int w2 = static_cast<int>((packed >> 2) & 0x03) - 1;  // bits 2-3 → activation[j+64]
+                int w3 = static_cast<int>((packed >> 0) & 0x03) - 1;  // bits 0-1 → activation[j+96]
+
+                sum += w0 * static_cast<int>(quant_input[base_a + j + 0]);
+                sum += w1 * static_cast<int>(quant_input[base_a + j + 32]);
+                sum += w2 * static_cast<int>(quant_input[base_a + j + 64]);
+                sum += w3 * static_cast<int>(quant_input[base_a + j + 96]);
             }
         }
         *out = static_cast<float>(sum);
@@ -246,27 +271,96 @@ static void bitnet_linear(float* output, const float* input, int8_t* quant_input
     // weight shape: [M, K/4] (packed 2-bit)
     // The scalar fallback already handles {0,1,2} -> {-1,0,1} conversion
     const int K_packed = K / 4;  // 4 weights per byte
+    const float scale_factor = weight.scale * (*quant_scale);
 
+    // Parallelize across output rows (each row is independent)
+    #pragma omp parallel for schedule(static) if(M >= 64)
     for (int m = 0; m < M; m++) {
         bitnet_vec_dot_i2_i8(K, &output[m],
                              weight.packed_data.data() + m * K_packed,
                              quant_input);
         // Apply weight scale and activation scale
-        output[m] *= weight.scale * (*quant_scale);
+        output[m] *= scale_factor;
     }
 }
 
 // Regular fp32 linear layer (for embeddings, lm_head)
+// Optimized with SIMD and OpenMP parallelization
 static void fp32_linear(float* output, const float* input, const float* weight,
                         int M, int K) {
-    // Simple GEMV: output[m] = sum_k(input[k] * weight[m*K + k])
+#if defined(__AVX512F__)
+    // AVX-512: Process 16 floats at a time
+    #pragma omp parallel for schedule(static) if(M >= 64)
     for (int m = 0; m < M; m++) {
-        float sum = 0.0f;
-        for (int k = 0; k < K; k++) {
-            sum += input[k] * weight[m * K + k];
+        const float* w_row = weight + m * K;
+        __m512 sum_vec = _mm512_setzero_ps();
+
+        int k = 0;
+        for (; k + 16 <= K; k += 16) {
+            __m512 w = _mm512_loadu_ps(w_row + k);
+            __m512 x = _mm512_loadu_ps(input + k);
+            sum_vec = _mm512_fmadd_ps(w, x, sum_vec);
+        }
+
+        float sum = _mm512_reduce_add_ps(sum_vec);
+
+        // Handle remaining elements
+        for (; k < K; k++) {
+            sum += w_row[k] * input[k];
         }
         output[m] = sum;
     }
+#elif defined(__AVX2__) && defined(__FMA__)
+    // AVX2 + FMA: Process 8 floats at a time
+    #pragma omp parallel for schedule(static) if(M >= 64)
+    for (int m = 0; m < M; m++) {
+        const float* w_row = weight + m * K;
+        __m256 sum_vec0 = _mm256_setzero_ps();
+        __m256 sum_vec1 = _mm256_setzero_ps();
+
+        int k = 0;
+        // 2x unrolled loop for better latency hiding
+        for (; k + 16 <= K; k += 16) {
+            __m256 w0 = _mm256_loadu_ps(w_row + k);
+            __m256 w1 = _mm256_loadu_ps(w_row + k + 8);
+            __m256 x0 = _mm256_loadu_ps(input + k);
+            __m256 x1 = _mm256_loadu_ps(input + k + 8);
+            sum_vec0 = _mm256_fmadd_ps(w0, x0, sum_vec0);
+            sum_vec1 = _mm256_fmadd_ps(w1, x1, sum_vec1);
+        }
+        for (; k + 8 <= K; k += 8) {
+            __m256 w = _mm256_loadu_ps(w_row + k);
+            __m256 x = _mm256_loadu_ps(input + k);
+            sum_vec0 = _mm256_fmadd_ps(w, x, sum_vec0);
+        }
+
+        // Horizontal sum
+        __m256 sum_vec = _mm256_add_ps(sum_vec0, sum_vec1);
+        __m128 hi = _mm256_extractf128_ps(sum_vec, 1);
+        __m128 lo = _mm256_castps256_ps128(sum_vec);
+        __m128 sum4 = _mm_add_ps(hi, lo);
+        sum4 = _mm_add_ps(sum4, _mm_shuffle_ps(sum4, sum4, _MM_SHUFFLE(2, 3, 0, 1)));
+        sum4 = _mm_add_ps(sum4, _mm_shuffle_ps(sum4, sum4, _MM_SHUFFLE(1, 0, 3, 2)));
+        float sum = _mm_cvtss_f32(sum4);
+
+        // Handle remaining elements
+        for (; k < K; k++) {
+            sum += w_row[k] * input[k];
+        }
+        output[m] = sum;
+    }
+#else
+    // Scalar fallback with OpenMP
+    #pragma omp parallel for schedule(static) if(M >= 64)
+    for (int m = 0; m < M; m++) {
+        const float* w_row = weight + m * K;
+        float sum = 0.0f;
+        for (int k = 0; k < K; k++) {
+            sum += input[k] * w_row[k];
+        }
+        output[m] = sum;
+    }
+#endif
 }
 
 // Embedding lookup
@@ -408,13 +502,6 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
     embed_lookup(hidden, engine->embed_tokens.fp32_data.data(),
                  &token_id, 1, H);
 
-    // Debug: print first few hidden values after embedding
-    static bool debug_once = true;
-    if (debug_once) {
-        fprintf(stderr, "DEBUG: After embed, token=%d, hidden[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                token_id, hidden[0], hidden[1], hidden[2], hidden[3]);
-    }
-
     // Process each layer
     for (int l = 0; l < cfg.num_hidden_layers; l++) {
         auto& layer = engine->layers[l];
@@ -447,13 +534,6 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
         // Residual connection
         for (int i = 0; i < H; i++) {
             hidden[i] = residual[i] + mlp_out[i];
-        }
-
-        // Debug: print after first layer
-        if (debug_once && l == 0) {
-            fprintf(stderr, "DEBUG: After layer 0, hidden[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                    hidden[0], hidden[1], hidden[2], hidden[3]);
-            debug_once = false;
         }
     }
 

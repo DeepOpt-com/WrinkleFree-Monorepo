@@ -41,9 +41,10 @@ int main(int argc, char** argv) {
     // Debug: print more config
     printf("  Num KV heads: %d\n", bitnet_get_num_kv_heads(engine));
 
-    // Token IDs for "Hello, my name is" (from Qwen tokenizer)
-    int32_t input_ids[] = {9707, 11, 856, 836, 374};
-    int num_input = 5;
+    // Token IDs for "Hello, my name is" (Llama-3 tokenizer used by DLM checkpoint)
+    // 128000 = BOS, 9906 = "Hello", 11 = ",", 856 = " my", 836 = " name", 374 = " is"
+    int32_t input_ids[] = {128000, 9906, 11, 856, 836, 374};
+    int num_input = 6;
 
     printf("\nGenerating with %d input tokens, max %d new tokens...\n",
            num_input, num_generate);

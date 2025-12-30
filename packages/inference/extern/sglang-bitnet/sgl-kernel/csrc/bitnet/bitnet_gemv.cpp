@@ -340,6 +340,67 @@ void bitnet_vec_dot_i2_i8(
     const int la_num = nb % 32;
     const int groupla_num = (la_num != 0) ? 1 : 0;
 
+    // Bias correction: maddubs computes sum(w*a) where w∈{0,1,2}
+    // We need sum((w-1)*a) = sum(w*a) - sum(a)
+    // Compute sum of all activations using SIMD
+    int32_t sum_activations = 0;
+
+#if defined(BITNET_HAS_X86_SIMD) && defined(__AVX512F__)
+    // AVX-512: Sum 64 int8s at a time
+    __m512i sum_vec = _mm512_setzero_si512();
+    int i = 0;
+    for (; i + 64 <= n; i += 64) {
+        __m512i act = _mm512_loadu_si512((const __m512i*)(activations + i));
+        // Sum bytes: extend to 16-bit then to 32-bit
+        // Split 512-bit into two 256-bit halves
+        __m256i act_lo = _mm512_castsi512_si256(act);
+        __m256i act_hi = _mm512_extracti64x4_epi64(act, 1);
+        // Extend int8 to int16 (256-bit -> 512-bit)
+        __m512i lo16 = _mm512_cvtepi8_epi16(act_lo);
+        __m512i hi16 = _mm512_cvtepi8_epi16(act_hi);
+        // Sum pairs of int16 to int32 using madd with 1s
+        __m512i lo32 = _mm512_madd_epi16(lo16, _mm512_set1_epi16(1));
+        __m512i hi32 = _mm512_madd_epi16(hi16, _mm512_set1_epi16(1));
+        sum_vec = _mm512_add_epi32(sum_vec, _mm512_add_epi32(lo32, hi32));
+    }
+    sum_activations = _mm512_reduce_add_epi32(sum_vec);
+    for (; i < n; i++) sum_activations += activations[i];
+
+#elif defined(BITNET_HAS_X86_SIMD) && defined(__AVX2__)
+    // AVX2: Sum 32 int8s at a time
+    __m256i sum_vec = _mm256_setzero_si256();
+    int i = 0;
+    for (; i + 32 <= n; i += 32) {
+        __m256i act = _mm256_loadu_si256((const __m256i*)(activations + i));
+        // Convert to 16-bit and sum
+        __m128i lo8 = _mm256_castsi256_si128(act);
+        __m128i hi8 = _mm256_extracti128_si256(act, 1);
+        __m256i lo16 = _mm256_cvtepi8_epi16(lo8);
+        __m256i hi16 = _mm256_cvtepi8_epi16(hi8);
+        __m256i sum16 = _mm256_add_epi16(lo16, hi16);
+        sum_vec = _mm256_add_epi32(sum_vec, _mm256_madd_epi16(sum16, _mm256_set1_epi16(1)));
+    }
+    sum_activations = hsum_i32_8(sum_vec);
+    for (; i < n; i++) sum_activations += activations[i];
+
+#elif defined(BITNET_HAS_ARM_NEON)
+    // NEON: Sum 16 int8s at a time
+    int32x4_t sum_vec = vdupq_n_s32(0);
+    int i = 0;
+    for (; i + 16 <= n; i += 16) {
+        int8x16_t act = vld1q_s8(activations + i);
+        int16x8_t lo = vmovl_s8(vget_low_s8(act));
+        int16x8_t hi = vmovl_s8(vget_high_s8(act));
+        sum_vec = vaddq_s32(sum_vec, vpaddlq_s16(lo));
+        sum_vec = vaddq_s32(sum_vec, vpaddlq_s16(hi));
+    }
+    sum_activations = vaddlvq_s32(sum_vec);
+    for (; i < n; i++) sum_activations += activations[i];
+
+#else
+    for (int i = 0; i < n; i++) sum_activations += activations[i];
+#endif
+
 #if defined(BITNET_HAS_X86_SIMD) && defined(__AVX512F__) && defined(__AVX512BW__)
     // AVX-512 implementation - processes 64 bytes at a time (2x throughput vs AVX2)
     // Process 256 ternary weights per iteration (64 packed bytes)
@@ -445,9 +506,11 @@ void bitnet_vec_dot_i2_i8(
         __m256i lo = _mm512_castsi512_si256(accu);
         __m256i hi = _mm512_extracti64x4_epi64(accu, 1);
         accu_rem = _mm256_add_epi32(accu_rem, _mm256_add_epi32(lo, hi));
-        *result = (float)hsum_i32_8(accu_rem);
+        // Bias correction: subtract sum of activations
+        *result = (float)(hsum_i32_8(accu_rem) - sum_activations);
     } else {
-        *result = (float)hsum_i32_16(accu);
+        // Bias correction: subtract sum of activations
+        *result = (float)(hsum_i32_16(accu) - sum_activations);
     }
 
 #elif defined(BITNET_HAS_X86_SIMD) && defined(__AVX2__)
@@ -575,10 +638,9 @@ void bitnet_vec_dot_i2_i8(
     // Combine all accumulators
     __m256i accu = _mm256_add_epi32(_mm256_add_epi32(accu0, accu1), _mm256_add_epi32(accu2, accu3));
 
-    // Handle remaining blocks
+    // Handle remaining blocks - widen to 32-bit immediately to avoid overflow
+    // (la_num can be up to 31, which could overflow int16 accumulators)
     for (int i = 0; i < groupla_num; i++) {
-        __m256i accula = _mm256_setzero_si256();
-
         for (int j = 0; j < la_num; j++) {
             __m256i xq8_3 = _mm256_loadu_si256(
                 (const __m256i*)(packed_weights + group32_num * 32 * 32 + j * 32)
@@ -610,17 +672,17 @@ void bitnet_vec_dot_i2_i8(
             xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
             xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
 
-            accula = _mm256_add_epi16(accula, _mm256_add_epi16(xq8_0, xq8_1));
-            accula = _mm256_add_epi16(accula, _mm256_add_epi16(xq8_2, xq8_3));
-        }
+            // Sum the 4 maddubs results in 16-bit (safe, max ~2000 per lane)
+            __m256i sum16 = _mm256_add_epi16(_mm256_add_epi16(xq8_0, xq8_1),
+                                             _mm256_add_epi16(xq8_2, xq8_3));
 
-        accu = _mm256_add_epi32(
-            accu,
-            _mm256_madd_epi16(accula, ones)
-        );
+            // Immediately widen to 32-bit to avoid overflow across blocks
+            accu = _mm256_add_epi32(accu, _mm256_madd_epi16(sum16, ones));
+        }
     }
 
-    *result = (float)hsum_i32_8(accu);
+    // Bias correction: subtract sum of activations
+    *result = (float)(hsum_i32_8(accu) - sum_activations);
 
 #elif defined(BITNET_HAS_ARM_NEON)
     // ARM NEON implementation
@@ -729,7 +791,8 @@ void bitnet_vec_dot_i2_i8(
     accu_0 = vaddq_s32(accu_0, accu_1);
     accu_2 = vaddq_s32(accu_2, accu_3);
     accu_0 = vaddq_s32(accu_0, accu_2);
-    *result = (float)vaddlvq_s32(accu_0);
+    // Bias correction: subtract sum of activations
+    *result = (float)(vaddlvq_s32(accu_0) - sum_activations);
 
 #else
     // NO FALLBACK: Fail loudly if no SIMD support
@@ -859,12 +922,22 @@ void quantize_activations_i8(
         __m512i i32 = _mm512_cvt_roundps_epi32(scaled, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
 
         // Pack 16x int32 -> 16x int16 -> 16x int8 with saturation
-        __m256i lo = _mm512_castsi512_si256(i32);
-        __m256i hi = _mm512_extracti64x4_epi64(i32, 1);
-        __m256i i16 = _mm256_packs_epi32(lo, hi);
-        // Fix lane order (packs interleaves lanes)
-        i16 = _mm256_permute4x64_epi64(i16, _MM_SHUFFLE(3, 1, 2, 0));
-        __m128i i8 = _mm256_castsi256_si128(_mm256_packs_epi16(i16, i16));
+        // Use 128-bit operations to avoid lane-crossing issues with AVX2 pack
+        __m256i lo256 = _mm512_castsi512_si256(i32);   // int32[0:7]
+        __m256i hi256 = _mm512_extracti64x4_epi64(i32, 1);  // int32[8:15]
+
+        // Split each 256-bit half into 128-bit quarters
+        __m128i q0 = _mm256_castsi256_si128(lo256);        // int32[0:3]
+        __m128i q1 = _mm256_extracti128_si256(lo256, 1);   // int32[4:7]
+        __m128i q2 = _mm256_castsi256_si128(hi256);        // int32[8:11]
+        __m128i q3 = _mm256_extracti128_si256(hi256, 1);   // int32[12:15]
+
+        // Pack to int16 (4+4 -> 8 per operation)
+        __m128i i16_01 = _mm_packs_epi32(q0, q1);  // int16[0:7]
+        __m128i i16_23 = _mm_packs_epi32(q2, q3);  // int16[8:15]
+
+        // Pack to int8 (8+8 -> 16)
+        __m128i i8 = _mm_packs_epi16(i16_01, i16_23);  // int8[0:15]
 
         // Store 16 bytes
         _mm_storeu_si128((__m128i*)(output + i), i8);
