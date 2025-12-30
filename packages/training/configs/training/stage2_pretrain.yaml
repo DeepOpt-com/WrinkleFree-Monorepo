@@ -32,9 +32,11 @@ packing:
 # Optimization (MuonClip for BitNet stability - Kimi K2 methodology)
 # MuonClip = Muon optimizer + QK-clipping for attention stability
 # Reference: https://github.com/GAD-cell/muon-clip
+# Muon uses higher LR for hidden weights, AdamW uses standard LR for embeddings/norms
 optimizer:
   type: muonclip
-  lr: 0.02  # Muon uses higher LR (spectral norm units)
+  lr_muon: 0.02  # Muon LR for hidden weights (spectral norm units)
+  lr_adam: 2e-4  # AdamW LR for embeddings, norms, lm_head
   weight_decay: 0.0  # Muon doesn't need weight decay
   momentum: 0.95  # Muon momentum
   enable_clipping: true  # QK-clipping for attention stability
@@ -105,8 +107,8 @@ pre_stage_2:
 
 # Checkpointing
 checkpoint:
-  save_interval: 1000
-  keep_last_n: 3
+  save_interval: 200  # Checkpoint every 200 steps
+  keep_last_n: 5  # Keep 5 most recent checkpoints
   save_optimizer: true
 
 # Logging (no eval - all data is unseen in streaming pre-training)
@@ -126,6 +128,13 @@ early_stopping:
   patience: 5     # Stop after N consecutive checks without improvement
   min_delta: 0.01 # Minimum loss improvement to count as "better"
   min_evals: 10   # Don't stop before this many checks (at log_interval)
+
+# Curriculum Learning: Warmup with high-quality data before mixed distribution
+# Prevents loss instability when starting with noisy multi-domain data
+curriculum:
+  enabled: true
+  warmup_ratio: 0.2  # First 20% of training uses warmup_data_config
+  warmup_data_config: fineweb  # Config name in cheapertraining/configs/data/
 
 # CheaperTraining influence-based data selection
 influence:

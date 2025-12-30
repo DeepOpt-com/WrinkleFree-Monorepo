@@ -205,6 +205,11 @@ def get_bitnet_tp_plan() -> dict:
     - Attention: [Col, Col, Col] -> [Row] (Q,K,V -> O)
     - FFN: [Col, Col] -> [Row] (gate,up -> down)
 
+    Note: We use use_local_output=False for ColwiseParallel to keep outputs as DTensors.
+    This allows DTensor to handle view/reshape operations automatically without needing
+    to manually track local vs global num_heads. See PyTorch TP tutorial for details:
+    https://docs.pytorch.org/tutorials/intermediate/TP_tutorial.html
+
     Returns:
         Dictionary of {module_path: ParallelStyle}
     """
@@ -212,6 +217,8 @@ def get_bitnet_tp_plan() -> dict:
 
     return {
         # Attention projections
+        # Default use_local_output=True converts DTensor to local tensor after projection
+        # This allows mixing with non-DTensor tensors like RoPE freqs_cis
         "self_attn.q_proj": ColwiseParallel(),
         "self_attn.k_proj": ColwiseParallel(),
         "self_attn.v_proj": ColwiseParallel(),

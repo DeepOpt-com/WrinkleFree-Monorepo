@@ -30,7 +30,7 @@ optimizer:
 
 scheduler:
   type: constant     # Official: constant_with_warmup
-  warmup_ratio: 0.0  # Disabled - Muon is inherently stable
+  warmup_ratio: 0.03 # Official: 3% warmup
   min_lr_ratio: 0.1
 
 # Gradient clipping (ZClip adaptive clipping is enabled by default)
@@ -49,7 +49,7 @@ diffusion:
 
 # Checkpointing
 checkpoint:
-  save_interval: 200
+  save_interval: 5000
   keep_last_n: 3
   hub:
     enabled: false

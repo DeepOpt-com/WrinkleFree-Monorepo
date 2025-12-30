@@ -23,6 +23,11 @@ resources:
 
 workdir: ../..
 
+envs:
+  # Fix: SkyPilot doesn't set CUDA_VISIBLE_DEVICES for jobs without --gpus
+  # See: https://github.com/skypilot-org/skypilot/issues/2510
+  CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+
 setup: |
   set -e
   cd ~/sky_workdir

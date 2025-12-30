@@ -236,6 +236,83 @@ def upload_to_gcs(local_path: Path, model_name: str, checkpoint_name: str = "che
         return False
 
 
+def cleanup_old_gcs_checkpoints(model_name: str, keep_n: int = 5) -> None:
+    """Delete old checkpoints from GCS, keeping only the N most recent.
+
+    Args:
+        model_name: Name of the model (used in GCS path)
+        keep_n: Number of recent checkpoints to keep (default: 5)
+    """
+    gcs_bucket = os.environ.get("GCS_BUCKET")
+    if not gcs_bucket:
+        return
+
+    gcs_prefix = f"gs://{gcs_bucket}/dlm/{model_name}/"
+    try:
+        # List all checkpoint-step-* directories
+        result = subprocess.run(
+            ["gsutil", "ls", "-d", f"{gcs_prefix}checkpoint-step-*"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            result = subprocess.run(
+                ["gcloud", "storage", "ls", f"{gcs_prefix}checkpoint-step-*"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        if result.returncode != 0 or not result.stdout:
+            return
+
+        checkpoints = result.stdout.strip().split("\n")
+        # Parse step numbers and sort
+        step_checkpoints = []
+        for cp in checkpoints:
+            cp = cp.rstrip("/")
+            if "checkpoint-step-" in cp:
+                try:
+                    step = int(cp.split("checkpoint-step-")[-1])
+                    step_checkpoints.append((step, cp))
+                except ValueError:
+                    continue
+
+        # Sort by step number (descending) and find ones to delete
+        step_checkpoints.sort(key=lambda x: x[0], reverse=True)
+        to_delete = step_checkpoints[keep_n:]
+
+        if not to_delete:
+            return
+
+        logger.info(f"Cleaning up {len(to_delete)} old GCS checkpoints (keeping {keep_n} most recent)")
+        for step, cp_path in to_delete:
+            try:
+                # Add trailing slash for directory deletion
+                delete_path = cp_path if cp_path.endswith("/") else cp_path + "/"
+                result = subprocess.run(
+                    ["gsutil", "-m", "rm", "-r", delete_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if result.returncode == 0:
+                    logger.info(f"Deleted old checkpoint: checkpoint-step-{step}")
+                else:
+                    # Try gcloud storage
+                    subprocess.run(
+                        ["gcloud", "storage", "rm", "-r", delete_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to delete checkpoint-step-{step}: {e}")
+    except Exception as e:
+        logger.warning(f"GCS cleanup failed: {e}")
+
+
 def find_latest_gcs_checkpoint(model_name: str) -> str | None:
     """Find the latest checkpoint on GCS. Returns GCS URI or None."""
     gcs_bucket = os.environ.get("GCS_BUCKET")
@@ -1025,6 +1102,8 @@ def train(
 
                 # Upload to GCS periodically
                 upload_to_gcs(checkpoint_dir, model_name, f"checkpoint-step-{step}")
+                # Cleanup old checkpoints (keep only 5 most recent)
+                cleanup_old_gcs_checkpoints(model_name, keep_n=5)
 
     pbar.close()
 

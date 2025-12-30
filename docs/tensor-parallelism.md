@@ -144,6 +144,50 @@ BitLinear's quantization (`weight.abs().mean()`) works correctly with DTensor be
 3. **TP overhead**: Each layer has allreduce overhead; more layers = more overhead
 4. **Optimal TP degree**: Usually 2-8, matching GPUs per node
 
+## Model Requirements for TP
+
+### Attention Head Divisibility
+
+For tensor parallelism to work, **both `num_attention_heads` AND `num_kv_heads` must be divisible by `tp_size`**:
+
+| TP Size | Valid num_heads | Invalid |
+|---------|-----------------|---------|
+| 2 | 2, 4, 6, 8, 16... | 1, 3, 5, 7... |
+| 4 | 4, 8, 12, 16... | 1, 2, 3, 5... |
+| 8 | 8, 16, 24, 32... | 1, 2, 4, 6... |
+
+Example TP-compatible config:
+```python
+config = BitNetConfig(
+    hidden_size=512,        # 512 = 8 heads * 64 head_dim
+    num_attention_heads=8,  # Divisible by 1, 2, 4, 8
+    num_kv_heads=8,         # Must ALSO be divisible by TP size
+    ...
+)
+```
+
+### Attention TP Implementation (TorchTitan Pattern)
+
+The attention module uses the **TorchTitan pattern** of using `-1` in `view()` to infer local heads dynamically from tensor size:
+
+```python
+# After q_proj with TP, output dimension is reduced
+xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+
+# Use -1 to infer actual local heads from tensor size
+# TP may have sharded the projection outputs, reducing the head count
+xq = xq.view(batch_size, seq_len, -1, self.head_dim)
+xk = xk.view(batch_size, seq_len, -1, self.head_dim)
+xv = xv.view(batch_size, seq_len, -1, self.head_dim)
+```
+
+This approach from [TorchTitan](https://github.com/pytorch/torchtitan/blob/main/torchtitan/models/llama3/model/model.py) ensures the reshape works regardless of TP sharding. The comment in TorchTitan explains: *"Use -1 instead of `n_heads` to infer the actual local heads from sizes of xq, xk, and xv as TP may have sharded them after the above linear ops."*
+
+**Key benefits:**
+- No need to track TP world size in attention module
+- Works with default `use_local_output=True` (ColwiseParallel default)
+- No mixed DTensor/Tensor issues with RoPE freqs_cis buffer
+
 ## Troubleshooting
 
 ### "Distributed must be initialized"
@@ -159,6 +203,12 @@ TP size must divide world size evenly:
 - 8 GPUs: TP can be 1, 2, 4, or 8
 - 6 GPUs: TP can be 1, 2, 3, or 6
 
+### "Shape '[B, S, H, D]' is invalid for input"
+
+This error means the attention heads aren't divisible by TP size. Ensure:
+1. `num_attention_heads % tp_size == 0`
+2. `num_kv_heads % tp_size == 0`
+
 ### NCCL Timeout
 
 Increase timeout for slow networks:
@@ -172,6 +222,27 @@ TP doesn't reduce memory per GPU (just computation). Use FSDP for memory reducti
 ```yaml
 distributed.tensor_parallel.tp_size: 2  # Small TP degree
 distributed.fsdp.sharding_strategy: FULL_SHARD  # Maximum sharding
+```
+
+### SkyPilot: CUDA_VISIBLE_DEVICES Empty
+
+When launching jobs on SkyPilot without the `--gpus` flag, `CUDA_VISIBLE_DEVICES` may not be set. Add it explicitly to your YAML:
+
+```yaml
+envs:
+  # Fix: SkyPilot doesn't set CUDA_VISIBLE_DEVICES for jobs without --gpus
+  # See: https://github.com/skypilot-org/skypilot/issues/2510
+  CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+```
+
+### SkyPilot: "No module named 'wrinklefree'"
+
+Ensure you use `uv run torchrun` (not bare `torchrun`) in your run script:
+
+```yaml
+run: |
+  source ~/.local/bin/env
+  uv run torchrun --standalone --nproc_per_node=8 scripts/test_tp_smoke.py
 ```
 
 ## API Reference

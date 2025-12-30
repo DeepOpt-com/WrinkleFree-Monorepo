@@ -76,23 +76,27 @@ def setup_distributed():
 def create_model(model_name: str = "smollm2_135m"):
     """Create a small BitNet model for testing."""
     from wrinklefree.models import BitNetLlama
+    from wrinklefree.models.config import BitNetConfig
 
-    # SmolLM2-135M config (small, good for testing)
+    # TP-compatible config (heads must be divisible by TP size)
+    # For TP=8: need num_heads AND num_kv_heads divisible by 8
+    # For TP=4: need num_heads AND num_kv_heads divisible by 4
+    # For TP=2: need num_heads AND num_kv_heads divisible by 2
     if model_name == "smollm2_135m":
-        config = {
-            "hidden_size": 576,
-            "intermediate_size": 1536,
-            "num_hidden_layers": 6,  # Reduced for smoke test
-            "num_attention_heads": 9,
-            "num_kv_heads": 3,
-            "vocab_size": 49152,
-            "max_position_embeddings": 2048,
-            "rope_theta": 100000.0,
-        }
+        config = BitNetConfig(
+            hidden_size=512,  # 512 = 8 heads * 64 head_dim
+            intermediate_size=1536,
+            num_hidden_layers=6,  # Reduced for smoke test
+            num_attention_heads=8,  # Divisible by 1, 2, 4, 8
+            num_kv_heads=8,  # Must also be divisible by TP size
+            vocab_size=49152,
+            max_position_embeddings=2048,
+            rope_theta=100000.0,
+        )
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
-    model = BitNetLlama(**config)
+    model = BitNetLlama(config)
     return model
 
 

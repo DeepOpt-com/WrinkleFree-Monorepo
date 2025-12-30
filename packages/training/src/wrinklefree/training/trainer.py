@@ -671,8 +671,16 @@ def create_optimizer(
             import os
             os.makedirs(log_dir, exist_ok=True)
 
+            # Check for separate LRs (lr_muon, lr_adam) vs unified LR
+            lr_muon = kwargs.get("lr_muon", learning_rate)
+            lr_adam = kwargs.get("lr_adam", learning_rate)
+            use_unified_lr = (lr_muon == lr_adam)
+
             config = MuonConfig(
-                lr=learning_rate,
+                unified_lr=use_unified_lr,
+                lr=learning_rate if use_unified_lr else None,
+                lr_muon=lr_muon if not use_unified_lr else None,
+                lr_adam=lr_adam if not use_unified_lr else None,
                 muon_beta=kwargs.get("momentum", 0.95),
                 muon_decay=weight_decay,
                 adam_betas=betas,
@@ -683,8 +691,9 @@ def create_optimizer(
                 clipping_alpha=kwargs.get("clipping_alpha", 0.5),
                 log_dir=log_dir,  # Valid log dir for MuonClip TensorBoard writer
             )
+            lr_info = f"unified_lr={learning_rate}" if use_unified_lr else f"lr_muon={lr_muon}, lr_adam={lr_adam}"
             logger.info(
-                f"Using MuonClip optimizer (Muon + QK-clipping={'enabled' if enable_clipping else 'disabled'})"
+                f"Using MuonClip optimizer ({lr_info}, QK-clipping={'enabled' if enable_clipping else 'disabled'})"
             )
             return MuonClip(model, model_config, config)
         except ImportError:

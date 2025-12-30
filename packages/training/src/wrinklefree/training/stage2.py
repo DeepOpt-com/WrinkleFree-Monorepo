@@ -65,6 +65,8 @@ class Stage2Trainer(Trainer):
         config: DictConfig,
         teacher: Optional[HiddenStateTeacherWrapper] = None,
         pre_stage_2_config: Optional[DictConfig] = None,
+        next_phase_loader_future: Optional[Any] = None,  # concurrent.futures.Future
+        switch_step: Optional[int] = None,
         **kwargs,
     ):
         # Determine mode: distillation vs pure LM
@@ -100,6 +102,14 @@ class Stage2Trainer(Trainer):
             config=config,
             **kwargs,
         )
+
+        # Curriculum learning: swap dataloader mid-training
+        # The next phase dataloader is loaded in a background thread
+        self.next_phase_loader_future = next_phase_loader_future
+        self.next_phase_dataloader = None  # Will be set when future completes
+        self.switch_step = switch_step
+        if switch_step is not None:
+            logger.info(f"Curriculum: Will switch to Phase 2 dataloader at step {switch_step}")
 
         # Get training config (support both full config and training-only config)
         self.training_cfg = getattr(config, "training", config)
@@ -291,6 +301,33 @@ class Stage2Trainer(Trainer):
         data_iter = iter(self.train_dataloader)
 
         while self.global_step < self.max_steps:
+            # Curriculum: Check if background-loaded Phase 2 dataloader is ready
+            if (
+                self.next_phase_loader_future is not None
+                and self.next_phase_dataloader is None
+                and self.next_phase_loader_future.done()
+            ):
+                # Get the loaded dataloader from the future
+                result = self.next_phase_loader_future.result()
+                self.next_phase_dataloader = result[0]  # (dataloader, mixed_dataset, probe_loaders)
+                if self.rank == 0:
+                    logger.info(f"[Background] Phase 2 dataloader ready at step {self.global_step}")
+                self.next_phase_loader_future = None  # Clear future
+
+            # Curriculum: Switch dataloader at switch_step (if Phase 2 is ready)
+            if (
+                self.next_phase_dataloader is not None
+                and self.switch_step is not None
+                and self.global_step >= self.switch_step
+            ):
+                if self.rank == 0:
+                    logger.info(f"Curriculum: Switching to Phase 2 dataloader at step {self.global_step}")
+                self.train_dataloader = self.next_phase_dataloader
+                data_iter = iter(self.train_dataloader)
+                self.next_phase_dataloader = None  # Prevent re-switching
+                import gc
+                gc.collect()
+
             # Get next batch
             try:
                 batch = next(data_iter)
@@ -657,6 +694,8 @@ def run_stage2(
     run_manager: Optional[Any] = None,
     experiment_name: Optional[str] = None,
     teacher_model_name: Optional[str] = None,
+    next_phase_loader_future: Optional[Any] = None,  # concurrent.futures.Future
+    switch_step: Optional[int] = None,
 ) -> nn.Module:
     """
     Run Stage 2: Continue pre-training to adapt weight distributions.
@@ -821,13 +860,24 @@ def run_stage2(
             )
 
     # Create optimizer and scheduler
+    opt_cfg = config.training.optimizer
+    # For MuonClip: get separate LRs, fallback to lr if not specified
+    lr_muon = getattr(opt_cfg, "lr_muon", getattr(opt_cfg, "lr", 0.02))
+    lr_adam = getattr(opt_cfg, "lr_adam", getattr(opt_cfg, "lr", 2e-4))
     optimizer = create_optimizer(
         model,
-        learning_rate=config.training.optimizer.lr,
+        learning_rate=lr_muon,  # Primary LR (Muon uses this)
         weight_decay=config.training.optimizer.weight_decay,
-        optimizer_type=config.training.optimizer.type,  # Pass optimizer type from config
-        model_config=model.config if hasattr(model, "config") else None,  # For MuonClip QK-clipping
-        log_dir=str(output_dir / "optimizer_logs"),  # MuonClip needs valid log dir
+        optimizer_type=config.training.optimizer.type,
+        model_config=model.config if hasattr(model, "config") else None,
+        log_dir=str(output_dir / "optimizer_logs"),
+        # MuonClip-specific params
+        lr_muon=lr_muon,
+        lr_adam=lr_adam,
+        momentum=getattr(opt_cfg, "momentum", 0.95),
+        enable_clipping=getattr(opt_cfg, "enable_clipping", True),
+        clipping_threshold=getattr(opt_cfg, "clipping_threshold", 50.0),
+        clipping_alpha=getattr(opt_cfg, "clipping_alpha", 0.5),
     )
 
     # Influence-based data selection (optional)
@@ -960,6 +1010,8 @@ def run_stage2(
         run_manager=run_manager,
         experiment_name=experiment_name,
         stage="stage2",
+        next_phase_loader_future=next_phase_loader_future,
+        switch_step=switch_step,
     )
     trainer.output_dir = output_dir
 

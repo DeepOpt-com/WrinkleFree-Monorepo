@@ -27,6 +27,11 @@ Usage:
 import os
 from typing import Any, Optional
 
+# Prevent HuggingFace datasets from hanging on multi-core systems
+# Reference: https://github.com/huggingface/datasets/issues/6079
+if "KMP_AFFINITY" not in os.environ:
+    os.environ["KMP_AFFINITY"] = "disabled"
+
 import torch
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
@@ -42,10 +47,18 @@ def _get_optimal_num_workers(num_workers: int | None, default: int = 4) -> int:
     Returns:
         Number of workers to use for data loading.
 
+    Environment variable override:
+        DATA_NUM_WORKERS=0  # Forces num_workers=0 for debugging
+
     Best practice: 4-8 workers for streaming datasets balances throughput
     and HuggingFace API rate limits.
     Reference: PyTorch forums and performance tuning guides.
     """
+    # Environment variable override for debugging
+    env_workers = os.environ.get("DATA_NUM_WORKERS")
+    if env_workers is not None:
+        return int(env_workers)
+
     if num_workers is not None:
         return num_workers
     return default
@@ -252,15 +265,26 @@ def _create_single_source_dataloader(
     text_column: str,
 ) -> tuple[DataLoader, None]:
     """Create dataloader for single dataset source."""
+    import time
+    import logging
     from datasets import load_dataset
 
+    logger = logging.getLogger(__name__)
+
     # Load dataset
+    path = dataset_config["path"]
+    name = dataset_config.get("name")
+    split = dataset_config.get("split", "train")
+    logger.info(f"Loading single-source dataset: {path} (subset={name}, split={split})")
+    start = time.time()
     ds = load_dataset(
-        dataset_config["path"],
-        name=dataset_config.get("name"),
-        split=dataset_config.get("split", "train"),
+        path,
+        name=name,
+        split=split,
         streaming=True,
     )
+    elapsed = time.time() - start
+    logger.info(f"Dataset loaded in {elapsed:.1f}s")
 
     # Apply distributed sharding
     if world_size > 1:

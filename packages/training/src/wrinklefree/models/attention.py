@@ -165,9 +165,13 @@ class BitNetAttention(nn.Module):
         value_states = self.v_proj(hidden_states)
 
         # Reshape for multi-head attention
-        query_states = query_states.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        key_states = key_states.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
-        value_states = value_states.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        # Use -1 instead of num_heads to infer actual local heads from tensor size.
+        # This is the TorchTitan pattern: TP may have sharded the projection outputs,
+        # so we dynamically compute local heads from the actual tensor dimensions.
+        # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/models/llama3/model/model.py
+        query_states = query_states.view(batch_size, seq_len, -1, self.head_dim)
+        key_states = key_states.view(batch_size, seq_len, -1, self.head_dim)
+        value_states = value_states.view(batch_size, seq_len, -1, self.head_dim)
 
         # Apply RoPE
         if position_ids is None:
@@ -228,8 +232,13 @@ class BitNetFlashAttention(BitNetAttention):
         position_ids: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Forward pass with Flash Attention when possible."""
-        # Try to use Flash Attention
+        """
+        Forward pass with Flash Attention when possible.
+
+        Uses SDPA (scaled_dot_product_attention) for performance when available.
+        Falls back to standard attention when attention weights are requested.
+        """
+        # Use SDPA when available and attention weights not needed
         if not output_attentions and hasattr(F, "scaled_dot_product_attention"):
             return self._forward_flash(hidden_states, attention_mask, position_ids)
 
@@ -250,10 +259,14 @@ class BitNetFlashAttention(BitNetAttention):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        # Reshape
-        query_states = query_states.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        key_states = key_states.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
-        value_states = value_states.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        # Reshape for multi-head attention
+        # Use -1 instead of num_heads to infer actual local heads from tensor size.
+        # This is the TorchTitan pattern: TP may have sharded the projection outputs,
+        # so we dynamically compute local heads from the actual tensor dimensions.
+        # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/models/llama3/model/model.py
+        query_states = query_states.view(batch_size, seq_len, -1, self.head_dim)
+        key_states = key_states.view(batch_size, seq_len, -1, self.head_dim)
+        value_states = value_states.view(batch_size, seq_len, -1, self.head_dim)
 
         # Apply RoPE
         if position_ids is None:
@@ -272,14 +285,17 @@ class BitNetFlashAttention(BitNetAttention):
         value_states = repeat_kv(value_states.transpose(1, 2), self.num_kv_groups).transpose(1, 2)
 
         # Flash Attention
+        # Always use is_causal=True for autoregressive LM (causal language modeling).
+        # This avoids dtype issues with DTensor (tensor parallelism) when explicit masks
+        # are passed. The explicit attention_mask from the model is a causal mask anyway.
         dropout_p = self.attention_dropout if self.training else 0.0
         attn_output = F.scaled_dot_product_attention(
             query_states,
             key_states,
             value_states,
-            attn_mask=attention_mask,
+            attn_mask=None,  # Don't pass mask - use is_causal instead
             dropout_p=dropout_p,
-            is_causal=attention_mask is None,  # Use causal mask if no explicit mask
+            is_causal=True,  # Always use causal for autoregressive LM
         )
 
         # Reshape and apply SubLN

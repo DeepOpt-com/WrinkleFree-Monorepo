@@ -411,8 +411,11 @@ impl DlmScheduler {
 
                 self.batch.clear();
                 let logit_positions: Vec<usize>;
-                // Track whether we used compact batch (only masked tokens) vs full batch
-                let use_compact_batch: bool;
+                // Track batch index mapping:
+                // - masked_only=true: batch_idx = enumerate index
+                // - masked_only=false: batch_idx = block_idx - batch_offset
+                let masked_only: bool;
+                let batch_offset: usize;
 
                 if use_cached && first_token_unmasked {
                     // DualCache hit: Only compute for remaining masked positions
@@ -433,25 +436,29 @@ impl DlmScheduler {
                         let pos = block_start_pos + i as i32;
                         self.batch.add(block_tokens[i], pos, seq_id, true);
                     }
-                    use_compact_batch = true;
+                    masked_only = true;
+                    batch_offset = 0; // Not used when masked_only=true
                 } else {
-                    // Full block forward - clear entire block's KV cache first
-                    // This is critical: llama.cpp KV cache doesn't expect re-computation
-                    // at the same positions without clearing first
+                    // Full block forward - clear KV cache from current small block onwards
+                    // Only clear from current position to preserve valid cache from previous small blocks
+                    let current_pos = block_start_pos + start_idx as i32;
                     let block_end_pos = block_start_pos + block_size as i32;
-                    self.engine.kv_cache_seq_rm(seq_id, block_start_pos, block_end_pos);
+                    self.engine.kv_cache_seq_rm(seq_id, current_pos, block_end_pos);
 
-                    // Full batch: add all block tokens
-                    for (i, &token) in block_tokens.iter().enumerate() {
+                    // Add tokens from current small block onwards only
+                    // Previous small blocks already have valid KV cache
+                    for i in start_idx..block_size {
+                        let token = block_tokens[i];
                         let pos = block_start_pos + i as i32;
-                        let need_logits = i >= start_idx && i < end_idx && token == mask_id;
+                        let need_logits = i < end_idx && token == mask_id;
                         self.batch.add(token, pos, seq_id, need_logits);
                     }
 
                     logit_positions = (start_idx..end_idx)
                         .filter(|&i| block_tokens[i] == mask_id)
                         .collect();
-                    use_compact_batch = false;
+                    masked_only = false;
+                    batch_offset = start_idx; // Batch indices are relative to start_idx
 
                     // Update DualCache
                     let kv_end_pos = block_start_pos + block_size as i32;
@@ -472,12 +479,12 @@ impl DlmScheduler {
 
                 for (enum_idx, &block_idx) in logit_positions.iter().enumerate() {
                     // Determine batch index based on batch type:
-                    // - Compact batch: sequential indices (0, 1, 2...)
-                    // - Full batch: block indices (actual position in the 32-token block)
-                    let batch_idx = if use_compact_batch {
+                    // - masked_only: sequential indices (0, 1, 2...)
+                    // - partial block: block_idx - batch_offset
+                    let batch_idx = if masked_only {
                         enum_idx as i32
                     } else {
-                        block_idx as i32
+                        (block_idx - batch_offset) as i32
                     };
 
                     if let Some(logits) = self.engine.get_logits(batch_idx) {
