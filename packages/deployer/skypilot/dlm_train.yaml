@@ -21,7 +21,7 @@ resources:
   accelerators: H100:1  # Single GPU, scale via wf dlm --scale
   use_spot: false
   disk_size: 200
-  disk_tier: best
+  # disk_tier: best  # Removed - not supported on RunPod
   job_recovery:
     max_restarts_on_errors: 3  # Handle transient errors
 

@@ -173,3 +173,6 @@ git submodule update --init --recursive
 - [Architecture](docs/architecture.md) - System design and package relationships
 - [Dependencies](docs/dependencies.md) - Dependency graph and version constraints
 - [Development](docs/development.md) - Contributing and CI/CD
+
+# SKY Pilot
+### NEVER CANCEL JOBS THAT YOU DON'T OWN!!!! (ONLY CANCEL JOBS THAT YOU STARTED YOURSELF)
