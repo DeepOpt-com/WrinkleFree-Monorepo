@@ -3,16 +3,16 @@
 # Trains a model with Fast-dLLM v2 SFT recipe for 2.5x faster inference.
 # Auto-resumes from GCS checkpoint if available (checkpoint-step-* dirs).
 #
-# Launch via wf CLI (recommended):
+# Launch (from packages/deployer):
+#   source credentials/.env
+#   sky jobs launch skypilot/dlm_train.yaml -n wf-dlm-train --secret WANDB_API_KEY -y
+#
+# Or via wf CLI (recommended):
 #   wf dlm -m bitnet_2b                # Resume from checkpoint (Nebius default)
 #   wf dlm -m qwen3_4b -s hf://org/checkpoint
 #
-# Or manually:
-#   sky launch skypilot/dlm_train.yaml -y \
-#     --env MODEL=bitnet_2b
-#
 # Monitor:
-#   wf logs wf-dlm-train
+#   sky jobs logs <job_id>
 
 name: wf-dlm-train
 
