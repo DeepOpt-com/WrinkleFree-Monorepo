@@ -23,6 +23,11 @@
 #include <stdexcept>
 #include <omp.h>
 
+// SIMD intrinsics for optimized fp32_linear
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
+
 // Use SIMD kernels when available
 #ifdef USE_SIMD_KERNELS
 #include "bitnet_gemv.h"
