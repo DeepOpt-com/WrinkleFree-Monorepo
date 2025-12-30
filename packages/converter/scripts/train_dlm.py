@@ -664,6 +664,8 @@ def train(
 
     # Load model and tokenizer (from checkpoint if resuming)
     load_path = str(resume_checkpoint) if resume_checkpoint else model_path
+    print(f"[CHECKPOINT] Loading model from: {load_path}")
+    print(f"[CHECKPOINT] resume_checkpoint={resume_checkpoint}, model_path={model_path}")
     logger.info(f"Loading checkpoint from {load_path}")
     tokenizer = AutoTokenizer.from_pretrained(load_path)
     model = AutoModelForCausalLM.from_pretrained(
@@ -783,10 +785,12 @@ def train(
 
     # Start with appropriate dataset based on resume step
     if resume_step < curriculum_switch_step:
+        print(f"[CURRICULUM] Starting with chat-only dataset (phase 1), resume_step={resume_step} < switch={curriculum_switch_step}")
         logger.info(f"Starting with chat-only dataset (phase 1)")
         tokenized_dataset = chat_tokenized
         current_phase = 1
     else:
+        print(f"[CURRICULUM] Starting with mixed dataset (phase 2), resume_step={resume_step} >= switch={curriculum_switch_step}")
         logger.info(f"Starting with mixed dataset (phase 2, resumed past switch point)")
         tokenized_dataset = mixed_tokenized
         current_phase = 2
