@@ -93,6 +93,23 @@ ssh Desktop 'cd /home/lev/code/WrinkleFree/packages/inference && \
 
 Desktop IP: `192.168.1.217` (configured in `~/.ssh/config`)
 
+## RunPod Setup (ALWAYS DO THIS)
+
+When starting a new RunPod instance, **always install gcloud**:
+
+```bash
+# Install gcloud CLI
+curl -sSL https://sdk.cloud.google.com > /tmp/install_gcloud.sh
+bash /tmp/install_gcloud.sh --disable-prompts --install-dir=/opt
+
+# Add to PATH
+echo 'export PATH=/opt/google-cloud-sdk/bin:$PATH' >> ~/.bashrc
+export PATH=/opt/google-cloud-sdk/bin:$PATH
+
+# Verify
+gcloud --version
+```
+
 ## Core Principles
 
 - FAIL LOUDLY INSTEAD OF FALLBACKS
