@@ -48,16 +48,23 @@ VERSION = 1
 QK_I2_S = 128  # Block size for sgl-kernel
 
 
-def pack_ternary_sglkernel(weights: torch.Tensor) -> tuple[torch.Tensor, float]:
+def pack_ternary_sglkernel(weights: torch.Tensor, simd_mode: bool = True) -> tuple[torch.Tensor, float]:
     """
     Quantize and pack weights for sgl-kernel format.
 
-    Uses SEQUENTIAL packing (4 consecutive weights per byte):
-    - byte[i] = w[4*i] | (w[4*i+1] << 2) | (w[4*i+2] << 4) | (w[4*i+3] << 6)
-    - Encoding: 00=-1, 01=0, 10=+1 (offset by 1 from {-1,0,1})
+    SIMD mode (default): Block-interleaved packing for AVX2/AVX512 kernels
+    - Block size: 128 elements (QK_I2_S)
+    - 32 bytes per block
+    - byte[j].bits[6:7] = weight[j+0]   (for activation[j+0])
+    - byte[j].bits[4:5] = weight[j+32]  (for activation[j+32])
+    - byte[j].bits[2:3] = weight[j+64]  (for activation[j+64])
+    - byte[j].bits[0:1] = weight[j+96]  (for activation[j+96])
+
+    Scalar mode: Sequential packing (4 consecutive weights per byte)
 
     Args:
         weights: Input tensor [out_features, in_features]
+        simd_mode: Use SIMD-optimized block-interleaved packing (default True)
 
     Returns:
         packed: Packed uint8 tensor [out_features, in_features/4]
@@ -65,8 +72,8 @@ def pack_ternary_sglkernel(weights: torch.Tensor) -> tuple[torch.Tensor, float]:
     """
     M, K = weights.shape
 
-    # K must be multiple of 4 for packing
-    assert K % 4 == 0, f"K ({K}) must be multiple of 4"
+    # K must be multiple of 128 for SIMD block alignment
+    assert K % QK_I2_S == 0, f"K ({K}) must be multiple of {QK_I2_S}"
 
     # Convert to float32 for computation
     w = weights.float()
@@ -83,18 +90,35 @@ def pack_ternary_sglkernel(weights: torch.Tensor) -> tuple[torch.Tensor, float]:
     # Shift to unsigned: {-1, 0, 1} -> {0, 1, 2}
     w_unsigned = (w_quant + 1).to(torch.uint8)
 
-    # SEQUENTIAL packing: 4 consecutive weights per byte
     K_packed = K // 4
     packed = torch.zeros(M, K_packed, dtype=torch.uint8)
 
-    for byte_idx in range(K_packed):
-        k = byte_idx * 4
-        packed[:, byte_idx] = (
-            (w_unsigned[:, k] << 0) |
-            (w_unsigned[:, k + 1] << 2) |
-            (w_unsigned[:, k + 2] << 4) |
-            (w_unsigned[:, k + 3] << 6)
-        )
+    if simd_mode:
+        # SIMD Block-interleaved packing
+        # For each 128-element block: 32 packed bytes
+        # byte[j] packs weights at positions j, j+32, j+64, j+96 within block
+        num_blocks = K // QK_I2_S
+        for block_idx in range(num_blocks):
+            base_w = block_idx * QK_I2_S  # Start of 128-element block in weights
+            base_p = block_idx * 32       # Start of 32-byte block in packed
+            for j in range(32):
+                # Pack 4 weights from positions j, j+32, j+64, j+96 within block
+                packed[:, base_p + j] = (
+                    (w_unsigned[:, base_w + j + 0] << 6) |   # bits 6-7
+                    (w_unsigned[:, base_w + j + 32] << 4) |  # bits 4-5
+                    (w_unsigned[:, base_w + j + 64] << 2) |  # bits 2-3
+                    (w_unsigned[:, base_w + j + 96] << 0)    # bits 0-1
+                )
+    else:
+        # Sequential packing: 4 consecutive weights per byte
+        for byte_idx in range(K_packed):
+            k = byte_idx * 4
+            packed[:, byte_idx] = (
+                (w_unsigned[:, k] << 0) |
+                (w_unsigned[:, k + 1] << 2) |
+                (w_unsigned[:, k + 2] << 4) |
+                (w_unsigned[:, k + 3] << 6)
+            )
 
     return packed, scale
 
