@@ -74,32 +74,51 @@ cheapertraining = { workspace = true }
   - Use `c3d-standard-22` (22 vCPUs) instead of larger instances
   - Or request quota increase via GCP Console
 
-## Remote Sync (runpod-dev)
+## Remote Sync (gpucloud-dev)
 
-The `runpod-dev` tool (in `extern/runpod-dev`) handles all sync operations:
+The `gpucloud-dev` tool (in `extern/gpucloud-dev/`) handles all sync operations:
 
 ```bash
 # Sync to RunPod instance
-uv run runpod-dev sync my-dev
+uv run gcd sync my-dev
 
 # Sync to SSH host (uses .sync.conf preset)
-uv run runpod-dev sync-ssh desktop
+uv run gcd sync-ssh desktop
+
+# Smart sync (skips if watch active or no changes)
+uv run gcd sync-ssh desktop --smart
 
 # Sync with live watching
-uv run runpod-dev sync-ssh desktop --watch
+uv run gcd sync-ssh desktop --watch
 
 # Check sync status (for AI agents)
-uv run runpod-dev status --json
+uv run gcd status --json
 ```
 
-### Sync Status File
+### AI Agent Sync Protocol (CRITICAL)
 
-- Location: `.sync-status.json` (gitignored)
-- Updated after every sync operation
-- AI agents should check this before assuming files are synced:
-  ```bash
-  uv run runpod-dev status --json | jq '.watch_active'
-  ```
+Before running commands on remote servers:
+
+1. **Use `--smart` flag** (or check sync status first):
+   ```bash
+   uv run gcd sync-ssh desktop --smart
+   ```
+
+2. **Decision logic** (handled automatically with `--smart`):
+   - If `watch_active=true` → SKIP SYNC (mutagen handles it)
+   - If `files_checksum` unchanged → SKIP SYNC
+   - Otherwise → Run rsync
+
+3. **Recommended workflow**:
+   ```bash
+   # Start watch mode once at session start
+   uv run gcd sync-ssh desktop --watch
+
+   # Subsequent operations: use --smart
+   uv run gcd sync-ssh desktop --smart
+   ```
+
+This prevents the costly 90MB rsync on every command.
 
 ### SSH Presets
 
