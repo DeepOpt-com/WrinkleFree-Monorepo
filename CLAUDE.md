@@ -2,18 +2,72 @@
 
 Monorepo for 1.58-bit quantized LLM research using uv workspaces.
 
+## AI Navigation Guide
+
+**Start here to understand the codebase:**
+
+| Question | Where to Look |
+|----------|---------------|
+| How does 1.58-bit training work? | `packages/training/CLAUDE.md` - Full pipeline explanation |
+| How does distillation work? | `packages/distillation/CLAUDE.md` - BitDistill, TCS loss |
+| What are BitLinear/SubLN? | `packages/architecture/CLAUDE.md` - Layer implementations |
+| How is data loaded/mixed? | `packages/data_handler/CLAUDE.md` - Streaming, packing, influence |
+| How to deploy to cloud? | `packages/deployer/CLAUDE.md` - SkyPilot/Modal setup |
+| How to serve models? | `packages/inference/CLAUDE.md` - SGLang, BitNet.cpp, Rust gateway |
+| How to evaluate models? | `packages/eval/CLAUDE.md` - lm-eval harness, benchmarks |
+| How to convert to DLM? | `packages/converter/CLAUDE.md` - Fast-dLLM v2 training |
+| System architecture? | `docs/architecture.md` - Package relationships |
+| Package dependencies? | `docs/dependencies.md` - Dependency graph |
+
+**Each package has its own CLAUDE.md** with detailed guidance for that specific area.
+
+## Training Pipeline Overview
+
+WrinkleFree implements **BitDistill** for training 1.58-bit (ternary) LLMs:
+
+```
+Stage 1: SubLN Insertion (packages/training)
+    │   Convert model: add BitLinear + SubLN layers
+    ▼
+Stage 1.9: Layer-wise Distillation (packages/training)
+    │   Align hidden states with teacher (~100M tokens)
+    ▼
+Stage 2: Continue Pre-training (packages/training)
+    │   QAT with gradual quantization warmup (~10B tokens)
+    ▼
+Stage 3: Knowledge Distillation (packages/distillation)
+    │   BitDistill or TCS loss with teacher guidance
+    ▼
+Export: Convert to GGUF/DLM (packages/converter)
+    │
+    ▼
+Serve: Inference with BitNet.cpp (packages/inference)
+```
+
+**Key insight**: Stages 1-2 are in `training`, Stage 3+ is in `distillation`.
+
 ## Package Map
 
-| Package | Type | Purpose |
-|---------|------|---------|
-| `packages/training` | App | 1.58-bit training pipeline (BitDistill) |
-| `packages/distillation` | App | Knowledge distillation |
-| `packages/architecture` | Lib | BitNet layers (BitLinear, SubLN) & model conversion |
-| `packages/data_handler` | Lib | Shared data layer & utilities |
-| `packages/inference` | App | Serving layer (sglang-bitnet) |
-| `packages/eval` | App | Model evaluation (lm-eval) |
-| `packages/deployer` | App | Cloud deployment (Modal/SkyPilot) |
-| `packages/converter` | App | Model format conversion (DLM) |
+| Package | Type | Purpose | Key Entry Point |
+|---------|------|---------|-----------------|
+| `packages/training` | App | 1.58-bit training (Stages 1, 1.9, 2) | `scripts/train.py` |
+| `packages/distillation` | App | Knowledge distillation (Stage 3+) | `scripts/distill.py` |
+| `packages/architecture` | Lib | BitNet layers & model conversion | Import as library |
+| `packages/data_handler` | Lib | Data loading & influence functions | Import as library |
+| `packages/inference` | App | Model serving (sglang-bitnet) | `demo/serve_sglang.py` |
+| `packages/eval` | App | Model evaluation (lm-eval) | `scripts/evaluate.py` |
+| `packages/deployer` | App | Cloud deployment (SkyPilot/Modal) | `wf` CLI |
+| `packages/converter` | App | DLM format conversion | `scripts/train_dlm.py` |
+
+## Common Tasks Quick Reference
+
+| Task | Package | Command |
+|------|---------|---------|
+| Train Stage 2 | training | `uv run --package wrinklefree python scripts/train.py model=smollm2_135m training=stage2_pretrain` |
+| Run distillation | distillation | `uv run --package wrinklefree-distillation python scripts/distill.py student.checkpoint_path=...` |
+| Deploy to cloud | deployer | `wf train -m smollm2_135m -s 2 --cloud nebius` |
+| Run evaluation | eval | `uv run --package wrinklefree_eval python scripts/evaluate.py --model-path ...` |
+| Start inference | inference | `uv run streamlit run demo/serve_sglang.py` |
 
 ## Quick Start
 
