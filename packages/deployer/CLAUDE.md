@@ -12,7 +12,8 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 | Command | Package | Description |
 |---------|---------|-------------|
 | `wf train` | `training` | 1.58-bit quantization training |
-| `wf distill` | `distillation` | Knowledge distillation |
+| `wf distill` | `distillation` | Knowledge distillation (BitNet) |
+| `wf tcs-distill` | `distillation` | TCS distillation (DLM with block attention) |
 | `wf dlm` | `converter` | DLM format conversion |
 | `wf serve` | `inference` | Model serving |
 | `wf eval` | `eval` | Model evaluation |
@@ -41,6 +42,11 @@ uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --cloud nebius
 # With specific scale (4x H100)
 uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --scale large
 
+# TCS distillation for DLM models (block-wise attention enabled)
+uv run --package wrinklefree-deployer wf tcs-distill \
+  --checkpoint gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/ \
+  --cloud runpod
+
 # Check logs
 uv run --package wrinklefree-deployer wf logs <run_id>
 
@@ -57,10 +63,11 @@ uv run --package wrinklefree-deployer sky jobs queue
 | File | Purpose |
 |------|---------|
 | `src/wf_deployer/constants.py` | All magic strings, defaults, scales, GAR config |
-| `src/wf_deployer/core.py` | Main API: train(), train_distill(), logs(), cancel() |
+| `src/wf_deployer/core.py` | Main API: train(), train_distill(), train_tcs_distill(), logs() |
 | `src/wf_deployer/cli.py` | CLI commands |
 | `skypilot/train.yaml` | SkyPilot training job template |
-| `skypilot/distill_train.yaml` | SkyPilot distillation job template |
+| `skypilot/distill_train.yaml` | SkyPilot distillation job template (BitNet) |
+| `skypilot/tcs_distill_train.yaml` | SkyPilot TCS distillation job template (DLM) |
 | `skypilot/service.yaml` | SkyServe inference template |
 | `credentials/.env` | Local credentials (gitignored) |
 | `credentials/gcp-service-account.json` | GCP service account for GCS + Docker auth |

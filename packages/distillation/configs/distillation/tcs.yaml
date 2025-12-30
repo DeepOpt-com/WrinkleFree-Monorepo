@@ -1,0 +1,39 @@
+# Target Concrete Score (TCS) distillation for DLM students
+# Based on Apple's TCSM (ICML 2025) + BitDistill block-wise attention
+#
+# Key differences from BitDistill:
+# - NO logit shifting (DLM predicts masked tokens, not next tokens)
+# - Top-K estimation for sparse TCS matching
+# - Block-wise attention distillation (matches within bd_size blocks only)
+#
+# References:
+# - TCSM: https://machinelearning.apple.com/research/target-concrete
+# - BitDistill: arxiv.org/abs/2510.13998
+# - Fast-dLLM v2: arxiv.org/abs/2509.26328
+
+# Student type - MUST be "dlm" for TCS distillation
+student_type: dlm
+
+# TCS Loss weights
+# L = L_CE + lambda_tcs * L_TCS + gamma_attention * L_BlockAttn
+lambda_logits: 10.0      # Weight for TCS logits distillation (same as lambda_tcs)
+gamma_attention: 1.0e-5  # Weight for block-wise attention distillation (ENABLED!)
+
+# Temperature for TCS (KL divergence)
+# Higher = softer distributions = more information transfer
+temperature: 5.0
+
+# TCS-specific settings
+top_k: 100  # Number of top tokens for sparse TCS estimation
+
+# Block-wise attention distillation settings
+# Block size is read from DLM checkpoint's dlm_config.json (bd_size)
+# Default: 32 (Fast-dLLM v2 standard)
+block_size: 32
+
+# Attention distillation settings
+attention:
+  enabled: true           # Block-wise attention distillation enabled
+  use_relation_distill: true  # Use A·A^T relation matrices (BitDistill)
+  distill_layer: -1       # Single layer (-1 = last, recommended)
+  alpha: 1.0              # Attention loss scaling coefficient

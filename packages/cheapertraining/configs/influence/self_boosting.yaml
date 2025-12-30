@@ -1,0 +1,35 @@
+# Self-boosting configuration (Phase III)
+# Reference: MobileLLM-R1 paper (arXiv:2509.24945) Phase III
+
+defaults:
+  - default
+
+# Phase III: Mid-training Self-Boosting
+self_boosting:
+  # Influence threshold for rejection sampling
+  # Samples with influence <= threshold are rejected
+  influence_threshold: 0.0
+
+  # Iterative compression settings
+  num_stages: 2
+  compression_ratio_per_stage: 0.5  # Keep 50% per stage
+
+  # How often to refresh probe gradients with updated model
+  recompute_interval: 1000
+
+  # Buffer size for rejection sampling
+  # Larger = more efficient but more memory
+  buffer_size: 1000
+
+  # Minimum samples to keep after filtering
+  # Prevents empty batches
+  min_batch_size: 1
+
+# Training integration
+training:
+  # Whether to enable self-boosting filtering
+  enable_self_boosting: true
+
+  # Log rejection statistics
+  log_rejection_rate: true
+  log_interval: 100

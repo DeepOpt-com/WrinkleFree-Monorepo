@@ -230,6 +230,52 @@ def distill(ctx, model: str, checkpoint: str, teacher: str | None, config: str, 
     )
 
 
+@cli.command("tcs-distill",
+    context_settings=dict(
+        ignore_unknown_options=True,
+        allow_extra_args=True,
+    )
+)
+@click.option("--checkpoint", "-ckpt", required=True, help="DLM checkpoint path (gs:// or local)")
+@click.option("--teacher", "-t", default=None, help="Teacher model (default: from dlm_config.json)")
+@click.option("--scale", "-s", default=None,
+              type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
+              help="GPU scale profile")
+@click.option("--cloud", "-c", default="nebius", type=click.Choice(["nebius", "runpod", "vast"]), help="Cloud provider")
+@click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
+@click.pass_context
+def tcs_distill(ctx, checkpoint: str, teacher: str | None, scale: str, cloud: str, detach: bool):
+    """Launch TCS distillation for DLM students (block-wise attention enabled).
+
+    Distills a DLM (Diffusion Language Model) student against an AR teacher
+    using Target Concrete Score (TCS) with block-wise attention distillation.
+
+    \b
+    Key features:
+        - NO logit shifting (DLM predicts masked tokens, not next tokens)
+        - Top-K TCS estimation for sparse distribution matching
+        - Block-wise attention distillation (matches within bd_size blocks)
+        - GCS checkpoint uploads enabled by default
+
+    \b
+    Examples:
+        wf tcs-distill --checkpoint gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/
+        wf tcs-distill --checkpoint gs://... --teacher 1bitLLM/bitnet_b1_58-2B
+        wf tcs-distill --checkpoint gs://... --cloud runpod --scale medium
+        wf tcs-distill --checkpoint gs://... training.max_steps=1000
+    """
+    overrides = list(ctx.args)
+
+    core.train_tcs_distill(
+        checkpoint=checkpoint,
+        teacher=teacher,
+        scale=scale,
+        overrides=overrides,
+        cloud=cloud,
+        detach=detach,
+    )
+
+
 @cli.command()
 @click.argument("job_name")
 @click.option("--follow", "-f", is_flag=True, help="Stream logs continuously")

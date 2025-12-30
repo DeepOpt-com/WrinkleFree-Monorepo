@@ -14,14 +14,13 @@ WrinkleFree-Distillation implements knowledge distillation for quantized LLMs:
 ## Monorepo Integration
 
 This package is part of the WrinkleFree monorepo and depends on:
-- **cheapertraining**: Shared data loading utilities, influence-based dataset rebalancing
+- **data_handler**: Shared data loading utilities, influence-based dataset rebalancing
 
 **Related packages**:
 | Package | Relationship |
 |---------|--------------|
-| `cheapertraining` | Data loading, influence functions (shared library) |
+| `data_handler` | Data loading, influence functions (shared library) |
 | `training` | Produces quantized models that can be distilled |
-| `fairy2` | Produces Fairy2 models that can be distilled |
 | `deployer` | Cloud deployment |
 
 **Running from monorepo root**:
@@ -43,6 +42,23 @@ Where:
 - L_LD: KL(P_teacher || P_student) * T^2 at temperature T
 - L_AD: Attention relation distillation (single layer)
 ```
+
+### TCS Distillation Loss (for DLM Students)
+
+Target Concrete Score (TCS) distillation for DLM (Diffusion Language Model) students:
+```
+L = L_CE + lambda_tcs * L_TCS + gamma_attn * L_BlockAttn
+
+Where:
+- L_CE: Cross-entropy on ground truth labels (NO SHIFT for DLM!)
+- L_TCS: KL(softmax(teacher_topk/T) || softmax(student[topk_indices]/T)) * T^2
+- L_BlockAttn: Block-wise attention relation distillation (within bd_size blocks)
+```
+
+**Key differences from BitDistill**:
+1. **No logit shifting** - DLM predicts masked tokens, not next tokens
+2. **Top-K estimation** - Sparse distribution matching for efficiency
+3. **Block-wise attention** - Only matches attention within blocks where both AR teacher and DLM student use bidirectional attention
 
 ### Teacher Backends
 
@@ -70,6 +86,19 @@ uv run python scripts/distill.py \
   student.checkpoint_path=outputs/stage2/checkpoint.pt \
   distillation=logits_only
 
+# TCS distillation for DLM students (block-wise attention enabled)
+uv run python scripts/distill.py \
+  distillation=tcs \
+  student.checkpoint_path=gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/ \
+  student.type=dlm
+
+# TCS with explicit teacher
+uv run python scripts/distill.py \
+  distillation=tcs \
+  student.checkpoint_path=gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/ \
+  student.type=dlm \
+  teacher.model_name=1bitLLM/bitnet_b1_58-2B
+
 # Run tests
 uv run pytest
 ```
@@ -77,7 +106,7 @@ uv run pytest
 ## Configuration
 
 All configs in `configs/` using Hydra:
-- `distillation/` - Distillation configs (bitdistill, logits_only, classification)
+- `distillation/` - Distillation configs (bitdistill, logits_only, tcs, classification)
 - `training/` - Training hyperparameters
 
 ### Key Config Options
@@ -99,7 +128,7 @@ distillation:
   gamma_attention: 1e-5 # Attention distillation weight (0 = disabled)
   temperature: 5.0      # KL temperature
 
-# Data (from cheapertraining)
+# Data (from data_handler)
 data:
   config_name: mixed_pretrain
 
@@ -119,9 +148,9 @@ influence:
 ### Entry Point
 - `scripts/distill.py` - Main Hydra entry point
 
-## Data (via CheaperTraining)
+## Data (via data_handler)
 
-Uses cheapertraining's data infrastructure:
+Uses data_handler's data infrastructure:
 - `create_dataloader()` - Multi-source mixed datasets
 - `MixedDataset.update_weights_from_influence()` - Dynamic rebalancing
 - `InfluenceDistillation` - Compute optimal mixture weights
@@ -142,4 +171,6 @@ uv run pytest --cov=distillation
 ## References
 
 - Paper: [BitDistill](https://arxiv.org/abs/2510.13998)
+- TCS: [Apple TCSM (ICML 2025)](https://machinelearning.apple.com/research/target-concrete)
+- DLM: [DDLM](https://openreview.net/forum?id=xfw92pDy2u), [Fast-dLLM v2](https://arxiv.org/abs/2509.26328)
 - Related: [BitNet](https://arxiv.org/abs/2310.11453), [Fairy2i](https://arxiv.org/abs/2512.02901)

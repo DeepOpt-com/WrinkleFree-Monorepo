@@ -35,10 +35,12 @@ uv sync --package wrinklefree
 ```bash
 # Check imports work
 uv run --package wrinklefree python -c "import wrinklefree; print('training: ok')"
-uv run --package cheapertraining python -c "import cheapertraining; print('cheapertraining: ok')"
+uv run --package data-handler python -c "import data_handler; print('data_handler: ok')"
+uv run --package bitnet-arch python -c "import bitnet_arch; print('bitnet_arch: ok')"
+uv run --package wrinklefree-distillation python -c "import distillation; print('distillation: ok')"
 
 # Run tests
-uv run pytest packages/cheapertraining/tests/ -v --tb=short
+uv run pytest packages/data_handler/tests/ -v --tb=short
 ```
 
 ## Common Tasks
@@ -57,6 +59,25 @@ uv run --package wrinklefree python packages/training/scripts/train.py \
   model=smollm2_135m \
   training=stage2_pretrain \
   training.max_steps=100
+```
+
+### Running Distillation (Stage 3)
+
+```bash
+# BitDistill distillation (logits + attention)
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+  student.checkpoint_path=outputs/stage2/checkpoint.pt
+
+# Logits-only distillation (no attention)
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+  student.checkpoint_path=outputs/stage2/checkpoint.pt \
+  distillation=logits_only
+
+# TCS distillation for DLM students
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+  distillation=tcs \
+  student.checkpoint_path=outputs/dlm/checkpoint.pt \
+  student.type=dlm
 ```
 
 ### Running Evaluation
@@ -123,7 +144,8 @@ Ensure workspace dependencies are configured:
 ```toml
 # In packages/training/pyproject.toml
 [tool.uv.sources]
-cheapertraining = { workspace = true }
+data-handler = { workspace = true }
+bitnet-arch = { workspace = true }
 ```
 
 ## Next Steps

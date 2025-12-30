@@ -1,0 +1,22 @@
+# APOLLO optimizer - memory efficient (1/8 of AdamW memory)
+# Reference: https://arxiv.org/abs/2412.05270
+# MLSys 2025 Outstanding Paper Honorable Mention
+#
+# Requires optional dependency: pip install cheapertraining[apollo]
+#
+# Use case: When GPU memory is constrained and you need larger batch sizes
+# or want to train bigger models on the same hardware.
+
+optimizer:
+  type: apollo
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  # Note: lr and weight_decay come from training config
+
+# Gradient scaling for mixed precision
+grad_scaler:
+  enabled: true
+  init_scale: 65536
+  growth_factor: 2.0
+  backoff_factor: 0.5
+  growth_interval: 2000

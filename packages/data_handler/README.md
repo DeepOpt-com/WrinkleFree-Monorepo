@@ -1,12 +1,17 @@
-# CheaperTraining
+# Data Handler
 
 > Part of [WrinkleFree Monorepo](https://github.com/DeepOpt-com/WrinkleFree-Monorepo) - Shared library for data loading and influence-based optimization.
 
-Efficient LLM training library implementing the [MobileLLM-R1](https://arxiv.org/abs/2509.24945) training methodology. This is a **clean room implementation** based solely on the paper description, designed for commercial use.
+A shared data handling library for the WrinkleFree monorepo, providing data loading, influence-based optimization, and dataset mixing utilities. Based on techniques from [MobileLLM-R1](https://arxiv.org/abs/2509.24945).
 
 ## Overview
 
-CheaperTraining provides a complete training pipeline for language models from pretraining through post-training, optimized for efficiency at scale (up to 671B parameters). It serves as the continued pre-training foundation for the [training](../training) package's BitNet fine-tuning library.
+Data Handler provides shared data utilities for the WrinkleFree monorepo, including:
+- Streaming data loading with sequence packing
+- Influence-based dataset reweighting
+- Multi-source dataset mixing with dynamic weight optimization
+
+It is used by both the [training](../training) and [distillation](../distillation) packages.
 
 ## Features
 
@@ -27,21 +32,24 @@ cd WrinkleFree-Monorepo
 uv sync --all-packages
 
 # Or install just this package
-uv sync --package cheapertraining
+uv sync --package data-handler
 ```
 
 ## Quick Start
 
-```bash
-# Run pretraining phase 1
-cheapertraining-pretrain training=pretrain_phase1 model=mobilellm_950m
+```python
+# Import data handler utilities
+from data_handler.data import create_dataloader, MixedDataset
+from data_handler.influence import InfluenceAwareOptimizer
 
-# Run with custom config
-cheapertraining-train \
-    model=mobilellm_950m \
-    training=pretrain_phase1 \
-    data=pretrain_phase1_mix \
-    distributed=fsdp2
+# Create a mixed dataset
+dataset = MixedDataset(sources=["fineweb", "code"], weights=[0.7, 0.3])
+
+# Create dataloader with sequence packing
+dataloader = create_dataloader(dataset, batch_size=32, max_seq_length=2048)
+
+# Wrap optimizer with influence-based weight updates
+optimizer = InfluenceAwareOptimizer(base_optimizer, update_interval=1000)
 ```
 
 ## Training Pipeline
@@ -57,8 +65,8 @@ cheapertraining-train \
 ## Project Structure
 
 ```
-packages/cheapertraining/
-├── src/cheapertraining/          # Main source code
+packages/data_handler/
+├── src/data_handler/             # Main source code
 │   ├── models/                   # Model architecture
 │   │   ├── config.py                # MobileLLM configs (140M-671B)
 │   │   ├── mobilellm.py             # Main MobileLLM model class
@@ -131,14 +139,18 @@ defaults:
   - distributed: fsdp2
 ```
 
-## Integration with WrinkleFree-1.58Quant
+## Integration with Training Package
 
-This library is designed to work with the BitNet 1.58-bit fine-tuning pipeline:
+This library is used by the training and distillation packages for:
 
-1. **CheaperTraining**: Efficient continued pre-training
-2. **WrinkleFree-1.58Quant**: SubLN insertion and 1.58-bit quantization
+1. **Training Package**: Data loading, influence-based optimization for Stage 2 pre-training
+2. **Distillation Package**: Data loading, dataset mixing for knowledge distillation
 
-Checkpoints from CheaperTraining can be directly loaded into WrinkleFree-1.58Quant's Stage 1 (SubLN insertion).
+Workspace dependency configuration:
+```toml
+[tool.uv.sources]
+data-handler = { workspace = true }
+```
 
 ## References
 

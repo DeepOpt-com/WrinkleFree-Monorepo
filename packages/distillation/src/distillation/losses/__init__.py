@@ -14,6 +14,10 @@ from distillation.losses.logits_loss import (
     LogitsDistillationLoss,
     SoftTargetCrossEntropy,
 )
+from distillation.losses.tcs_loss import (
+    LogitsOnlyTCSLoss,
+    TCSDistillLoss,
+)
 
 __all__ = [
     # Logits
@@ -24,7 +28,10 @@ __all__ = [
     "AttentionRelationDistillationLoss",
     "BitDistillAttentionRelationLoss",
     "HiddenStateDistillationLoss",
-    # Combined
+    # Combined (AR models)
     "BitDistillLoss",
     "ClassificationDistillLoss",
+    # TCS (DLM models)
+    "TCSDistillLoss",
+    "LogitsOnlyTCSLoss",
 ]

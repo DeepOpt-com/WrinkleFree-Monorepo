@@ -15,12 +15,15 @@ WrinkleFree is a repository for training and serving 1.58-bit (ternary) LLM mode
 ## Monorepo Integration
 
 This package is part of the WrinkleFree monorepo and depends on:
-- **cheapertraining**: Shared data loading and influence functions
+- **data_handler**: Shared data loading and influence functions
+- **bitnet_arch**: BitNet layers (BitLinear, SubLN) and model conversion
 
 **Related packages**:
 | Package | Relationship |
 |---------|--------------|
-| `cheapertraining` | Data loading, influence optimization |
+| `data_handler` | Data loading, influence optimization |
+| `architecture` | BitNet layers and model conversion |
+| `distillation` | Knowledge distillation (Stage 3+) |
 | `deployer` | Cloud deployment (launches training jobs) |
 | `converter` | Converts trained models to DLM format |
 | `inference` | Serves trained models |
@@ -418,12 +421,12 @@ modal run src/wf_deployer/modal_deployer.py --model smollm2_135m --stage 2 \
 - BitNet submodule (at meta-repo root ../extern/BitNet) is for inference only
 - MoE support uses llama.cpp's Mixtral-style tensor packing
 
-## Training Data (from CheaperTraining)
+## Training Data (from data_handler)
 
-**Data configs are managed by CheaperTraining, NOT 1.58Quant.**
+**Data configs are managed by data_handler, NOT this package.**
 
-1.58Quant's `configs/data/default.yaml` just specifies `config_name: mixed_pretrain`, which loads
-the actual data config from `CheaperTraining/configs/data/mixed_pretrain.yaml`.
+This package's `configs/data/default.yaml` just specifies `config_name: mixed_pretrain`, which loads
+the actual data config from `data_handler/configs/data/mixed_pretrain.yaml`.
 
 The `mixed_pretrain` config includes:
 - 6 data sources (DCLM, FineWeb-Edu, GitHub Code 2025, FineMath, SlimPajama, SYNTH)
@@ -433,10 +436,10 @@ The `mixed_pretrain` config includes:
 **To use a different data config**, override `data.config_name`:
 ```bash
 uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain \
-  data.config_name=fineweb  # Use CheaperTraining's fineweb.yaml
+  data.config_name=fineweb  # Use data_handler's fineweb.yaml
 ```
 
-**Available configs** (in `packages/cheapertraining/configs/data/`):
+**Available configs** (in `packages/data_handler/configs/data/`):
 - `mixed_pretrain` - Multi-source with influence (default, recommended)
 - `fineweb` - Single-source FineWeb-Edu (no influence)
 - `downstream` - SFT/finetuning tasks (Stage 3)

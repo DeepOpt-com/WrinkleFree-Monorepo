@@ -557,6 +557,8 @@ def main(cfg: DictConfig) -> None:
                     config_name=warmup_config,
                     with_probes=False,
                     seed=cfg.seed,
+                    rank=rank,
+                    world_size=world_size,
                 )
 
                 # Phase 2: Load in background thread (mixed_pretrain takes longer)
@@ -569,6 +571,8 @@ def main(cfg: DictConfig) -> None:
                         config_name=config_name,
                         with_probes=influence_enabled,
                         seed=cfg.seed,
+                        rank=rank,
+                        world_size=world_size,
                     )
 
                 executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -584,6 +588,8 @@ def main(cfg: DictConfig) -> None:
                     config_name=config_name,
                     with_probes=influence_enabled,
                     seed=cfg.seed,
+                    rank=rank,
+                    world_size=world_size,
                 )
 
             # Extract first probe loader for legacy interface (stage2 trainer expects single loader)
@@ -808,8 +814,7 @@ def main(cfg: DictConfig) -> None:
             logger.info("Running Unified Training (auto-convert + objectives)")
 
             # Load model - will be auto-converted to BitNet if needed
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-
+            # NOTE: AutoModelForCausalLM, AutoTokenizer already imported at module level
             model = AutoModelForCausalLM.from_pretrained(
                 cfg.model.teacher.pretrained,
                 torch_dtype=torch.bfloat16,

@@ -7,7 +7,7 @@ Knowledge distillation package for quantized LLMs (BitNet, Fairy2, etc.).
 - **BitDistill-style distillation** (logits + attention)
 - **Toggle-able attention distillation** for different use cases
 - **Multiple teacher backends**: Local HuggingFace models or vLLM servers
-- **Influence-based dataset rebalancing** via cheapertraining
+- **Influence-based dataset rebalancing** via data_handler
 
 ## Installation
 

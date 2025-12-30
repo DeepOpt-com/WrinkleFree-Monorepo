@@ -3,15 +3,20 @@
 ## Package Dependencies
 
 ```
-cheapertraining (library)
+data_handler (library)
     │
     ├──► training (wrinklefree)
     │       Dependencies: torch, transformers, hydra-core, datasets, wandb
-    │       Uses: cheapertraining.data, cheapertraining.influence
+    │       Uses: data_handler.data, data_handler.influence
     │
-    └──► fairy2
-            Dependencies: torch, transformers, hydra-core
-            Uses: cheapertraining.data
+    └──► distillation (wrinklefree-distillation)
+            Dependencies: torch, transformers, hydra-core, vllm (optional)
+            Uses: data_handler.data, data_handler.influence
+
+architecture (library)
+    │
+    └──► training (wrinklefree)
+            Uses: bitnet_arch.layers, bitnet_arch.conversion
 
 inference
     │   Dependencies: sglang, torch, transformers
@@ -23,13 +28,13 @@ inference
 
 deployer
     │   Dependencies: modal, skypilot, typer
-    │   Orchestrates: training, inference, eval
+    │   Orchestrates: training, distillation, inference, eval
     │
     └──► References all other packages via cloud deployment
 
 converter
         Dependencies: torch, transformers, safetensors
-        Standalone: no internal package dependencies
+        Uses: data_handler.data
 ```
 
 ## Workspace Dependencies
@@ -40,12 +45,26 @@ Packages that import other packages must declare workspace sources:
 # packages/training/pyproject.toml
 [project]
 dependencies = [
-    "cheapertraining",  # Listed as dependency
+    "data-handler",  # Shared data library
+    "bitnet-arch",   # BitNet layers & conversion
     # ... other deps
 ]
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }  # Resolved from workspace
+data-handler = { workspace = true }
+bitnet-arch = { workspace = true }
+```
+
+```toml
+# packages/distillation/pyproject.toml
+[project]
+dependencies = [
+    "data-handler",  # Shared data library
+    # ... other deps
+]
+
+[tool.uv.sources]
+data-handler = { workspace = true }
 ```
 
 ## External Submodules
@@ -81,6 +100,14 @@ git commit -m "Update BitNet submodule"
 | hydra-core | >=1.3.0 | Configuration |
 | wandb | >=0.16.0 | Experiment tracking |
 | bitsandbytes | >=0.42.0 | 8-bit optimizers |
+
+### Distillation Stack
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| vllm | >=0.6.0 | Remote teacher backend (optional) |
+| safetensors | >=0.4.0 | Model serialization |
+| google-cloud-storage | >=2.0.0 | GCS checkpoint access |
 
 ### Inference Stack
 

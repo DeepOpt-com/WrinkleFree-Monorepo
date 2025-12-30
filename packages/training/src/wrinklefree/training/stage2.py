@@ -538,18 +538,90 @@ class ContinuedPretrainingTrainer(Trainer):
     def _forward_step(self, batch: dict) -> dict[str, torch.Tensor]:
         """Forward step with token tracking.
 
-        Handles both modes:
-        - Pure LM: uses ContinuePretrainLoss
-        - Pre-stage-2: combines layer-wise distillation with LM loss
+        Handles three modes (in priority order):
+        1. ObjectiveManager: delegates to composable objectives system
+        2. Pre-stage-2: combines layer-wise distillation with LM loss
+        3. Pure LM: uses ContinuePretrainLoss
         """
         # Track tokens
         batch_tokens = batch["input_ids"].numel()
         self.tokens_processed += batch_tokens
 
-        if self.pre_stage_2_enabled:
+        if self.use_objective_manager:
+            return self._forward_step_objectives(batch)
+        elif self.pre_stage_2_enabled:
             return self._forward_step_distillation(batch)
         else:
             return self._forward_step_lm(batch)
+
+    def _forward_step_objectives(self, batch: dict) -> dict[str, torch.Tensor]:
+        """Forward step using ObjectiveManager for composable objectives.
+
+        This is the unified approach that supports:
+        - continue_pretrain: Cross-entropy LM loss
+        - layerwise_distill: Hidden state alignment with teacher
+        - dlm: Diffusion language modeling (future)
+
+        The ObjectiveManager handles preprocessing, teacher forward (if needed),
+        and combining multiple weighted objectives.
+        """
+        # 1. Preprocess batch (e.g., masking for DLM)
+        batch = self.objective_manager.preprocess_batch(batch)
+
+        # 2. Teacher forward (only if any objective requires it)
+        teacher_outputs = None
+        if self.objective_manager.requires_teacher and self.teacher is not None:
+            with torch.no_grad():
+                teacher_outputs = self.teacher(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch.get("attention_mask"),
+                )
+
+        # 3. Student forward
+        student_outputs = self.model(
+            input_ids=batch["input_ids"],
+            attention_mask=batch.get("attention_mask"),
+            position_ids=batch.get("position_ids"),
+            output_hidden_states=self.objective_manager.requires_hidden_states,
+        )
+
+        # 4. Compute objectives via ObjectiveManager
+        manager_output = self.objective_manager(
+            model_outputs=student_outputs,
+            batch=batch,
+            teacher_outputs=teacher_outputs,
+        )
+
+        # 5. Step curriculum scheduler (if present)
+        self.objective_manager.step_curriculum()
+
+        # 6. Build loss dict
+        loss_dict = {
+            "loss": manager_output.loss,
+            "tokens_processed": torch.tensor(float(self.tokens_processed), device=batch["input_ids"].device),
+        }
+
+        # Add unweighted CE loss and perplexity (for fair comparison across runs)
+        if manager_output.ce_loss is not None:
+            loss_dict["ce_loss"] = manager_output.ce_loss
+        if manager_output.perplexity is not None:
+            loss_dict["perplexity"] = manager_output.perplexity
+        else:
+            # Compute perplexity from CE loss if available
+            if manager_output.ce_loss is not None:
+                loss_dict["perplexity"] = torch.exp(torch.clamp(manager_output.ce_loss, max=10.0))
+
+        # Add per-objective metrics (for detailed logging)
+        for obj_name, obj_output in manager_output.objective_outputs.items():
+            loss_dict[f"{obj_name}_loss"] = obj_output.loss
+            for metric_name, value in obj_output.metrics.items():
+                loss_dict[f"{obj_name}_{metric_name}"] = value
+
+        # Add current objective weights (for curriculum tracking)
+        for obj_name, weight in manager_output.weights_used.items():
+            loss_dict[f"weight_{obj_name}"] = torch.tensor(weight, device=batch["input_ids"].device)
+
+        return loss_dict
 
     def _forward_step_lm(self, batch: dict) -> dict[str, torch.Tensor]:
         """Pure LM forward step (default mode)."""

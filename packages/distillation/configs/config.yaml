@@ -1,5 +1,14 @@
 # Distillation main configuration
-# Override with: python scripts/distill.py distillation=logits_only student.checkpoint_path=...
+#
+# Usage:
+#   # BitNet distillation (default)
+#   python scripts/distill.py student.checkpoint_path=outputs/stage2/checkpoint.pt
+#
+#   # DLM distillation with TCS
+#   python scripts/distill.py \
+#     distillation=tcs \
+#     student.checkpoint_path=gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/ \
+#     student.type=dlm
 
 defaults:
   - distillation: bitdistill
@@ -8,6 +17,7 @@ defaults:
 # Student model (required)
 student:
   checkpoint_path: ???  # Required: path to student checkpoint
+  type: auto            # "bitnet", "dlm", or "auto" (auto-detect from path)
   model_config: null    # Optional: override model config
 
 # Teacher model
@@ -48,6 +58,11 @@ scheduler:
 checkpoint:
   save_interval: 500
   keep_last_n: 3
+  gcs:
+    enabled: true  # Upload checkpoints to GCS
+    bucket: wrinklefree-checkpoints
+    upload_interval: 500  # Upload every N steps
+    keep_n: 5  # Keep N most recent checkpoints on GCS
 
 # Logging
 logging:

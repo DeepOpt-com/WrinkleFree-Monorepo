@@ -1,0 +1,93 @@
+# Fairy2i Smoke Test - 1M tokens on Nebius H100
+#
+# Quick validation of Fairy2 training with real data from CheaperTraining.
+#
+# Launch:
+#   cd WrinkleFree-Deployer && uv run sky launch skypilot/fairy2_smoke_test.yaml -y --infra nebius
+#
+# Monitor:
+#   uv run sky logs fairy2-smoke
+
+name: fairy2-smoke
+
+resources:
+  cloud: nebius
+  accelerators: H100:1
+  use_spot: false
+  disk_size: 100
+
+# Sync both Fairy2 and CheaperTraining
+workdir: ../WrinkleFree-Fairy2
+
+file_mounts:
+  # Mount CheaperTraining for data loading
+  ~/cheapertraining:
+    name: cheapertraining-src
+    source: ../WrinkleFree-CheaperTraining
+    mode: COPY
+
+envs:
+  # Model and mode
+  MODEL: smollm2_135m
+  MODE: w2
+
+  # ~1M tokens: batch=8, seq=512, grad_accum=8 → 32K tokens/step → ~31 steps
+  MAX_STEPS: "31"
+
+  # W&B tracking
+  WANDB_PROJECT: wrinklefree-fairy2
+
+  # GCS checkpointing
+  GCS_BUCKET: wrinklefree-checkpoints
+
+setup: |
+  set -e
+
+  # Install uv
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Install Fairy2 first (creates venv)
+  echo "Installing Fairy2..."
+  cd ~/sky_workdir
+  uv sync
+
+  # Install CheaperTraining into Fairy2's venv
+  echo "Installing CheaperTraining..."
+  uv pip install -e ~/cheapertraining
+
+  # Verify GPU setup
+  uv run python -c 'import torch; print(f"PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}")'
+
+  # Verify CheaperTraining import
+  uv run python -c 'from fairy2.data import CHEAPERTRAINING_AVAILABLE; print(f"CheaperTraining: {CHEAPERTRAINING_AVAILABLE}")'
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  echo "=============================================="
+  echo "Fairy2i Smoke Test - 1M tokens"
+  echo "Model: ${MODEL}"
+  echo "Mode: ${MODE}"
+  echo "Steps: ${MAX_STEPS} (~1M tokens)"
+  echo "=============================================="
+
+  # Run training with real data
+  # NOTE: No data= arg needed - create_pretraining_dataloader() loads config from CheaperTraining
+  uv run python scripts/train.py \
+    model=${MODEL} \
+    training=fairy2_${MODE} \
+    training.max_steps=${MAX_STEPS} \
+    training.save_interval=10 \
+    training.influence.enabled=true \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET}
+
+  echo ""
+  echo "=============================================="
+  echo "SMOKE TEST COMPLETE!"
+  echo "=============================================="

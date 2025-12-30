@@ -2,8 +2,14 @@
 """Main entry point for distillation training.
 
 Usage:
-    # Distill against original model (default)
+    # Distill BitNet model against original model (default)
     python scripts/distill.py student.checkpoint_path=outputs/stage2/checkpoint.pt
+
+    # Distill DLM model with TCS (Target Concrete Score)
+    python scripts/distill.py \
+        student.checkpoint_path=gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/ \
+        student.type=dlm \
+        distillation=tcs
 
     # Distill with different teacher
     python scripts/distill.py \
@@ -22,8 +28,10 @@ Usage:
         teacher.vllm_url=http://localhost:8000
 """
 
+import json
 import logging
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional, Union
@@ -60,6 +68,187 @@ def download_from_gcs(gcs_path: str) -> Path:
 
     logger.info(f"Downloaded to: {local_path}")
     return local_path
+
+
+def download_directory_from_gcs(gcs_path: str) -> Path:
+    """Download a directory from GCS to local temp directory.
+
+    Used for DLM checkpoints which are HuggingFace format directories.
+    """
+    if not gcs_path.startswith("gs://"):
+        raise ValueError(f"Not a GCS path: {gcs_path}")
+
+    # Ensure trailing slash for directory
+    gcs_path = gcs_path.rstrip("/") + "/"
+
+    temp_dir = tempfile.mkdtemp()
+    local_path = Path(temp_dir) / "checkpoint"
+    local_path.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Downloading directory from GCS: {gcs_path}")
+
+    # Try gsutil first
+    try:
+        result = subprocess.run(
+            ["gsutil", "-m", "cp", "-r", f"{gcs_path}*", str(local_path)],
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 min timeout
+        )
+        if result.returncode == 0:
+            logger.info(f"Downloaded to: {local_path}")
+            return local_path
+        else:
+            logger.warning(f"gsutil failed: {result.stderr}")
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        logger.warning(f"gsutil failed: {e}")
+
+    # Fallback to gcloud storage
+    try:
+        result = subprocess.run(
+            ["gcloud", "storage", "cp", "-r", f"{gcs_path}*", str(local_path)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode == 0:
+            logger.info(f"Downloaded to: {local_path}")
+            return local_path
+        else:
+            raise RuntimeError(f"gcloud storage failed: {result.stderr}")
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"Failed to download from GCS (no gsutil or gcloud): {e}")
+
+
+def detect_checkpoint_type(checkpoint_path: Union[Path, str]) -> str:
+    """Detect whether checkpoint is 'dlm' or 'bitnet' format.
+
+    DLM checkpoints are HuggingFace directories with dlm_config.json.
+    BitNet checkpoints are torch .pt files.
+
+    Args:
+        checkpoint_path: Path to checkpoint (local or downloaded)
+
+    Returns:
+        "dlm" or "bitnet"
+    """
+    path = Path(checkpoint_path) if isinstance(checkpoint_path, str) else checkpoint_path
+
+    # If it's a directory, check for DLM config
+    if path.is_dir():
+        if (path / "dlm_config.json").exists():
+            return "dlm"
+        if (path / "config.json").exists():
+            # HuggingFace format without dlm_config - could be either
+            # Check for bd_size in config.json
+            with open(path / "config.json") as f:
+                config = json.load(f)
+                if "bd_size" in config:
+                    return "dlm"
+        return "bitnet"
+
+    # If it ends in .pt, it's a torch checkpoint (BitNet)
+    if str(path).endswith(".pt") or str(path).endswith(".pth"):
+        return "bitnet"
+
+    return "bitnet"
+
+
+def load_dlm_student(
+    checkpoint_path: Union[Path, str],
+    device: torch.device,
+    use_flash_attention: bool = False,  # Disable flash for attention distillation
+) -> tuple:
+    """Load DLM student model from HuggingFace format checkpoint.
+
+    Args:
+        checkpoint_path: Path to DLM checkpoint directory (local or gs://)
+        device: Device to load model on
+        use_flash_attention: Whether to use flash attention (disable for attention distillation)
+
+    Returns:
+        Tuple of (model, tokenizer, dlm_config, teacher_name)
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitNetForCausalLM, BitNetConfig
+
+    # Handle GCS paths
+    if isinstance(checkpoint_path, str) and checkpoint_path.startswith("gs://"):
+        checkpoint_path = download_directory_from_gcs(checkpoint_path)
+
+    path = Path(checkpoint_path)
+    logger.info(f"Loading DLM student model from {path}")
+
+    # Load DLM config if available
+    dlm_config = {}
+    dlm_config_path = path / "dlm_config.json"
+    if dlm_config_path.exists():
+        with open(dlm_config_path) as f:
+            dlm_config = json.load(f)
+        logger.info(f"DLM config: bd_size={dlm_config.get('bd_size')}, mask_token={dlm_config.get('mask_token')}")
+
+    # Get source checkpoint (teacher) from DLM config
+    teacher_name = dlm_config.get("source_checkpoint")
+
+    # Load model config and check for auto_map issues
+    config_path = path / "config.json"
+    model_config = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            model_config = json.load(f)
+
+    # Check if auto_map points to custom files that don't exist
+    if "auto_map" in model_config:
+        auto_config = model_config.get("auto_map", {}).get("AutoConfig", "")
+        if auto_config:
+            # Extract the module file from "module.ClassName"
+            module_file = auto_config.split(".")[0] + ".py"
+            if not (path / module_file).exists():
+                logger.warning(f"auto_map references {module_file} but file not found. Removing auto_map from config.")
+                # Remove auto_map and save updated config
+                del model_config["auto_map"]
+                with open(config_path, "w") as f:
+                    json.dump(model_config, f, indent=2)
+
+    # Also store bd_size in dlm_config if not already there (extract from model config)
+    if "bd_size" not in dlm_config and "bd_size" in model_config:
+        dlm_config["bd_size"] = model_config["bd_size"]
+        logger.info(f"Extracted bd_size={dlm_config['bd_size']} from model config")
+
+    # Load model with appropriate attention implementation
+    attn_impl = "eager" if not use_flash_attention else "flash_attention_2"
+
+    # Try loading with transformers' built-in BitNet first
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            str(path),
+            torch_dtype=torch.bfloat16,
+            attn_implementation=attn_impl,
+            trust_remote_code=True,
+            output_attentions=True,  # Enable attention output
+        )
+    except Exception as e:
+        logger.warning(f"AutoModelForCausalLM failed: {e}")
+        logger.info("Trying explicit BitNetForCausalLM loading...")
+        # Fall back to explicit BitNet loading
+        config = BitNetConfig.from_pretrained(str(path))
+        model = BitNetForCausalLM.from_pretrained(
+            str(path),
+            config=config,
+            torch_dtype=torch.bfloat16,
+            attn_implementation=attn_impl,
+        )
+    model = model.to(device)
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(str(path), trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    logger.info(f"Loaded DLM model: {model.config.architectures}")
+    logger.info(f"  - Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(f"  - Vocab size: {model.config.vocab_size}")
+
+    return model, tokenizer, dlm_config, teacher_name
 
 
 def load_student_model(
@@ -169,15 +358,40 @@ def run_distillation(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    # Load student model
+    # Detect or get student type from config
+    student_type = cfg.student.get("type", "auto")
+    if student_type == "auto":
+        # For GCS paths, we need to infer from path structure
+        checkpoint_str = str(checkpoint_path)
+        if checkpoint_str.startswith("gs://") and "/dlm/" in checkpoint_str:
+            student_type = "dlm"
+        elif not checkpoint_str.startswith("gs://"):
+            student_type = detect_checkpoint_type(checkpoint_path)
+        else:
+            student_type = "bitnet"  # Default
+        logger.info(f"Auto-detected student type: {student_type}")
+    else:
+        logger.info(f"Using configured student type: {student_type}")
+
+    # Load student model based on type
     needs_attention = cfg.distillation.gamma_attention > 0
     use_flash = not needs_attention  # Disable flash if attention distillation enabled
+    dlm_config = {}
+    tokenizer = None
 
-    student, inferred_teacher = load_student_model(
-        checkpoint_path,
-        device,
-        use_flash_attention=use_flash,
-    )
+    if student_type == "dlm":
+        student, tokenizer, dlm_config, inferred_teacher = load_dlm_student(
+            checkpoint_path,
+            device,
+            use_flash_attention=use_flash,
+        )
+        logger.info(f"Loaded DLM student with bd_size={dlm_config.get('bd_size', 32)}")
+    else:
+        student, inferred_teacher = load_student_model(
+            checkpoint_path,
+            device,
+            use_flash_attention=use_flash,
+        )
 
     # Determine teacher model
     if teacher_model_name is None:
@@ -207,13 +421,16 @@ def run_distillation(
         from data_handler.data import create_dataloader, load_data_config
         from transformers import AutoTokenizer
 
-        # Load tokenizer from teacher
-        tokenizer = AutoTokenizer.from_pretrained(
-            teacher_model_name,
-            trust_remote_code=True,
-        )
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+        # Use student tokenizer for DLM (has mask token), else teacher tokenizer
+        if tokenizer is None:
+            tokenizer = AutoTokenizer.from_pretrained(
+                teacher_model_name,
+                trust_remote_code=True,
+            )
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+        else:
+            logger.info("Using student tokenizer (DLM with mask token)")
 
         # Load data config
         data_config = load_data_config(cfg.data.config_name)
@@ -235,10 +452,19 @@ def run_distillation(
         raise
 
     # Create trainer config
-    from distillation.training.config import DistillationConfig, LossConfig, TeacherConfig
+    from distillation.training.config import (
+        DistillationConfig,
+        GCSConfig,
+        LossConfig,
+        TeacherConfig,
+    )
+
+    # Get block_size from DLM config or use default
+    block_size = dlm_config.get("bd_size", cfg.distillation.get("block_size", 32))
 
     distill_config = DistillationConfig(
         student_checkpoint_path=str(checkpoint_path),
+        student_type=student_type,
         teacher=TeacherConfig(
             model_name=teacher_model_name,
             use_vllm=cfg.teacher.use_vllm,
@@ -251,6 +477,14 @@ def run_distillation(
             temperature=cfg.distillation.temperature,
             use_relation_distill=cfg.distillation.attention.use_relation_distill,
             distill_layer=cfg.distillation.attention.distill_layer,
+            top_k=cfg.distillation.get("top_k", 100),
+            block_size=block_size,
+        ),
+        gcs=GCSConfig(
+            enabled=cfg.checkpoint.get("gcs", {}).get("enabled", True),
+            bucket=cfg.checkpoint.get("gcs", {}).get("bucket", "wrinklefree-checkpoints"),
+            upload_interval=cfg.checkpoint.get("gcs", {}).get("upload_interval", 500),
+            keep_n=cfg.checkpoint.get("gcs", {}).get("keep_n", 5),
         ),
         max_steps=cfg.training.max_steps,
         batch_size=cfg.training.batch_size,

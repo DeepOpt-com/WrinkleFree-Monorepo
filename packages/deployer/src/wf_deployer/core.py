@@ -743,6 +743,151 @@ def _train_distill_skypilot(
 
 
 # =============================================================================
+# TCS Distillation (DLM Students)
+# =============================================================================
+
+
+def train_tcs_distill(
+    checkpoint: str,
+    teacher: str | None = None,
+    scale: Scale | None = None,
+    overrides: list[str] | None = None,
+    cloud: str = "nebius",
+    detach: bool = True,
+) -> str:
+    """Launch TCS distillation training for DLM students.
+
+    Distills a DLM (Diffusion Language Model) student against an AR teacher
+    using Target Concrete Score (TCS) with block-wise attention distillation.
+
+    Args:
+        checkpoint: Path to DLM checkpoint (gs:// or local)
+        teacher: Teacher model name (default: inferred from dlm_config.json)
+        scale: GPU scale profile ("dev", "small", etc.)
+        overrides: Hydra config overrides
+        cloud: Cloud provider ("nebius", "runpod", "vast")
+        detach: Return immediately (True) or wait for completion (False)
+
+    Returns:
+        Run ID
+
+    Example:
+        >>> from wf_deployer import train_tcs_distill
+        >>> run_id = train_tcs_distill("gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/")
+        >>> run_id = train_tcs_distill("gs://...", teacher="1bitLLM/bitnet_b1_58-2B")
+    """
+    overrides = overrides or []
+    return _train_tcs_distill_skypilot(checkpoint, teacher, scale, overrides, cloud, detach)
+
+
+def _train_tcs_distill_skypilot(
+    checkpoint: str,
+    teacher: str | None,
+    scale: Scale | None,
+    overrides: list[str],
+    cloud: str,
+    detach: bool,
+) -> str:
+    """Launch TCS distillation on SkyPilot."""
+    try:
+        import sky
+    except ImportError:
+        raise ImportError(
+            "SkyPilot not installed. Install with: uv add 'skypilot[all]'"
+        )
+
+    # Default scale for TCS distillation (2B model fits on single H100)
+    if scale is None:
+        scale = "small"
+
+    scale_config = SCALES[scale]
+    gpu_count = scale_config["gpus"]
+    gpu_type = scale_config["type"]
+    accelerators = f"{gpu_type}:{gpu_count}"
+
+    print(f"🚀 Launching TCS Distillation on SkyPilot")
+    print(f"   Cloud: {cloud}")
+    if cloud == "vast":
+        print("   ⚠️  Vast.ai: Marketplace pricing, variable reliability. Use --cloud nebius for critical runs.")
+    print(f"   Scale: {scale} ({accelerators})")
+    print(f"   DLM Checkpoint: {checkpoint}")
+    if teacher:
+        print(f"   Teacher: {teacher}")
+    else:
+        print(f"   Teacher: (from dlm_config.json)")
+    print(f"   Block attention: ENABLED")
+    if overrides:
+        print(f"   Overrides: {overrides}")
+
+    # Build environment variables
+    envs = {
+        "DLM_CHECKPOINT": checkpoint,
+        "TEACHER_MODEL": teacher or "",
+    }
+
+    # Pass through secrets from local environment
+    wandb_key = os.environ.get("WANDB_API_KEY")
+    if wandb_key:
+        envs["WANDB_API_KEY"] = wandb_key
+    else:
+        print("   ⚠️  WANDB_API_KEY not set - logging disabled")
+
+    # HF_TOKEN is optional but useful for gated models
+    if os.environ.get("HF_TOKEN"):
+        envs["HF_TOKEN"] = os.environ["HF_TOKEN"]
+
+    # GCS credentials for non-GCP clouds
+    if cloud != "gcp" and GCP_SA_PATH.exists():
+        sa_json = GCP_SA_PATH.read_text()
+        envs["GCS_CREDENTIALS_B64"] = base64.b64encode(sa_json.encode()).decode()
+        print(f"   GCS auth: Using service account (base64)")
+
+    # Hydra overrides
+    if overrides:
+        envs["HYDRA_OVERRIDES"] = " ".join(overrides)
+
+    # Create task from TCS distillation YAML
+    task = sky.Task.from_yaml("skypilot/tcs_distill_train.yaml")
+    task.update_envs(envs)
+
+    # Select cloud provider
+    if cloud == "gcp":
+        cloud_obj = sky.GCP()
+    elif cloud == "runpod":
+        cloud_obj = sky.RunPod()
+    elif cloud == "vast":
+        cloud_obj = sky.Vast()
+    else:
+        cloud_obj = sky.Nebius()
+
+    # Update accelerators based on scale
+    existing_resources = list(task.resources)[0] if task.resources else None
+    use_spot = existing_resources.use_spot if existing_resources else False
+    task.set_resources(
+        sky.Resources(accelerators=accelerators, cloud=cloud_obj, use_spot=use_spot)
+    )
+
+    job_name = "wf-tcs-distill"
+
+    # Launch as managed job
+    if detach:
+        request_id = sky.jobs.launch(task)
+        job_id, _ = sky.get(request_id)
+        print(f"✓ Launched! Job ID: {job_id}")
+        print(f"  View logs: uv run wf logs {job_name}")
+        print(f"  Cancel:    uv run wf cancel {job_name}")
+        return job_name
+    else:
+        print("   Waiting for completion...")
+        request_id = sky.jobs.launch(task)
+        job_id, _ = sky.get(request_id)
+        log_request = sky.jobs.tail_logs(name=job_name)
+        sky.stream_and_get(log_request)
+        print(f"✓ Completed!")
+        return job_name
+
+
+# =============================================================================
 # Inference / Serving
 # =============================================================================
 

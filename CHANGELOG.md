@@ -6,18 +6,63 @@ All notable changes to the WrinkleFree monorepo.
 
 ### Added
 - `packages/architecture/` - New package for BitNet layers (BitLinear, SubLN) and model conversion
+  - `BitLinear`: Ternary weight quantization with 8-bit activation quantization
+  - `SubLN`: Sub-Layer Normalization for training stability
+  - `LambdaWarmup`: Gradual quantization schedule management
+  - `convert_model_to_bitnet()`: On-the-fly model conversion
+- `packages/distillation/` - Dedicated knowledge distillation package (moved from training)
+  - **BitDistill loss**: Logits + attention relation distillation
+  - **TCS loss**: Target Concrete Score for DLM (diffusion) students
+  - **Teacher backends**: LocalTeacher (HuggingFace), VLLMTeacher (remote)
+  - **Muon optimizer support** with separate AdamW params for embeddings
 - `packages/training/src/wrinklefree/objectives/` - Composable objectives system with curriculum scheduling
+  - `ObjectiveManager`: Combines multiple objectives with weights
+  - `CurriculumScheduler`: Adjusts weights during training
 - `packages/training/configs/training/unified.yaml` - Unified training config with auto-convert support
+- `packages/deployer/` - New distillation commands
+  - `wf distill` - Launch BitDistill distillation jobs
+  - `wf tcs-distill` - Launch TCS distillation jobs
 - On-the-fly BitNet conversion (no separate stage1 step needed)
 
 ### Changed
 - Renamed `cheapertraining` to `data_handler` (import as `data_handler`, package name `data-handler`)
+- Renamed `fairy2` to `distillation` (dedicated distillation package, NOT Fairy2i)
 - Renamed `Stage2Trainer` to `ContinuedPretrainingTrainer` (backward-compatible alias preserved)
 - Training package now imports from `bitnet_arch` for BitNet components
+- Stage 3 distillation moved from training package to distillation package
+- All documentation updated to reflect new package names
 
 ### Removed
 - `packages/fairy2/` - Complex-valued quantization package (Fairy2i)
 - `packages/deployer/skypilot/fairy2_*.yaml` - SkyPilot configs for fairy2
+- `packages/training/src/wrinklefree/distillation/` - Moved to distillation package
+- `packages/training/configs/training/stage3_distill*.yaml` - Moved to distillation package
+
+### Migration Guide
+
+**Package renames:**
+- `cheapertraining` → `data_handler`
+  - Import: `from data_handler.data import ...`
+  - Package: `--package data-handler`
+- `fairy2` → `distillation` (different purpose - now for knowledge distillation)
+
+**Stage 3 distillation:**
+```bash
+# OLD (training package)
+uv run --package wrinklefree python scripts/train.py training=stage3_distill
+
+# NEW (distillation package)
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+  student.checkpoint_path=outputs/stage2/checkpoint.pt
+```
+
+**Workspace dependencies:**
+```toml
+# In pyproject.toml
+[tool.uv.sources]
+data-handler = { workspace = true }
+bitnet-arch = { workspace = true }
+```
 
 ### Previous Changes
 - Root documentation: `docs/architecture.md`, `docs/quick-start.md`, `docs/dependencies.md`, `docs/development.md`

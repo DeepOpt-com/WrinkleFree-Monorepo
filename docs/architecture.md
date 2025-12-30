@@ -4,21 +4,33 @@
 
 ```
                     ┌─────────────────┐
-                    │  cheapertraining │  (Shared Library)
+                    │   data_handler   │  (Shared Library)
                     │  - Data loading  │
                     │  - Influence     │
                     │  - Mixture opt   │
                     └────────┬────────┘
                              │
-              ┌──────────────┴──────────────┐
-              │                             │
-              ▼                             ▼
-    ┌─────────────────┐           ┌─────────────────┐
-    │    training     │           │     fairy2      │
-    │  1.58-bit QAT   │           │  Complex quant  │
-    │  (BitDistill)   │           │                 │
-    └────────┬────────┘           └─────────────────┘
-             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              │              ▼
+    ┌─────────────────┐      │    ┌─────────────────┐
+    │    training     │      │    │  distillation   │
+    │  1.58-bit QAT   │      │    │  Teacher-student│
+    │  (BitDistill)   │      │    │  (Stage 3+)     │
+    └────────┬────────┘      │    └────────┬────────┘
+             │               │             │
+             │               │             │
+    ┌────────┴───────────────┘             │
+    │                                      │
+    ▼                                      │
+┌─────────────────┐                        │
+│  architecture   │  (Shared Library)      │
+│  - BitLinear    │                        │
+│  - SubLN        │                        │
+│  - Conversion   │                        │
+└─────────────────┘                        │
+                                           │
+             ┌─────────────────────────────┘
              │ produces checkpoints
              ▼
     ┌─────────────────┐           ┌─────────────────┐
@@ -33,7 +45,7 @@
                                   └─────────────────┘
 
     ┌─────────────────┐
-    │    deployer     │  (Orchestrates cloud training/serving)
+    │    deployer     │  (Orchestrates cloud training/serving/distillation)
     │  SkyPilot/Modal │
     └─────────────────┘
 ```
@@ -42,9 +54,10 @@
 
 | Package | Type | Description |
 |---------|------|-------------|
-| `cheapertraining` | **Library** | Shared code imported by other packages |
-| `training` | Application | Executable training pipeline |
-| `fairy2` | Application | Executable training for complex-valued models |
+| `data_handler` | **Library** | Shared data loading, influence functions |
+| `architecture` | **Library** | BitNet layers (BitLinear, SubLN) & model conversion |
+| `training` | Application | 1.58-bit training pipeline (Stages 1, 1.9, 2) |
+| `distillation` | Application | Knowledge distillation (Stage 3+, BitDistill, TCS) |
 | `inference` | Application | Model serving application |
 | `eval` | Application | Evaluation scripts |
 | `deployer` | Application | CLI tool for cloud deployment |
@@ -57,10 +70,17 @@
 1. **Stage 1**: SubLN insertion (training package)
 2. **Stage 1.9**: Layer-wise distillation (training package)
 3. **Stage 2**: Continue pre-training with QAT (training package)
-4. **Stage 3**: Distillation fine-tuning (training package)
+4. **Stage 3**: Knowledge distillation (**distillation package**)
 5. **Export**: Convert to GGUF/DLM (converter package)
 6. **Serve**: Deploy for inference (inference package)
 7. **Evaluate**: Run benchmarks (eval package)
+
+### Distillation Options
+
+The distillation package supports multiple modes:
+- **BitDistill**: Logits + attention relation distillation
+- **TCS**: Target Concrete Score for DLM (diffusion) students
+- **Logits-only**: KL divergence without attention
 
 ### Deployment Flow
 
@@ -69,9 +89,11 @@ Local Development
        │
        ▼
 ┌──────────────┐
-│   deployer   │ ── wf train ──► Modal/SkyPilot
-│              │ ── wf serve ──► Cloud GPU
-│              │ ── wf eval  ──► Batch eval
+│   deployer   │ ── wf train ───────► Modal/SkyPilot
+│              │ ── wf distill ─────► Distillation jobs
+│              │ ── wf tcs-distill ─► TCS distillation
+│              │ ── wf serve ───────► Cloud GPU
+│              │ ── wf eval  ───────► Batch eval
 └──────────────┘
 ```
 
@@ -91,6 +113,7 @@ Local Development
 - **hydra-core**: Configuration management
 - **datasets**: HuggingFace data loading
 - **wandb**: Experiment tracking
+- **vLLM**: Remote teacher backend (optional, for distillation)
 
 ## Configuration
 
@@ -101,10 +124,11 @@ packages/{name}/configs/
 ├── model/          # Model architecture configs
 ├── training/       # Training hyperparameters
 ├── data/           # Dataset configs
+├── distillation/   # Distillation settings (distillation package)
 └── distributed/    # FSDP/DDP settings
 ```
 
-Root-level configs can be shared via the `cheapertraining` package.
+Shared data configs are in the `data_handler` package.
 
 ## Build & Test
 
@@ -117,7 +141,9 @@ uv run pytest
 
 # Run package-specific tests
 uv run --package wrinklefree pytest packages/training/tests/
-uv run --package cheapertraining pytest packages/cheapertraining/tests/
+uv run --package data-handler pytest packages/data_handler/tests/
+uv run --package wrinklefree-distillation pytest packages/distillation/tests/
+uv run --package bitnet-arch pytest packages/architecture/tests/
 
 # Type checking
 uv run mypy packages/training/src/

@@ -1,0 +1,109 @@
+# Fairy2i Complex-Valued LLM Quantization Training Job
+#
+# Trains a model with Fairy2i algorithm for complex-valued quantization.
+# Weights are quantized to {+1, -1, +i, -i} (fourth roots of unity).
+#
+# Launch via wf CLI (recommended):
+#   wf fairy2 -m smollm2_135m --mode w2
+#
+# Or manually:
+#   sky launch skypilot/fairy2_train.yaml -y \
+#     --env MODEL=smollm2_135m \
+#     --env MODE=w2
+#
+# Monitor:
+#   wf logs wf-fairy2-train
+
+name: wf-fairy2-train
+
+resources:
+  # Use standard PyTorch image for portability across clouds
+  accelerators: H100:1  # Single GPU, scale via wf fairy2 --scale
+  use_spot: false
+  disk_size: 200
+  disk_tier: best
+
+# Sync Fairy2 code to cluster (monorepo path)
+workdir: ../fairy2
+
+# Mount GCS credentials for checkpoint upload
+file_mounts:
+  ~/.config/gcloud/application_default_credentials.json: ~/.config/gcloud/application_default_credentials.json
+
+envs:
+  # Model config name (matches configs/model/*.yaml)
+  MODEL: smollm2_135m
+
+  # Quantization mode: w1 (1-bit) or w2 (2-bit)
+  MODE: w2
+
+  # Hydra overrides (passed from wf fairy2 command)
+  HYDRA_OVERRIDES: ""
+
+  # W&B tracking (set via WANDB_API_KEY env var)
+  WANDB_PROJECT: wrinklefree-fairy2
+
+  # GCS credentials (ADC)
+  GOOGLE_APPLICATION_CREDENTIALS: ~/.config/gcloud/application_default_credentials.json
+  GCS_BUCKET: wrinklefree-checkpoints
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv for fast package management
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Install dependencies
+  uv sync
+
+  # Verify GPU setup
+  uv run python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
+
+  # Verify GCS credentials
+  echo "Testing GCS access..."
+  uv run python -c "from google.cloud import storage; client = storage.Client(); bucket = client.bucket('${GCS_BUCKET}'); print(f'GCS bucket access: {bucket.exists()}')" || echo "GCS check failed, continuing..."
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  echo "=============================================="
+  echo "Fairy2i Complex-Valued Quantization Training"
+  echo "Model: ${MODEL}"
+  echo "Mode: ${MODE} (${MODE}=w1 for 1-bit, w2 for 2-bit)"
+  echo "Overrides: ${HYDRA_OVERRIDES:-'(none)'}"
+  echo "=============================================="
+
+  # Build Hydra command
+  HYDRA_CMD="uv run python scripts/train.py model=${MODEL} training=fairy2_${MODE}"
+
+  # Add any additional overrides
+  if [ -n "${HYDRA_OVERRIDES}" ]; then
+    HYDRA_CMD="${HYDRA_CMD} ${HYDRA_OVERRIDES}"
+  fi
+
+  # Enable GCS checkpointing
+  HYDRA_CMD="${HYDRA_CMD} gcs.enabled=true gcs.bucket=${GCS_BUCKET}"
+
+  echo "Running: ${HYDRA_CMD}"
+  eval ${HYDRA_CMD}
+
+  # Upload final checkpoint to GCS
+  echo ""
+  echo "Uploading to GCS..."
+  OUTPUT_DIR="./outputs/fairy2_${MODEL}"
+  if [ -d "${OUTPUT_DIR}" ]; then
+    gsutil -m cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/fairy2/${MODEL}/ || echo "gsutil failed, trying gcloud storage..."
+    gcloud storage cp -r ${OUTPUT_DIR}/* gs://${GCS_BUCKET}/fairy2/${MODEL}/ || echo "Upload failed"
+  else
+    echo "Warning: Output directory ${OUTPUT_DIR} not found"
+  fi
+
+  echo ""
+  echo "=============================================="
+  echo "TRAINING COMPLETE!"
+  echo "GCS: gs://${GCS_BUCKET}/fairy2/${MODEL}/"
+  echo "=============================================="

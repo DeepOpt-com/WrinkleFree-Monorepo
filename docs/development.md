@@ -11,7 +11,7 @@ cd WrinkleFree-Monorepo
 uv sync --all-packages
 
 # Verify setup
-uv run pytest packages/cheapertraining/tests/ -v
+uv run pytest packages/data_handler/tests/ -v
 ```
 
 ## Adding a New Package
@@ -54,11 +54,11 @@ To use another package from the workspace:
 # In packages/mypackage/pyproject.toml
 [project]
 dependencies = [
-    "cheapertraining",  # The package name
+    "data-handler",  # The package name
 ]
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }  # Resolve from workspace
+data-handler = { workspace = true }  # Resolve from workspace
 ```
 
 ## Running Tests
@@ -133,14 +133,25 @@ uv run --package wrinklefree python packages/training/scripts/train.py \
 uv run --package wrinklefree pytest packages/training/tests/unit/
 ```
 
-### cheapertraining
+### data_handler
 
 ```bash
 # Run all tests
-uv run --package cheapertraining pytest packages/cheapertraining/tests/
+uv run --package data-handler pytest packages/data_handler/tests/
 
 # Test data loading
-uv run --package cheapertraining python -c "from cheapertraining.data import get_loader; print('ok')"
+uv run --package data-handler python -c "from data_handler.data import create_dataloader; print('ok')"
+```
+
+### distillation
+
+```bash
+# Run all tests
+uv run --package wrinklefree-distillation pytest packages/distillation/tests/
+
+# Run distillation smoke test
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+  student.checkpoint_path=outputs/stage2/checkpoint.pt training.max_steps=10
 ```
 
 ### deployer
@@ -186,8 +197,8 @@ Only test affected packages:
 # If only training changed
 uv run --package wrinklefree pytest packages/training/tests/
 
-# If cheapertraining changed (affects training and fairy2)
-uv run pytest packages/cheapertraining/tests/ packages/training/tests/ packages/fairy2/tests/
+# If data_handler changed (affects training and distillation)
+uv run pytest packages/data_handler/tests/ packages/training/tests/ packages/distillation/tests/
 ```
 
 ## Debugging Tips
@@ -199,7 +210,7 @@ uv run pytest packages/cheapertraining/tests/ packages/training/tests/ packages/
 uv run python -c "import wrinklefree; print(wrinklefree.__file__)"
 
 # Check workspace resolution
-uv tree --package wrinklefree | grep cheapertraining
+uv tree --package wrinklefree | grep data-handler
 ```
 
 ### Dependency Conflicts
