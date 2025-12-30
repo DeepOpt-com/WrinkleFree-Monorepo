@@ -244,7 +244,7 @@ static void bitnet_linear(float* output, const float* input, int8_t* quant_input
 
     // Call GEMV for each output row
     // weight shape: [M, K/4] (packed 2-bit)
-    // TODO: Use batched GEMM for better performance
+    // The scalar fallback already handles {0,1,2} -> {-1,0,1} conversion
     const int K_packed = K / 4;  // 4 weights per byte
 
     for (int m = 0; m < M; m++) {
@@ -819,6 +819,10 @@ int32_t bitnet_num_layers(BitNetEngine* engine) {
 
 int32_t bitnet_max_seq_len(BitNetEngine* engine) {
     return engine ? engine->config.max_position_embeddings : 0;
+}
+
+int bitnet_get_num_kv_heads(BitNetEngine* engine) {
+    return engine ? engine->config.num_key_value_heads : 0;
 }
 
 void bitnet_free_result(GenerationResult* result) {

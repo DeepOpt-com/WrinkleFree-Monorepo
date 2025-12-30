@@ -37,7 +37,7 @@ file_mounts:
 
 envs:
   # Model config name (matches configs/model/*.yaml)
-  MODEL: smollm2_135m
+  MODEL: bitnet_2b
 
   # Source checkpoint (optional - can be set via Hydra override)
   SOURCE_PATH: ""
