@@ -70,17 +70,46 @@ cheapertraining = { workspace = true }
   - Use `c3d-standard-22` (22 vCPUs) instead of larger instances
   - Or request quota increase via GCP Console
 
-## Remote Sync
+## Remote Sync (runpod-dev)
+
+The `runpod-dev` tool (in `extern/runpod-dev`) handles all sync operations:
 
 ```bash
-# Sync to Desktop
-./sync.sh --preset desktop --no-watch
+# Sync to RunPod instance
+uv run runpod-dev sync my-dev
 
-# Sync to RunPod
-./sync.sh --preset runpod --no-watch
+# Sync to SSH host (uses .sync.conf preset)
+uv run runpod-dev sync-ssh desktop
+
+# Sync with live watching
+uv run runpod-dev sync-ssh desktop --watch
+
+# Check sync status (for AI agents)
+uv run runpod-dev status --json
 ```
 
-**Presets** (in `.sync.conf`): `desktop`, `runpod`, `RTX6000`
+### Sync Status File
+
+- Location: `.sync-status.json` (gitignored)
+- Updated after every sync operation
+- AI agents should check this before assuming files are synced:
+  ```bash
+  uv run runpod-dev status --json | jq '.watch_active'
+  ```
+
+### SSH Presets
+
+Configure `.sync.conf` for SSH hosts:
+```ini
+[project]
+uv_projects=packages/training packages/inference
+
+[desktop]
+host=Desktop
+dir=/home/lev/code/WrinkleFree
+```
+
+**Presets**: `desktop`, `runpod`, `RTX6000`
 
 ## Inference Engine Quick Start
 
