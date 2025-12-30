@@ -408,6 +408,13 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
     embed_lookup(hidden, engine->embed_tokens.fp32_data.data(),
                  &token_id, 1, H);
 
+    // Debug: print first few hidden values after embedding
+    static bool debug_once = true;
+    if (debug_once) {
+        fprintf(stderr, "DEBUG: After embed, token=%d, hidden[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                token_id, hidden[0], hidden[1], hidden[2], hidden[3]);
+    }
+
     // Process each layer
     for (int l = 0; l < cfg.num_hidden_layers; l++) {
         auto& layer = engine->layers[l];
@@ -440,6 +447,13 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
         // Residual connection
         for (int i = 0; i < H; i++) {
             hidden[i] = residual[i] + mlp_out[i];
+        }
+
+        // Debug: print after first layer
+        if (debug_once && l == 0) {
+            fprintf(stderr, "DEBUG: After layer 0, hidden[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
+                    hidden[0], hidden[1], hidden[2], hidden[3]);
+            debug_once = false;
         }
     }
 

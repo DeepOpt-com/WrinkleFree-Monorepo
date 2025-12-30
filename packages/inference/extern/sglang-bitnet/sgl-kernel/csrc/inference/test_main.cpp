@@ -6,6 +6,9 @@
 
 #include "bitnet_engine.h"
 
+// Debug function for kv heads (not in header yet)
+extern "C" int bitnet_get_num_kv_heads(BitNetEngine* engine);
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printf("Usage: %s <model.sglbin> [num_tokens]\n", argv[0]);
@@ -36,7 +39,6 @@ int main(int argc, char** argv) {
     printf("  Max seq len: %d\n", bitnet_max_seq_len(engine));
 
     // Debug: print more config
-    extern "C" int bitnet_get_num_kv_heads(BitNetEngine* engine);
     printf("  Num KV heads: %d\n", bitnet_get_num_kv_heads(engine));
 
     // Token IDs for "Hello, my name is" (from Qwen tokenizer)
