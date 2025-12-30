@@ -262,14 +262,6 @@ static void bitnet_linear(float* output, const float* input, int8_t* quant_input
     // Quantize input activations to INT8
     quantize_activations_i8(K, quant_input, input, quant_scale);
 
-    // Debug: print quantization info for different sizes
-    static int call_count = 0;
-    if (call_count < 10) {
-        fprintf(stderr, "DEBUG bitnet_linear[%d]: M=%d, K=%d, weight.scale=%.6f, quant_scale=%.6f\n",
-                call_count, M, K, weight.scale, *quant_scale);
-        call_count++;
-    }
-
     // Call GEMV for each output row
     // weight shape: [M, K/4] (packed 2-bit)
     // The scalar fallback already handles {0,1,2} -> {-1,0,1} conversion
@@ -288,16 +280,82 @@ static void bitnet_linear(float* output, const float* input, int8_t* quant_input
 }
 
 // Regular fp32 linear layer (for embeddings, lm_head)
+// Optimized with SIMD and OpenMP parallelization
 static void fp32_linear(float* output, const float* input, const float* weight,
                         int M, int K) {
-    // Simple GEMV: output[m] = sum_k(input[k] * weight[m*K + k])
+#if defined(__AVX512F__)
+    // AVX-512: Process 16 floats at a time
+    #pragma omp parallel for schedule(static) if(M >= 64)
     for (int m = 0; m < M; m++) {
-        float sum = 0.0f;
-        for (int k = 0; k < K; k++) {
-            sum += input[k] * weight[m * K + k];
+        const float* w_row = weight + m * K;
+        __m512 sum_vec = _mm512_setzero_ps();
+
+        int k = 0;
+        for (; k + 16 <= K; k += 16) {
+            __m512 w = _mm512_loadu_ps(w_row + k);
+            __m512 x = _mm512_loadu_ps(input + k);
+            sum_vec = _mm512_fmadd_ps(w, x, sum_vec);
+        }
+
+        float sum = _mm512_reduce_add_ps(sum_vec);
+
+        // Handle remaining elements
+        for (; k < K; k++) {
+            sum += w_row[k] * input[k];
         }
         output[m] = sum;
     }
+#elif defined(__AVX2__) && defined(__FMA__)
+    // AVX2 + FMA: Process 8 floats at a time
+    #pragma omp parallel for schedule(static) if(M >= 64)
+    for (int m = 0; m < M; m++) {
+        const float* w_row = weight + m * K;
+        __m256 sum_vec0 = _mm256_setzero_ps();
+        __m256 sum_vec1 = _mm256_setzero_ps();
+
+        int k = 0;
+        // 2x unrolled loop for better latency hiding
+        for (; k + 16 <= K; k += 16) {
+            __m256 w0 = _mm256_loadu_ps(w_row + k);
+            __m256 w1 = _mm256_loadu_ps(w_row + k + 8);
+            __m256 x0 = _mm256_loadu_ps(input + k);
+            __m256 x1 = _mm256_loadu_ps(input + k + 8);
+            sum_vec0 = _mm256_fmadd_ps(w0, x0, sum_vec0);
+            sum_vec1 = _mm256_fmadd_ps(w1, x1, sum_vec1);
+        }
+        for (; k + 8 <= K; k += 8) {
+            __m256 w = _mm256_loadu_ps(w_row + k);
+            __m256 x = _mm256_loadu_ps(input + k);
+            sum_vec0 = _mm256_fmadd_ps(w, x, sum_vec0);
+        }
+
+        // Horizontal sum
+        __m256 sum_vec = _mm256_add_ps(sum_vec0, sum_vec1);
+        __m128 hi = _mm256_extractf128_ps(sum_vec, 1);
+        __m128 lo = _mm256_castps256_ps128(sum_vec);
+        __m128 sum4 = _mm_add_ps(hi, lo);
+        sum4 = _mm_add_ps(sum4, _mm_shuffle_ps(sum4, sum4, _MM_SHUFFLE(2, 3, 0, 1)));
+        sum4 = _mm_add_ps(sum4, _mm_shuffle_ps(sum4, sum4, _MM_SHUFFLE(1, 0, 3, 2)));
+        float sum = _mm_cvtss_f32(sum4);
+
+        // Handle remaining elements
+        for (; k < K; k++) {
+            sum += w_row[k] * input[k];
+        }
+        output[m] = sum;
+    }
+#else
+    // Scalar fallback with OpenMP
+    #pragma omp parallel for schedule(static) if(M >= 64)
+    for (int m = 0; m < M; m++) {
+        const float* w_row = weight + m * K;
+        float sum = 0.0f;
+        for (int k = 0; k < K; k++) {
+            sum += input[k] * w_row[k];
+        }
+        output[m] = sum;
+    }
+#endif
 }
 
 // Embedding lookup
@@ -406,49 +464,18 @@ static void mlp_forward(BitNetEngine* engine, int layer_idx, float* hidden, floa
     bitnet_linear(gate.data(), hidden, quant_buf, layer.gate_proj, I, H, &quant_scale);
     bitnet_linear(up.data(), hidden, quant_buf, layer.up_proj, I, H, &quant_scale);
 
-    // Debug MLP internals
-    static int mlp_debug_count = 0;
-    if (mlp_debug_count < 1) {
-        fprintf(stderr, "DEBUG MLP: gate[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                gate[0], gate[1], gate[2], gate[3]);
-        fprintf(stderr, "DEBUG MLP: up[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                up[0], up[1], up[2], up[3]);
-    }
-
     // ReLU²(gate) * up (BitNet uses ReLU² instead of SiLU)
     relu_squared(gate.data(), I);
-
-    if (mlp_debug_count < 1) {
-        fprintf(stderr, "DEBUG MLP: relu²(gate)[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                gate[0], gate[1], gate[2], gate[3]);
-    }
-
     elementwise_mul(mlp_hidden.data(), gate.data(), up.data(), I);
-
-    if (mlp_debug_count < 1) {
-        fprintf(stderr, "DEBUG MLP: gate*up[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                mlp_hidden[0], mlp_hidden[1], mlp_hidden[2], mlp_hidden[3]);
-    }
 
     // Apply ffn_sub_norm before down projection (if available)
     if (!layer.ffn_sub_norm.fp32_data.empty()) {
         rms_norm(mlp_hidden.data(), mlp_hidden.data(),
                  layer.ffn_sub_norm.fp32_data.data(), I, cfg.rms_norm_eps);
-
-        if (mlp_debug_count < 1) {
-            fprintf(stderr, "DEBUG MLP: after ffn_sub_norm[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                    mlp_hidden[0], mlp_hidden[1], mlp_hidden[2], mlp_hidden[3]);
-        }
     }
 
     // Down projection
     bitnet_linear(output, mlp_hidden.data(), quant_buf, layer.down_proj, H, I, &quant_scale);
-
-    if (mlp_debug_count < 1) {
-        fprintf(stderr, "DEBUG MLP: output[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                output[0], output[1], output[2], output[3]);
-        mlp_debug_count++;
-    }
 }
 
 // ============================================================================
@@ -470,13 +497,6 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
     embed_lookup(hidden, engine->embed_tokens.fp32_data.data(),
                  &token_id, 1, H);
 
-    // Debug: print first few hidden values after embedding
-    static bool debug_once = true;
-    if (debug_once) {
-        fprintf(stderr, "DEBUG: After embed, token=%d, hidden[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                token_id, hidden[0], hidden[1], hidden[2], hidden[3]);
-    }
-
     // Process each layer
     for (int l = 0; l < cfg.num_hidden_layers; l++) {
         auto& layer = engine->layers[l];
@@ -490,12 +510,6 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
 
         // Self-attention
         attention_forward(engine, l, pos, hidden, attn_out);
-
-        // Debug: print attn output for first layer
-        if (debug_once && l == 0) {
-            fprintf(stderr, "DEBUG: After attn, attn_out[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                    attn_out[0], attn_out[1], attn_out[2], attn_out[3]);
-        }
 
         // Residual connection
         for (int i = 0; i < H; i++) {
@@ -512,22 +526,9 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
         // MLP
         mlp_forward(engine, l, hidden, mlp_out);
 
-        // Debug: print mlp output for first layer
-        if (debug_once && l == 0) {
-            fprintf(stderr, "DEBUG: After mlp, mlp_out[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                    mlp_out[0], mlp_out[1], mlp_out[2], mlp_out[3]);
-        }
-
         // Residual connection
         for (int i = 0; i < H; i++) {
             hidden[i] = residual[i] + mlp_out[i];
-        }
-
-        // Debug: print after first layer
-        if (debug_once && l == 0) {
-            fprintf(stderr, "DEBUG: After layer 0, hidden[0:4]=[%.4f, %.4f, %.4f, %.4f]\n",
-                    hidden[0], hidden[1], hidden[2], hidden[3]);
-            debug_once = false;
         }
     }
 
