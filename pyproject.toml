@@ -5,7 +5,6 @@ description = "WrinkleFree monorepo for 1.58-bit quantized LLM research"
 requires-python = ">=3.10"
 dependencies = [
     "muon-clip",
-    "muon-optimizer>=0.1.0",
 ]
 
 [tool.uv.workspace]

@@ -112,23 +112,28 @@ class DistillationTrainer:
         optimizer_type = self.config.optimizer_type.lower()
 
         if optimizer_type == "muonclip" or optimizer_type == "muon":
-            from distillation.training.muon_clip import MuonClip, get_muon_param_groups
+            from muon import MuonClip, MuonConfig
 
-            # Use the local MuonClip implementation (doesn't require distributed training)
-            param_groups = get_muon_param_groups(
-                self.student,
-                lr_muon=self.config.learning_rate,
-                lr_adam=self.config.learning_rate * 0.1,  # 10x lower LR for adam params
-                weight_decay=self.config.weight_decay,
+            # Get model config if available (for QK-clipping)
+            model_config = getattr(self.student, "config", None)
+
+            config = MuonConfig(
+                lr=self.config.learning_rate,
+                muon_beta=0.95,
+                muon_decay=self.config.weight_decay,
+                adam_betas=(0.9, 0.95),
+                adam_eps=1e-8,
+                adam_decay=self.config.weight_decay,
+                enable_clipping=False,  # Disable QK-clipping for now
+                log_dir="",  # Empty string triggers writer creation (muon-clip bug workaround)
             )
 
             logger.info(
-                f"Using MuonClip optimizer: "
-                f"{len(param_groups[0]['params'])} params with Muon, "
-                f"{len(param_groups[1]['params'])} params with AdamW"
+                f"Using MuonClip optimizer (lr={self.config.learning_rate}, "
+                f"weight_decay={self.config.weight_decay})"
             )
 
-            return MuonClip(param_groups)
+            return MuonClip(self.student, model_config, config)
 
         if optimizer_type == "adamw_8bit":
             try:

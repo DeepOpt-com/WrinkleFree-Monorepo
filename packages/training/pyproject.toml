@@ -21,7 +21,6 @@ dependencies = [
     "safetensors>=0.4.0",
     "accelerate>=0.27.0",
     "zstandard>=0.22.0",
-    "muon-optimizer>=0.1.0", # Muon optimizer
     "huggingface_hub>=0.20.0", # Checkpoint uploads to HF Hub
     "hf_transfer>=0.1.0", # Fast HF downloads
     "google-cloud-storage>=2.14.0", # GCS checkpoint uploads
