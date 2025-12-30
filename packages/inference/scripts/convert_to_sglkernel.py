@@ -160,8 +160,15 @@ def write_tensor(f, name: str, data: torch.Tensor, dtype_id: int, scale: float =
     f.write(data_bytes)
 
 
-def convert_checkpoint(input_path: Path, output_path: Path) -> None:
-    """Convert checkpoint to sgl-kernel binary format."""
+def convert_checkpoint(input_path: Path, output_path: Path, pack_lm_head: bool = False) -> None:
+    """Convert checkpoint to sgl-kernel binary format.
+
+    Args:
+        input_path: Path to input checkpoint directory
+        output_path: Path for output .bin file
+        pack_lm_head: If True, create a quantized lm_head for faster inference
+                      (uses embed_tokens quantized to 2-bit)
+    """
 
     # Load config
     config_path = input_path / "config.json"
@@ -254,6 +261,30 @@ def convert_checkpoint(input_path: Path, output_path: Path) -> None:
 
     logger.info(f"Packed {quantized_count} linear layers")
 
+    # Optionally create quantized lm_head from embed_tokens
+    if pack_lm_head:
+        embed_name = "model.embed_tokens.weight"
+        if embed_name in processed:
+            embed_tensor = processed[embed_name]
+            if embed_tensor.dtype == torch.float32:
+                # Check if lm_head is tied to embeddings
+                if config.get("tie_word_embeddings", True):
+                    logger.info("Creating quantized lm_head from embed_tokens (tie_word_embeddings=true)")
+                    # lm_head needs K (hidden_size) to be multiple of 128 for SIMD
+                    hidden_size = config.get("hidden_size", embed_tensor.shape[1])
+                    if hidden_size % QK_I2_S == 0:
+                        packed_lm, scale_lm = pack_ternary_sglkernel(embed_tensor)
+                        processed["lm_head.weight"] = packed_lm
+                        scales["lm_head.weight"] = scale_lm
+                        logger.info(f"  Quantized lm_head: {embed_tensor.shape} -> {packed_lm.shape}")
+                        logger.info(f"  Added ~{packed_lm.numel() / 1e6:.1f}MB for 2x faster inference")
+                    else:
+                        logger.warning(f"Cannot pack lm_head: hidden_size {hidden_size} not divisible by {QK_I2_S}")
+                else:
+                    logger.warning("Cannot pack lm_head: tie_word_embeddings is false, would need separate lm_head weights")
+        else:
+            logger.warning(f"Cannot pack lm_head: {embed_name} not found")
+
     # Write binary file
     logger.info(f"Writing to {output_path}...")
 
@@ -303,13 +334,15 @@ def main():
     parser.add_argument("input", type=Path, help="Input checkpoint directory")
     parser.add_argument("output", type=Path, help="Output .bin file")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--pack-lm-head", action="store_true",
+                        help="Quantize lm_head to 2-bit for faster inference (adds ~82MB, ~2x faster)")
 
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    convert_checkpoint(args.input, args.output)
+    convert_checkpoint(args.input, args.output, pack_lm_head=args.pack_lm_head)
 
 
 if __name__ == "__main__":
