@@ -89,6 +89,7 @@ class DistillationConfig:
     save_interval: int = 500
     keep_last_n: int = 3
     output_dir: str = "outputs/distillation"
+    resume_from: str = ""  # Path to checkpoint to resume from (local or gs://)
 
     # Logging
     log_interval: int = 10

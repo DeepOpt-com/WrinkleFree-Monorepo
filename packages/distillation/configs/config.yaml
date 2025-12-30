@@ -58,6 +58,7 @@ scheduler:
 checkpoint:
   save_interval: 500
   keep_last_n: 3
+  resume_from: ""  # Path to checkpoint to resume from (local or gs://)
   gcs:
     enabled: true  # Upload checkpoints to GCS
     bucket: wrinklefree-checkpoints

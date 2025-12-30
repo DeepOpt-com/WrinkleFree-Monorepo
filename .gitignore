@@ -8,6 +8,10 @@ node_modules/
 __pycache__/
 *.pyc
 
+# Training runs / TensorBoard logs
+**/runs/
+*.tfevents.*
+
 # Credentials (keep examples, ignore real creds)
 credentials/*.json
 credentials/.env

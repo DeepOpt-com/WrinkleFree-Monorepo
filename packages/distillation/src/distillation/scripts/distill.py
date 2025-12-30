@@ -462,6 +462,9 @@ def run_distillation(
     # Get block_size from DLM config or use default
     block_size = dlm_config.get("bd_size", cfg.distillation.get("block_size", 32))
 
+    # Get resume checkpoint path if provided
+    resume_from = cfg.checkpoint.get("resume_from", "")
+
     distill_config = DistillationConfig(
         student_checkpoint_path=str(checkpoint_path),
         student_type=student_type,
@@ -499,6 +502,7 @@ def run_distillation(
         save_interval=cfg.checkpoint.save_interval,
         keep_last_n=cfg.checkpoint.keep_last_n,
         output_dir=str(output_dir),
+        resume_from=resume_from,
         log_interval=cfg.logging.log_interval,
         eval_interval=cfg.logging.eval_interval,
         wandb_enabled=cfg.logging.wandb.enabled,
@@ -521,6 +525,25 @@ def run_distillation(
         mixed_dataset=mixed_dataset,
         device=device,
     )
+
+    # Resume from checkpoint if specified
+    if resume_from:
+        logger.info(f"Resuming from checkpoint: {resume_from}")
+        # Handle GCS paths
+        if resume_from.startswith("gs://"):
+            resume_dir = download_directory_from_gcs(resume_from)
+            resume_path = Path(resume_dir) / "checkpoint.pt"
+        else:
+            resume_path = Path(resume_from)
+            # If path is a directory, look for checkpoint.pt inside
+            if resume_path.is_dir():
+                resume_path = resume_path / "checkpoint.pt"
+
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {resume_path}")
+
+        trainer.load_checkpoint(resume_path)
+        logger.info(f"Resumed from step {trainer.global_step}")
 
     # Train
     metrics = trainer.train()
