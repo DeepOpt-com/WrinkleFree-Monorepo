@@ -29,16 +29,23 @@ fp8:
 packing:
   enabled: true  # Default on for training efficiency
 
-# Optimization (AdamW for stable training)
+# Optimization (MuonClip for BitNet stability - Kimi K2 methodology)
+# MuonClip = Muon optimizer + QK-clipping for attention stability
+# Reference: https://github.com/GAD-cell/muon-clip
+# Muon uses higher LR for hidden weights, AdamW uses standard LR for embeddings/norms
 optimizer:
-  type: adamw
-  lr: 5e-5  # Conservative LR for stable convergence
-  weight_decay: 0.01
-  betas: [0.9, 0.95]
+  type: muonclip
+  lr_muon: 0.005  # Muon LR for hidden weights (spectral norm units)
+  lr_adam: 5e-5  # AdamW LR for embeddings, norms, lm_head
+  weight_decay: 0.0  # Muon doesn't need weight decay
+  momentum: 0.95  # Muon momentum
+  enable_clipping: true  # QK-clipping for attention stability
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
 
 scheduler:
   type: wsd  # Warmup-Stable-Decay (DeepSeek-V3 style)
-  warmup_steps: 500  # Short warmup
+  warmup_steps: 550  # Short warmup
   decay_ratio: 0.2   # 20% of training for decay
   decay_type: linear  # "linear" or "cosine"
   min_lr_ratio: 0.0   # Decay to zero
@@ -47,8 +54,8 @@ scheduler:
 total_tokens: 10_000_000_000  # 10B tokens
 max_steps: null  # Optional: override total_tokens with fixed step count
 max_seq_length: 512  # Reduced for single GPU
-batch_size: 32  # H100 can handle 32 for qwen3_4b
-gradient_accumulation_steps: 8  # Effective batch = 256 (doubled for faster convergence)
+batch_size: 8  # Per-device batch size
+gradient_accumulation_steps: 64  # Effective batch = 512 (increased for stability with MuonClip)
 gradient_clipping: 1.0
 
 # Loss (no distillation, just LM loss)
@@ -61,7 +68,7 @@ loss:
 # Reference: https://huggingface.co/blog/1_58_llm_extreme_quantization
 lambda_warmup:
   enabled: true  # Enable gradual quantization
-  warmup_steps: 1000  # Steps to reach full quantization (lambda=1)
+  warmup_steps: 500  # Steps to reach full quantization (lambda=1)
   schedule: linear  # "linear" or "cosine"
 
 # Pre-Stage 2 mode: Layer-wise distillation before pure LM training
@@ -100,8 +107,8 @@ pre_stage_2:
 
 # Checkpointing
 checkpoint:
-  save_interval: 1000
-  keep_last_n: 3
+  save_interval: 200  # Checkpoint every 200 steps
+  keep_last_n: 5  # Keep 5 most recent checkpoints
   save_optimizer: true
 
 # Logging (no eval - all data is unseen in streaming pre-training)
@@ -121,6 +128,13 @@ early_stopping:
   patience: 5     # Stop after N consecutive checks without improvement
   min_delta: 0.01 # Minimum loss improvement to count as "better"
   min_evals: 10   # Don't stop before this many checks (at log_interval)
+
+# Curriculum Learning: Warmup with high-quality data before mixed distribution
+# Prevents loss instability when starting with noisy multi-domain data
+curriculum:
+  enabled: true
+  warmup_ratio: 0.2  # First 20% of training uses warmup_data_config
+  warmup_data_config: fineweb  # Config name in cheapertraining/configs/data/
 
 # CheaperTraining influence-based data selection
 influence:

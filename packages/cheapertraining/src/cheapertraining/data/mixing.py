@@ -133,18 +133,30 @@ class MixedDataset(IterableDataset):
 
     def _load_datasets(self):
         """Lazy load datasets with distributed sharding support."""
+        import os
+        import time
         from datasets import load_dataset
+
+        # Disable KMP affinity to prevent hangs on multi-core systems
+        # Reference: https://github.com/huggingface/datasets/issues/6079
+        if "KMP_AFFINITY" not in os.environ:
+            os.environ["KMP_AFFINITY"] = "disabled"
 
         self._datasets = []
         self._iterators = []
 
-        for mixture in self.mixtures:
+        total = len(self.mixtures)
+        for i, mixture in enumerate(self.mixtures):
+            logger.info(f"Loading dataset {i+1}/{total}: {mixture.name} ({mixture.path})")
+            start = time.time()
             ds = load_dataset(
                 mixture.path,
                 name=mixture.subset,
                 split=mixture.split,
                 streaming=self.streaming,
             )
+            elapsed = time.time() - start
+            logger.info(f"Dataset {mixture.name} loaded in {elapsed:.1f}s")
 
             # Apply distributed sharding if multi-GPU
             if self.world_size > 1 and self.streaming:

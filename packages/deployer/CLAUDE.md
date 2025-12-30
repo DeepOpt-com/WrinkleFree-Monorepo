@@ -79,6 +79,25 @@ secrets:
 
 The CLI (`wf train`) auto-prepares Docker credentials for Nebius/RunPod.
 
+## GCS Setup (Required for SkyPilot)
+
+SkyPilot uses GCS for file mounts. **gsutil must be configured separately from gcloud** because standalone gsutil doesn't share gcloud credentials.
+
+**Auto-setup** (recommended): Just run `source credentials/.env` - it auto-configures gsutil if needed.
+
+**Manual setup**:
+```bash
+# Run from packages/deployer
+./scripts/setup-gcs.sh
+```
+
+This creates `~/.boto` pointing to the service account. Verify with:
+```bash
+gsutil ls gs://wrinklefree-checkpoints/
+```
+
+**If gsutil fails with 401 errors**: The `.boto` file is missing or misconfigured. Re-run the setup script.
+
 ## Scales (GPU Configurations)
 
 | Scale | GPUs | Use Case |
@@ -110,6 +129,16 @@ Build and push with:
 | Vast.ai | `--cloud vast` | Cheap H100s, marketplace pricing |
 
 ## Troubleshooting
+
+### gsutil 401 "Anonymous caller" errors
+```bash
+# gsutil doesn't share gcloud credentials - needs separate config
+# Run the setup script to create ~/.boto
+./scripts/setup-gcs.sh
+
+# Or manually verify .boto exists and points to service account
+cat ~/.boto
+```
 
 ### SkyPilot not finding credentials
 ```bash

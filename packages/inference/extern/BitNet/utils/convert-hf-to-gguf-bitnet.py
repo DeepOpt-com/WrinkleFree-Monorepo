@@ -957,7 +957,13 @@ class BitnetModel(Model):
     model_arch = gguf.MODEL_ARCH.BITNET
 
     def set_vocab(self):
-        self._set_vocab_sentencepiece()
+        try:
+            self._set_vocab_sentencepiece()
+        except FileNotFoundError:
+            try:
+                self._set_vocab_llama_hf()
+            except (FileNotFoundError, TypeError):
+                self._set_vocab_gpt2()
         
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -975,6 +981,10 @@ class BitnetModel(Model):
         return result.type(dtype)
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # Skip weight_scale tensors - these are computed at inference time
+        if "weight_scale" in name:
+            return []
+            
         # quant weight to i2 (in fp16)
         if name.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight", 
                           "down_proj.weight", "up_proj.weight", "gate_proj.weight",
@@ -986,7 +996,18 @@ class BitnetModel(Model):
     def write_tensors(self):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
 
+        # Build scale map for unpacking packed weights
+        scale_map = dict()
         for name, data_torch in self.get_tensors():
+            if name.endswith(("weight_scale")):
+                data_torch = data_torch.to(torch.float32)
+                name = name.replace(".weight_scale", "")
+                scale_map[name] = data_torch
+
+        for name, data_torch in self.get_tensors():
+            # Skip weight_scale tensors (already processed above)
+            if name.endswith(("weight_scale")):
+                continue
             # we don't need these
             if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
                 continue
@@ -996,6 +1017,17 @@ class BitnetModel(Model):
             # convert any unsupported data types to float32
             if data_torch.dtype not in (torch.float16, torch.float32):
                 data_torch = data_torch.to(torch.float32)
+
+            # Unpack 2-bit packed weights if we have a corresponding weight_scale
+            weight_key = name.replace(".weight", "")
+            if weight_key in scale_map:
+                data_torch = data_torch.to(torch.uint8)
+                origin_shape = data_torch.shape
+                shift = torch.tensor([0, 2, 4, 6], dtype=torch.uint8).reshape((4, *(1 for _ in range(len(origin_shape)))))
+                data_torch = data_torch.unsqueeze(0).expand((4, *origin_shape)) >> shift
+                data_torch = data_torch & 3
+                data_torch = (data_torch.float() - 1).reshape((origin_shape[0] * 4, *origin_shape[1:]))
+                data_torch = data_torch / scale_map[weight_key].float()
 
             # use the first number-like part of the tensor name as the block id
             bid = None

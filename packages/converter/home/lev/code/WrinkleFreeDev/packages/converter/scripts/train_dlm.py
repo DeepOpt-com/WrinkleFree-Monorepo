@@ -69,7 +69,7 @@ if not HAS_WRINKLEFREE:
 MASK_TOKEN = "|<MASK>|"
 DEFAULT_SEQ_LENGTH = 512  # Official script uses 512
 DEFAULT_WARMUP_RATIO = 0.03  # Official: 3% warmup
-# GCS_UPLOAD_INTERVAL is now read from config (checkpoint.save_interval)
+GCS_UPLOAD_INTERVAL = 1000  # Upload to GCS every N steps
 BATCH_PROBE_REDUCTION = 0.8  # Reduce batch by 20% on OOM
 
 # ChatML special tokens (Qwen3 style)
@@ -234,83 +234,6 @@ def upload_to_gcs(local_path: Path, model_name: str, checkpoint_name: str = "che
     except subprocess.TimeoutExpired:
         logger.warning("GCS upload timed out")
         return False
-
-
-def cleanup_old_gcs_checkpoints(model_name: str, keep_n: int = 5) -> None:
-    """Delete old checkpoints from GCS, keeping only the N most recent.
-
-    Args:
-        model_name: Name of the model (used in GCS path)
-        keep_n: Number of recent checkpoints to keep (default: 5)
-    """
-    gcs_bucket = os.environ.get("GCS_BUCKET")
-    if not gcs_bucket:
-        return
-
-    gcs_prefix = f"gs://{gcs_bucket}/dlm/{model_name}/"
-    try:
-        # List all checkpoint-step-* directories
-        result = subprocess.run(
-            ["gsutil", "ls", "-d", f"{gcs_prefix}checkpoint-step-*"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            result = subprocess.run(
-                ["gcloud", "storage", "ls", f"{gcs_prefix}checkpoint-step-*"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-
-        if result.returncode != 0 or not result.stdout:
-            return
-
-        checkpoints = result.stdout.strip().split("\n")
-        # Parse step numbers and sort
-        step_checkpoints = []
-        for cp in checkpoints:
-            cp = cp.rstrip("/")
-            if "checkpoint-step-" in cp:
-                try:
-                    step = int(cp.split("checkpoint-step-")[-1])
-                    step_checkpoints.append((step, cp))
-                except ValueError:
-                    continue
-
-        # Sort by step number (descending) and find ones to delete
-        step_checkpoints.sort(key=lambda x: x[0], reverse=True)
-        to_delete = step_checkpoints[keep_n:]
-
-        if not to_delete:
-            return
-
-        logger.info(f"Cleaning up {len(to_delete)} old GCS checkpoints (keeping {keep_n} most recent)")
-        for step, cp_path in to_delete:
-            try:
-                # Add trailing slash for directory deletion
-                delete_path = cp_path if cp_path.endswith("/") else cp_path + "/"
-                result = subprocess.run(
-                    ["gsutil", "-m", "rm", "-r", delete_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-                if result.returncode == 0:
-                    logger.info(f"Deleted old checkpoint: checkpoint-step-{step}")
-                else:
-                    # Try gcloud storage
-                    subprocess.run(
-                        ["gcloud", "storage", "rm", "-r", delete_path],
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to delete checkpoint-step-{step}: {e}")
-    except Exception as e:
-        logger.warning(f"GCS cleanup failed: {e}")
 
 
 def find_latest_gcs_checkpoint(model_name: str) -> str | None:
@@ -577,7 +500,6 @@ def train(
     early_stopping_cfg: dict | None = None,  # Early stopping config from Hydra
     quantization_warmup_steps: int = 0,  # Lambda warmup for BitNet (0 = disabled)
     optimizer_cfg: dict | None = None,  # Optimizer config (type, momentum, etc.)
-    save_interval: int = 200,  # Save checkpoint every N steps
 ):
     """Run Fast-dLLM v2 SFT training."""
     set_seed(seed)
@@ -819,8 +741,6 @@ def train(
     if optimizer_type == "muonclip":
         optimizer_kwargs["enable_clipping"] = opt_cfg.get("enable_clipping", True)
         optimizer_kwargs["clipping_threshold"] = opt_cfg.get("clipping_threshold", 50.0)
-        optimizer_kwargs["unified_lr"] = opt_cfg.get("unified_lr", True)
-        optimizer_kwargs["lr_adam"] = opt_cfg.get("lr_adam", learning_rate * 0.1)
 
         # Ensure model config has head_dim for QK-clipping
         if not hasattr(model.config, "head_dim"):
@@ -835,10 +755,7 @@ def train(
         optimizer_kwargs["log_dir"] = str(optimizer_log_dir)
 
     optimizer = create_optimizer(model, optimizer_type=optimizer_type, **optimizer_kwargs)
-    if optimizer_type == "muonclip" and not opt_cfg.get("unified_lr", True):
-        logger.info(f"Using {optimizer_type} optimizer (lr_muon={learning_rate}, lr_adam={optimizer_kwargs['lr_adam']})")
-    else:
-        logger.info(f"Using {optimizer_type} optimizer (lr={learning_rate})")
+    logger.info(f"Using {optimizer_type} optimizer (lr={learning_rate})")
 
     # Create scheduler based on config
     if scheduler_type == "cosine":
@@ -1014,38 +931,21 @@ def train(
             prev_loss = avg_loss
 
             pbar.update(1)
-            # Show both LRs if we have multiple param groups (MuonClip)
-            all_lrs = scheduler.get_last_lr()
-            if len(all_lrs) > 1:
-                pbar.set_postfix({
-                    "loss": f"{avg_loss:.4f}",
-                    "tokens": f"{tokens_seen:,}",
-                    "lr_muon": f"{all_lrs[1]:.2e}",
-                    "lr_adam": f"{all_lrs[0]:.2e}",
-                })
-            else:
-                pbar.set_postfix({
-                    "loss": f"{avg_loss:.4f}",
-                    "tokens": f"{tokens_seen:,}",
-                    "lr": f"{all_lrs[0]:.2e}",
-                })
+            pbar.set_postfix({
+                "loss": f"{avg_loss:.4f}",
+                "tokens": f"{tokens_seen:,}",
+                "lr": f"{scheduler.get_last_lr()[0]:.2e}",
+            })
 
             if use_wandb:
                 # Get current lambda value for quantization tracking
                 current_lambda = lambda_warmup_scheduler.lambda_val if lambda_warmup_scheduler else 1.0
 
-                # Get LRs for all param groups
-                all_lrs = scheduler.get_last_lr()
-                lr_adam = all_lrs[0] if len(all_lrs) > 0 else 0
-                lr_muon = all_lrs[1] if len(all_lrs) > 1 else lr_adam
-
                 wandb.log({
                     # Core metrics
                     "train/loss": avg_loss,
                     "train/tokens": tokens_seen,
-                    "train/lr": lr_adam,  # Primary LR (backward compat)
-                    "train/lr_adam": lr_adam,  # Adam LR for embed/head/norm
-                    "train/lr_muon": lr_muon,  # Muon LR for hidden weights
+                    "train/lr": scheduler.get_last_lr()[0],
                     "train/step": step,
                     # Curriculum tracking (1=chat-only, 2=mixed)
                     "train/curriculum_phase": current_phase,
@@ -1077,8 +977,8 @@ def train(
                 tokenizer.save_pretrained(checkpoint_dir)
                 break
 
-            # Save checkpoint at save_interval (also at step 10 as smoke test)
-            if step == 10 or (step > 0 and step % save_interval == 0):
+            # Save checkpoint every 1000 steps
+            if step % GCS_UPLOAD_INTERVAL == 0:
                 logger.info(f"Step {step}: Saving checkpoint")
                 checkpoint_dir = final_output / "checkpoint-latest"
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -1103,8 +1003,6 @@ def train(
 
                 # Upload to GCS periodically
                 upload_to_gcs(checkpoint_dir, model_name, f"checkpoint-step-{step}")
-                # Cleanup old checkpoints (keep only 5 most recent)
-                cleanup_old_gcs_checkpoints(model_name, keep_n=5)
 
     pbar.close()
 
@@ -1179,7 +1077,6 @@ def main(cfg: DictConfig) -> None:
         early_stopping_cfg=OmegaConf.to_container(cfg.conversion.get("early_stopping", {})),
         quantization_warmup_steps=cfg.conversion.get("quantization_warmup_steps", 0),
         optimizer_cfg=OmegaConf.to_container(cfg.conversion.optimizer),
-        save_interval=cfg.conversion.checkpoint.get("save_interval", 200),
     )
 
     logger.info(f"Training complete!")

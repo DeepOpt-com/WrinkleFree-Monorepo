@@ -35,6 +35,7 @@ from wrinklefree.quantization.lambda_warmup import (
     set_global_lambda_warmup,
 )
 from wrinklefree.training.fsdp_wrapper import setup_distributed, wrap_model_fsdp
+from wrinklefree.training.tensor_parallel import setup_2d_parallel
 from wrinklefree.training.trainer import Trainer, create_optimizer, create_scheduler
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ class Stage2Trainer(Trainer):
         config: DictConfig,
         teacher: Optional[HiddenStateTeacher] = None,
         pre_stage_2_config: Optional[DictConfig] = None,
+        next_phase_loader_future: Optional[Any] = None,  # concurrent.futures.Future
+        switch_step: Optional[int] = None,
         **kwargs,
     ):
         # Determine mode: distillation vs pure LM
@@ -101,6 +104,14 @@ class Stage2Trainer(Trainer):
             config=config,
             **kwargs,
         )
+
+        # Curriculum learning: swap dataloader mid-training
+        # The next phase dataloader is loaded in a background thread
+        self.next_phase_loader_future = next_phase_loader_future
+        self.next_phase_dataloader = None  # Will be set when future completes
+        self.switch_step = switch_step
+        if switch_step is not None:
+            logger.info(f"Curriculum: Will switch to Phase 2 dataloader at step {switch_step}")
 
         # Get training config (support both full config and training-only config)
         self.training_cfg = getattr(config, "training", config)
@@ -292,6 +303,33 @@ class Stage2Trainer(Trainer):
         data_iter = iter(self.train_dataloader)
 
         while self.global_step < self.max_steps:
+            # Curriculum: Check if background-loaded Phase 2 dataloader is ready
+            if (
+                self.next_phase_loader_future is not None
+                and self.next_phase_dataloader is None
+                and self.next_phase_loader_future.done()
+            ):
+                # Get the loaded dataloader from the future
+                result = self.next_phase_loader_future.result()
+                self.next_phase_dataloader = result[0]  # (dataloader, mixed_dataset, probe_loaders)
+                if self.rank == 0:
+                    logger.info(f"[Background] Phase 2 dataloader ready at step {self.global_step}")
+                self.next_phase_loader_future = None  # Clear future
+
+            # Curriculum: Switch dataloader at switch_step (if Phase 2 is ready)
+            if (
+                self.next_phase_dataloader is not None
+                and self.switch_step is not None
+                and self.global_step >= self.switch_step
+            ):
+                if self.rank == 0:
+                    logger.info(f"Curriculum: Switching to Phase 2 dataloader at step {self.global_step}")
+                self.train_dataloader = self.next_phase_dataloader
+                data_iter = iter(self.train_dataloader)
+                self.next_phase_dataloader = None  # Prevent re-switching
+                import gc
+                gc.collect()
+
             # Get next batch
             try:
                 batch = next(data_iter)
@@ -658,6 +696,8 @@ def run_stage2(
     run_manager: Optional[Any] = None,
     experiment_name: Optional[str] = None,
     teacher_model_name: Optional[str] = None,
+    next_phase_loader_future: Optional[Any] = None,  # concurrent.futures.Future
+    switch_step: Optional[int] = None,
 ) -> nn.Module:
     """
     Run Stage 2: Continue pre-training to adapt weight distributions.
@@ -789,23 +829,57 @@ def run_stage2(
             **compile_options,
         )
 
-    # Wrap with FSDP if multi-GPU
+    # Wrap with distributed training (FSDP or TP+FSDP2)
     if world_size > 1:
         from wrinklefree.models import BitNetDecoderLayer
-        model = wrap_model_fsdp(
-            model,
-            transformer_layer_cls=BitNetDecoderLayer,
-            sharding_strategy=config.distributed.fsdp.sharding_strategy,
-            mixed_precision=config.distributed.fsdp.mixed_precision.enabled,
-            activation_checkpointing=config.distributed.fsdp.activation_checkpointing.enabled,
+
+        # Check if using tensor parallelism
+        dist_strategy = getattr(config.distributed, "strategy", "fsdp")
+        tp_config = getattr(config.distributed, "tensor_parallel", None)
+        use_tp = (
+            dist_strategy == "tp_fsdp"
+            or (tp_config is not None and getattr(tp_config, "enabled", False))
         )
 
+        if use_tp:
+            # 2D parallelism: Tensor Parallel + FSDP2
+            tp_size = getattr(tp_config, "tp_size", 0) if tp_config else 0
+            logger.info(f"Using 2D parallelism: TP+FSDP2 (tp_size={tp_size})")
+            model, device_mesh = setup_2d_parallel(
+                model,
+                tp_size=tp_size,
+                mixed_precision=config.distributed.fsdp.mixed_precision.enabled,
+                activation_checkpointing=config.distributed.fsdp.activation_checkpointing.enabled,
+            )
+        else:
+            # Standard FSDP1
+            model = wrap_model_fsdp(
+                model,
+                transformer_layer_cls=BitNetDecoderLayer,
+                sharding_strategy=config.distributed.fsdp.sharding_strategy,
+                mixed_precision=config.distributed.fsdp.mixed_precision.enabled,
+                activation_checkpointing=config.distributed.fsdp.activation_checkpointing.enabled,
+            )
+
     # Create optimizer and scheduler
+    opt_cfg = config.training.optimizer
+    # For MuonClip: get separate LRs, fallback to lr if not specified
+    lr_muon = getattr(opt_cfg, "lr_muon", getattr(opt_cfg, "lr", 0.02))
+    lr_adam = getattr(opt_cfg, "lr_adam", getattr(opt_cfg, "lr", 2e-4))
     optimizer = create_optimizer(
         model,
-        learning_rate=config.training.optimizer.lr,
+        learning_rate=lr_muon,  # Primary LR (Muon uses this)
         weight_decay=config.training.optimizer.weight_decay,
-        use_8bit=config.training.optimizer.type == "adamw_8bit",
+        optimizer_type=config.training.optimizer.type,
+        model_config=model.config if hasattr(model, "config") else None,
+        # log_dir omitted - uses default /tmp/muon_logs, muon's tensorboard disabled via None check
+        # MuonClip-specific params
+        lr_muon=lr_muon,
+        lr_adam=lr_adam,
+        momentum=getattr(opt_cfg, "momentum", 0.95),
+        enable_clipping=getattr(opt_cfg, "enable_clipping", True),
+        clipping_threshold=getattr(opt_cfg, "clipping_threshold", 50.0),
+        clipping_alpha=getattr(opt_cfg, "clipping_alpha", 0.5),
     )
 
     # Influence-based data selection (optional)
@@ -938,6 +1012,8 @@ def run_stage2(
         run_manager=run_manager,
         experiment_name=experiment_name,
         stage="stage2",
+        next_phase_loader_future=next_phase_loader_future,
+        switch_step=switch_step,
     )
     trainer.output_dir = output_dir
 

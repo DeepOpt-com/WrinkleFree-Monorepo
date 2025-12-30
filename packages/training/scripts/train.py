@@ -517,16 +517,74 @@ def main(cfg: DictConfig) -> None:
             # Data configs live in CheaperTraining/configs/data/ - 1.58Quant doesn't manage data
             config_name = cfg.data.get("config_name", "mixed_pretrain")
             influence_enabled = cfg.training.get("influence", {}).get("enabled", False)
-            logger.info(f"Loading data config '{config_name}' from CheaperTraining (probes={influence_enabled})")
 
-            train_dataloader, mixed_dataset, probe_dataloaders = create_pretraining_dataloader(
-                tokenizer=tokenizer,
-                batch_size=cfg.training.batch_size,
-                max_length=cfg.training.max_seq_length,
-                config_name=config_name,
-                with_probes=influence_enabled,
-                seed=cfg.seed,
-            )
+            # Curriculum warmup: use simple data (e.g., fineweb) for first X% of training
+            # Phase 2 dataloader is loaded in background thread while training starts
+            curriculum_cfg = cfg.training.get("curriculum", {})
+            next_phase_dataloader = None
+            switch_step = None
+            background_loader_future = None
+
+            if curriculum_cfg.get("enabled", False):
+                import concurrent.futures
+                warmup_ratio = curriculum_cfg.get("warmup_ratio", 0.2)
+                warmup_config = curriculum_cfg.get("warmup_data_config", "fineweb")
+
+                # Calculate switch step
+                world_size = int(os.environ.get("WORLD_SIZE", 1))
+                tokens_per_step = (
+                    cfg.training.batch_size
+                    * cfg.training.max_seq_length
+                    * cfg.training.gradient_accumulation_steps
+                    * world_size
+                )
+                total_steps = cfg.training.get("max_steps") or (cfg.training.total_tokens // tokens_per_step)
+                switch_step = int(total_steps * warmup_ratio)
+
+                logger.info(f"Curriculum enabled: Phase 1 ({warmup_config}) for {switch_step} steps ({warmup_ratio:.0%})")
+                logger.info(f"Phase 2 ({config_name}) will be loaded in background, switches at step {switch_step}")
+
+                # Initialize variables that will be set in Phase 2
+                probe_dataloaders = None
+                mixed_dataset = None
+
+                # Phase 1: Warmup dataloader (fineweb-edu, fast to load)
+                logger.info(f"Loading Phase 1 data: {warmup_config}")
+                train_dataloader, _, _ = create_pretraining_dataloader(
+                    tokenizer=tokenizer,
+                    batch_size=cfg.training.batch_size,
+                    max_length=cfg.training.max_seq_length,
+                    config_name=warmup_config,
+                    with_probes=False,
+                    seed=cfg.seed,
+                )
+
+                # Phase 2: Load in background thread (mixed_pretrain takes longer)
+                def load_phase2():
+                    logger.info(f"[Background] Loading Phase 2 data: {config_name}")
+                    return create_pretraining_dataloader(
+                        tokenizer=tokenizer,
+                        batch_size=cfg.training.batch_size,
+                        max_length=cfg.training.max_seq_length,
+                        config_name=config_name,
+                        with_probes=influence_enabled,
+                        seed=cfg.seed,
+                    )
+
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                background_loader_future = executor.submit(load_phase2)
+                logger.info(f"[Background] Phase 2 dataloader loading started in background thread")
+            else:
+                # Standard single-phase loading
+                logger.info(f"Loading data config '{config_name}' from CheaperTraining (probes={influence_enabled})")
+                train_dataloader, mixed_dataset, probe_dataloaders = create_pretraining_dataloader(
+                    tokenizer=tokenizer,
+                    batch_size=cfg.training.batch_size,
+                    max_length=cfg.training.max_seq_length,
+                    config_name=config_name,
+                    with_probes=influence_enabled,
+                    seed=cfg.seed,
+                )
 
             # Extract first probe loader for legacy interface (stage2 trainer expects single loader)
             probe_dataloader = None
@@ -728,6 +786,8 @@ def main(cfg: DictConfig) -> None:
                 run_manager=run_manager,
                 experiment_name=cfg.experiment_name,
                 resume_from=resume_from,
+                next_phase_loader_future=background_loader_future,  # Curriculum: Background-loaded Phase 2
+                switch_step=switch_step,  # Curriculum: Step to switch dataloaders
             )
 
             # Update metadata with wandb URL (after trainer initialized wandb)

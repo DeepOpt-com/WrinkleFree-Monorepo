@@ -1,0 +1,9 @@
+{
+  "timestamp": "2025-12-30T01:18:48.042438",
+  "type": "training_failed",
+  "severity": "ERROR",
+  "fingerprint": "e9e9da9bb2ac5fc0f03b8a37dad8f8a8bb4c97fa01691d28ff808642e632401c",
+  "error": "expected str, bytes or os.PathLike object, not NoneType",
+  "traceback": "Traceback (most recent call last):\n  File \"/workspace/project/packages/training/scripts/train.py\", line 779, in main\n    model = run_stage2(\n  File \"/workspace/project/packages/training/src/wrinklefree/training/stage2.py\", line 867, in run_stage2\n    optimizer = create_optimizer(\n  File \"/workspace/project/packages/training/src/wrinklefree/training/trainer.py\", line 672, in create_optimizer\n    os.makedirs(log_dir, exist_ok=True)\n  File \"/usr/lib/python3.10/os.py\", line 210, in makedirs\n    head, tail = path.split(name)\n  File \"/usr/lib/python3.10/posixpath.py\", line 103, in split\n    p = os.fspath(p)\nTypeError: expected str, bytes or os.PathLike object, not NoneType\n",
+  "message": "Training failed with exception"
+}

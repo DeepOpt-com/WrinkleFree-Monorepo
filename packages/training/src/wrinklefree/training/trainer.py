@@ -551,8 +551,20 @@ class Trainer:
         else:
             self.model.load_state_dict(checkpoint["model_state_dict"])
 
-        # Load optimizer state
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        # Load optimizer state (skip if RESUME_OPTIMIZER=false or optimizer type changed)
+        skip_optimizer = os.environ.get("RESUME_OPTIMIZER", "true").lower() == "false"
+        if skip_optimizer:
+            if self.rank == 0:
+                logger.info("Skipping optimizer state load (RESUME_OPTIMIZER=false)")
+        elif "optimizer_state_dict" in checkpoint:
+            try:
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            except ValueError as e:
+                if "doesn't match the size" in str(e):
+                    if self.rank == 0:
+                        logger.warning(f"Optimizer state mismatch (likely different optimizer type), skipping: {e}")
+                else:
+                    raise
 
         # Reset learning rate to config value (checkpoint may have different LR)
         config_lr = None
@@ -577,9 +589,13 @@ class Trainer:
                 if self.rank == 0:
                     logger.info(f"Reset LR from checkpoint value {old_lr} to config value {config_lr}")
 
-        # Load scheduler state
-        if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
-            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        # Load scheduler state (skip if switching optimizers)
+        if self.scheduler is not None and "scheduler_state_dict" in checkpoint and not skip_optimizer:
+            try:
+                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            except Exception as e:
+                if self.rank == 0:
+                    logger.warning(f"Failed to load scheduler state, starting fresh: {e}")
             # Also reset scheduler's base_lrs if we changed the LR
             # Must handle SequentialLR by updating sub-schedulers
             if config_lr is not None:
@@ -650,8 +666,16 @@ def create_optimizer(
                     )
                     enable_clipping = False
 
+            # Check for separate LRs (lr_muon, lr_adam) vs unified LR
+            lr_muon = kwargs.get("lr_muon", learning_rate)
+            lr_adam = kwargs.get("lr_adam", learning_rate)
+            use_unified_lr = (lr_muon == lr_adam)
+
             config = MuonConfig(
-                lr=learning_rate,
+                unified_lr=use_unified_lr,
+                lr=learning_rate if use_unified_lr else None,
+                lr_muon=lr_muon if not use_unified_lr else None,
+                lr_adam=lr_adam if not use_unified_lr else None,
                 muon_beta=kwargs.get("momentum", 0.95),
                 muon_decay=weight_decay,
                 adam_betas=betas,
@@ -660,10 +684,14 @@ def create_optimizer(
                 enable_clipping=enable_clipping,
                 clipping_threshold=kwargs.get("clipping_threshold", 50.0),
                 clipping_alpha=kwargs.get("clipping_alpha", 0.5),
-                log_dir="",  # Empty string to initialize TensorBoard writer (workaround for muon-clip bug)
+                # NOTE: muon-clip has a bug where writer is only created if log_dir is empty!
+                # See: if not muon_config.log_dir : self.writer = SummaryWriter(...)
+                # So we pass empty string to create the writer, otherwise flush_metrics() crashes
+                log_dir="",  # Empty string triggers writer creation (muon-clip bug workaround)
             )
+            lr_info = f"unified_lr={learning_rate}" if use_unified_lr else f"lr_muon={lr_muon}, lr_adam={lr_adam}"
             logger.info(
-                f"Using MuonClip optimizer (Muon + QK-clipping={'enabled' if enable_clipping else 'disabled'})"
+                f"Using MuonClip optimizer ({lr_info}, QK-clipping={'enabled' if enable_clipping else 'disabled'})"
             )
             return MuonClip(model, model_config, config)
         except ImportError:

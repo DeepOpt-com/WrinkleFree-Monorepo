@@ -1,0 +1,9 @@
+{
+  "timestamp": "2025-12-30T01:30:03.371042",
+  "type": "training_failed",
+  "severity": "ERROR",
+  "fingerprint": "e9e9da9bb2ac5fc0f03b8a37dad8f8a8bb4c97fa01691d28ff808642e632401c",
+  "error": "'MuonClip' object has no attribute 'writer'",
+  "traceback": "Traceback (most recent call last):\n  File \"/workspace/project/packages/training/scripts/train.py\", line 779, in main\n    model = run_stage2(\n  File \"/workspace/project/packages/training/src/wrinklefree/training/stage2.py\", line 1029, in run_stage2\n    metrics = trainer.train()\n  File \"/workspace/project/packages/training/src/wrinklefree/training/stage2.py\", line 385, in train\n    self.optimizer.step()\n  File \"/workspace/project/.venv/lib/python3.10/site-packages/torch/optim/lr_scheduler.py\", line 133, in wrapper\n    return func.__get__(opt, opt.__class__)(*args, **kwargs)\n  File \"/workspace/project/.venv/lib/python3.10/site-packages/torch/optim/optimizer.py\", line 517, in wrapper\n    out = func(*args, **kwargs)\n  File \"/workspace/project/.venv/lib/python3.10/site-packages/muon.py\", line 192, in step\n    return self.single_muon_step(closure)\n  File \"/workspace/project/.venv/lib/python3.10/site-packages/torch/utils/_contextlib.py\", line 120, in decorate_context\n    return func(*args, **kwargs)\n  File \"/workspace/project/.venv/lib/python3.10/site-packages/muon.py\", line 296, in single_muon_step\n    self.flush_metrics()\n  File \"/workspace/project/.venv/lib/python3.10/site-packages/muon.py\", line 152, in flush_metrics\n    self.writer.add_scalar(key, val, global_step=self._step)\nAttributeError: 'MuonClip' object has no attribute 'writer'\n",
+  "message": "Training failed with exception"
+}

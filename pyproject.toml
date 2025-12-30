@@ -3,9 +3,16 @@ name = "wrinklefree-workspace"
 version = "0.1.0"
 description = "WrinkleFree monorepo for 1.58-bit quantized LLM research"
 requires-python = ">=3.10"
+dependencies = [
+    "muon-clip",
+    "muon-optimizer>=0.1.0",
+]
 
 [tool.uv.workspace]
 members = ["packages/*"]
+
+[tool.uv.sources]
+muon-clip = { git = "https://github.com/GAD-cell/muon-clip.git", rev = "main" }
 
 [dependency-groups]
 dev = [

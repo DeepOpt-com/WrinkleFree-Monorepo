@@ -411,28 +411,54 @@ impl DlmScheduler {
 
                 self.batch.clear();
                 let logit_positions: Vec<usize>;
+                // Track batch index mapping:
+                // - masked_only=true: batch_idx = enumerate index
+                // - masked_only=false: batch_idx = block_idx - batch_offset
+                let masked_only: bool;
+                let batch_offset: usize;
 
                 if use_cached && first_token_unmasked {
                     // DualCache hit: Only compute for remaining masked positions
+                    // Clear KV cache for just the masked positions we're recomputing
+                    for i in start_idx..end_idx {
+                        if block_tokens[i] == mask_id {
+                            let pos = block_start_pos + i as i32;
+                            self.engine.kv_cache_seq_rm(seq_id, pos, pos + 1);
+                        }
+                    }
+
                     logit_positions = (start_idx..end_idx)
                         .filter(|&i| block_tokens[i] == mask_id)
                         .collect();
 
+                    // Compact batch: only add masked tokens
                     for &i in &logit_positions {
                         let pos = block_start_pos + i as i32;
                         self.batch.add(block_tokens[i], pos, seq_id, true);
                     }
+                    masked_only = true;
+                    batch_offset = 0; // Not used when masked_only=true
                 } else {
-                    // Full block forward - compute all and update cache
-                    for (i, &token) in block_tokens.iter().enumerate() {
+                    // Full block forward - clear KV cache from current small block onwards
+                    // Only clear from current position to preserve valid cache from previous small blocks
+                    let current_pos = block_start_pos + start_idx as i32;
+                    let block_end_pos = block_start_pos + block_size as i32;
+                    self.engine.kv_cache_seq_rm(seq_id, current_pos, block_end_pos);
+
+                    // Add tokens from current small block onwards only
+                    // Previous small blocks already have valid KV cache
+                    for i in start_idx..block_size {
+                        let token = block_tokens[i];
                         let pos = block_start_pos + i as i32;
-                        let need_logits = i >= start_idx && i < end_idx && token == mask_id;
+                        let need_logits = i < end_idx && token == mask_id;
                         self.batch.add(token, pos, seq_id, need_logits);
                     }
 
                     logit_positions = (start_idx..end_idx)
                         .filter(|&i| block_tokens[i] == mask_id)
                         .collect();
+                    masked_only = false;
+                    batch_offset = start_idx; // Batch indices are relative to start_idx
 
                     // Update DualCache
                     let kv_end_pos = block_start_pos + block_size as i32;
@@ -451,8 +477,17 @@ impl DlmScheduler {
                 // Process masked positions with confidence thresholding
                 let mut candidates: Vec<(usize, i32, f32)> = Vec::new();
 
-                for (batch_idx, &block_idx) in logit_positions.iter().enumerate() {
-                    if let Some(logits) = self.engine.get_logits(batch_idx as i32) {
+                for (enum_idx, &block_idx) in logit_positions.iter().enumerate() {
+                    // Determine batch index based on batch type:
+                    // - masked_only: sequential indices (0, 1, 2...)
+                    // - partial block: block_idx - batch_offset
+                    let batch_idx = if masked_only {
+                        enum_idx as i32
+                    } else {
+                        (block_idx - batch_offset) as i32
+                    };
+
+                    if let Some(logits) = self.engine.get_logits(batch_idx) {
                         let probs = softmax(logits);
                         let token_id = argmax(logits);
                         let confidence = probs[token_id as usize];
@@ -476,7 +511,7 @@ impl DlmScheduler {
                 if !unmasked_any && !candidates.is_empty() {
                     let (idx, token, _) = candidates
                         .iter()
-                        .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+                        .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Less))
                         .copied()
                         .unwrap();
 
@@ -605,11 +640,12 @@ pub fn softmax(logits: &[f32]) -> Vec<f32> {
 }
 
 /// Find index of maximum value in logits.
+/// Handles NaN values by treating them as less than any other value.
 pub fn argmax(logits: &[f32]) -> i32 {
     logits
         .iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less))
         .map(|(i, _)| i as i32)
         .unwrap_or(0)
 }

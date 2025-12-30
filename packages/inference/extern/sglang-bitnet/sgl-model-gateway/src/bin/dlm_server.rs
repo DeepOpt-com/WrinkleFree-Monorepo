@@ -12,19 +12,164 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use axum::{routing::get, Router};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 use tracing::{error, info};
 
 #[cfg(feature = "native-inference")]
 use sgl_model_gateway::inference::{
-    BatchConfig, DlmConfig, DlmScheduler, DlmSchedulerConfig, NativeBatchEngine,
+    BatchConfig, BatchSamplingParams, DlmConfig, DlmScheduler, DlmSchedulerConfig,
+    DlmSchedulerHandle, InferenceRequest, NativeBatchEngine,
 };
-#[cfg(feature = "native-inference")]
-use sgl_model_gateway::routers::BatchRouter;
 
 async fn health() -> &'static str {
     "ok"
+}
+
+// OpenAI-compatible request/response types
+#[derive(Debug, Deserialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionRequest {
+    messages: Vec<ChatMessage>,
+    #[serde(default = "default_max_tokens")]
+    max_tokens: i32,
+    #[serde(default)]
+    temperature: Option<f32>,
+    #[serde(default)]
+    top_p: Option<f32>,
+    #[serde(default)]
+    stream: bool,
+}
+
+fn default_max_tokens() -> i32 {
+    256
+}
+
+#[derive(Debug, Serialize)]
+struct ChatCompletionChoice {
+    index: i32,
+    message: ChatCompletionMessage,
+    finish_reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatCompletionMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatCompletionUsage {
+    prompt_tokens: i32,
+    completion_tokens: i32,
+    total_tokens: i32,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatCompletionResponse {
+    id: String,
+    object: String,
+    created: u64,
+    model: String,
+    choices: Vec<ChatCompletionChoice>,
+    usage: ChatCompletionUsage,
+}
+
+#[cfg(feature = "native-inference")]
+struct AppState {
+    handle: DlmSchedulerHandle,
+    engine: Arc<NativeBatchEngine>,
+    request_counter: AtomicU64,
+}
+
+#[cfg(feature = "native-inference")]
+async fn chat_completions(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ChatCompletionRequest>,
+) -> Result<Json<ChatCompletionResponse>, (StatusCode, String)> {
+    // Build prompt from messages using Llama 3 format
+    let mut prompt = String::new();
+    for msg in &req.messages {
+        prompt.push_str(&format!("{}: {}<|eot_id|>", msg.role.to_uppercase(), msg.content));
+    }
+    prompt.push_str("ASSISTANT:");
+
+    // Tokenize
+    let input_ids = state
+        .engine
+        .tokenize(&prompt, true)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let prompt_tokens = input_ids.len() as i32;
+
+    // Create request
+    let request_id = state.request_counter.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = oneshot::channel();
+
+    let inference_req = InferenceRequest {
+        request_id,
+        input_ids,
+        params: BatchSamplingParams {
+            temperature: req.temperature.unwrap_or(0.7),
+            top_p: req.top_p.unwrap_or(0.9),
+            ..Default::default()
+        },
+        max_tokens: req.max_tokens,
+        stream: false,
+        response_tx: Some(tx),
+        token_tx: None,
+    };
+
+    // Submit to scheduler
+    state
+        .handle
+        .submit(inference_req)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Wait for response
+    let response = rx
+        .await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Request cancelled".to_string()))?;
+
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    Ok(Json(ChatCompletionResponse {
+        id: format!("chatcmpl-{}", request_id),
+        object: "chat.completion".to_string(),
+        created,
+        model: "dlm".to_string(),
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            message: ChatCompletionMessage {
+                role: "assistant".to_string(),
+                content: response.text,
+            },
+            finish_reason: response.finish_reason.to_string(),
+        }],
+        usage: ChatCompletionUsage {
+            prompt_tokens,
+            completion_tokens: response.completion_tokens,
+            total_tokens: prompt_tokens + response.completion_tokens,
+        },
+    }))
 }
 
 #[tokio::main]
@@ -42,6 +187,8 @@ async fn main() {
     let mut block_size: usize = 32;
     let mut threshold: f32 = 0.95;
     let mut small_block_size: usize = 8;
+    let mut mask_token_id: Option<i32> = None;
+    let mut force_unmask: bool = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -86,6 +233,10 @@ async fn main() {
                     .unwrap_or(small_block_size);
                 i += 2;
             }
+            "--mask-token-id" => {
+                mask_token_id = args.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
             "--help" => {
                 println!("DLM Server - Fast-dLLM v2 Block Diffusion Inference");
                 println!();
@@ -99,6 +250,7 @@ async fn main() {
                 println!("  --block-size N           Block size for parallel decode (default: 32)");
                 println!("  --threshold F            Confidence threshold 0-1 (default: 0.95)");
                 println!("  --small-block-size N     Sub-block size (default: 8)");
+                println!("  --mask-token-id ID       Override mask token ID (for benchmarking non-DLM models)");
                 println!("  --help                   Show this help");
                 return;
             }
@@ -134,21 +286,34 @@ async fn main() {
         info!("Model loaded: vocab_size={}", engine.vocab_size());
 
         // Detect or configure DLM
-        let dlm_config = match DlmConfig::detect(&engine) {
-            Some(mut config) => {
-                info!(
-                    "Detected DLM model: mask_token_id={}",
-                    config.mask_token_id
-                );
-                config.block_size = block_size;
-                config.threshold = threshold;
-                config.small_block_size = small_block_size;
-                config
-            }
-            None => {
-                error!("Model does not appear to be DLM-trained (no mask token found)");
-                error!("Ensure the model was trained with Fast-dLLM v2 and has |<MASK>| token");
-                std::process::exit(1);
+        let dlm_config = if let Some(manual_mask_id) = mask_token_id {
+            // Manual mask token ID provided - use it directly
+            info!(
+                "Using manual mask_token_id={} (benchmark mode)",
+                manual_mask_id
+            );
+            DlmConfig::new(manual_mask_id)
+                .with_block_size(block_size)
+                .with_threshold(threshold)
+                .with_small_block_size(small_block_size)
+        } else {
+            // Auto-detect DLM model
+            match DlmConfig::detect(&engine) {
+                Some(mut config) => {
+                    info!(
+                        "Detected DLM model: mask_token_id={}",
+                        config.mask_token_id
+                    );
+                    config.block_size = block_size;
+                    config.threshold = threshold;
+                    config.small_block_size = small_block_size;
+                    config
+                }
+                None => {
+                    error!("Model does not appear to be DLM-trained (no mask token found)");
+                    error!("Use --mask-token-id to manually specify a mask token for benchmarking");
+                    std::process::exit(1);
+                }
             }
         };
 
@@ -164,19 +329,22 @@ async fn main() {
             radix_cache_max_tokens: 100_000,
         };
 
-        let (mut scheduler, handle) = DlmScheduler::new(scheduler_config, engine);
+        let (mut scheduler, handle) = DlmScheduler::new(scheduler_config, engine.clone());
 
         info!("DLM scheduler initialized");
 
-        // Create router using BatchRouter with DLM scheduler
-        // Note: We reuse BatchRouter's HTTP API but with DLM scheduling
-        // For a production system, you'd want a dedicated DlmRouter
-        let app = Router::new().route("/health", get(health));
+        // Create app state
+        let app_state = Arc::new(AppState {
+            handle,
+            engine,
+            request_counter: AtomicU64::new(0),
+        });
 
-        // TODO: Add DLM-specific routes:
-        // - POST /v1/chat/completions (with DLM scheduling)
-        // - GET /v1/models
-        // - GET /stats (DLM-specific stats)
+        // Create router with chat completions endpoint
+        let app = Router::new()
+            .route("/health", get(health))
+            .route("/v1/chat/completions", post(chat_completions))
+            .with_state(app_state);
 
         let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
         info!("Server listening on http://{}", addr);

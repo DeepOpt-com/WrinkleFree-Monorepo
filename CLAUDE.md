@@ -70,6 +70,9 @@ cheapertraining = { workspace = true }
 ## GCP Configuration
 
 - **Project ID**: `wrinklefree-481904`
+- **CPU Quota Limit**: 24 vCPUs per VM family in us-central1 (affects c3d, c2, etc.)
+  - Use `c3d-standard-22` (22 vCPUs) instead of larger instances
+  - Or request quota increase via GCP Console
 
 ## Remote Sync
 
@@ -96,6 +99,23 @@ ssh Desktop 'cd /home/lev/code/WrinkleFree/packages/inference && \
 ## SSH Hosts
 
 Desktop IP: `192.168.1.217` (configured in `~/.ssh/config`)
+
+## RunPod Setup (ALWAYS DO THIS)
+
+When starting a new RunPod instance, **always install gcloud**:
+
+```bash
+# Install gcloud CLI
+curl -sSL https://sdk.cloud.google.com > /tmp/install_gcloud.sh
+bash /tmp/install_gcloud.sh --disable-prompts --install-dir=/opt
+
+# Add to PATH
+echo 'export PATH=/opt/google-cloud-sdk/bin:$PATH' >> ~/.bashrc
+export PATH=/opt/google-cloud-sdk/bin:$PATH
+
+# Verify
+gcloud --version
+```
 
 ## Core Principles
 
