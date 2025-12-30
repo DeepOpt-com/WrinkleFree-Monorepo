@@ -35,8 +35,8 @@ packing:
 # Muon uses higher LR for hidden weights, AdamW uses standard LR for embeddings/norms
 optimizer:
   type: muonclip
-  lr_muon: 0.02  # Muon LR for hidden weights (spectral norm units)
-  lr_adam: 2e-4  # AdamW LR for embeddings, norms, lm_head
+  lr_muon: 0.005  # Muon LR for hidden weights (spectral norm units)
+  lr_adam: 5e-5  # AdamW LR for embeddings, norms, lm_head
   weight_decay: 0.0  # Muon doesn't need weight decay
   momentum: 0.95  # Muon momentum
   enable_clipping: true  # QK-clipping for attention stability
@@ -45,7 +45,7 @@ optimizer:
 
 scheduler:
   type: wsd  # Warmup-Stable-Decay (DeepSeek-V3 style)
-  warmup_steps: 500  # Short warmup
+  warmup_steps: 550  # Short warmup
   decay_ratio: 0.2   # 20% of training for decay
   decay_type: linear  # "linear" or "cosine"
   min_lr_ratio: 0.0   # Decay to zero
@@ -68,7 +68,7 @@ loss:
 # Reference: https://huggingface.co/blog/1_58_llm_extreme_quantization
 lambda_warmup:
   enabled: true  # Enable gradual quantization
-  warmup_steps: 1000  # Steps to reach full quantization (lambda=1)
+  warmup_steps: 500  # Steps to reach full quantization (lambda=1)
   schedule: linear  # "linear" or "cosine"
 
 # Pre-Stage 2 mode: Layer-wise distillation before pure LM training

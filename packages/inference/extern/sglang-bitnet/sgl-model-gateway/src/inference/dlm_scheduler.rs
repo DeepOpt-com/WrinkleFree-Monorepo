@@ -640,11 +640,12 @@ pub fn softmax(logits: &[f32]) -> Vec<f32> {
 }
 
 /// Find index of maximum value in logits.
+/// Handles NaN values by treating them as less than any other value.
 pub fn argmax(logits: &[f32]) -> i32 {
     logits
         .iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less))
         .map(|(i, _)| i as i32)
         .unwrap_or(0)
 }
