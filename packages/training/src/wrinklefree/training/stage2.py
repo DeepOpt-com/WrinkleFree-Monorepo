@@ -870,7 +870,7 @@ def run_stage2(
         weight_decay=config.training.optimizer.weight_decay,
         optimizer_type=config.training.optimizer.type,
         model_config=model.config if hasattr(model, "config") else None,
-        log_dir=str(output_dir / "optimizer_logs"),
+        log_dir=None,  # Disable muon's buggy tensorboard writer (uses WandB instead)
         # MuonClip-specific params
         lr_muon=lr_muon,
         lr_adam=lr_adam,

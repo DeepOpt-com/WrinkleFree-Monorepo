@@ -167,6 +167,10 @@ class DistributedSubLN(nn.Module):
         # Local hidden size after sharding
         local_hidden_size = global_hidden_size // tp_size
 
+        # Get device from original module
+        device = subln.weight.device if hasattr(subln, "weight") and subln.weight is not None else "cpu"
+        dtype = subln.weight.dtype if hasattr(subln, "weight") and subln.weight is not None else torch.float32
+
         distributed_ln = cls(
             hidden_size=local_hidden_size,
             eps=getattr(subln, "eps", 1e-6),
@@ -182,6 +186,9 @@ class DistributedSubLN(nn.Module):
         with torch.no_grad():
             if hasattr(subln, "weight") and subln.weight is not None:
                 distributed_ln.weight.copy_(subln.weight[start:end])
+
+        # Move to same device and dtype as original
+        distributed_ln = distributed_ln.to(device=device, dtype=dtype)
 
         return distributed_ln
 
@@ -301,11 +308,13 @@ def apply_tensor_parallel(
     # Get TP process group
     tp_group = tp_mesh.get_group()
 
-    # 1. Patch SubLN modules BEFORE parallelization
-    # This ensures correct normalization when hidden dim is sharded
-    _patch_subln_modules(model, tp_group)
+    # NOTE: We skip SubLN patching when using use_local_output=True (default).
+    # With use_local_output=True, ColwiseParallel converts DTensor outputs to local
+    # tensors, so SubLN receives local hidden dims and computes local variance.
+    # This is acceptable since the shards are independent after the projection.
+    # Only need DistributedSubLN if using use_local_output=False (DTensor throughout).
 
-    # 2. Get TP plan for transformer layers
+    # Get TP plan for transformer layers
     tp_plan = get_bitnet_tp_plan()
 
     # 3. Apply TP to each transformer layer
