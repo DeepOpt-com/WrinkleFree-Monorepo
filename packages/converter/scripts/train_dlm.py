@@ -819,7 +819,7 @@ def train(
     if optimizer_type == "muonclip":
         optimizer_kwargs["enable_clipping"] = opt_cfg.get("enable_clipping", True)
         optimizer_kwargs["clipping_threshold"] = opt_cfg.get("clipping_threshold", 50.0)
-        optimizer_kwargs["unified_lr"] = opt_cfg.get("unified_lr", True)
+        optimizer_kwargs["unified_lr"] = opt_cfg.get("unified_lr", False)  # Default False: use separate LRs
         optimizer_kwargs["lr_adam"] = opt_cfg.get("lr_adam", learning_rate * 0.1)
 
         # Ensure model config has head_dim for QK-clipping
