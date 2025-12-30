@@ -675,10 +675,12 @@ def train(
 
     # === FAST-DLLM V2 SETUP ===
 
-    # 1. Add mask token to tokenizer
+    # 1. Add mask token to tokenizer (only if not already present)
+    mask_token_added = False
     if MASK_TOKEN not in tokenizer.get_vocab():
         tokenizer.add_special_tokens({"additional_special_tokens": [MASK_TOKEN]})
         model.resize_token_embeddings(len(tokenizer))
+        mask_token_added = True
         logger.info(f"Added mask token {MASK_TOKEN} to vocabulary")
     mask_id = tokenizer.encode(MASK_TOKEN, add_special_tokens=False)[0]
     logger.info(f"Mask token ID: {mask_id}")
@@ -687,19 +689,24 @@ def train(
     # Initialize mask token embedding to mean of existing vocabulary.
     # Random initialization creates activation outliers that break BitNet's
     # per-token quantization (scale = 127 / max(|x|)), causing loss spikes.
-    input_embeddings = model.get_input_embeddings()
-    if input_embeddings is not None and input_embeddings.weight.shape[0] > 1:
-        with torch.no_grad():
-            if mask_id < input_embeddings.weight.shape[0]:
-                # Calculate mean of all tokens except the new one (if it's last)
-                limit_idx = input_embeddings.weight.shape[0] - 1 if mask_id == input_embeddings.weight.shape[0] - 1 else None
-                mean_embedding = input_embeddings.weight[:limit_idx].mean(dim=0)
-                input_embeddings.weight[mask_id] = mean_embedding
-                logger.info(f"Initialized {MASK_TOKEN} embedding to mean of vocab (norm={mean_embedding.norm().item():.2f})")
-            else:
-                logger.warning(f"Mask token ID {mask_id} out of embedding range, skipping smart initialization")
+    # IMPORTANT: Only do this when adding a NEW mask token, not when resuming
+    # from a checkpoint (where the mask token has already been trained).
+    if mask_token_added:
+        input_embeddings = model.get_input_embeddings()
+        if input_embeddings is not None and input_embeddings.weight.shape[0] > 1:
+            with torch.no_grad():
+                if mask_id < input_embeddings.weight.shape[0]:
+                    # Calculate mean of all tokens except the new one (if it's last)
+                    limit_idx = input_embeddings.weight.shape[0] - 1 if mask_id == input_embeddings.weight.shape[0] - 1 else None
+                    mean_embedding = input_embeddings.weight[:limit_idx].mean(dim=0)
+                    input_embeddings.weight[mask_id] = mean_embedding
+                    logger.info(f"Initialized {MASK_TOKEN} embedding to mean of vocab (norm={mean_embedding.norm().item():.2f})")
+                else:
+                    logger.warning(f"Mask token ID {mask_id} out of embedding range, skipping smart initialization")
+        else:
+            logger.warning("Could not access input embeddings for smart initialization")
     else:
-        logger.warning("Could not access input embeddings for smart initialization")
+        logger.info(f"Mask token already in vocab (resume from checkpoint), keeping trained embedding")
 
     # 2. Set bd_size in model config
     model.config.bd_size = block_size
