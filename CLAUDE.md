@@ -66,6 +66,9 @@ cheapertraining = { workspace = true }
 ## GCP Configuration
 
 - **Project ID**: `wrinklefree-481904`
+- **CPU Quota Limit**: 24 vCPUs per VM family in us-central1 (affects c3d, c2, etc.)
+  - Use `c3d-standard-22` (22 vCPUs) instead of larger instances
+  - Or request quota increase via GCP Console
 
 ## Remote Sync
 

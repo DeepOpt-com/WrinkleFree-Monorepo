@@ -1,0 +1,44 @@
+# SkyPilot configuration for DLM inference development
+# Uses GCP c3d-highcpu-16 (16 vCPUs, DDR5)
+# Note: GCP quota limits us-central1 to 24 vCPUs per VM family
+
+name: dlm-dev
+
+resources:
+  cloud: gcp
+  instance_type: c3d-highcpu-16
+  region: us-central1
+  disk_size: 200
+  disk_tier: high
+  use_spot: false
+
+setup: |
+  set -ex
+
+  echo "=== GCP C3D Instance Setup ==="
+  echo "Instance: c3d-highcpu-16 (16 vCPUs, DDR5)"
+
+  # Show CPU info
+  echo "=== CPU Information ==="
+  lscpu | grep -E "(Model name|CPU\(s\)|Thread|Core|Socket|Cache|AVX)" | head -20 || true
+  cat /proc/cpuinfo | grep -m1 "flags" | tr ' ' '\n' | grep -E "^avx" || true
+
+  # Install build dependencies
+  sudo apt-get update && sudo apt-get install -y \
+    clang cmake ccache git curl build-essential \
+    python3-pip python3-venv
+
+  # Install Rust
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  source ~/.cargo/env
+
+  # Install uv
+  pip install uv
+
+run: |
+  # Keep instance running for interactive development
+  echo "Instance ready for development"
+  echo "Connect via: ssh dlm-dev"
+
+  # Keep alive
+  while true; do sleep 3600; done
