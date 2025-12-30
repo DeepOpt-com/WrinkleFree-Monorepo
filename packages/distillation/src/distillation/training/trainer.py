@@ -17,6 +17,37 @@ from distillation.training.config import DistillationConfig, LossConfig
 logger = logging.getLogger(__name__)
 
 
+class _CombinedOptimizer(torch.optim.Optimizer):
+    """Wrapper that combines two optimizers (Muon + AdamW) into one interface."""
+
+    def __init__(self, opt1: torch.optim.Optimizer, opt2: torch.optim.Optimizer):
+        # Initialize base Optimizer with combined param_groups
+        self.opt1 = opt1
+        self.opt2 = opt2
+        # Use a dummy defaults dict - actual params managed by child optimizers
+        defaults = {"lr": opt1.defaults.get("lr", 0.001)}
+        super().__init__(opt1.param_groups + opt2.param_groups, defaults)
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+        self.opt1.step()
+        self.opt2.step()
+        return loss
+
+    def zero_grad(self, set_to_none: bool = True):
+        self.opt1.zero_grad(set_to_none=set_to_none)
+        self.opt2.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        return {"opt1": self.opt1.state_dict(), "opt2": self.opt2.state_dict()}
+
+    def load_state_dict(self, state_dict):
+        self.opt1.load_state_dict(state_dict["opt1"])
+        self.opt2.load_state_dict(state_dict["opt2"])
+
+
 class DistillationTrainer:
     """
     Trainer for knowledge distillation.
@@ -100,24 +131,99 @@ class DistillationTrainer:
         self._influence_calculator = None
 
     def _create_optimizer(self) -> torch.optim.Optimizer:
-        """Create optimizer based on config."""
-        params = self.student.parameters()
+        """Create optimizer based on config.
 
-        if self.config.optimizer_type == "adamw_8bit":
+        Supports:
+        - muonclip: Muon + QK-clipping for training stability (recommended)
+        - adamw_8bit: 8-bit AdamW via bitsandbytes (memory efficient)
+        - adamw: Standard AdamW
+        """
+        optimizer_type = self.config.optimizer_type.lower()
+
+        if optimizer_type == "muonclip" or optimizer_type == "muon":
+            try:
+                from muon import Muon
+
+                # Separate params: Muon for 2D+ params, AdamW for 1D (bias, norm)
+                muon_params = []
+                adamw_params = []
+
+                for name, param in self.student.named_parameters():
+                    if not param.requires_grad:
+                        continue
+                    if param.ndim >= 2:
+                        muon_params.append(param)
+                    else:
+                        adamw_params.append(param)
+
+                logger.info(
+                    f"Using Muon optimizer: {len(muon_params)} params with Muon, "
+                    f"{len(adamw_params)} params with AdamW"
+                )
+
+                # Create combined optimizer using param groups
+                # Muon handles 2D params, AdamW handles 1D params
+                muon_opt = Muon(
+                    muon_params,
+                    lr=self.config.learning_rate,
+                    momentum=0.95,
+                    weight_decay=self.config.weight_decay,
+                )
+                adamw_opt = torch.optim.AdamW(
+                    adamw_params,
+                    lr=self.config.learning_rate,
+                    betas=(0.9, 0.95),
+                    weight_decay=0.0,  # No weight decay on 1D params
+                )
+
+                # Return a wrapper that steps both
+                return _CombinedOptimizer(muon_opt, adamw_opt)
+            except ImportError:
+                logger.warning("muon-optimizer not available, falling back to AdamW")
+                optimizer_type = "adamw"
+
+        if optimizer_type == "adamw_8bit":
             try:
                 import bitsandbytes as bnb
+
+                # Separate params with/without weight decay
+                decay_params = []
+                no_decay_params = []
+                for name, param in self.student.named_parameters():
+                    if not param.requires_grad:
+                        continue
+                    if "bias" in name or "norm" in name or "ln" in name:
+                        no_decay_params.append(param)
+                    else:
+                        decay_params.append(param)
+
                 return bnb.optim.AdamW8bit(
-                    params,
+                    [
+                        {"params": decay_params, "weight_decay": self.config.weight_decay},
+                        {"params": no_decay_params, "weight_decay": 0.0},
+                    ],
                     lr=self.config.learning_rate,
-                    weight_decay=self.config.weight_decay,
                 )
             except ImportError:
                 logger.warning("bitsandbytes not available, falling back to AdamW")
 
+        # Standard AdamW with separate param groups
+        decay_params = []
+        no_decay_params = []
+        for name, param in self.student.named_parameters():
+            if not param.requires_grad:
+                continue
+            if "bias" in name or "norm" in name or "ln" in name:
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+
         return torch.optim.AdamW(
-            params,
+            [
+                {"params": decay_params, "weight_decay": self.config.weight_decay},
+                {"params": no_decay_params, "weight_decay": 0.0},
+            ],
             lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
         )
 
     def _create_scheduler(self):
