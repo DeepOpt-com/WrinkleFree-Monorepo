@@ -819,8 +819,9 @@ def train(
     if optimizer_type == "muonclip":
         optimizer_kwargs["enable_clipping"] = opt_cfg.get("enable_clipping", True)
         optimizer_kwargs["clipping_threshold"] = opt_cfg.get("clipping_threshold", 50.0)
-        optimizer_kwargs["unified_lr"] = opt_cfg.get("unified_lr", True)
-        optimizer_kwargs["lr_adam"] = opt_cfg.get("lr_adam", learning_rate * 0.1)
+        # Always use separate LRs: lr for Muon params, lr_adam for Adam params (embed/head/norm)
+        optimizer_kwargs["unified_lr"] = False
+        optimizer_kwargs["lr_adam"] = opt_cfg.get("lr_adam", 2e-5)  # Standard AdamW LR for embed/head/norm
 
         # Ensure model config has head_dim for QK-clipping
         if not hasattr(model.config, "head_dim"):
@@ -851,23 +852,25 @@ def train(
     # === LOAD OPTIMIZER/SCHEDULER STATE IF RESUMING ===
     if resume_state and "optimizer" in resume_state:
         try:
+            # Capture target LRs from config-aware optimizer BEFORE loading checkpoint state
+            # This preserves per-group LRs (e.g., lr_muon=1e-3, lr_adam=2e-5)
+            target_lrs = [g["lr"] for g in optimizer.param_groups]
+            logger.info(f"Target LRs from config: {target_lrs}")
+
             optimizer.load_state_dict(resume_state["optimizer"])
             scheduler.load_state_dict(resume_state["scheduler"])
 
-            # Reset LR to config value (checkpoint may have different LR)
-            old_lr = optimizer.param_groups[0]["lr"]
-            if old_lr != learning_rate:
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = learning_rate
-                    if "initial_lr" in param_group:
-                        param_group["initial_lr"] = learning_rate
-                logger.info(f"Reset LR from checkpoint value {old_lr} to config value {learning_rate}")
+            # Restore per-group LRs from config (checkpoint may have different values)
+            for group, target_lr in zip(optimizer.param_groups, target_lrs):
+                group["lr"] = target_lr
+                if "initial_lr" in group:
+                    group["initial_lr"] = target_lr
 
-            # Update scheduler's base_lrs to match config LR
+            # Update scheduler's base_lrs to match per-group LRs
             if hasattr(scheduler, "base_lrs"):
-                scheduler.base_lrs = [learning_rate] * len(scheduler.base_lrs)
+                scheduler.base_lrs = list(target_lrs)
 
-            logger.info("Loaded optimizer and scheduler state from checkpoint")
+            logger.info(f"Loaded optimizer/scheduler state, restored config LRs: {[g['lr'] for g in optimizer.param_groups]}")
         except Exception as e:
             logger.warning(f"Failed to load optimizer state: {e}")
 

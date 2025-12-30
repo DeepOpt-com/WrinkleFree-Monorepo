@@ -9,6 +9,7 @@
 
 #include "bitnet_engine.h"
 #include "kv_cache.h"
+#include "sglkernel_loader.h"
 #include "../bitnet/bitnet_gemv.h"
 
 #include <cstdlib>
@@ -397,77 +398,108 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
 }
 
 // ============================================================================
-// Model Loading (Placeholder - needs safetensors implementation)
+// Model Loading - sgl-kernel binary format
 // ============================================================================
 
-static bool load_model(BitNetEngine* engine, const char* model_path) {
-    // TODO: Implement safetensors loading
-    // For now, we'll initialize with random weights for testing the FFI
-
-    auto& cfg = engine->config;
-    const int H = cfg.hidden_size;
-    const int I = cfg.intermediate_size;
-    const int V = cfg.vocab_size;
-    const int L = cfg.num_hidden_layers;
-
-    // Allocate embedding (fp32)
-    engine->embed_tokens.fp32_data.resize(V * H);
-    engine->embed_tokens.is_packed = false;
-
-    // Allocate final norm
-    engine->final_norm.fp32_data.resize(H, 1.0f);
-
-    // Allocate lm_head (fp32 or packed)
-    engine->lm_head.fp32_data.resize(V * H);
-    engine->lm_head.is_packed = false;
-
-    // Allocate layer weights
-    engine->layers.resize(L);
-    for (int l = 0; l < L; l++) {
-        auto& layer = engine->layers[l];
-
-        // Attention (packed 2-bit)
-        layer.q_proj.packed_data.resize(H * H / 4);
-        layer.q_proj.is_packed = true;
-        layer.q_proj.scale = 1.0f;
-
-        layer.k_proj.packed_data.resize(H * H / 4);
-        layer.k_proj.is_packed = true;
-        layer.k_proj.scale = 1.0f;
-
-        layer.v_proj.packed_data.resize(H * H / 4);
-        layer.v_proj.is_packed = true;
-        layer.v_proj.scale = 1.0f;
-
-        layer.o_proj.packed_data.resize(H * H / 4);
-        layer.o_proj.is_packed = true;
-        layer.o_proj.scale = 1.0f;
-
-        // MLP (packed 2-bit)
-        layer.gate_proj.packed_data.resize(I * H / 4);
-        layer.gate_proj.is_packed = true;
-        layer.gate_proj.scale = 1.0f;
-
-        layer.up_proj.packed_data.resize(I * H / 4);
-        layer.up_proj.is_packed = true;
-        layer.up_proj.scale = 1.0f;
-
-        layer.down_proj.packed_data.resize(H * I / 4);
-        layer.down_proj.is_packed = true;
-        layer.down_proj.scale = 1.0f;
-
-        // Norms (fp32)
-        layer.input_layernorm.fp32_data.resize(H, 1.0f);
-        layer.post_attention_layernorm.fp32_data.resize(H, 1.0f);
+static bool load_weight_tensor(
+    const sgl_kernel::SGLKernelModelLoader& loader,
+    const std::string& name,
+    WeightTensor& tensor,
+    bool expect_packed = false
+) {
+    auto info = loader.get_tensor_info(name);
+    if (!info) {
+        set_error("Tensor not found: " + name);
+        return false;
     }
 
-    // Note: Actual weight loading from safetensors needs implementation
-    // This placeholder returns true to allow testing the API
+    auto data = loader.load_tensor_data(name);
+    if (data.empty()) {
+        set_error("Failed to load tensor data: " + name);
+        return false;
+    }
 
-    set_error("Model loading from safetensors not yet implemented. "
-              "Using placeholder weights for API testing.");
+    tensor.scale = info->scale;
+    tensor.is_packed = (info->dtype == sgl_kernel::DType::UINT8);
 
-    return true;  // Return true for now to test API
+    if (tensor.is_packed) {
+        tensor.packed_data = std::move(data);
+        tensor.shape.assign(info->shape.begin(), info->shape.end());
+    } else {
+        // Convert to float32
+        size_t num_floats = data.size() / sizeof(float);
+        tensor.fp32_data.resize(num_floats);
+        std::memcpy(tensor.fp32_data.data(), data.data(), data.size());
+        tensor.shape.assign(info->shape.begin(), info->shape.end());
+    }
+
+    return true;
+}
+
+static bool load_model(BitNetEngine* engine, const char* model_path) {
+    using namespace sgl_kernel;
+
+    SGLKernelModelLoader loader;
+    if (!loader.load(model_path)) {
+        set_error("Failed to load model: " + loader.error());
+        return false;
+    }
+
+    // Update engine config from model
+    auto& model_cfg = loader.config();
+    auto& cfg = engine->config;
+
+    cfg.vocab_size = model_cfg.vocab_size;
+    cfg.hidden_size = model_cfg.hidden_size;
+    cfg.intermediate_size = model_cfg.intermediate_size;
+    cfg.num_hidden_layers = model_cfg.num_hidden_layers;
+    cfg.num_attention_heads = model_cfg.num_attention_heads;
+    cfg.num_key_value_heads = model_cfg.num_key_value_heads;
+    cfg.head_dim = cfg.hidden_size / cfg.num_attention_heads;
+    cfg.max_position_embeddings = model_cfg.max_position_embeddings;
+    cfg.rms_norm_eps = model_cfg.rms_norm_eps;
+    cfg.bos_token_id = model_cfg.bos_token_id;
+    cfg.eos_token_id = model_cfg.eos_token_id;
+    cfg.pad_token_id = model_cfg.pad_token_id;
+
+    // Load embedding
+    if (!load_weight_tensor(loader, "model.embed_tokens.weight", engine->embed_tokens)) {
+        return false;
+    }
+
+    // Load final norm
+    if (!load_weight_tensor(loader, "model.norm.weight", engine->final_norm)) {
+        return false;
+    }
+
+    // Load lm_head
+    if (!load_weight_tensor(loader, "lm_head.weight", engine->lm_head)) {
+        return false;
+    }
+
+    // Load layer weights
+    engine->layers.resize(cfg.num_hidden_layers);
+    for (int l = 0; l < cfg.num_hidden_layers; l++) {
+        auto& layer = engine->layers[l];
+        std::string prefix = "model.layers." + std::to_string(l) + ".";
+
+        // Attention projections (packed)
+        if (!load_weight_tensor(loader, prefix + "self_attn.q_proj.weight", layer.q_proj, true)) return false;
+        if (!load_weight_tensor(loader, prefix + "self_attn.k_proj.weight", layer.k_proj, true)) return false;
+        if (!load_weight_tensor(loader, prefix + "self_attn.v_proj.weight", layer.v_proj, true)) return false;
+        if (!load_weight_tensor(loader, prefix + "self_attn.o_proj.weight", layer.o_proj, true)) return false;
+
+        // MLP projections (packed)
+        if (!load_weight_tensor(loader, prefix + "mlp.gate_proj.weight", layer.gate_proj, true)) return false;
+        if (!load_weight_tensor(loader, prefix + "mlp.up_proj.weight", layer.up_proj, true)) return false;
+        if (!load_weight_tensor(loader, prefix + "mlp.down_proj.weight", layer.down_proj, true)) return false;
+
+        // Norms (fp32)
+        if (!load_weight_tensor(loader, prefix + "input_layernorm.weight", layer.input_layernorm)) return false;
+        if (!load_weight_tensor(loader, prefix + "post_attention_layernorm.weight", layer.post_attention_layernorm)) return false;
+    }
+
+    return true;
 }
 
 // ============================================================================
@@ -480,15 +512,25 @@ BitNetEngine* bitnet_engine_create(const char* model_path, const BitNetConfig* c
     try {
         auto engine = new BitNetEngine();
 
-        // Apply configuration if provided
-        if (config) {
-            engine->config.max_position_embeddings = config->max_seq_len > 0
-                ? config->max_seq_len : engine->config.max_position_embeddings;
+        // Load model weights FIRST - this populates config from model file
+        if (!load_model(engine, model_path)) {
+            delete engine;
+            return nullptr;
         }
 
         auto& cfg = engine->config;
 
-        // Create KV cache
+        // Apply user configuration overrides if provided
+        if (config) {
+            if (config->max_seq_len > 0) {
+                cfg.max_position_embeddings = config->max_seq_len;
+            }
+            if (config->num_threads > 0) {
+                // Store for later use
+            }
+        }
+
+        // Create KV cache with dimensions from loaded model
         engine->kv_cache.reset(
             kv_cache_create(cfg.num_hidden_layers, cfg.num_attention_heads,
                            cfg.head_dim, cfg.max_position_embeddings)
@@ -499,7 +541,7 @@ BitNetEngine* bitnet_engine_create(const char* model_path, const BitNetConfig* c
             return nullptr;
         }
 
-        // Allocate scratch buffers
+        // Allocate scratch buffers with dimensions from loaded model
         engine->hidden_states.resize(cfg.hidden_size);
         engine->residual.resize(cfg.hidden_size);
         engine->attn_output.resize(cfg.hidden_size);
@@ -509,12 +551,6 @@ BitNetEngine* bitnet_engine_create(const char* model_path, const BitNetConfig* c
 
         // Initialize RNG
         engine->rng.seed(42);
-
-        // Load model weights
-        if (!load_model(engine, model_path)) {
-            delete engine;
-            return nullptr;
-        }
 
         engine->is_loaded = true;
         return engine;
