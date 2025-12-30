@@ -1,0 +1,9 @@
+{
+  "timestamp": "2025-12-30T01:45:11.636476",
+  "type": "training_failed",
+  "severity": "ERROR",
+  "fingerprint": "dc16e6dc3c162ab9ef27973790f867acb293ae2671cb7aef727f7295b5569cd8",
+  "error": "WandB is enabled but WANDB_API_KEY environment variable is not set. Set it with: export WANDB_API_KEY=your_api_key",
+  "traceback": "Traceback (most recent call last):\n  File \"/workspace/project/packages/training/scripts/train.py\", line 779, in main\n    model = run_stage2(\n  File \"/workspace/project/packages/training/src/wrinklefree/training/stage2.py\", line 999, in run_stage2\n    trainer = Stage2Trainer(\n  File \"/workspace/project/packages/training/src/wrinklefree/training/stage2.py\", line 97, in __init__\n    super().__init__(\n  File \"/workspace/project/packages/training/src/wrinklefree/training/trainer.py\", line 187, in __init__\n    raise RuntimeError(\nRuntimeError: WandB is enabled but WANDB_API_KEY environment variable is not set. Set it with: export WANDB_API_KEY=your_api_key\n",
+  "message": "Training failed with exception"
+}

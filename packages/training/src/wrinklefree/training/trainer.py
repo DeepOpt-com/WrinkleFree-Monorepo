@@ -666,11 +666,6 @@ def create_optimizer(
                     )
                     enable_clipping = False
 
-            # Get log_dir from kwargs, default to /tmp if not provided
-            log_dir = kwargs.get("log_dir", "/tmp/muon_logs")
-            import os
-            os.makedirs(log_dir, exist_ok=True)
-
             # Check for separate LRs (lr_muon, lr_adam) vs unified LR
             lr_muon = kwargs.get("lr_muon", learning_rate)
             lr_adam = kwargs.get("lr_adam", learning_rate)
@@ -689,7 +684,10 @@ def create_optimizer(
                 enable_clipping=enable_clipping,
                 clipping_threshold=kwargs.get("clipping_threshold", 50.0),
                 clipping_alpha=kwargs.get("clipping_alpha", 0.5),
-                log_dir=log_dir,  # Valid log dir for MuonClip TensorBoard writer
+                # NOTE: muon-clip has a bug where writer is only created if log_dir is empty!
+                # See: if not muon_config.log_dir : self.writer = SummaryWriter(...)
+                # So we pass empty string to create the writer, otherwise flush_metrics() crashes
+                log_dir="",  # Empty string triggers writer creation (muon-clip bug workaround)
             )
             lr_info = f"unified_lr={learning_rate}" if use_unified_lr else f"lr_muon={lr_muon}, lr_adam={lr_adam}"
             logger.info(

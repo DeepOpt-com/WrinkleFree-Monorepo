@@ -69,7 +69,7 @@ if not HAS_WRINKLEFREE:
 MASK_TOKEN = "|<MASK>|"
 DEFAULT_SEQ_LENGTH = 512  # Official script uses 512
 DEFAULT_WARMUP_RATIO = 0.03  # Official: 3% warmup
-GCS_UPLOAD_INTERVAL = 1000  # Upload to GCS every N steps
+# GCS_UPLOAD_INTERVAL is now read from config (checkpoint.save_interval)
 BATCH_PROBE_REDUCTION = 0.8  # Reduce batch by 20% on OOM
 
 # ChatML special tokens (Qwen3 style)
@@ -577,6 +577,7 @@ def train(
     early_stopping_cfg: dict | None = None,  # Early stopping config from Hydra
     quantization_warmup_steps: int = 0,  # Lambda warmup for BitNet (0 = disabled)
     optimizer_cfg: dict | None = None,  # Optimizer config (type, momentum, etc.)
+    save_interval: int = 200,  # Save checkpoint every N steps
 ):
     """Run Fast-dLLM v2 SFT training."""
     set_seed(seed)
@@ -1076,8 +1077,8 @@ def train(
                 tokenizer.save_pretrained(checkpoint_dir)
                 break
 
-            # Save checkpoint every 1000 steps
-            if step % GCS_UPLOAD_INTERVAL == 0:
+            # Save checkpoint at save_interval (also at step 10 as smoke test)
+            if step == 10 or (step > 0 and step % save_interval == 0):
                 logger.info(f"Step {step}: Saving checkpoint")
                 checkpoint_dir = final_output / "checkpoint-latest"
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -1178,6 +1179,7 @@ def main(cfg: DictConfig) -> None:
         early_stopping_cfg=OmegaConf.to_container(cfg.conversion.get("early_stopping", {})),
         quantization_warmup_steps=cfg.conversion.get("quantization_warmup_steps", 0),
         optimizer_cfg=OmegaConf.to_container(cfg.conversion.optimizer),
+        save_interval=cfg.conversion.checkpoint.get("save_interval", 200),
     )
 
     logger.info(f"Training complete!")
