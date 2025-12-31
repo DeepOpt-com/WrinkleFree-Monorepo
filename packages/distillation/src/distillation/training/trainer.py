@@ -190,7 +190,7 @@ class DistillationTrainer:
                 adam_betas=(0.9, 0.95),
                 adam_eps=1e-8,
                 adam_decay=self.config.weight_decay,
-                enable_clipping=False,  # Disable QK-clipping for now
+                enable_clipping=True,  # MUST-DO: Always enable QK-clipping for stability
                 log_dir="",  # Empty string triggers writer creation (muon-clip bug workaround)
             )
 

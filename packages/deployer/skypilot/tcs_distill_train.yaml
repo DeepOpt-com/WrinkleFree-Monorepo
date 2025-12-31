@@ -136,7 +136,7 @@ run: |
   # seq_len=2048 (MUST-DO: never reduce), batch_size=1 to fit in 80GB VRAM
   HYDRA_CMD="${HYDRA_CMD} data.max_seq_length=2048"
   HYDRA_CMD="${HYDRA_CMD} training.batch_size=1"
-  HYDRA_CMD="${HYDRA_CMD} training.gradient_accumulation_steps=64"
+  HYDRA_CMD="${HYDRA_CMD} training.gradient_accumulation_steps=128"
   HYDRA_CMD="${HYDRA_CMD} training.max_steps=500"
   HYDRA_CMD="${HYDRA_CMD} logging.log_interval=2"
 
