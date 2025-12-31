@@ -17,7 +17,7 @@ student_type: dlm
 # TCS Loss weights
 # L = L_CE + lambda_tcs * L_TCS + gamma_attention * L_BlockAttn
 # NOTE: T^2 scaling is applied internally (T=5 → 25x), so lambda=1.0 gives 25x weight
-lambda_logits: 1.0       # Weight for TCS logits distillation (same as lambda_tcs)
+lambda_logits: 0.1       # Weight for TCS logits distillation - reduced to balance with CE (T²=25 internal scaling)
 gamma_attention: 1.0e-5  # Weight for block-wise attention distillation (ENABLED!)
 
 # Temperature for TCS (KL divergence)
