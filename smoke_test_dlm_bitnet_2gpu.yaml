@@ -13,6 +13,7 @@ name: dlm-bitnet-smoke-2gpu
 resources:
   cloud: nebius
   accelerators: L40S:2
+  memory: 192+
   disk_size: 100
 
 workdir: .
@@ -54,6 +55,9 @@ run: |
 
   echo "=== DLM + BitNet Smoke Test (2x L40 with FSDP) ==="
 
+  # Disable Ray memory monitor to prevent OOM kills
+  export RAY_memory_monitor_refresh_ms=0
+
   # Enable debug logging for FSDP
   export TORCH_DISTRIBUTED_DEBUG=INFO
   export NCCL_DEBUG=WARN
@@ -80,6 +84,9 @@ run: |
     'training.logging.wandb.tags=[smoke-test,dlm-bitnet,2xL40,fsdp]' \
     training.logging.log_interval=1 \
     \
-    training.torch_compile.enabled=false
+    training.torch_compile.enabled=false \
+    \
+    training.optimizer.type=adamw \
+    +data.num_workers=0
 
   echo "=== FSDP Smoke Test Complete ==="
