@@ -69,8 +69,43 @@ uv run --package wrinklefree-deployer sky jobs queue
 | `skypilot/distill_train.yaml` | SkyPilot distillation job template (BitNet) |
 | `skypilot/tcs_distill_train.yaml` | SkyPilot TCS distillation job template (DLM) |
 | `skypilot/service.yaml` | SkyServe inference template |
+| `skypilot/smoke_test_unified_1gpu.yaml` | Smoke test: 1x L40 unified training |
+| `skypilot/smoke_test_unified_2gpu.yaml` | Smoke test: 2x L40 with FSDP |
 | `credentials/.env` | Local credentials (gitignored) |
 | `credentials/gcp-service-account.json` | GCP service account for GCS + Docker auth |
+
+## Smoke Tests
+
+Quick validation of the training pipeline (~5 minutes):
+
+```bash
+cd packages/deployer
+
+# 1x L40 smoke test (20 steps with influence remixing)
+sky launch skypilot/smoke_test_unified_1gpu.yaml -y --cluster unified-1gpu
+
+# 2x L40 smoke test (FSDP data parallelism)
+sky launch skypilot/smoke_test_unified_2gpu.yaml -y --cluster unified-2gpu
+
+# Monitor
+sky logs unified-1gpu
+sky logs unified-2gpu
+
+# Teardown
+sky down unified-1gpu unified-2gpu -y
+```
+
+**Test Configuration**:
+- **Steps**: 20 total (4 warmup + 16 with influence)
+- **First 20%**: Warmup on fineweb-edu, no influence updates
+- **Remaining 80%**: Mixed data with influence-based remixing
+- **Checkpoints**: GCS upload every 10 steps
+- **Verifies**: Loss decreases, MuonClip works, GCS/WandB logging
+
+**Expected Results**:
+- First loss: ~10-12
+- Last loss: ~6-8 (should decrease!)
+- Checkpoints in GCS: step_10/, step_20/, final/
 
 ## Credential Management
 
