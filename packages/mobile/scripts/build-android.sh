@@ -15,7 +15,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOBILE_DIR="$(dirname "$SCRIPT_DIR")"
-INFERENCE_DIR="$MOBILE_DIR/../inference"
+PACKAGES_DIR="$(dirname "$MOBILE_DIR")"
+REPO_ROOT="$(dirname "$PACKAGES_DIR")"
+INFERENCE_DIR="$PACKAGES_DIR/inference"
 
 # Default NDK path (Android Studio default location)
 ANDROID_SDK="${ANDROID_SDK:-$HOME/Android/Sdk}"
@@ -44,7 +46,6 @@ echo "Using Android NDK: $ANDROID_NDK"
 
 # Build BitNet.cpp for Android with TL1 kernels
 # BitNet submodule is at repo root, not inside inference package
-REPO_ROOT="$(dirname "$(dirname "$INFERENCE_DIR")")"
 BITNET_DIR="$REPO_ROOT/extern/BitNet"
 BUILD_DIR="$MOBILE_DIR/build-android"
 

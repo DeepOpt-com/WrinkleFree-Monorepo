@@ -27,12 +27,21 @@ mobile/
 ## Key Commands
 
 ```bash
-# Build native library for Android (with TL1 kernels)
+# Build BitNet for Android (ARM64)
 ./scripts/build-android.sh
 
-# Test via ADB
-adb push models/dlm-bitnet-2b-tl1.gguf /data/local/tmp/
-adb shell "cd /data/local/tmp && ./llama-cli -m dlm-bitnet-2b-tl1.gguf -p 'Hello' -n 50"
+# Download official BitNet 2B model (1.2GB)
+huggingface-cli download microsoft/bitnet-b1.58-2B-4T-gguf ggml-model-i2_s.gguf --local-dir models/
+
+# Test on connected Android device
+./scripts/test-android.sh
+
+# Or manually via ADB:
+adb push build-android/bin/llama-cli /data/local/tmp/bitnet/
+adb push build-android/3rdparty/llama.cpp/src/libllama.so /data/local/tmp/bitnet/
+adb push build-android/3rdparty/llama.cpp/ggml/src/libggml.so /data/local/tmp/bitnet/
+adb push models/ggml-model-i2_s.gguf /data/local/tmp/bitnet/
+adb shell "cd /data/local/tmp/bitnet && export LD_LIBRARY_PATH=. && ./llama-cli -m ggml-model-i2_s.gguf -p 'Hello' -n 50 --threads 4"
 ```
 
 ## Shared Code (No Duplication)
@@ -41,13 +50,22 @@ This package does NOT copy C++ code. Instead, CMakeLists.txt references:
 - `../inference/extern/sglang-bitnet/sgl-kernel/csrc/` - Inference engine + ARM kernels
 - `../inference/extern/sglang-bitnet/3rdparty/llama.cpp/` - GGUF model loading
 
-## Model Conversion
+## Models
 
-Convert DLM checkpoints to GGUF with TL1 quantization for ARM:
+### Official BitNet Model (Recommended for testing)
+```bash
+huggingface-cli download microsoft/bitnet-b1.58-2B-4T-gguf ggml-model-i2_s.gguf --local-dir models/
+```
+
+### Custom DLM Model Conversion
+To convert DLM checkpoints to GGUF (requires kernel generation for TL1):
 ```bash
 cd ../inference
 python scripts/convert_dlm_to_gguf.py <checkpoint> -o ../mobile/models/model-tl1.gguf --quant tl1
 ```
+
+Note: TL1 kernels are model-dimension specific. The build currently uses preset 3B kernels.
+For custom models, generate kernels via BitNet's `setup_env.py`.
 
 ## Performance
 
