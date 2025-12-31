@@ -5,7 +5,8 @@ This file provides guidance to Claude Code when working with this repository.
 ## Project Overview
 
 WrinkleFree Inference Engine is a serving layer for 1.58-bit quantized LLMs:
-- **Primary Backend**: BitNet.cpp (26+ tok/s) or SGLang-BitNet (16 tok/s)
+- **Primary Backend**: Native sgl-kernel server (29+ tok/s) - RECOMMENDED
+- **Alternative Backends**: BitNet.cpp (26 tok/s), SGLang-BitNet (16 tok/s)
 - **Frontend**: Streamlit chat UI with SSE streaming
 - **Deployment**: Via WrinkleFree-Deployer (GCP C3D, H3, RunPod)
 
@@ -69,7 +70,50 @@ curl http://localhost:30000/v1/chat/completions \
   -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
 ```
 
-## BitNet.cpp Quick Start (Alternative - 1.6x faster)
+## Native sgl-kernel Server (RECOMMENDED - 29+ tok/s)
+
+The native server uses sgl-kernel's optimized SIMD kernels (AVX2/AVX512) for maximum CPU throughput.
+
+**Key optimizations:**
+- `bitnet_gemv` for single-token decode (8x faster than gemm)
+- Greedy decoding by default (eliminates sampling overhead)
+- Repetition penalty to reduce output loops
+- KV cache for efficient autoregressive generation
+
+**Prerequisites:**
+```bash
+# Install sgl-kernel with BitNet support (one-time)
+./scripts/setup-cpu.sh
+```
+
+**Convert checkpoint to packed format:**
+```bash
+# Convert bf16 checkpoint to sgl-kernel binary (2.5x smaller, 14x faster)
+python scripts/convert_to_sglkernel.py models/my-checkpoint models/my-checkpoint.bin
+```
+
+**Start server:**
+```bash
+# From sgl-kernel binary format (fastest loading)
+python scripts/serve_bitnet_native.py \
+    --model models/dlm-bitnet-2b.bin \
+    --tokenizer models/dlm-bitnet-2b
+
+# Test
+curl http://localhost:30000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+```
+
+**Performance:** ~29 tok/s on GCP c3d-standard-32 (AMD EPYC Genoa with AVX512)
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `scripts/serve_bitnet_native.py` | Native server with TL2 kernels |
+| `scripts/convert_to_sglkernel.py` | Converts bf16 checkpoints to packed format |
+
+## BitNet.cpp Quick Start (Alternative - 1.6x slower)
 
 **Prerequisites**: `clang` compiler required (`sudo apt install clang`)
 
@@ -167,10 +211,12 @@ demo/
 └── serve_sglang.py                        # Streamlit chat frontend
 
 scripts/
+├── serve_bitnet_native.py                 # Native sgl-kernel server (29+ tok/s) [RECOMMENDED]
+├── convert_to_sglkernel.py                # Convert bf16 checkpoints to packed format
 ├── build-safe.sh                          # Safe build wrapper (4 jobs, 8 cores)
-├── launch_rust_gateway.sh                # Rust gateway (native inference)
-├── launch_sglang_bitnet.sh               # SGLang Python server
-├── launch_bitnet_cpp.sh                  # BitNet.cpp server
+├── launch_rust_gateway.sh                 # Rust gateway (native inference)
+├── launch_sglang_bitnet.sh                # SGLang Python server
+├── launch_bitnet_cpp.sh                   # BitNet.cpp server
 ├── benchmark_kernels.py                   # Kernel performance testing
 ├── validate_kv_cache.py                   # KV cache validation
 └── test_repacking.py                      # Weight repacking tests
@@ -201,10 +247,10 @@ legacy/                                    # Archived code (see legacy/README.md
 
 | File | Purpose |
 |------|---------|
-| `demo/serve_sglang.py` | Primary Streamlit chat UI |
-| `scripts/launch_sglang_bitnet.sh` | SGLang server launch script |
-| `extern/sglang-bitnet/python/sglang/srt/models/bitnet.py` | BitNet model with weight packing |
-| `extern/sglang-bitnet/sgl-kernel/` | Native SIMD kernels |
+| `scripts/serve_bitnet_native.py` | **Primary server** - Native sgl-kernel (29+ tok/s) |
+| `scripts/convert_to_sglkernel.py` | Convert bf16 checkpoints to packed .bin format |
+| `demo/serve_sglang.py` | Streamlit chat UI frontend |
+| `extern/sglang-bitnet/sgl-kernel/` | Native SIMD kernels (AVX2/AVX512) |
 
 ## Common Tasks
 
@@ -295,22 +341,60 @@ Example: `System: You are helpful<|eot_id|>User: Hello<|eot_id|>Assistant:`
 
 SGLang automatically applies this template when using the OpenAI-compatible `/v1/chat/completions` endpoint.
 
+## Model Conversion (IMPORTANT for Custom Checkpoints)
+
+When serving custom DLM/BitNet checkpoints (not official microsoft/BitNet models), you may need to convert them:
+
+### Converting bf16 Checkpoints to Packed Format
+
+Use `convert_to_sglkernel.py` to convert bf16/fp16 training checkpoints to optimized 2-bit packed format:
+
+```bash
+# Convert checkpoint (reduces size by ~2.5x)
+python scripts/convert_to_sglkernel.py models/my-checkpoint models/my-checkpoint.bin
+
+# With quantized lm_head for 2x faster inference (adds ~82MB)
+python scripts/convert_to_sglkernel.py models/my-checkpoint models/my-checkpoint.bin --pack-lm-head
+```
+
+**Input**: HuggingFace checkpoint directory with `config.json` and `model.safetensors`
+**Output**: Binary file with packed 2-bit weights for sgl-kernel
+
+### Weight Formats
+
+| Format | Description | Size | Speed |
+|--------|-------------|------|-------|
+| bf16 (online) | Training weights, quantized on-the-fly | 4.5GB | ~2 tok/s |
+| packed (offline) | Pre-quantized for inference | 1.8GB | ~26 tok/s |
+| GGUF | llama.cpp format for BitNet.cpp | 1.1GB | ~26 tok/s |
+
+### Testing Custom Checkpoints
+
+```bash
+# Validate conversion
+python scripts/test_sglkernel_inference.py --checkpoint models/my-checkpoint
+
+# Test server inference
+python scripts/test_sglkernel_inference.py --server-url http://localhost:30000
+```
+
 ## Notes
 
 ### Backend Selection Guide
 | Backend | Best For | Batching | Speed (single) |
 |---------|----------|----------|----------------|
+| **Native sgl-kernel** | Single user, max throughput | No | **~29 tok/s** |
+| **BitNet.cpp** | Single user, alternative | No | ~26 tok/s |
 | **SGLang** | Multi-user, concurrent requests | Yes (5x speedup) | ~16 tok/s |
-| **Rust Gateway** | Single user, lowest latency | No | ~20 tok/s |
-| **BitNet.cpp** | Single user, max throughput | No | ~26 tok/s |
+| **Rust Gateway** | Single user, low latency | No | ~20 tok/s |
 
-- **SGLang recommended** for production with multiple users (continuous batching support)
-- **Rust Gateway** for single-user scenarios where latency matters
-- **BitNet.cpp** for maximum single-request throughput
-- **Custom SGLang fork**: We use `extern/sglang-bitnet/` (custom fork with BitNet kernels), NOT upstream sglang
-- **Self-contained build**: The Rust gateway builds llama.cpp from `sglang-bitnet/3rdparty/llama.cpp`, no external BitNet.cpp dependency
-- **Chat template**: Both BitNet.cpp and SGLang support OpenAI-compatible chat API
-- HuggingFace models are automatically packed on-the-fly during loading (sglang only)
-- Both servers use OpenAI-compatible API (`/v1/chat/completions`)
-- Legacy code (old BitNet.cpp integration, CLI, benchmarks) is in `legacy/`
-- `extern/BitNet/` is kept as reference only - not used by the Rust gateway
+**Recommendations:**
+- **Native sgl-kernel** (`serve_bitnet_native.py`) for maximum single-request throughput
+- **SGLang** for production with multiple concurrent users (continuous batching)
+- **BitNet.cpp** as fallback if sgl-kernel build fails
+
+**Notes:**
+- All servers use OpenAI-compatible API (`/v1/chat/completions`)
+- Native server requires checkpoint conversion: `python scripts/convert_to_sglkernel.py`
+- Custom SGLang fork: `extern/sglang-bitnet/` (NOT upstream sglang from PyPI)
+- Legacy code is in `legacy/`

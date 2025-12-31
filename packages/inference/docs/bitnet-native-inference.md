@@ -1,6 +1,25 @@
 # BitNet Native Inference Guide
 
-This document describes how to run BitNet 1.58-bit models using the native C++ inference engine.
+This document describes how to run BitNet 1.58-bit models using native SIMD kernels.
+
+## TL;DR - Quick Start (Python Server)
+
+The **recommended** approach is the Python native server which achieves **29 tok/s**:
+
+```bash
+# Step 1: Convert checkpoint (one-time)
+python scripts/convert_to_sglkernel.py models/my-checkpoint models/my-checkpoint.bin
+
+# Step 2: Start server
+python scripts/serve_bitnet_native.py \
+    --model models/my-checkpoint.bin \
+    --tokenizer models/my-checkpoint
+
+# Step 3: Test
+curl http://localhost:30000/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+```
 
 ## Background: Why Native Inference?
 
@@ -9,12 +28,22 @@ The standard BitNet.cpp and llama.cpp paths have **known issues with 2B models**
 - TL2 format produces garbage output for 2B architecture
 - Kernel dimensions are hardcoded for 3B model
 
-The native inference path (`bitnet_engine.cpp`) bypasses these issues by:
-1. Using sgl-kernel's own SIMD kernels (AVX2/AVX512/NEON)
-2. Loading weights directly from a custom binary format
-3. Implementing the forward pass in optimized C++
+**Two native inference paths are available:**
 
-## Quick Start
+### 1. Python Server (RECOMMENDED) - `serve_bitnet_native.py`
+- **Performance**: ~29 tok/s
+- **Key optimizations**:
+  - `bitnet_gemv` for single-token decode (8x faster than gemm)
+  - Greedy decoding by default
+  - Repetition penalty
+- **Simplest setup**: Just Python + sgl-kernel
+
+### 2. C++ Engine - `bitnet_engine.cpp`
+- **Performance**: ~40+ tok/s (theoretical)
+- **More complex**: Requires Rust + C++ build
+- Uses sgl-kernel SIMD kernels via FFI
+
+## Python Server Setup (Recommended)
 
 ### 1. Convert Checkpoint
 
@@ -156,21 +185,21 @@ Key factors:
 
 | Backend | Format | Works for 2B? | TPS | Notes |
 |---------|--------|---------------|-----|-------|
+| **Python Native** | **.bin** | **Yes** | **29** | **Recommended - simplest** |
+| C++ Native | .bin | Yes | 40+ | More complex setup |
 | BitNet.cpp | GGUF TL2 | No | N/A | Kernel dim mismatch |
 | llama.cpp | GGUF I2_S | No | N/A | Not supported |
-| Python SGLang | safetensors | Yes | ~16 | Python overhead |
-| **Native (sgl-kernel)** | **.bin** | **Yes** | **40+** | **Recommended** |
+| Python SGLang | safetensors | Yes | ~16 | Higher overhead |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
+| `scripts/serve_bitnet_native.py` | **Python native server (29 tok/s)** |
 | `scripts/convert_to_sglkernel.py` | Convert safetensors → .bin |
 | `scripts/test_sglkernel_inference.py` | Validation test script |
-| `extern/sglang-bitnet/sgl-kernel/csrc/inference/bitnet_engine.cpp` | C++ inference engine |
-| `extern/sglang-bitnet/sgl-kernel/csrc/inference/sglkernel_loader.h` | Binary model loader |
-| `extern/sglang-bitnet/sgl-kernel/csrc/bitnet/bitnet_gemv.cpp` | SIMD kernels |
-| `extern/sglang-bitnet/sgl-model-gateway/src/bin/native_server.rs` | HTTP server |
+| `extern/sglang-bitnet/sgl-kernel/` | SIMD kernels (bitnet_gemv, bitnet_gemm) |
+| `extern/sglang-bitnet/sgl-kernel/csrc/inference/bitnet_engine.cpp` | C++ inference engine (alternative) |
 
 ## Troubleshooting
 
