@@ -23,6 +23,7 @@ name: wrinklefree-unified-1gpu
 
 resources:
   accelerators: L40S:1
+  memory: 64+
   use_spot: false
   cloud: nebius
 
@@ -79,29 +80,25 @@ run: |
   echo "Max Steps: $MAX_STEPS"
   echo ""
   echo "Test Configuration:"
-  echo "  - Steps 1-4 (20%): Warmup on fineweb-edu (no influence)"
-  echo "  - Steps 5-20 (80%): Mixed data with influence updates"
-  echo "  - GCS upload every 10 steps"
+  echo "  - 20 training steps on fineweb-edu"
+  echo "  - GCS checkpoint upload every 10 steps"
   echo ""
   echo "Features:"
-  echo "  - Combined STE + DLM (multi-task)"
-  echo "  - MuonClip + QK Clipping"
-  echo "  - Influence-based data remixing"
+  echo "  - Combined STE + DLM (multi-task learning)"
+  echo "  - MuonClip optimizer with QK Clipping"
   echo "  - Auto BitNet conversion"
   echo "  - GCS checkpoint upload"
   echo "  - WandB logging"
   echo "================================================"
 
-  # Run unified training with influence-based data remixing
-  # First 20% (4 steps) is warmup on fineweb-edu before influence kicks in
-  # After warmup, influence updates happen every 5 steps
+  # Run unified training with STE + DLM multi-task learning
+  # Using fineweb-edu (single source) for reliability - avoids HF API timeouts
   echo ""
-  echo "[Training] Running unified training with STE+DLM + influence remixing..."
+  echo "[Training] Running unified training with STE+DLM..."
   uv run --package wrinklefree python packages/training/scripts/train.py \
     model=${MODEL} \
     training=unified \
     data=default \
-    data.config_name=mixed_pretrain \
     distributed=single_gpu \
     training.max_steps=${MAX_STEPS} \
     output_dir=$CHECKPOINT_DIR \
@@ -113,12 +110,7 @@ run: |
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET} \
     training.early_stopping.enabled=false \
-    training.objectives.dlm.mask_token_id=0 \
-    influence.enabled=true \
-    influence.warmup_steps=4 \
-    influence.update_interval=5 \
-    influence.learning_rate=0.2 \
-    influence.samples_per_dataset=50
+    training.objectives.dlm.mask_token_id=0
 
   echo ""
   echo "================================================"
