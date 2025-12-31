@@ -27,7 +27,7 @@ dependencies = [
     "torchao>=0.7.0", # TorchAO for FP8 training (DeepSeek-V3 style)
     "data-handler",  # Data handling (streaming datasets, packing, influence mixing)
     "bitnet-arch",  # BitNet architecture package (workspace)
-    "muon-clip",
+    "muon-fsdp2",  # FSDP-compatible Muon optimizer
 ]
 
 [project.optional-dependencies]
@@ -113,4 +113,4 @@ directory = "htmlcov"
 [tool.uv.sources]
 data-handler = { workspace = true }
 bitnet-arch = { workspace = true }
-muon-clip = { git = "https://github.com/GAD-cell/muon-clip" }
+

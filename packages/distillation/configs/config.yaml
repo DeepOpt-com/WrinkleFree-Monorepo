@@ -47,22 +47,26 @@ optimizer:
   type: adamw  # adamw, adamw_8bit, muon
   lr: 2.4e-3
   weight_decay: 0.024
+  # MuonClip-specific (when type=muon): uses separate LRs for Muon and Adam
+  lr_muon: 1e-3  # Learning rate for Muon (main weights)
+  lr_adam: 5e-5  # Learning rate for Adam (bias/norm)
 
 # Scheduler
 scheduler:
   type: cosine
-  warmup_steps: 2000
+  warmup_steps: 0  # 0 = auto (use warmup_ratio)
+  warmup_ratio: 0.03  # 3% of max_steps when warmup_steps=0
   min_lr_ratio: 0.1
 
 # Checkpointing
 checkpoint:
-  save_interval: 500
+  save_interval: 50  # Reduced for testing GCS uploads
   keep_last_n: 3
   resume_from: ""  # Path to checkpoint to resume from (local or gs://)
   gcs:
     enabled: true  # Upload checkpoints to GCS
     bucket: wrinklefree-checkpoints
-    upload_interval: 500  # Upload every N steps
+    upload_interval: 50  # Upload every N steps (reduced for testing)
     keep_n: 5  # Keep N most recent checkpoints on GCS
 
 # Logging

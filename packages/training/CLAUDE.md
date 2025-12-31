@@ -413,11 +413,52 @@ modal run src/wf_deployer/modal_deployer.py --model smollm2_135m --stage 2 \
 - `activation_sparsity.mode`: "topk" or "block" (N:M structured)
 - `activation_sparsity.warmup.warmup_steps`: Gradual warmup (default: 1000)
 
+## FSDP Multi-GPU Training
+
+When using `distributed=fsdp_multi` for multi-GPU training, be aware of these critical requirements:
+
+### Collective Operations
+FSDP uses collective operations that **ALL ranks must participate in**:
+- `save_checkpoint()` - Gathering sharded state dict is collective
+- `eval_loss` must be synchronized across ranks for consistent checkpoint save decisions
+
+**Key fixes in trainer.py:**
+1. **Best checkpoint save**: All ranks call `save_checkpoint("best")`, not just rank 0
+2. **Eval loss sync**: Added `dist.all_reduce` to synchronize eval loss across ranks
+3. **Dataloader verification**: Added check that batch counts match across ranks
+
+### Muon Optimizer with FSDP
+
+**CRITICAL**: The original `muon-clip` package is **incompatible with FSDP** because it broadcasts raw parameters, but FSDP shards them across ranks.
+
+**Solution**: Use `muon-fsdp2` (from PyPI) which uses gather-scatter instead of broadcast:
+
+```python
+from muon_fsdp2 import Muon
+
+optimizer = Muon([
+    {"params": muon_params, "lr": lr_muon, "use_muon": True},
+    {"params": adam_params, "lr": lr_adam, "use_muon": False}
+])
+```
+
+When `training.optimizer.type=muonclip` is specified, the trainer automatically uses `muon_fsdp2.Muon`.
+
+### Common FSDP Hangs
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Hang at checkpoint | Only rank 0 calls save_checkpoint | All ranks must call |
+| Hang at eval | Different ranks make different save decisions | Sync eval loss with all_reduce |
+| Muon collective mismatch | Broadcast with sharded params | Use muon_fsdp2 |
+| Dataloader mismatch | Different batch counts per rank | Use drop_last=True |
+
 ## Notes
 
 - Training uses bfloat16 for numerical stability
 - Teacher models are loaded in bfloat16 to match student dtype
 - Use 8-bit AdamW (bitsandbytes) or Muon optimizer for memory efficiency
+- **FSDP with Muon**: Use `muon-fsdp2` package (automatically selected when `optimizer.type=muonclip`)
 - BitNet submodule (at meta-repo root ../extern/BitNet) is for inference only
 - MoE support uses llama.cpp's Mixtral-style tensor packing
 

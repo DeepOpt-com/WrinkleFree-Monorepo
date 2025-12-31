@@ -241,6 +241,20 @@ class Trainer:
         if self.rank == 0:
             logger.info(f"Starting training for {self.max_steps} steps")
 
+        # Verify dataloader lengths match across ranks (FSDP debug helper)
+        if self.world_size > 1 and self.train_dataloader is not None:
+            import torch.distributed as dist
+            local_len = torch.tensor(len(self.train_dataloader), device=self.device)
+            gathered = [torch.zeros_like(local_len) for _ in range(self.world_size)]
+            dist.all_gather(gathered, local_len)
+            if self.rank == 0:
+                logger.info(f"Train batches per rank: {[x.item() for x in gathered]}")
+            if not all(x == gathered[0] for x in gathered):
+                raise RuntimeError(
+                    f"Dataloader batch count mismatch across ranks: {[x.item() for x in gathered]}. "
+                    "This will cause FSDP collective operation hangs."
+                )
+
         pbar = tqdm(
             total=self.max_steps,
             desc="Training",
@@ -355,8 +369,8 @@ class Trainer:
 
                     if eval_loss < self.best_eval_loss:
                         self.best_eval_loss = eval_loss
-                        if self.rank == 0:
-                            self.save_checkpoint("best")
+                        # All ranks must call save_checkpoint for FSDP (collective op)
+                        self.save_checkpoint("best")
 
                 # Checkpointing
                 # NOTE: All ranks must call save_checkpoint for FSDP state dict gathering
@@ -464,6 +478,14 @@ class Trainer:
         self.model.train()
 
         avg_loss = total_loss / max(num_batches, 1)
+
+        # Sync loss across ranks for consistent save decisions (FSDP requirement)
+        if self.world_size > 1:
+            import torch.distributed as dist
+            loss_tensor = torch.tensor(avg_loss, device=self.device)
+            dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+            avg_loss = loss_tensor.item()
+
         self.eval_losses.append(avg_loss)
         return avg_loss
 
@@ -649,53 +671,37 @@ def create_optimizer(
 
     if optimizer_type == "muonclip":
         try:
-            from muon import MuonClip, MuonConfig
+            # Use muon_fsdp2 - FSDP-compatible Muon optimizer
+            # This uses gather-scatter instead of broadcast for sharded parameters
+            from muon_fsdp2 import Muon
 
-            enable_clipping = kwargs.get("enable_clipping", True)
-            model_config = kwargs.get("model_config", None)
-
-            # QK-clipping requires model config with attention head info
-            if enable_clipping and model_config is None:
-                # Try to get config from model if it has one
-                if hasattr(model, "config"):
-                    model_config = model.config
+            # Separate parameters: Muon for 2D weights, Adam for 1D (bias, norm)
+            muon_params = []
+            adam_params = []
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                # Muon works on 2D+ matrices, use Adam for embeddings and 1D params
+                if param.ndim >= 2 and "embed" not in name.lower():
+                    muon_params.append(param)
                 else:
-                    logger.warning(
-                        "QK-clipping requires model_config with attention head info. "
-                        "Disabling clipping."
-                    )
-                    enable_clipping = False
+                    adam_params.append(param)
 
-            # Check for separate LRs (lr_muon, lr_adam) vs unified LR
             lr_muon = kwargs.get("lr_muon", learning_rate)
             lr_adam = kwargs.get("lr_adam", learning_rate)
-            use_unified_lr = (lr_muon == lr_adam)
 
-            config = MuonConfig(
-                unified_lr=use_unified_lr,
-                lr=learning_rate if use_unified_lr else None,
-                lr_muon=lr_muon if not use_unified_lr else None,
-                lr_adam=lr_adam if not use_unified_lr else None,
-                muon_beta=kwargs.get("momentum", 0.95),
-                muon_decay=weight_decay,
-                adam_betas=betas,
-                adam_eps=kwargs.get("eps", 1e-8),
-                adam_decay=weight_decay,
-                enable_clipping=enable_clipping,
-                clipping_threshold=kwargs.get("clipping_threshold", 50.0),
-                clipping_alpha=kwargs.get("clipping_alpha", 0.5),
-                # NOTE: muon-clip has a bug where writer is only created if log_dir is empty!
-                # See: if not muon_config.log_dir : self.writer = SummaryWriter(...)
-                # So we pass empty string to create the writer, otherwise flush_metrics() crashes
-                log_dir="",  # Empty string triggers writer creation (muon-clip bug workaround)
-            )
-            lr_info = f"unified_lr={learning_rate}" if use_unified_lr else f"lr_muon={lr_muon}, lr_adam={lr_adam}"
+            # muon_fsdp2 API: only param_groups, parameters set per-group
+            optimizer = Muon([
+                {"params": muon_params, "lr": lr_muon, "use_muon": True},
+                {"params": adam_params, "lr": lr_adam, "use_muon": False}
+            ])
             logger.info(
-                f"Using MuonClip optimizer ({lr_info}, QK-clipping={'enabled' if enable_clipping else 'disabled'})"
+                f"Using Muon (FSDP2) optimizer: {len(muon_params)} Muon params (lr={lr_muon}), "
+                f"{len(adam_params)} Adam params (lr={lr_adam})"
             )
-            return MuonClip(model, model_config, config)
+            return optimizer
         except ImportError:
-            logger.warning("muon-clip not available, falling back to AdamW 8-bit")
+            logger.warning("muon_fsdp2 not available, falling back to AdamW 8-bit")
             optimizer_type = "adamw_8bit"
 
     # Separate parameters with and without weight decay
