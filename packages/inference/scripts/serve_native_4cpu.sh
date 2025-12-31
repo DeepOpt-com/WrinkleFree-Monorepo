@@ -63,7 +63,7 @@ if [ ! -f "$BIN_PATH" ]; then
     echo "  Input:  $TOKENIZER_PATH"
     echo "  Output: $BIN_PATH"
     echo ""
-    python scripts/convert_to_sglkernel.py "$TOKENIZER_PATH" "$BIN_PATH"
+    uv run python scripts/convert_to_sglkernel.py "$TOKENIZER_PATH" "$BIN_PATH"
     echo ""
     echo "Conversion complete!"
     echo ""
@@ -76,7 +76,7 @@ echo "  Tokenizer: $TOKENIZER_PATH"
 echo "  CPUs:      0-3 (4 cores)"
 echo ""
 
-exec taskset -c 0-3 python scripts/serve_bitnet_native.py \
+exec taskset -c 0-3 uv run python scripts/serve_bitnet_native.py \
     --model "$BIN_PATH" \
     --tokenizer "$TOKENIZER_PATH" \
     "$@"
