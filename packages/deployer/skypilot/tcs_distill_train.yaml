@@ -129,12 +129,16 @@ run: |
   HYDRA_CMD="${HYDRA_CMD} distillation=tcs"
   HYDRA_CMD="${HYDRA_CMD} student.checkpoint_path=${DLM_CHECKPOINT}"
   HYDRA_CMD="${HYDRA_CMD} student.type=dlm"
-  # Reduced batch size for 2x 2.4B models + eager attention on single H100
-  # batch_size=2, seq_len=512 to fit in 80GB VRAM
-  HYDRA_CMD="${HYDRA_CMD} training.batch_size=2"
-  HYDRA_CMD="${HYDRA_CMD} training.gradient_accumulation_steps=128"
-  HYDRA_CMD="${HYDRA_CMD} data.max_seq_length=512"
+
+  # MuonClip + AdamW optimizer (MUST-DO: always use this)
+  HYDRA_CMD="${HYDRA_CMD} optimizer.type=muon"
+
+  # seq_len=2048 (MUST-DO: never reduce), batch_size=1 to fit in 80GB VRAM
+  HYDRA_CMD="${HYDRA_CMD} data.max_seq_length=2048"
+  HYDRA_CMD="${HYDRA_CMD} training.batch_size=1"
+  HYDRA_CMD="${HYDRA_CMD} training.gradient_accumulation_steps=64"
   HYDRA_CMD="${HYDRA_CMD} training.max_steps=500"
+  HYDRA_CMD="${HYDRA_CMD} logging.log_interval=2"
 
   # Add teacher model if provided
   if [ -n "${TEACHER_MODEL}" ]; then

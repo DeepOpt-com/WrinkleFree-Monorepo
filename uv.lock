@@ -26,6 +26,7 @@ members = [
     "wrinklefree-eval",
     "wrinklefree-fairy2",
     "wrinklefree-inference",
+    "wrinklefree-mobile",
     "wrinklefree-workspace",
 ]
 
@@ -10130,6 +10131,16 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.27.0" },
 ]
 provides-extras = ["dev", "torch", "benchmark", "convert"]
+
+[[package]]
+name = "wrinklefree-mobile"
+version = "0.1.0"
+source = { virtual = "packages/mobile" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = []
 
 [[package]]
 name = "wrinklefree-workspace"

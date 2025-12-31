@@ -11,6 +11,12 @@ WrinkleFree-Distillation implements knowledge distillation for quantized LLMs:
 - **Package management**: uv
 - **License**: Apache 2.0 (commercially friendly)
 
+## MUST-DO Rules
+
+1. **Always use MuonClip + AdamW**: Set `optimizer.type=muon` (NOT adamw). If it fails, fix it.
+2. **Always use seq_len=2048**: Never reduce sequence length. If OOM, use more GPUs or gradient checkpointing.
+3. **Always use max_seq_length=2048 in data config**: This is the standard for LLM training.
+
 ## Monorepo Integration
 
 This package is part of the WrinkleFree monorepo and depends on:

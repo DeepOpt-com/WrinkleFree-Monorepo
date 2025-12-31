@@ -1,0 +1,19 @@
+# Build outputs
+build-android/
+*.so
+*.a
+
+# Model files (download separately)
+models/*.gguf
+
+# Android Studio
+android/.idea/
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+*.iml
+
+# IDE
+.vscode/
+*.swp

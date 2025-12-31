@@ -1,0 +1,10 @@
+[project]
+name = "wrinklefree-mobile"
+version = "0.1.0"
+description = "Android inference for DLM-BitNet models"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+dev-dependencies = []

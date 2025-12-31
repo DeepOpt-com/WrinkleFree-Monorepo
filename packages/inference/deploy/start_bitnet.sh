@@ -2,8 +2,11 @@
 # Start BitNet native inference server (uses sgl-kernel SIMD kernels for ~25 tok/s)
 cd /opt/wrinklefree
 export PATH="$HOME/.local/bin:$PATH"
-export OMP_NUM_THREADS=4
-export MKL_NUM_THREADS=4
+
+# Use all available CPUs
+NUM_CPUS=$(nproc)
+export OMP_NUM_THREADS=$NUM_CPUS
+export MKL_NUM_THREADS=$NUM_CPUS
 
 # Disable torch.compile to avoid C++ compilation issues
 export TORCH_COMPILE_DISABLE=1

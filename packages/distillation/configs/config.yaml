@@ -32,7 +32,7 @@ teacher:
 # Data (uses cheapertraining)
 data:
   config_name: mixed_pretrain  # CheaperTraining config to use
-  max_seq_length: 1024
+  max_seq_length: 2048  # MUST-DO: always use 2048
   num_workers: 4
 
 # Training
@@ -42,12 +42,12 @@ training:
   gradient_accumulation_steps: 8
   gradient_clipping: 1.0
 
-# Optimizer
+# Optimizer (MUST-DO: always use MuonClip)
 optimizer:
-  type: adamw  # adamw, adamw_8bit, muon
+  type: muon  # muon (default), adamw, adamw_8bit
   lr: 2.4e-3
   weight_decay: 0.024
-  # MuonClip-specific (when type=muon): uses separate LRs for Muon and Adam
+  # MuonClip uses separate LRs for Muon and Adam param groups
   lr_muon: 1e-3  # Learning rate for Muon (main weights)
   lr_adam: 5e-5  # Learning rate for Adam (bias/norm)
 

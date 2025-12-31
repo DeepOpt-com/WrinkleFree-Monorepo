@@ -694,6 +694,20 @@ def health():
     return jsonify({"status": "healthy", "native_kernel": NATIVE_KERNEL})
 
 
+@app.route('/v1/models', methods=['GET'])
+def list_models():
+    """OpenAI-compatible models endpoint for Streamlit compatibility."""
+    return jsonify({
+        "object": "list",
+        "data": [{
+            "id": "bitnet-native",
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "wrinklefree",
+        }]
+    })
+
+
 @app.route('/generate', methods=['POST'])
 def generate_endpoint():
     data = request.json
@@ -714,14 +728,85 @@ def generate_endpoint():
     })
 
 
+@torch.no_grad()
+def generate_stream(prompt: str, max_new_tokens: int = 128):
+    """Generate tokens one at a time for streaming."""
+    with model_lock:
+        inputs = tokenizer(prompt, return_tensors="pt")
+        input_ids = inputs.input_ids
+        past_key_values = None
+        generated = []
+
+        for _ in range(max_new_tokens):
+            logits, past_key_values = model(input_ids, past_key_values=past_key_values)
+            next_logits = logits[:, -1, :]
+
+            # Apply repetition penalty
+            if len(generated) > 0:
+                for token_id in set(generated):
+                    if next_logits[0, token_id] > 0:
+                        next_logits[0, token_id] /= 1.2
+                    else:
+                        next_logits[0, token_id] *= 1.2
+
+            next_token = next_logits.argmax(dim=-1)
+            token_id = next_token.item()
+            generated.append(token_id)
+
+            if token_id == tokenizer.eos_token_id:
+                break
+
+            # Decode just this token
+            token_text = tokenizer.decode([token_id], skip_special_tokens=True)
+            yield token_text
+
+            input_ids = next_token.view(1, 1)
+
+
 @app.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
     data = request.json
     messages = data.get('messages', [])
     max_tokens = data.get('max_tokens', 128)
+    stream = data.get('stream', False)
 
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
+    if stream:
+        # Streaming response using SSE
+        def generate_sse():
+            chat_id = f"chatcmpl-{int(time.time())}"
+            for token in generate_stream(prompt, max_tokens):
+                chunk = {
+                    "id": chat_id,
+                    "object": "chat.completion.chunk",
+                    "model": "bitnet-native",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": token},
+                        "finish_reason": None,
+                    }]
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+
+            # Final chunk
+            final = {
+                "id": chat_id,
+                "object": "chat.completion.chunk",
+                "model": "bitnet-native",
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop",
+                }]
+            }
+            yield f"data: {json.dumps(final)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        from flask import Response
+        return Response(generate_sse(), mimetype='text/event-stream')
+
+    # Non-streaming response
     start_time = time.time()
     result = generate(prompt, max_tokens)
     latency = time.time() - start_time
