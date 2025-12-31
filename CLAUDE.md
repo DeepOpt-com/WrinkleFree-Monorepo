@@ -36,18 +36,19 @@
 
 ## DLM GGUF Conversion (CRITICAL)
 
-**NEVER use native F16 format for BitNet inference - always use I2_S or TQ2_0!**
+**NEVER use F16 or TQ2_0 for bf16 DLM checkpoints - use TQ1_0!**
 
-### The Problem: Packed 2-bit Weights
-DLM checkpoints store weights in a **packed 2-bit format** (4 values per byte) with separate `weight_scale` tensors. The standard `convert_hf_to_gguf.py` does NOT unpack these correctly, causing:
-- Shape mismatch errors (e.g., `[640,2560]` instead of `[2560,2560]`)
-- Gibberish output if converted without unpacking
+### The Problem: bf16 "Online-Quant" Checkpoints
+DLM bf16 checkpoints store continuous float weights that are quantized at runtime. Using `llama-quantize` to convert F16 → TQ2_0 **destroys the model output** (produces garbage).
 
-### The Fix: Use Microsoft BitNet's Converter
-The fix is in `extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py`:
-1. Build a `scale_map` from `weight_scale` tensors
-2. Unpack 2-bit packed weights: `(data >> shift) & 3 - 1` to get ternary values
-3. Reshape from `[N/4, ...]` to `[N, ...]`
+### Quantization Format Benchmarks (GCP C3D-32, Dec 2025)
+| Type | Size | Speed | Output Quality | Notes |
+|------|------|-------|----------------|-------|
+| **TQ1_0** | ~678MB | 63 tok/s | ✅ Coherent | **RECOMMENDED** |
+| TQ2_0 | ~779MB | 76 tok/s | ❌ GARBAGE | Do NOT use for bf16! |
+| I2_S | ~1.1GB | ~55 tok/s | ✅ Coherent | Larger but works |
+| TL2 | ~1.1GB | ~80 tok/s | ✅ Coherent | Requires kernel config |
+| F16 | ~4.5GB | ~30 tok/s | ✅ Coherent | Too slow/large |
 
 ### Correct Workflow
 ```bash
@@ -62,24 +63,19 @@ gcloud storage cp \
 # 2. Fix architecture name (capital N -> lowercase n)
 sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' models/dlm-bitnet-2b/config.json
 
-# 3. Convert using Microsoft BitNet's converter with TL2 output
+# 3. Convert using Microsoft BitNet's converter with TQ1_0 output
 cd extern/reference/BitNet.cpp
 python utils/convert-hf-to-gguf-bitnet.py \
     ../../../models/dlm-bitnet-2b \
-    --outtype tl2 \
+    --outtype tq1_0 \
     --outfile ../../../models/dlm-bitnet-2b.gguf
 
-# 4. Verify model size (~1.1-1.2GB for 2B model, NOT 4.5GB)
+# 4. Verify model size (~678MB for TQ1_0, NOT 4.5GB)
 ls -lh models/dlm-bitnet-2b.gguf
 ```
 
-### Quantization Types
-| Type | Size | Speed | Notes |
-|------|------|-------|-------|
-| I2_S | ~1.1GB | Fast | 2-bit ternary, multiply-add |
-| TL2 | ~1.1GB | Faster | LUT-based, 5-bit index per 3 weights |
-| TQ2_0 | ~1.2GB | Fast | llama.cpp ternary format |
-| F16 | ~4.5GB | SLOW | DO NOT USE for inference! |
+### Why TQ2_0 Fails
+TQ2_0 conversion uses `llama-quantize` on F16 intermediate, which re-quantizes already-ternary-intended weights and destroys the distribution. TQ1_0 correctly preserves the ternary structure.
 
 ## Reference
 For detailed docs (pipeline diagrams, GCP config, troubleshooting): `docs/ai-code/reference.md`

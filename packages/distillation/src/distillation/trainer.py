@@ -290,6 +290,27 @@ class DistillationTrainer:
 
             api_key = os.environ.get("WANDB_API_KEY")
             if not api_key:
+                # VERY LOUD WARNING - WandB is critical for monitoring training!
+                warning_msg = """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ██╗    ██╗ █████╗ ██████╗ ███╗   ██╗██╗███╗   ██╗ ██████╗ ██╗              ║
+║  ██║    ██║██╔══██╗██╔══██╗████╗  ██║██║████╗  ██║██╔════╝ ██║              ║
+║  ██║ █╗ ██║███████║██████╔╝██╔██╗ ██║██║██╔██╗ ██║██║  ███╗██║              ║
+║  ██║███╗██║██╔══██║██╔══██╗██║╚██╗██║██║██║╚██╗██║██║   ██║╚═╝              ║
+║  ╚███╔███╔╝██║  ██║██║  ██║██║ ╚████║██║██║ ╚████║╚██████╔╝██╗              ║
+║   ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝              ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║   WANDB_API_KEY NOT SET - WANDB LOGGING DISABLED!                           ║
+║                                                                              ║
+║   You will NOT be able to monitor training losses in real-time!             ║
+║   This makes it impossible to detect training instabilities early.          ║
+║                                                                              ║
+║   To fix: Add --env WANDB_API_KEY=<your-key> when launching the job         ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+                print(warning_msg)
                 logger.warning("WANDB_API_KEY not set, disabling wandb")
                 return
 

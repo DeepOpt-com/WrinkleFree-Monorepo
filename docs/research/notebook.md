@@ -1,3 +1,50 @@
+## 12-31-2025
+
+### TCS Distillation Hyperparameter Corrections (Job 19)
+
+**Problem**: Job 18 showed loss plateau at ~4.9-5.5 instead of consistent decrease. WandB was also disabled, making monitoring impossible.
+
+**Root Cause Analysis** (via BitDistill paper review):
+
+Our `lambda_logits=0.1` was **100x too low** compared to BitDistill recommendations:
+- BitDistill paper: `lambda=10` (classification) or `lambda=1` (summarization)
+- Our config: `lambda=0.1` (way too low!)
+- With T²=25 internal scaling: effective weight was only 2.5x instead of 25x
+
+Similarly, `gamma_attention=1e-5` was too low:
+- BitDistill paper: `gamma=1e3-1e5` (normalized internally)
+- Our config: `gamma=1e-5` (at the very bottom)
+
+**Corrections Applied**:
+
+| Parameter | Before | After | BitDistill Reference |
+|-----------|--------|-------|---------------------|
+| `lambda_logits` | 0.1 | **1.0** | 1-10 |
+| `gamma_attention` | 1e-5 | **1e-4** | 1e3-1e5 (scaled down for stability) |
+| WandB | disabled | **enabled** | - |
+
+**Files Modified**:
+- `packages/distillation/configs/distillation/tcs.yaml` - Updated hyperparameters
+- `packages/distillation/src/distillation/training/trainer.py` - Added VERY LOUD ASCII art warning if WANDB_API_KEY not set
+- `packages/distillation/src/distillation/trainer.py` - Same warning
+- `packages/deployer/skypilot/tcs_distill_train.yaml` - Added WANDB_API_KEY and HF_TOKEN env vars
+- `packages/distillation/CLAUDE.md` - Added MUST-DO rule #5 for WANDB_API_KEY
+
+**Loss Formula** (for reference):
+```
+L = L_CE + lambda_logits * L_TCS + gamma_attention * L_BlockAttn
+
+Where:
+- L_CE: Cross-entropy loss (no shift for DLM)
+- L_TCS: KL(softmax(teacher_topk/T) || softmax(student[topk_indices]/T)) * T²
+- L_BlockAttn: Block-wise attention relation distillation
+- T=5 → T²=25x internal scaling on KL term
+```
+
+**Expected Outcome**: With lambda=1.0 (effective 25x weight on TCS loss), the model should learn better from teacher logits and show consistently decreasing loss.
+
+---
+
 ## 12-21-2025
 
 ### Bug Fix: BitNetLlamaForSequenceClassification lm_head crash

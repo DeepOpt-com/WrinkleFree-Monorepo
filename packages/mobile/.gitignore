@@ -9,11 +9,31 @@ models/*.gguf
 # Android Studio
 android/.idea/
 android/.gradle/
+android/.cxx/
 android/build/
 android/*/build/
+android/*/.cxx/
 android/local.properties
+android/captures/
 *.iml
+*.hprof
+
+# Gradle
+.gradle/
+gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# APK/AAB files
+*.apk
+*.aab
+*.ap_
+
+# Generated files
+*.dex
+.externalNativeBuild/
+.cxx/
 
 # IDE
 .vscode/
 *.swp
+.DS_Store

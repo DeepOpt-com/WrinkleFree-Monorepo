@@ -48,10 +48,11 @@ envs:
   # Data loading - force single-threaded to avoid HuggingFace streaming deadlocks
   DATA_NUM_WORKERS: "0"
 
-  # W&B tracking
+  # W&B tracking (CRITICAL - pass --env WANDB_API_KEY=<key> when launching!)
   WANDB_PROJECT: wrinklefree-distillation
+  WANDB_API_KEY: ""  # REQUIRED for monitoring! Will print loud warning if not set
 
-  # HuggingFace token for gated models (e.g., 1bitLLM/bitnet_b1_58-2B)
+  # HuggingFace token for gated models (e.g., microsoft/bitnet-b1.58-2B-4T-bf16)
   HF_TOKEN: ""
 
   # GCS credentials

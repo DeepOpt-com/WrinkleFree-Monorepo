@@ -1,22 +1,24 @@
 package com.wrinklefree.llmcore
 
+import android.os.Build
 import android.util.Log
 import java.io.Closeable
 
 /**
  * LLM inference engine for Android using llama.cpp with TL1 kernels.
  *
+ * On ARM64 devices: Uses native llama.cpp for real inference.
+ * On x86/x86_64 (emulators): Falls back to mock mode automatically.
+ *
  * Example usage:
  * ```kotlin
- * LLMEngine.initBackend()
- *
- * val engine = LLMEngine.load("/path/to/model-tl1.gguf")
- * val response = engine.generate("Hello, how are you?")
- * println("Response: $response")
- * println("Speed: ${engine.tokensPerSecond} tok/s")
- *
- * engine.close()
- * LLMEngine.freeBackend()
+ * if (LLMEngine.isNativeAvailable) {
+ *     LLMEngine.initBackend()
+ *     val engine = LLMEngine.load("/path/to/model-tl1.gguf")
+ *     val response = engine.generate("Hello, how are you?")
+ *     engine.close()
+ *     LLMEngine.freeBackend()
+ * }
  * ```
  */
 class LLMEngine private constructor(private var handle: Long) : Closeable {
@@ -64,13 +66,27 @@ class LLMEngine private constructor(private var handle: Long) : Closeable {
     companion object {
         private const val TAG = "LLMEngine"
 
+        /**
+         * Whether native library is available (ARM64 only).
+         * On x86 emulators this is false - use mock mode instead.
+         */
+        val isNativeAvailable: Boolean
+
         init {
-            try {
-                System.loadLibrary("llmcore")
-                Log.i(TAG, "Loaded llmcore native library")
-            } catch (e: UnsatisfiedLinkError) {
-                Log.e(TAG, "Failed to load llmcore: ${e.message}")
-                throw e
+            // Only try to load native library on ARM devices
+            val isArm = Build.SUPPORTED_ABIS.any { it.startsWith("arm") }
+            isNativeAvailable = if (isArm) {
+                try {
+                    System.loadLibrary("llmcore")
+                    Log.i(TAG, "Loaded llmcore native library")
+                    true
+                } catch (e: UnsatisfiedLinkError) {
+                    Log.e(TAG, "Failed to load llmcore: ${e.message}")
+                    false
+                }
+            } else {
+                Log.i(TAG, "Non-ARM device detected (${Build.SUPPORTED_ABIS.joinToString()}), native library not available")
+                false
             }
         }
 

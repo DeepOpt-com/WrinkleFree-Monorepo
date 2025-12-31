@@ -17,6 +17,7 @@ WrinkleFree-Distillation implements knowledge distillation for quantized LLMs:
 2. **Always enable QK-clipping**: Set `enable_clipping=True` in MuonConfig. Prevents loss spikes and training instability.
 3. **Always use seq_len=2048**: Never reduce sequence length. If OOM, use more GPUs or gradient checkpointing.
 4. **Always use max_seq_length=2048 in data config**: This is the standard for LLM training.
+5. **Always pass WANDB_API_KEY**: Add `--env WANDB_API_KEY=<key>` when launching jobs. Without it, you CANNOT monitor training losses and detect instabilities. A VERY LOUD warning will print if missing.
 
 ## Monorepo Integration
 
