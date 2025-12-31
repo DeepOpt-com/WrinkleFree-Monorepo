@@ -16,6 +16,11 @@ from data_handler.training.optimizer import (
     get_parameter_groups,
     get_num_parameters,
 )
+from data_handler.training.qk_clip import (
+    apply_qk_clip,
+    QKClipStats,
+    QKClipMonitor,
+)
 
 __all__ = [
     # Gradient clipping
@@ -29,4 +34,8 @@ __all__ = [
     "create_optimizer",
     "get_parameter_groups",
     "get_num_parameters",
+    # QK clipping
+    "apply_qk_clip",
+    "QKClipStats",
+    "QKClipMonitor",
 ]

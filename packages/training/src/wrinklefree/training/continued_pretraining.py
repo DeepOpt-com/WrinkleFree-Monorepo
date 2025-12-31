@@ -23,6 +23,7 @@ from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
 from data_handler.training import PlateauEarlyStopping, ZClip
+from data_handler.training.qk_clip import apply_qk_clip
 
 # Architecture package for on-the-fly conversion
 from bitnet_arch.conversion import auto_convert_if_needed, is_bitnet_model
@@ -215,6 +216,16 @@ class ContinuedPretrainingTrainer(Trainer):
             self.zclip = None
             logger.info("ZClip disabled, using fixed gradient clipping")
 
+        # QK clipping for attention stability (enabled by default)
+        opt_cfg = getattr(self.training_cfg, "optimizer", None)
+        self.qk_clip_enabled = getattr(opt_cfg, "enable_clipping", True) if opt_cfg else True
+        self.qk_clip_threshold = getattr(opt_cfg, "clipping_threshold", 50.0) if opt_cfg else 50.0
+        self.qk_clip_alpha = getattr(opt_cfg, "clipping_alpha", 0.5) if opt_cfg else 0.5
+        if self.qk_clip_enabled:
+            logger.info(
+                f"QK clipping enabled: threshold={self.qk_clip_threshold}, alpha={self.qk_clip_alpha}"
+            )
+
     def _check_influence_optimizer(self) -> bool:
         """Check if optimizer is InfluenceAwareOptimizer."""
         optimizer_class_name = self.optimizer.__class__.__name__
@@ -406,6 +417,16 @@ class ContinuedPretrainingTrainer(Trainer):
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
+                # QK clipping for attention stability (after optimizer step, before scheduler)
+                qk_clip_stats = None
+                if self.qk_clip_enabled:
+                    qk_clip_stats = apply_qk_clip(
+                        self.model,
+                        threshold=self.qk_clip_threshold,
+                        alpha=self.qk_clip_alpha,
+                        enabled=True,
+                    )
+
                 if self.scheduler is not None:
                     self.scheduler.step()
 
@@ -469,6 +490,13 @@ class ContinuedPretrainingTrainer(Trainer):
                         # Log lambda if warmup is active
                         if self.lambda_warmup is not None:
                             wandb_log["train/lambda"] = self.lambda_warmup.lambda_val
+
+                        # Log QK clipping stats
+                        if qk_clip_stats is not None:
+                            wandb_log["qk_clip/max_spectral_norm"] = qk_clip_stats.max_score
+                            wandb_log["qk_clip/was_clipped"] = 1.0 if qk_clip_stats.was_clipped else 0.0
+                            wandb_log["qk_clip/scale_factor"] = qk_clip_stats.scale_factor
+                            wandb_log["qk_clip/num_clipped_layers"] = qk_clip_stats.num_clipped
 
                         # Log distillation metrics if in pre_stage_2 mode
                         if self.pre_stage_2_enabled:
