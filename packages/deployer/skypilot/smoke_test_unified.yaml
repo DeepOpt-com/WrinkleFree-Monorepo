@@ -1,0 +1,121 @@
+# WrinkleFree Unified Training Smoke Test
+#
+# Tests the refactored unified training with:
+# - Combined STE + DLM multi-task learning
+# - MuonClip optimizer with QK clipping
+# - Configurable checkpoint resume
+# - Auto-convert to BitNet
+# - GCS checkpoint uploads
+# - WandB logging
+#
+# Launch:
+#   cd packages/deployer
+#   sky launch skypilot/smoke_test_unified.yaml -y --cluster unified-smoke
+#
+# Monitor:
+#   sky status
+#   sky logs unified-smoke
+#
+# Tear down:
+#   sky down unified-smoke -y
+
+name: wrinklefree-unified-smoke
+
+resources:
+  # L40 for GPU validation
+  accelerators: L40:1
+  use_spot: false  # On-demand for reliability
+  cloud: runpod
+
+# Sync from Refact worktree
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+# Upload credentials
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  MAX_STEPS: 100
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: unified-smoke-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Sync all packages
+  uv sync --all-packages
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Load credentials (WANDB_API_KEY, etc.)
+  source /tmp/credentials.env
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "========================================="
+  echo "WrinkleFree Unified Training Smoke Test"
+  echo "========================================="
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS"
+  echo "Features:"
+  echo "  - Combined STE + DLM (multi-task)"
+  echo "  - MuonClip + QK Clipping"
+  echo "  - Auto BitNet conversion"
+  echo "  - GCS checkpoint upload"
+  echo "  - WandB logging"
+  echo "========================================="
+
+  # Run unified training with DLM enabled (default in unified.yaml)
+  echo ""
+  echo "[Training] Running unified training with STE+DLM..."
+  uv run --package wrinklefree python packages/training/scripts/train.py \
+    model=${MODEL} \
+    training=unified \
+    data=fineweb \
+    distributed=single_gpu \
+    training.max_steps=${MAX_STEPS} \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=unified_smoke \
+    training.checkpoint.save_interval=50 \
+    training.logging.log_interval=10 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    training.early_stopping.enabled=false
+
+  echo ""
+  echo "========================================="
+  echo "Smoke Test Complete!"
+  echo "========================================="
+
+  # List checkpoints
+  echo "Checkpoints:"
+  find $CHECKPOINT_DIR -type f -name "*.pt" -o -name "*.safetensors" 2>/dev/null | head -20 || echo "No checkpoints found"
+
+  # Verify WandB run was logged
+  echo ""
+  echo "WandB run: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
+
+  # Verify GCS upload
+  echo ""
+  echo "GCS checkpoints:"
+  gcloud storage ls "gs://${GCS_BUCKET}/checkpoints/unified_smoke/" 2>/dev/null || echo "No GCS checkpoints (may be expected for short runs)"

@@ -65,6 +65,15 @@ lambda_warmup:
   warmup_steps: 500
   schedule: linear
 
+# === RESUME CONFIGURATION ===
+# Controls what state to load when resuming from a checkpoint
+resume:
+  checkpoint_path: null           # Path or gs:// URL (overrides auto-discovery)
+  load_optimizer_state: true      # false = start with fresh optimizer
+  load_scheduler_state: true      # false = start with fresh scheduler
+  load_training_state: true       # false = start from step 0
+  strict_model_load: true         # Fail on missing/unexpected keys
+
 # === OBJECTIVES SYSTEM ===
 # Composable objectives with Hydra-configurable weights
 # Each objective can be enabled/disabled and weighted independently
@@ -74,6 +83,12 @@ objectives:
     weight: 1.0
     ignore_index: -100
     label_smoothing: 0.0
+
+  dlm:
+    enabled: true  # Combined STE+DLM training by default
+    weight: 0.5
+    mask_prob: 0.15
+    mask_token_id: null  # Auto-detected from tokenizer if null
 
   layerwise_distill:
     enabled: false  # Enable for distillation
@@ -88,26 +103,37 @@ curriculum:
   enabled: true
   interpolation: linear  # or "cosine"
   phases:
-    # Phase 1: Pure continue pretraining on high-quality data (first 20%)
+    # Phase 1: Warmup - STE only (first 10%)
     - name: warmup
-      end_ratio: 0.2
+      end_ratio: 0.1
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
+        dlm: 0.0
 
-    # Phase 2: Main training on mixed data (20% - 90%)
-    - name: main
-      end_ratio: 0.9
+    # Phase 2: Ramp up DLM (10% - 30%)
+    - name: dlm_ramp
+      end_ratio: 0.3
       data_config: mixed_pretrain
       objectives:
         continue_pretrain: 1.0
+        dlm: 0.3
 
-    # Phase 3: SFT phase (last 10%)
-    - name: sft
-      end_ratio: 1.0
-      data_config: downstream
+    # Phase 3: Main combined training (30% - 80%)
+    - name: main
+      end_ratio: 0.8
+      data_config: mixed_pretrain
       objectives:
         continue_pretrain: 1.0
+        dlm: 0.5
+
+    # Phase 4: DLM focus (last 20%)
+    - name: dlm_focus
+      end_ratio: 1.0
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 0.5
+        dlm: 1.0
 
 # Teacher model (only loaded if an objective requires_teacher)
 teacher:

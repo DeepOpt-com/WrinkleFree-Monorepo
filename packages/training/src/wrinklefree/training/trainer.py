@@ -553,12 +553,17 @@ class Trainer:
         if dist.is_initialized() and self.world_size > 1:
             dist.barrier()
 
-    def load_checkpoint(self, path: Path) -> None:
+    def load_checkpoint(self, path: Path, resume_config: Optional[DictConfig] = None) -> None:
         """
-        Load a checkpoint.
+        Load a checkpoint with configurable state loading.
 
         Args:
             path: Path to checkpoint directory or file
+            resume_config: Optional resume configuration with:
+                - load_optimizer_state: bool (default: True)
+                - load_scheduler_state: bool (default: True)
+                - load_training_state: bool (default: True)
+                - strict_model_load: bool (default: True)
         """
         if path.is_dir():
             checkpoint_path = path / "checkpoint.pt"
@@ -567,6 +572,21 @@ class Trainer:
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
+        # Get resume config (from argument, self.config, or defaults)
+        if resume_config is None:
+            training_config = getattr(self.config, "training", self.config) if self.config else {}
+            resume_config = getattr(training_config, "resume", {})
+
+        load_optimizer = getattr(resume_config, "load_optimizer_state", True)
+        load_scheduler = getattr(resume_config, "load_scheduler_state", True)
+        load_training_state = getattr(resume_config, "load_training_state", True)
+        strict_load = getattr(resume_config, "strict_model_load", True)
+
+        # Backward compatibility: env var overrides config
+        if os.environ.get("RESUME_OPTIMIZER", "").lower() == "false":
+            load_optimizer = False
+            load_scheduler = False
+
         # Load model state
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
@@ -574,13 +594,12 @@ class Trainer:
             from wrinklefree.training.fsdp_wrapper import load_fsdp_state_dict
             load_fsdp_state_dict(self.model, checkpoint["model_state_dict"])
         else:
-            self.model.load_state_dict(checkpoint["model_state_dict"])
+            self.model.load_state_dict(checkpoint["model_state_dict"], strict=strict_load)
 
-        # Load optimizer state (skip if RESUME_OPTIMIZER=false or optimizer type changed)
-        skip_optimizer = os.environ.get("RESUME_OPTIMIZER", "true").lower() == "false"
-        if skip_optimizer:
+        # Load optimizer state
+        if not load_optimizer:
             if self.rank == 0:
-                logger.info("Skipping optimizer state load (RESUME_OPTIMIZER=false)")
+                logger.info("Skipping optimizer state load (resume.load_optimizer_state=false)")
         elif "optimizer_state_dict" in checkpoint:
             try:
                 self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -614,8 +633,11 @@ class Trainer:
                 if self.rank == 0:
                     logger.info(f"Reset LR from checkpoint value {old_lr} to config value {config_lr}")
 
-        # Load scheduler state (skip if switching optimizers)
-        if self.scheduler is not None and "scheduler_state_dict" in checkpoint and not skip_optimizer:
+        # Load scheduler state
+        if not load_scheduler:
+            if self.rank == 0:
+                logger.info("Skipping scheduler state load (resume.load_scheduler_state=false)")
+        elif self.scheduler is not None and "scheduler_state_dict" in checkpoint:
             try:
                 self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             except Exception as e:
@@ -635,12 +657,21 @@ class Trainer:
                     for sub_sched in self.scheduler._schedulers:
                         _update_sched_lr(sub_sched)
 
-        # Load training state
-        self.global_step = checkpoint.get("global_step", 0)
-        self.epoch = checkpoint.get("epoch", 0)
-        self.best_eval_loss = checkpoint.get("best_eval_loss", float("inf"))
-        self.train_losses = checkpoint.get("train_losses", [])
-        self.eval_losses = checkpoint.get("eval_losses", [])
+        # Load training state (step, epoch, metrics)
+        if load_training_state:
+            self.global_step = checkpoint.get("global_step", 0)
+            self.epoch = checkpoint.get("epoch", 0)
+            self.best_eval_loss = checkpoint.get("best_eval_loss", float("inf"))
+            self.train_losses = checkpoint.get("train_losses", [])
+            self.eval_losses = checkpoint.get("eval_losses", [])
+        else:
+            if self.rank == 0:
+                logger.info("Starting from step 0 (resume.load_training_state=false)")
+            self.global_step = 0
+            self.epoch = 0
+            self.best_eval_loss = float("inf")
+            self.train_losses = []
+            self.eval_losses = []
 
         if self.rank == 0:
             logger.info(f"Loaded checkpoint from {checkpoint_path} at step {self.global_step}")

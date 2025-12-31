@@ -49,7 +49,34 @@ uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain data=
 uv run python scripts/train.py model=qwen3_4b training=stage2_pretrain data=fineweb
 ```
 
-## Training Pipeline (3 Stages + Distillation)
+## Training Pipeline
+
+### Unified Training (Recommended)
+
+The `unified` config combines STE quantization training with DLM (Diffusion Language Model) objectives in a single pass:
+
+```bash
+# Combined STE + DLM training (GitHub Issue #2)
+uv run python scripts/train.py model=smollm2_135m training=unified data=fineweb
+
+# Key features:
+# - Auto-converts model to BitNet if needed
+# - Multi-task: LM loss + DLM masking loss on same data
+# - Curriculum: Phases ramp up DLM weight over training
+# - MuonClip optimizer with QK clipping
+# - WandB logging with per-objective losses
+```
+
+**Configurable Resume**:
+```bash
+# Resume with fresh optimizer (new LR schedule)
+uv run python scripts/train.py training=unified \
+  training.resume.checkpoint_path=gs://bucket/checkpoint.pt \
+  training.resume.load_optimizer_state=false \
+  training.resume.load_scheduler_state=false
+```
+
+### Legacy Stages (Still Supported)
 
 | Stage | Config | Purpose | Tokens |
 |-------|--------|---------|--------|
