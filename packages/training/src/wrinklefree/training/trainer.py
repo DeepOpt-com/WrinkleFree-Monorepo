@@ -1,5 +1,8 @@
 """Main training loop for BitNet models."""
 
+# Patch muon_fsdp2 before importing it (fixes missing muon_update function)
+import wrinklefree.training.muon_patch  # noqa: F401
+
 import logging
 import os
 import time

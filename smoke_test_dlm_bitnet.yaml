@@ -81,7 +81,6 @@ run: |
     \
     training.torch_compile.enabled=false \
     \
-    training.optimizer.type=adamw \
     +data.num_workers=0
 
   echo "=== Smoke Test Complete ==="
