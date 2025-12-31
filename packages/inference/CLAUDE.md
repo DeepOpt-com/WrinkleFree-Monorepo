@@ -80,26 +80,41 @@ The native server uses sgl-kernel's optimized SIMD kernels (AVX2/AVX512) for max
 - Repetition penalty to reduce output loops
 - KV cache for efficient autoregressive generation
 
-**Prerequisites:**
+### Quick Start (One Command)
+
+```bash
+# Download checkpoint from GCS (one-time)
+mkdir -p models/dlm-bitnet-2b
+gcloud storage cp -r gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/* models/dlm-bitnet-2b/
+
+# Start server (auto-converts to .bin if needed)
+./scripts/serve_native.sh models/dlm-bitnet-2b
+
+# Start Streamlit UI (in another terminal)
+uv run streamlit run demo/serve_sglang.py --server.port 7860
+```
+
+### Full Workflow
+
+**Step 1: Prerequisites**
 ```bash
 # Install sgl-kernel with BitNet support (one-time)
 ./scripts/setup-cpu.sh
 ```
 
-**Convert checkpoint to packed format:**
+**Step 2: Download checkpoint from GCS**
 ```bash
-# Convert bf16 checkpoint to sgl-kernel binary (2.5x smaller, 14x faster)
-python scripts/convert_to_sglkernel.py models/my-checkpoint models/my-checkpoint.bin
+mkdir -p models/dlm-bitnet-2b
+gcloud storage cp -r gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/* models/dlm-bitnet-2b/
 ```
 
-**Start server:**
+**Step 3: Start server** (auto-converts checkpoint to packed .bin format)
 ```bash
-# From sgl-kernel binary format (fastest loading)
-python scripts/serve_bitnet_native.py \
-    --model models/dlm-bitnet-2b.bin \
-    --tokenizer models/dlm-bitnet-2b
+./scripts/serve_native.sh models/dlm-bitnet-2b
+```
 
-# Test
+**Step 4: Test**
+```bash
 curl http://localhost:30000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
@@ -110,8 +125,10 @@ curl http://localhost:30000/v1/chat/completions \
 **Files:**
 | File | Purpose |
 |------|---------|
+| `scripts/serve_native.sh` | One-command wrapper (auto-converts + serves) |
 | `scripts/serve_bitnet_native.py` | Native server with TL2 kernels |
 | `scripts/convert_to_sglkernel.py` | Converts bf16 checkpoints to packed format |
+| `demo/serve_sglang.py` | Streamlit chat UI |
 
 ## BitNet.cpp Quick Start (Alternative - 1.6x slower)
 
