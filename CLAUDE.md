@@ -57,21 +57,31 @@ mkdir -p models/dlm-bitnet-2b
 gcloud storage cp \
     'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-3600/*.json' \
     'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-3600/*.safetensors' \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-3600/*.jinja' \
     models/dlm-bitnet-2b/
 
-# 2. Fix architecture name (capital N -> lowercase n)
+# 2. Convert using our wrapper script (handles architecture name, TQ1_0 default)
+uv run python packages/inference/scripts/convert_checkpoint_to_gguf.py \
+    models/dlm-bitnet-2b \
+    --outfile models/dlm-bitnet-2b.gguf \
+    --validate
+
+# 3. Verify model has correct architecture
+xxd models/dlm-bitnet-2b.gguf | head -5  # Should show "bitnet-b1.58"
+
+# 4. Serve with llama.cpp
+llama-server -m models/dlm-bitnet-2b.gguf --port 30000
+```
+
+### Manual Conversion (Alternative)
+```bash
+# Fix architecture name first
 sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' models/dlm-bitnet-2b/config.json
 
-# 3. Convert using Microsoft BitNet's converter with TQ1_0 output
-cd extern/reference/BitNet.cpp
-python utils/convert-hf-to-gguf-bitnet.py \
-    ../../../models/dlm-bitnet-2b \
+# Convert directly with BitNet's converter
+uv run python extern/BitNet/utils/convert-hf-to-gguf-bitnet.py \
+    models/dlm-bitnet-2b \
     --outtype tq1_0 \
-    --outfile ../../../models/dlm-bitnet-2b.gguf
-
-# 4. Verify model size (~678MB for TQ1_0, NOT 4.5GB)
-ls -lh models/dlm-bitnet-2b.gguf
+    --outfile models/dlm-bitnet-2b.gguf
 ```
 
 ### Why TQ2_0 Fails

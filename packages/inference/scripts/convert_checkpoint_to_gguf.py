@@ -9,21 +9,23 @@ This script handles:
 - Architecture name variants (BitnetForCausalLM vs BitNetForCausalLM)
 
 Supported output formats:
-- i2_s: 2-bit integer, multiply-add (default, works with vanilla llama.cpp)
-- tq2_0: Ternary quantization (works with vanilla llama.cpp)
+- tq1_0: Ternary quantization v1 (RECOMMENDED - coherent output, ~1.2GB for 2B model)
+- i2_s: 2-bit integer, multiply-add (works with vanilla llama.cpp)
 - tl1: LUT-based 1 (requires pre-generated kernel config)
 - tl2: LUT-based 2 (requires pre-generated kernel config)
 - f32/f16: Reference only (DO NOT USE for inference - 4x larger, slower)
 
+CRITICAL: Do NOT use tq2_0 for bf16 "online-quant" checkpoints - produces garbage output!
+
 Usage:
-    # Basic conversion (I2_S recommended for vanilla llama.cpp)
+    # Basic conversion (TQ1_0 recommended)
     python convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf
 
     # With validation
     python convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf --validate
 
-    # TQ2_0 format (alternative to I2_S)
-    python convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf --outtype tq2_0
+    # I2_S format (alternative to TQ1_0)
+    python convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf --outtype i2_s
 
     # From GCS (auto-downloads, excludes optimizer state)
     python convert_checkpoint_to_gguf.py gs://bucket/checkpoint --outfile model.gguf
@@ -304,10 +306,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Output Format Guide:
-  i2_s   - 2-bit integer, multiply-add (~1.1GB for 2B model) [DEFAULT, RECOMMENDED]
+  tq1_0  - Ternary quantization v1 (~1.2GB for 2B model) [DEFAULT, RECOMMENDED]
+           Lossless for ternary {-1, 0, +1} values, produces coherent output
+  i2_s   - 2-bit integer, multiply-add (~1.1GB for 2B model)
            Works with vanilla llama.cpp, good balance of speed and compatibility
-  tq2_0  - Ternary quantization (~1.2GB for 2B model)
-           Alternative to i2_s, also works with vanilla llama.cpp
   tl1    - LUT-based format 1 (~1.1GB)
            Requires pre-generated kernel config, faster on some CPUs
   tl2    - LUT-based format 2 (~1.1GB)
@@ -315,8 +317,10 @@ Output Format Guide:
   f16    - Float16 (~4.5GB for 2B model)
            DO NOT USE for inference - for reference/debugging only
 
+WARNING: Do NOT use tq2_0 for bf16 "online-quant" checkpoints - produces garbage!
+
 Examples:
-  # Basic conversion with I2_S (recommended)
+  # Basic conversion with TQ1_0 (recommended)
   python convert_checkpoint_to_gguf.py ./checkpoint --outfile model.gguf
 
   # With validation
@@ -325,8 +329,8 @@ Examples:
   # From GCS (auto-downloads, excludes optimizer state)
   python convert_checkpoint_to_gguf.py gs://bucket/checkpoint --outfile model.gguf
 
-  # TQ2_0 format
-  python convert_checkpoint_to_gguf.py ./checkpoint --outfile model.gguf --outtype tq2_0
+  # I2_S format (alternative)
+  python convert_checkpoint_to_gguf.py ./checkpoint --outfile model.gguf --outtype i2_s
         """,
     )
 
@@ -344,9 +348,9 @@ Examples:
     parser.add_argument(
         "--outtype",
         type=str,
-        choices=["i2_s", "tq2_0", "tl1", "tl2", "f16", "f32"],
-        default="i2_s",
-        help="Output quantization type (default: i2_s)",
+        choices=["tq1_0", "i2_s", "tl1", "tl2", "f16", "f32"],
+        default="tq1_0",
+        help="Output quantization type (default: tq1_0, RECOMMENDED)",
     )
     parser.add_argument(
         "--validate",

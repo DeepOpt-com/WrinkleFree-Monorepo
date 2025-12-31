@@ -238,6 +238,7 @@ class MODEL_ARCH(IntEnum):
     CHATGLM      = auto()
     BITNET       = auto()
     BITNET_25    = auto()
+    BITNET_B158  = auto()
     T5           = auto()
     T5ENCODER    = auto()
     JAIS         = auto()
@@ -400,6 +401,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.CHATGLM:        "chatglm",
     MODEL_ARCH.BITNET:         "bitnet",
     MODEL_ARCH.BITNET_25:      "bitnet-25",
+    MODEL_ARCH.BITNET_B158:    "bitnet-b1.58",
     MODEL_ARCH.T5:             "t5",
     MODEL_ARCH.T5ENCODER:      "t5encoder",
     MODEL_ARCH.JAIS:           "jais",
@@ -1186,6 +1188,28 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.ATTN_SUB_NORM,
         MODEL_TENSOR.FFN_SUB_NORM,
     ],
+    MODEL_ARCH.BITNET_B158: [
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.ROPE_FREQS,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_Q,
+        MODEL_TENSOR.ATTN_K,
+        MODEL_TENSOR.ATTN_V,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.ATTN_ROT_EMBD,
+        MODEL_TENSOR.FFN_GATE_INP,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE,
+        MODEL_TENSOR.FFN_DOWN,
+        MODEL_TENSOR.FFN_UP,
+        MODEL_TENSOR.FFN_GATE_EXP,
+        MODEL_TENSOR.FFN_DOWN_EXP,
+        MODEL_TENSOR.FFN_UP_EXP,
+        MODEL_TENSOR.ATTN_SUB_NORM,
+        MODEL_TENSOR.FFN_SUB_NORM,
+    ],
     MODEL_ARCH.T5: [
         MODEL_TENSOR.TOKEN_EMBD,
         MODEL_TENSOR.OUTPUT,
@@ -1428,6 +1452,8 @@ class GGMLQuantizationType(IntEnum):
     Q4_0_8_8 = 33
     TQ1_0   = 34
     TQ2_0   = 35
+    I2_S    = 36
+    I8_S    = 37
     TL1     = 38
     TL2     = 39
 
@@ -1554,8 +1580,10 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q4_0_8_8:(32, 2 + 16),
     GGMLQuantizationType.TQ1_0:   (256, 2 + 4 * 13),
     GGMLQuantizationType.TQ2_0:   (256, 2 + 64),
-    GGMLQuantizationType.TL1:      (4, 1),
-    GGMLQuantizationType.TL2:      (4, 1),
+    GGMLQuantizationType.I2_S:    (1, 1),
+    GGMLQuantizationType.I8_S:    (1, 1),
+    GGMLQuantizationType.TL1:     (4, 1),
+    GGMLQuantizationType.TL2:     (4, 1),
 }
 
 

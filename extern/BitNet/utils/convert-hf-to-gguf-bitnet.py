@@ -964,7 +964,7 @@ class LlamaModel(Model):
 
 @Model.register("BitnetForCausalLM", "BitNetForCausalLM")
 class BitnetModel(Model):
-    model_arch = gguf.MODEL_ARCH.BITNET
+    model_arch = gguf.MODEL_ARCH.BITNET_B158
 
     def set_vocab(self):
         try:
@@ -1107,6 +1107,30 @@ class BitnetModel(Model):
                         assert data.dtype == np.uint8
                         assert i2_scale.dtype == np.float32
                         data_qtype = gguf.GGMLQuantizationType.TL2
+                    elif self.ftype == gguf.GGMLQuantizationType.TQ1_0 and suit_i2:
+                        # Use gguf quants module for TQ1_0 quantization
+                        from gguf import quants as gguf_quants
+                        data = gguf_quants.quantize(data.astype(np.float32), gguf.GGMLQuantizationType.TQ1_0)
+                        data_qtype = gguf.GGMLQuantizationType.TQ1_0
+                    elif self.ftype == gguf.GGMLQuantizationType.TQ2_0 and suit_i2:
+                        # Use gguf quants module for TQ2_0 quantization
+                        from gguf import quants as gguf_quants
+                        data = gguf_quants.quantize(data.astype(np.float32), gguf.GGMLQuantizationType.TQ2_0)
+                        data_qtype = gguf.GGMLQuantizationType.TQ2_0
+                    elif self.ftype == gguf.GGMLQuantizationType.I2_S and suit_i2:
+                        # I2_S is a simple 2-bit ternary format
+                        # Quantize to ternary values: -1, 0, 1
+                        scale = np.abs(data).max()
+                        if scale > 0:
+                            ternary = np.round(data / scale).astype(np.int8).clip(-1, 1)
+                        else:
+                            ternary = np.zeros_like(data, dtype=np.int8)
+                        # Pack 4 values per byte: (v + 1) fits in 2 bits
+                        packed = (ternary.astype(np.uint8) + 1).reshape(-1, 4)
+                        packed = packed[:, 0] | (packed[:, 1] << 2) | (packed[:, 2] << 4) | (packed[:, 3] << 6)
+                        data = packed
+                        i2_scale = np.array([scale], dtype=np.float32)
+                        data_qtype = gguf.GGMLQuantizationType.I2_S
                     else:  # default to float16 for quantized tensors
                         if data_dtype != np.float16:
                             data = data.astype(np.float16)
@@ -1136,8 +1160,11 @@ class BitnetModel(Model):
 ftype_map = {
     "f32": gguf.GGMLQuantizationType.F32,
     "f16": gguf.GGMLQuantizationType.F16,
-    "tl1" : gguf.GGMLQuantizationType.TL1,
-    "tl2" : gguf.GGMLQuantizationType.TL2,
+    "tl1": gguf.GGMLQuantizationType.TL1,
+    "tl2": gguf.GGMLQuantizationType.TL2,
+    "tq1_0": gguf.GGMLQuantizationType.TQ1_0,
+    "tq2_0": gguf.GGMLQuantizationType.TQ2_0,
+    "i2_s": gguf.GGMLQuantizationType.I2_S,
 }
 
 
