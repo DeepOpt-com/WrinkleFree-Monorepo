@@ -34,6 +34,7 @@ workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
 file_mounts:
   /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
   /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
 
 envs:
   GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
@@ -64,8 +65,10 @@ run: |
   cd ~/sky_workdir
   export PATH="$HOME/.cargo/bin:$PATH"
 
-  # Load credentials (WANDB_API_KEY, etc.)
+  # Load credentials (WANDB_API_KEY, HF token, etc.)
   source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
 
   CHECKPOINT_DIR="/tmp/checkpoints"
   mkdir -p $CHECKPOINT_DIR
@@ -89,7 +92,7 @@ run: |
   uv run --package wrinklefree python packages/training/scripts/train.py \
     model=${MODEL} \
     training=unified \
-    data=fineweb \
+    data=default \
     distributed=single_gpu \
     training.max_steps=${MAX_STEPS} \
     output_dir=$CHECKPOINT_DIR \

@@ -57,14 +57,39 @@ The `unified` config combines STE quantization training with DLM (Diffusion Lang
 
 ```bash
 # Combined STE + DLM training (GitHub Issue #2)
-uv run python scripts/train.py model=smollm2_135m training=unified data=fineweb
+uv run python scripts/train.py model=smollm2_135m training=unified data=mixed_pretrain
 
 # Key features:
 # - Auto-converts model to BitNet if needed
 # - Multi-task: LM loss + DLM masking loss on same data
 # - Curriculum: Phases ramp up DLM weight over training
 # - MuonClip optimizer with QK clipping
+# - Influence-based data remixing (dynamic dataset weights)
 # - WandB logging with per-objective losses
+```
+
+**Multi-Task Objectives**:
+The `ObjectiveManager` runs multiple objectives on the same batch:
+- `continue_pretrain`: Standard next-token prediction loss
+- `dlm`: Diffusion Language Model masking loss
+
+When DLM is enabled, the batch is preprocessed:
+1. Original labels stored in `batch["_original_labels"]`
+2. Input tokens masked with `mask_token_id`
+3. CE objective uses original labels; DLM uses masked positions
+
+**Curriculum Phases** (configurable in `unified.yaml`):
+```yaml
+curriculum:
+  phases:
+    - name: warmup         # Steps 0-10%
+      objectives: {continue_pretrain: 1.0, dlm: 0.0}
+    - name: dlm_ramp       # Steps 10-30%
+      objectives: {continue_pretrain: 1.0, dlm: 0.3}
+    - name: main           # Steps 30-80%
+      objectives: {continue_pretrain: 1.0, dlm: 0.5}
+    - name: dlm_focus      # Steps 80-100%
+      objectives: {continue_pretrain: 0.5, dlm: 1.0}
 ```
 
 **Configurable Resume**:
@@ -74,6 +99,49 @@ uv run python scripts/train.py training=unified \
   training.resume.checkpoint_path=gs://bucket/checkpoint.pt \
   training.resume.load_optimizer_state=false \
   training.resume.load_scheduler_state=false
+
+# Resume options:
+#   load_optimizer_state: true/false (reset LR schedule)
+#   load_scheduler_state: true/false
+#   load_training_state: true/false (reset step counter)
+#   strict_model_load: true/false (allow missing keys)
+```
+
+### Influence-Based Data Remixing
+
+Dynamic dataset weight optimization during training (MobileLLM-R1 methodology):
+
+```bash
+# Enable influence remixing with mixed_pretrain data
+uv run python scripts/train.py model=smollm2_135m training=unified \
+  data=mixed_pretrain \
+  influence.enabled=true \
+  influence.warmup_steps=1000 \
+  influence.update_interval=5000 \
+  influence.learning_rate=0.1
+
+# What happens:
+# 1. Warmup (first 1000 steps): Use initial dataset weights
+# 2. After warmup: Every 5000 steps, compute influence scores
+# 3. Adjust dataset weights to maximize influence on probe domains
+# 4. Log weights to WandB: influence/weight_{dataset_name}
+```
+
+**How Influence Works**:
+1. **Probe domains** (in `mixed_pretrain.yaml`): web_edu, code, math, dclm, diverse, reasoning
+2. **DataInf algorithm**: Efficient gradient-based influence estimation
+3. **Weight update**: `new_weight = (1 - lr) * current + lr * optimal`
+4. **Constraints**: min_weight=0.05, max_weight=0.60 (no domain dominates)
+
+**WandB Metrics**:
+```
+train/loss                    # Combined weighted loss
+train/continue_pretrain_loss  # LM objective loss
+train/dlm_loss               # DLM objective loss
+train/dlm_num_masked         # Tokens masked per batch
+schedule/continue_pretrain_weight  # Curriculum weight
+schedule/dlm_weight               # Curriculum weight
+influence/weight_{dataset}        # Per-dataset mixture weight
 ```
 
 ### Legacy Stages (Still Supported)
@@ -179,6 +247,42 @@ RESUME_CHECKPOINT=gs://...checkpoint.pt python scripts/train.py ...
 4. Continues training from the saved step
 
 The checkpoint must be a **file path** (ending in `checkpoint.pt`), not a directory.
+
+## Smoke Tests
+
+Smoke tests validate the full training pipeline in ~5 minutes:
+
+```bash
+cd packages/deployer
+
+# 1x L40 smoke test (20 steps with influence remixing)
+sky launch skypilot/smoke_test_unified_1gpu.yaml -y --cluster unified-1gpu
+
+# 2x L40 smoke test (FSDP data parallelism)
+sky launch skypilot/smoke_test_unified_2gpu.yaml -y --cluster unified-2gpu
+
+# Monitor
+sky logs unified-1gpu
+sky logs unified-2gpu
+
+# Teardown
+sky down unified-1gpu unified-2gpu -y
+```
+
+**Smoke Test Configuration**:
+- **Steps**: 20 total (4 warmup + 16 with influence)
+- **First 20%** (steps 1-4): fineweb-edu warmup, no influence
+- **Remaining 80%** (steps 5-20): mixed_pretrain with influence updates
+- **Checkpoints**: GCS upload every 10 steps
+- **Verifies**: Loss decreases, MuonClip works, GCS/WandB logging works
+
+**Expected Output**:
+```
+First loss: ~10-12
+Last loss: ~6-8 (should decrease!)
+Checkpoints: step_10/, step_20/, final/
+WandB: https://wandb.ai/wrinklefree/runs/{run_id}
+```
 
 ## Cloud Deployment (SkyPilot)
 
@@ -296,12 +400,58 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 ## Architecture
 
 ### Core Components
-- `src/wrinklefree/models/bitlinear.py` - BitLinear layer with STE quantization (ternary weights)
-- `src/wrinklefree/models/subln.py` - SubLN normalization (key BitDistill component)
-- `src/wrinklefree/distillation/` - Logits KL + attention + layer-wise distillation losses
-- `src/wrinklefree/training/stage1.py` - Stage 1 SubLN insertion
-- `src/wrinklefree/training/stage1_9.py` - Stage 1.9 layer-wise distillation
-- `src/wrinklefree/training/fsdp_wrapper.py` - FSDP wrapping with activation checkpointing
+
+**Objectives** (`src/wrinklefree/objectives/`):
+- `manager.py` - ObjectiveManager: runs multiple objectives on same batch
+- `continue_pretrain.py` - ContinuePretrainObjective: next-token prediction
+- `dlm.py` - DLMObjective: diffusion language model masking
+- `layerwise_distill.py` - LayerwiseDistillationObjective: hidden state alignment
+- `factory.py` - Creates ObjectiveManager from config
+- `curriculum.py` - CurriculumScheduler: phase-based weight transitions
+
+**Training** (`src/wrinklefree/training/`):
+- `trainer.py` - Main Trainer with configurable resume
+- `auto_setup.py` - Auto-magic checkpoint resolution + BitNet conversion
+- `continued_pretraining.py` - ContinuedPretrainingTrainer with influence support
+- `fsdp_wrapper.py` - FSDP wrapping with activation checkpointing
+- `stage1.py` - Stage 1 SubLN insertion
+- `stage1_9.py` - Stage 1.9 layer-wise distillation
+
+**Models** (`src/wrinklefree/models/`):
+- `bitlinear.py` - BitLinear layer with STE quantization (ternary weights)
+- `subln.py` - SubLN normalization (key BitDistill component)
+
+**Data** (`src/wrinklefree/data/`):
+- Imports from `data_handler` package
+- `InfluenceTracker` - Training callback for weight updates
+- `MixedDataset` - Runtime dataset with dynamic weights
+
+### Key Patterns
+
+**ObjectiveManager Pattern**:
+```python
+# ObjectiveManager runs all enabled objectives
+manager = ObjectiveManager(
+    objectives={"continue_pretrain": CPObj(), "dlm": DLMObj()},
+    weights={"continue_pretrain": 1.0, "dlm": 0.5},
+)
+
+# Preprocess applies DLM masking, stores originals
+batch = manager.preprocess_batch(batch)
+
+# Forward computes all losses, returns weighted sum
+output = manager(model_outputs, batch)
+# output.loss = 1.0 * cp_loss + 0.5 * dlm_loss
+```
+
+**Auto-Setup Pattern**:
+```python
+from wrinklefree.training.auto_setup import auto_setup_model
+
+# Resolves checkpoint (local/GCS/HuggingFace)
+# Auto-converts to BitNet if needed
+model, tokenizer = auto_setup_model(config, device)
+```
 
 ### Quantization
 - **BitNet 1.58-bit**: Ternary weights {-1, 0, 1} (3 levels, 1.58 bits/weight)
@@ -309,9 +459,16 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 ### Configuration
 All configs in `configs/` using Hydra:
 - `model/` - Model architecture configs (smollm2_135m, qwen3_4b)
-- `training/` - Stage-specific training configs
-- `data/` - Dataset configs (fineweb, falcon, downstream)
+- `training/` - Stage-specific training configs (unified, stage2_pretrain)
+- `data/` - Dataset configs (default points to data_handler)
 - `distributed/` - FSDP/DDP settings (single_gpu, fsdp_multi)
+
+**Key Config Files**:
+| Config | Purpose |
+|--------|---------|
+| `training/unified.yaml` | Combined STE+DLM with curriculum |
+| `training/stage2_pretrain.yaml` | Legacy Stage 2 |
+| `data/default.yaml` | Points to data_handler |
 
 ## Development
 

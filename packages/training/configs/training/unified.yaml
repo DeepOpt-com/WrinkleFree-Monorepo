@@ -88,7 +88,7 @@ objectives:
     enabled: true  # Combined STE+DLM training by default
     weight: 0.5
     mask_prob: 0.15
-    mask_token_id: null  # Auto-detected from tokenizer if null
+    mask_token_id: 0  # Use unk_token_id (0) as mask token for decoder-only models
 
   layerwise_distill:
     enabled: false  # Enable for distillation
