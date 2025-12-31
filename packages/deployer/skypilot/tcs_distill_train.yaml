@@ -45,6 +45,9 @@ envs:
   # Hydra overrides
   HYDRA_OVERRIDES: ""
 
+  # Data loading - force single-threaded to avoid HuggingFace streaming deadlocks
+  DATA_NUM_WORKERS: "0"
+
   # W&B tracking
   WANDB_PROJECT: wrinklefree-distillation
 
@@ -82,14 +85,17 @@ setup: |
   uv venv .venv
   source .venv/bin/activate
 
-  # Remove workspace source (only works in monorepo context)
-  sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
+  # Remove only workspace sources (keep git sources like muon-clip)
+  sed -i '/workspace = true/d' pyproject.toml
 
   # Install data_handler first (dependency)
   uv pip install -e ~/data_handler
 
   # Install distillation package
   uv pip install -e .
+
+  # Install zstd compression support (required for DCLM parquet)
+  uv pip install zstandard
 
   # Verify GPU setup
   python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
@@ -119,10 +125,16 @@ run: |
   fi
 
   # Build Hydra command
-  HYDRA_CMD="python scripts/distill.py"
+  HYDRA_CMD="python src/distillation/distill.py"
   HYDRA_CMD="${HYDRA_CMD} distillation=tcs"
   HYDRA_CMD="${HYDRA_CMD} student.checkpoint_path=${DLM_CHECKPOINT}"
   HYDRA_CMD="${HYDRA_CMD} student.type=dlm"
+  # Reduced batch size for 2x 2.4B models + eager attention on single H100
+  # batch_size=2, seq_len=512 to fit in 80GB VRAM
+  HYDRA_CMD="${HYDRA_CMD} training.batch_size=2"
+  HYDRA_CMD="${HYDRA_CMD} training.gradient_accumulation_steps=128"
+  HYDRA_CMD="${HYDRA_CMD} data.max_seq_length=512"
+  HYDRA_CMD="${HYDRA_CMD} training.max_steps=500"
 
   # Add teacher model if provided
   if [ -n "${TEACHER_MODEL}" ]; then

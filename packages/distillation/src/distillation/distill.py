@@ -604,7 +604,7 @@ def run_distillation(
     logger.info(f"Distillation complete: {metrics}")
 
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+@hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main entry point for distillation training."""
     # Log config
