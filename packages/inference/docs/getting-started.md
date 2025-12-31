@@ -24,8 +24,11 @@ cd packages/inference
 **Option A: From GCS (recommended)**
 ```bash
 mkdir -p models/dlm-bitnet-2b
-gcloud storage cp -r \
-    gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/* \
+# Download model files only (excludes optimizer state)
+gcloud storage cp \
+    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.json' \
+    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.safetensors' \
+    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.jinja' \
     models/dlm-bitnet-2b/
 ```
 

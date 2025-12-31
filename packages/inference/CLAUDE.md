@@ -83,9 +83,13 @@ The native server uses sgl-kernel's optimized SIMD kernels (AVX2/AVX512) for max
 ### Quick Start (One Command)
 
 ```bash
-# Download checkpoint from GCS (one-time)
+# Download checkpoint from GCS (one-time, excludes optimizer state)
 mkdir -p models/dlm-bitnet-2b
-gcloud storage cp -r gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/* models/dlm-bitnet-2b/
+gcloud storage cp \
+    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.json' \
+    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.safetensors' \
+    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.jinja' \
+    models/dlm-bitnet-2b/
 
 # Start server (auto-converts to .bin if needed)
 ./scripts/serve_native.sh models/dlm-bitnet-2b
@@ -105,7 +109,11 @@ uv run streamlit run demo/serve_sglang.py --server.port 7860
 **Step 2: Download checkpoint from GCS**
 ```bash
 mkdir -p models/dlm-bitnet-2b
-gcloud storage cp -r gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/* models/dlm-bitnet-2b/
+gcloud storage cp \
+    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.json' \
+    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.safetensors' \
+    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.jinja' \
+    models/dlm-bitnet-2b/
 ```
 
 **Step 3: Start server** (auto-converts checkpoint to packed .bin format)

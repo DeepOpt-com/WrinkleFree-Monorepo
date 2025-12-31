@@ -50,12 +50,13 @@ fi
 if [ ! -e "$TOKENIZER_PATH" ] && [ ! -e "$BIN_PATH" ]; then
     echo "Error: Checkpoint not found: $TOKENIZER_PATH"
     echo ""
-    echo "To download from GCS:"
+    echo "To download from GCS (model files only, excludes optimizer state):"
     echo "  mkdir -p models/dlm-bitnet-2b"
-    echo "  gcloud storage cp -r gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/* models/dlm-bitnet-2b/"
-    echo ""
-    echo "Or use a HuggingFace model:"
-    echo "  python -c \"from transformers import AutoModelForCausalLM; AutoModelForCausalLM.from_pretrained('microsoft/BitNet-b1.58-2B-4T')\""
+    echo "  gcloud storage cp \\"
+    echo "      'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.json' \\"
+    echo "      'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.safetensors' \\"
+    echo "      'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.jinja' \\"
+    echo "      models/dlm-bitnet-2b/"
     exit 1
 fi
 
