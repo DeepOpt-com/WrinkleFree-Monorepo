@@ -51,6 +51,9 @@ envs:
   # W&B tracking
   WANDB_PROJECT: wrinklefree-distillation
 
+  # HuggingFace token for gated models (e.g., 1bitLLM/bitnet_b1_58-2B)
+  HF_TOKEN: ""
+
   # GCS credentials
   GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-adc.json
   GCS_BUCKET: wrinklefree-checkpoints
