@@ -75,7 +75,7 @@ run: |
     training.max_seq_length=512 \
     \
     training.curriculum.enabled=false \
-    training.influence.enabled=false \
+    training.influence.enabled=true \
     \
     training.checkpoint.save_interval=10 \
     \
