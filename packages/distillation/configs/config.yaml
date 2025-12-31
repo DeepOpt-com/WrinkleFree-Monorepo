@@ -48,8 +48,8 @@ optimizer:
   lr: 2.4e-3
   weight_decay: 0.024
   # MuonClip uses separate LRs for Muon and Adam param groups
-  lr_muon: 1e-3  # Learning rate for Muon (main weights)
-  lr_adam: 5e-5  # Learning rate for Adam (bias/norm)
+  lr_muon: 5e-4  # Learning rate for Muon (main weights) - halved for stability
+  lr_adam: 2.5e-5  # Learning rate for Adam (bias/norm) - halved for stability
 
 # Scheduler
 scheduler:

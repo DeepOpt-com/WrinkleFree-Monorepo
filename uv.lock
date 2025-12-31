@@ -10147,6 +10147,7 @@ name = "wrinklefree-workspace"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "google-api-python-client" },
     { name = "muon-clip" },
 ]
 
@@ -10159,7 +10160,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "muon-clip", git = "https://github.com/GAD-cell/muon-clip.git?rev=main" }]
+requires-dist = [
+    { name = "google-api-python-client", specifier = ">=2.187.0" },
+    { name = "muon-clip", git = "https://github.com/GAD-cell/muon-clip.git?rev=main" },
+]
 
 [package.metadata.requires-dev]
 dev = [

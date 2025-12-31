@@ -82,8 +82,8 @@ class DistillationConfig:
 
     # MuonClip-specific learning rates (when optimizer_type="muon")
     # Uses unified_lr=False with separate LRs for Muon (main weights) and Adam (bias/norm)
-    lr_muon: float = 1e-3  # Learning rate for Muon (main weights)
-    lr_adam: float = 5e-5  # Learning rate for Adam (bias/norm)
+    lr_muon: float = 5e-4  # Learning rate for Muon (main weights) - halved for stability
+    lr_adam: float = 2.5e-5  # Learning rate for Adam (bias/norm) - halved for stability
 
     # Scheduler
     scheduler_type: str = "cosine"

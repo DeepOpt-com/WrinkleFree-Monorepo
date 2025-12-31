@@ -190,9 +190,9 @@ gsutil -m cp -r 'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkp
 # 2. Fix architecture name for llama.cpp (capital N → lowercase n)
 sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' models/dlm-bitnet-2b/config.json
 
-# 3. Convert to GGUF format (from monorepo root)
-uv run python packages/inference/extern/sglang-bitnet/3rdparty/llama.cpp/convert_hf_to_gguf.py \
-  models/dlm-bitnet-2b --outfile models/dlm-bitnet-2b.gguf
+# 3. Convert to GGUF format using Microsoft BitNet converter (handles packed 2-bit weights)
+uv run python extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py \
+  models/dlm-bitnet-2b --outfile models/dlm-bitnet-2b.gguf --outtype i2_s
 
 # 4. Upload to server and restart (example for Vultr)
 rsync -avz models/dlm-bitnet-2b.gguf root@<server-ip>:/opt/wrinklefree/models/
@@ -216,23 +216,38 @@ curl http://<ip>:30000/v1/chat/completions \
 
 **For DLM checkpoints, always use `dlm_server`** - it implements the block diffusion algorithm that makes DLM fast.
 
-### Convert DLM Checkpoint to GGUF
+### Convert DLM Checkpoint to GGUF (CRITICAL)
 
-Uses llama.cpp's `convert_hf_to_gguf.py`. Our `BitnetModel` class has been patched to support both tiktoken (DLM) and sentencepiece tokenizers.
+**WARNING: DLM checkpoints have PACKED 2-bit weights that require special handling!**
+
+DLM checkpoints store weights in a **packed 2-bit format** (4 values per byte) with separate `weight_scale` tensors. Using the standard llama.cpp converter will produce **gibberish output** or shape mismatch errors.
+
+**Use Microsoft BitNet's converter** at `extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py`:
 
 ```bash
 # IMPORTANT: Fix architecture name first (our training uses BitNetForCausalLM, llama.cpp expects BitnetForCausalLM)
 sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' models/my-checkpoint/config.json
 
-# Convert to GGUF (from monorepo root)
-uv run python packages/inference/extern/sglang-bitnet/3rdparty/llama.cpp/convert_hf_to_gguf.py \
-  models/my-checkpoint --outfile models/my-model.gguf
+# Convert to GGUF using Microsoft BitNet converter (handles packed weights)
+uv run python extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py \
+  models/my-checkpoint --outfile models/my-model.gguf --outtype i2_s
 
-# Verify conversion - check for all 30 layers (blk.0 through blk.29)
-# The output should show ~4.8GB file with 332 tensors
+# Verify conversion - should be ~1.1GB for I2_S format
+ls -lh models/my-model.gguf
 ```
 
+**DO NOT USE:**
+- `extern/sglang-bitnet/3rdparty/llama.cpp/convert_hf_to_gguf.py` - doesn't unpack 2-bit weights
+- `llama-quantize` for post-hoc I2_S/TQ2_0 quantization - corrupts already-ternary weights
+
+**How the fix works** (in `convert-hf-to-gguf-bitnet.py`):
+1. Build a `scale_map` from `weight_scale` tensors
+2. Unpack 2-bit packed weights: `(data >> shift) & 3 - 1` to get ternary values
+3. Reshape from `[N/4, ...]` to `[N, ...]`
+
 **Troubleshooting**:
+- **Gibberish output** ("GGGGG..." or nonsense): Used wrong converter or post-hoc quantization
+- **Shape mismatch** ("expected 2560, 2560, got 660, 2560, 1, 1"): Packed weights not unpacked
 - "tensor out of bounds" error: Model file corrupted or incomplete conversion
 - "tokenizer not found": Missing tokenizer.json in checkpoint directory
 - "BitnetForCausalLM not found": Need to run sed command to fix architecture name

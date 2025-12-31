@@ -183,8 +183,8 @@ class DistillationTrainer:
             # This follows the recommended pattern from muon-clip library
             config = MuonConfig(
                 unified_lr=False,  # Use separate LRs for Muon and Adam
-                lr_muon=self.config.lr_muon,  # For main weights (~1e-3)
-                lr_adam=self.config.lr_adam,  # For bias/norm (~5e-5)
+                lr_muon=self.config.lr_muon,  # For main weights (~5e-4)
+                lr_adam=self.config.lr_adam,  # For bias/norm (~2.5e-5)
                 muon_beta=0.95,
                 muon_decay=self.config.weight_decay,
                 adam_betas=(0.9, 0.95),

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "WrinkleFree monorepo for 1.58-bit quantized LLM research"
 requires-python = ">=3.10"
 dependencies = [
+    "google-api-python-client>=2.187.0",
     "muon-clip",
 ]
 
