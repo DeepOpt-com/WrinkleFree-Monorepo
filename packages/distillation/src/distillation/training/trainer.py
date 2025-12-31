@@ -457,22 +457,18 @@ class DistillationTrainer:
 
         For DLM students:
         - Student receives masked input and predicts original tokens
-        - Teacher receives original input (AR: predicts next token)
-        - Logits are aligned: teacher[:, :-1] corresponds to student[:, 1:]
+        - DLM is trained as standard CausalLM (block diffusion only at inference)
+        - Both teacher and student predict next token, no shifting between them
         """
         input_ids = batch["input_ids"]
         attention_mask = batch.get("attention_mask")
+        labels = batch["labels"]
 
-        # DLM-specific handling
-        if self.config.student_type == "dlm" and self.mask_token_id is not None:
-            # Apply masking to student input
-            masked_input_ids, mask_labels = apply_dlm_masking(
-                input_ids,
-                mask_token_id=self.mask_token_id,
-                mask_prob=self.mask_prob,
-            )
-
-            # Teacher gets original (unmasked) input
+        # DLM is trained as standard CausalLM!
+        # From train_dlm.py line 9: "Block diffusion happens at INFERENCE, not training"
+        # Both teacher and student get unmasked input and predict next token
+        if self.config.student_type == "dlm":
+            # Both models get same unmasked input
             with torch.no_grad():
                 teacher_outputs = self.teacher(
                     input_ids=input_ids,
@@ -480,9 +476,8 @@ class DistillationTrainer:
                     output_attentions=self.output_attentions,
                 )
 
-            # Student gets masked input
             student_outputs = self.student(
-                input_ids=masked_input_ids,
+                input_ids=input_ids,
                 attention_mask=attention_mask,
                 output_attentions=self.output_attentions,
             )
@@ -498,26 +493,35 @@ class DistillationTrainer:
             teacher_logits = teacher_outputs["logits"]
             teacher_attentions = teacher_outputs.get("attentions")
 
-            # CRITICAL: Align logits for AR teacher -> DLM student
-            # AR teacher at position i predicts token i+1
-            # DLM student at position i predicts token i (reconstruction)
-            # So we align: teacher[:, i] with student[:, i+1]
-            # i.e., teacher[:, :-1] corresponds to student[:, 1:]
+            # BOTH are CausalLMs - no shifting between them!
+            # Standard next-token prediction: logits[:, :-1] predicts labels[:, 1:]
             aligned_teacher_logits = teacher_logits[:, :-1, :].contiguous()
-            aligned_student_logits = student_logits[:, 1:, :].contiguous()
-            aligned_labels = mask_labels[:, 1:].contiguous()
+            aligned_student_logits = student_logits[:, :-1, :].contiguous()
+            aligned_labels = labels[:, 1:].contiguous()
 
             # Align attention masks if present
             aligned_attention_mask = None
             if attention_mask is not None:
                 aligned_attention_mask = attention_mask[:, 1:].contiguous()
 
+            # Align attention tensors - same slicing for both (no shift)
+            aligned_student_attentions = None
+            aligned_teacher_attentions = None
+            if student_attentions is not None:
+                aligned_student_attentions = tuple(
+                    a[:, :, :-1, :-1].contiguous() for a in student_attentions
+                )
+            if teacher_attentions is not None:
+                aligned_teacher_attentions = tuple(
+                    a[:, :, :-1, :-1].contiguous() for a in teacher_attentions
+                )
+
             # Compute distillation loss with aligned tensors
             loss_dict = self.loss_fn(
                 student_logits=aligned_student_logits,
                 teacher_logits=aligned_teacher_logits,
-                student_attentions=student_attentions,
-                teacher_attentions=teacher_attentions,
+                student_attentions=aligned_student_attentions,
+                teacher_attentions=aligned_teacher_attentions,
                 labels=aligned_labels,
                 attention_mask=aligned_attention_mask,
             )

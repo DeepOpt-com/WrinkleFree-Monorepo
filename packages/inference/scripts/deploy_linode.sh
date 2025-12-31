@@ -111,13 +111,36 @@ log "SSH ready!"
 step "Syncing Code"
 log "Syncing repository to $INSTALL_DIR..."
 
-# Use rsync with git-tracked files
+# Ensure submodules are initialized locally
 cd "$REPO_ROOT"
+git submodule update --init --recursive
+
+# Sync main repo (git-tracked files)
 git ls-files -z | rsync -avz --files-from=- --from0 \
     -e "ssh -o StrictHostKeyChecking=no" \
     . "root@${PUBLIC_IP}:${INSTALL_DIR}/"
 
-log "Synced $(git ls-files | wc -l) files"
+# Sync sgl-kernel submodule (required for native BitNet kernels)
+log "Syncing sgl-kernel submodule..."
+rsync -avz --delete \
+    -e "ssh -o StrictHostKeyChecking=no" \
+    --exclude='.git' \
+    --exclude='build/' \
+    --exclude='*.so' \
+    --exclude='__pycache__' \
+    packages/inference/extern/sglang-bitnet/sgl-kernel/ \
+    "root@${PUBLIC_IP}:${INSTALL_DIR}/packages/inference/extern/sglang-bitnet/sgl-kernel/"
+
+# Sync vllm-cpu-stub (required for sglang)
+log "Syncing vllm-cpu-stub..."
+rsync -avz --delete \
+    -e "ssh -o StrictHostKeyChecking=no" \
+    --exclude='.git' \
+    --exclude='__pycache__' \
+    packages/inference/extern/vllm-cpu-stub/ \
+    "root@${PUBLIC_IP}:${INSTALL_DIR}/packages/inference/extern/vllm-cpu-stub/"
+
+log "Code sync complete"
 
 step "Running Remote Setup"
 ssh -o StrictHostKeyChecking=no "root@${PUBLIC_IP}" "INSTALL_DIR=$INSTALL_DIR bash $INSTALL_DIR/packages/inference/deploy/setup_remote.sh"

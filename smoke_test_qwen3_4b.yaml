@@ -38,13 +38,13 @@ setup: |
   cd ~/sky_workdir
   uv sync --all-packages
 
-  # Install gcloud CLI for GCS
+  # Install gcloud CLI for GCS (to user home, no sudo needed)
   if ! command -v gcloud &> /dev/null; then
     curl -sSL https://sdk.cloud.google.com > /tmp/install_gcloud.sh
-    bash /tmp/install_gcloud.sh --disable-prompts --install-dir=/opt
-    echo 'export PATH=/opt/google-cloud-sdk/bin:$PATH' >> ~/.bashrc
+    bash /tmp/install_gcloud.sh --disable-prompts --install-dir=$HOME
+    echo 'export PATH=$HOME/google-cloud-sdk/bin:$PATH' >> ~/.bashrc
   fi
-  export PATH=/opt/google-cloud-sdk/bin:$PATH
+  export PATH=$HOME/google-cloud-sdk/bin:$PATH
 
   # Set up credentials
   echo "source /credentials" >> ~/.bashrc
@@ -54,8 +54,9 @@ run: |
   set -ex
   source /credentials
   cd ~/sky_workdir
-  export PATH=/opt/google-cloud-sdk/bin:$PATH
+  export PATH=$HOME/google-cloud-sdk/bin:$PATH
   export GOOGLE_APPLICATION_CREDENTIALS=/gcp-credentials
+  export GOOGLE_CLOUD_PROJECT=wrinklefree-481904
 
   # Set HuggingFace token
   export HF_TOKEN=$HUGGINGFACE_WRITE_TOKEN

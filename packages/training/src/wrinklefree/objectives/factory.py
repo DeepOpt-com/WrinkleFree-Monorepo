@@ -13,6 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from wrinklefree.objectives.base import Objective
 from wrinklefree.objectives.continue_pretrain import ContinuePretrainObjective
+from wrinklefree.objectives.dlm import DLMObjective
 from wrinklefree.objectives.layerwise import LayerwiseDistillationObjective, LayerwiseLossType
 from wrinklefree.objectives.manager import (
     CurriculumPhase,
@@ -37,6 +38,12 @@ def create_objective(name: str, config: dict[str, Any]) -> Objective:
         return ContinuePretrainObjective(
             ignore_index=config.get("ignore_index", -100),
             label_smoothing=config.get("label_smoothing", 0.0),
+        )
+    elif name == "dlm":
+        return DLMObjective(
+            mask_token_id=config["mask_token_id"],
+            mask_prob=config.get("mask_prob", 0.15),
+            ignore_index=config.get("ignore_index", -100),
         )
     elif name == "layerwise_distill":
         loss_type = config.get("loss_type", "mse_normalized")

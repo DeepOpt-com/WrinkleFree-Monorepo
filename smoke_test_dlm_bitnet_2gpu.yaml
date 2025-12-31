@@ -1,0 +1,85 @@
+# Smoke Test: DLM + BitNet Combined Training with Data Parallelism
+# Tests FSDP multi-GPU training on 2x L40
+#
+# Key settings:
+# - DLM objective with 15% masking
+# - BitNet continued pretraining
+# - SmolLM2-135M (small model for quick test)
+# - FSDP data parallelism on 2 GPUs
+# - 20 training steps
+
+name: dlm-bitnet-smoke-2gpu
+
+resources:
+  cloud: nebius
+  accelerators: L40S:2
+  disk_size: 100
+
+workdir: .
+
+file_mounts:
+  /credentials: ~/.config/.env.global
+  ~/.config/gcloud: ~/.config/gcloud
+
+setup: |
+  set -ex
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source ~/.cargo/env
+  fi
+
+  # Install all packages
+  cd ~/sky_workdir
+  uv sync --all-packages
+
+  # Set up credentials
+  echo "source /credentials" >> ~/.bashrc
+
+run: |
+  set -ex
+  source /credentials
+  cd ~/sky_workdir
+
+  # Export credentials (env file doesn't use export keyword)
+  export WANDB_API_KEY
+  export HUGGINGFACE_WRITE_TOKEN
+  export RUNPOD_API_KEY
+  export GOOGLE_CLOUD_PROJECT=wrinklefree-481904
+
+  # Set HuggingFace token
+  export HF_TOKEN=$HUGGINGFACE_WRITE_TOKEN
+  uv run huggingface-cli login --token $HF_TOKEN || true
+
+  echo "=== DLM + BitNet Smoke Test (2x L40 with FSDP) ==="
+
+  # Enable debug logging for FSDP
+  export TORCH_DISTRIBUTED_DEBUG=INFO
+  export NCCL_DEBUG=WARN
+
+  # Run training with FSDP data parallelism
+  uv run torchrun --nproc_per_node=2 \
+    packages/training/scripts/train.py \
+    model=smollm2_135m \
+    training=stage2_pretrain \
+    distributed=fsdp_multi \
+    \
+    training.max_steps=20 \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=2 \
+    training.max_seq_length=512 \
+    \
+    training.curriculum.enabled=false \
+    training.influence.enabled=false \
+    \
+    training.checkpoint.save_interval=10 \
+    \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=wrinklefree \
+    'training.logging.wandb.tags=[smoke-test,dlm-bitnet,2xL40,fsdp]' \
+    training.logging.log_interval=1 \
+    \
+    training.torch_compile.enabled=false
+
+  echo "=== FSDP Smoke Test Complete ==="

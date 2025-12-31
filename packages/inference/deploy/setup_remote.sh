@@ -63,7 +63,61 @@ log "Installing Python dependencies..."
 cd "$INSTALL_DIR/packages/inference"
 uv sync --frozen 2>/dev/null || uv sync
 
-# 6. Download model if not present
+# 6. Create venv and build sgl-kernel with BitNet SIMD kernels
+log "Setting up Python venv for native kernels..."
+cd "$INSTALL_DIR"
+if [ ! -d ".venv" ]; then
+    uv venv .venv
+fi
+source .venv/bin/activate
+
+# CRITICAL: Install CPU-only PyTorch to avoid CMake CUDA errors
+# The default torch wheel has CMake files that look for CUDA, causing build failures
+# Force-reinstall ensures we get the pure CPU version
+log "Installing CPU-only PyTorch (required for sgl-kernel build)..."
+uv pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu
+
+log "Building sgl-kernel with BitNet SIMD kernels..."
+cd "$INSTALL_DIR/packages/inference/extern/sglang-bitnet/sgl-kernel"
+
+# Use CPU-only config
+if [ -f "pyproject_cpu.toml" ]; then
+    cp pyproject_cpu.toml pyproject.toml
+fi
+
+# Install build deps and build kernel
+export CMAKE_BUILD_PARALLEL_LEVEL=4
+export MAKEFLAGS="-j4"
+uv pip install scikit-build-core cmake ninja pybind11
+uv pip install -e . --no-build-isolation 2>&1 || \
+    uv pip install . --no-build-isolation
+
+# Copy .so from site-packages to source dir (required for editable install)
+log "Installing kernel library..."
+cp $INSTALL_DIR/.venv/lib/python3.*/site-packages/sgl_kernel/common_ops.*.so \
+   $INSTALL_DIR/packages/inference/extern/sglang-bitnet/sgl-kernel/python/sgl_kernel/
+
+# Install vllm-cpu-stub (required for sglang)
+log "Installing vllm-cpu-stub..."
+cd "$INSTALL_DIR/packages/inference/extern/vllm-cpu-stub"
+uv pip install -e .
+
+# Install remaining inference deps
+log "Installing inference dependencies..."
+uv pip install transformers accelerate safetensors huggingface_hub flask streamlit
+
+# Verify kernel installation
+log "Verifying BitNet kernel..."
+python -c "
+from sgl_kernel.quantization import bitnet_check_kernel_available
+avail = bitnet_check_kernel_available()
+print(f'BitNet SIMD kernel available: {avail}')
+if not avail:
+    print('WARNING: Native kernel not available, will use slow fallback')
+    exit(1)
+" || warn "Native kernel build may have failed, will use fallback"
+
+# 7. Download model if not present
 MODEL_DIR="$INSTALL_DIR/models/bitnet-b1.58-2B-4T"
 if [ ! -d "$MODEL_DIR" ] || [ ! -f "$MODEL_DIR/config.json" ]; then
     log "Downloading BitNet model from HuggingFace..."
@@ -73,7 +127,16 @@ if [ ! -d "$MODEL_DIR" ] || [ ! -f "$MODEL_DIR/config.json" ]; then
     log "Model downloaded to $MODEL_DIR"
 fi
 
-# 7. Configure UFW firewall
+# 8. Convert model to packed .bin format for native server
+MODEL_BIN="$INSTALL_DIR/models/bitnet-b1.58-2B-4T.bin"
+if [ ! -f "$MODEL_BIN" ]; then
+    log "Converting model to native format (~1-2 min)..."
+    cd "$INSTALL_DIR/packages/inference"
+    uv run python scripts/convert_to_sglkernel.py "$MODEL_DIR" "$MODEL_BIN"
+    log "Model converted to $MODEL_BIN"
+fi
+
+# 9. Configure UFW firewall
 log "Configuring firewall..."
 ufw --force enable
 ufw allow 22/tcp comment 'SSH'
@@ -81,17 +144,17 @@ ufw allow 7860/tcp comment 'Streamlit UI'
 ufw allow 30000/tcp comment 'BitNet API'
 ufw status
 
-# 8. Start pm2 services
+# 10. Start pm2 services
 log "Starting pm2 services..."
 cd "$INSTALL_DIR/packages/inference"
 pm2 start deploy/ecosystem.config.js
 
-# 9. Setup pm2 to start on boot
+# 11. Setup pm2 to start on boot
 log "Configuring pm2 startup..."
 pm2 startup systemd -u root --hp /root
 pm2 save
 
-# 10. Verify services
+# 12. Verify services
 log "Verifying services..."
 sleep 5
 pm2 list

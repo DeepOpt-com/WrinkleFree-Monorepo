@@ -23,7 +23,7 @@ from wrinklefree.training.fsdp_wrapper import (
 )
 from wrinklefree.training.stage1 import convert_model_to_bitnet, run_stage1
 # ContinuedPretrainingTrainer is the new name for Stage2Trainer
-from wrinklefree.training.stage2 import ContinuedPretrainingTrainer, run_stage2
+from wrinklefree.training.continued_pretraining import ContinuedPretrainingTrainer, run_stage2
 # Backward compatibility alias
 Stage2Trainer = ContinuedPretrainingTrainer
 # Backward compatibility: run_stage1_9 is deprecated, use run_stage2 with pre_stage_2.enabled=true

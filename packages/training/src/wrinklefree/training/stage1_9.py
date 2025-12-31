@@ -59,7 +59,7 @@ def run_stage1_9(
     )
 
     # Import here to avoid circular imports
-    from wrinklefree.training.stage2 import run_stage2
+    from wrinklefree.training.continued_pretraining import run_stage2
 
     # Convert old layerwise_config to new pre_stage_2 format
     # The new config expects pre_stage_2 under config.training

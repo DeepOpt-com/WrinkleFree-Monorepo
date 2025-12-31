@@ -111,7 +111,7 @@ class Stage19BenchmarkRunner:
             })
 
             # Create trainer (Stage19Trainer merged into Stage2Trainer)
-            from wrinklefree.training.stage2 import Stage2Trainer
+            from wrinklefree.training.continued_pretraining import ContinuedPretrainingTrainer as Stage2Trainer
             # Convert layerwise_config to pre_stage_2 format
             pre_stage_2_config = OmegaConf.create({
                 "enabled": True,

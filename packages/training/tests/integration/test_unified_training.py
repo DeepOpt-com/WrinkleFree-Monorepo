@@ -19,7 +19,7 @@ from wrinklefree.objectives import (
     LayerwiseDistillationObjective,
     create_objective_manager,
 )
-from wrinklefree.training.stage2 import ContinuedPretrainingTrainer
+from wrinklefree.training.continued_pretraining import ContinuedPretrainingTrainer
 
 
 class SimpleLMHead(nn.Module):

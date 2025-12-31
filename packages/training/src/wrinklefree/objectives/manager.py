@@ -217,6 +217,11 @@ class ObjectiveManager(nn.Module):
         """Whether any objective requires hidden states."""
         return self._requires_hidden_states
 
+    @property
+    def any_modifies_input(self) -> bool:
+        """Whether any objective modifies the input batch."""
+        return self._has_input_modifiers
+
     def get_current_weights(self) -> dict[str, float]:
         """Get current objective weights (from curriculum or base)."""
         if self.curriculum is not None:

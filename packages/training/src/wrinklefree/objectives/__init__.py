@@ -15,6 +15,7 @@ Manager:
 
 from wrinklefree.objectives.base import Objective, ObjectiveOutput
 from wrinklefree.objectives.continue_pretrain import ContinuePretrainObjective
+from wrinklefree.objectives.dlm import DLMObjective
 from wrinklefree.objectives.layerwise import LayerwiseDistillationObjective
 from wrinklefree.objectives.manager import ObjectiveManager, CurriculumScheduler
 from wrinklefree.objectives.factory import create_objective_manager
@@ -25,6 +26,7 @@ __all__ = [
     "ObjectiveOutput",
     # Objectives
     "ContinuePretrainObjective",
+    "DLMObjective",
     "LayerwiseDistillationObjective",
     # Manager
     "ObjectiveManager",
