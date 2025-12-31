@@ -40,6 +40,54 @@ llama-server -m models/dlm-2b.gguf --port 30000
 
 *TL1/TL2 require pre-generated kernel config files matching your model dimensions.
 
+## Generating TL2 Kernels for Custom Models
+
+TL2 is the fastest format but requires kernel headers matching your exact model dimensions.
+
+### Automatic Kernel Generation
+
+Use the provided script to generate TL2 kernels:
+
+```bash
+# From model config.json (recommended)
+python packages/inference/scripts/setup_tl2_kernels.py \
+    --config models/my-checkpoint/config.json
+
+# Or with explicit dimensions
+python packages/inference/scripts/setup_tl2_kernels.py \
+    --hidden-size 2560 --intermediate-size 6912
+```
+
+This script:
+1. Reads model dimensions (hidden_size, intermediate_size, GQA heads)
+2. Calculates optimal BM/BK block parameters
+3. Generates `include/bitnet-lut-kernels.h` and `include/kernel_config.ini`
+
+### Rebuild and Convert
+
+After generating kernels:
+
+```bash
+# Rebuild llama.cpp with TL2 support
+cd extern/BitNet
+cmake -B build -DGGML_BITNET_X86_TL2=ON
+cmake --build build -j4
+
+# Convert model to TL2
+python utils/convert-hf-to-gguf-bitnet.py checkpoint --outtype tl2 --outfile model.gguf
+```
+
+### Kernel Shape Calculation
+
+For a model with `hidden_size=H`, `intermediate_size=I`, `num_kv_heads=K`, `head_dim=D`:
+
+| Layer | Shape [M, K] | Description |
+|-------|--------------|-------------|
+| gate/up_proj | [I, H] | Hidden → Intermediate |
+| down_proj | [H, I] | Intermediate → Hidden |
+| q/o_proj | [H, H] | Hidden → Hidden |
+| k/v_proj | [K*D, H] | Hidden → KV dim (GQA) |
+
 ## Why TQ2_0 Fails (Technical Details)
 
 When converting bf16 "online-quant" DLM checkpoints:
