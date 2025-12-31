@@ -23,9 +23,9 @@
 name: wrinklefree-unified-2gpu
 
 resources:
-  accelerators: L40:2
+  accelerators: L40S:2
   use_spot: false
-  cloud: runpod
+  cloud: nebius
 
 # Sync from Refact worktree
 workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
@@ -107,7 +107,8 @@ run: |
     packages/training/scripts/train.py \
     model=${MODEL} \
     training=unified \
-    data=mixed_pretrain \
+    data=default \
+    data.config_name=mixed_pretrain \
     distributed=fsdp_multi \
     distributed.num_gpus=2 \
     training.max_steps=${MAX_STEPS} \
