@@ -746,7 +746,12 @@ class LlamaModel(Model):
                 data_torch = data_torch.unsqueeze(0).expand((4, *origin_shape)) >> shift
                 data_torch = data_torch & 3
                 data_torch = (data_torch.float() - 1).reshape((origin_shape[0] * 4, *origin_shape[1:]))
-                data_torch = data_torch / scale_map[name.replace(".weight", "")].float()
+                # For ternary formats (TQ1_0, TQ2_0, I2_S, TL1, TL2), keep as {-1, 0, +1}
+                # For float formats (F32, F16), multiply by scale to get approximate values
+                if self.ftype in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16):
+                    # Dequantization for float output: w_approx = w_tern * scale
+                    data_torch = data_torch * scale_map[name.replace(".weight", "")].float()
+                # For ternary formats, we keep the raw {-1, 0, +1} values
 
             # use the first number-like part of the tensor name as the block id
             bid = None
