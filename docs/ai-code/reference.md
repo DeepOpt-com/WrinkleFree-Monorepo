@@ -6,6 +6,27 @@ Extended documentation for AI assistants. See main `CLAUDE.md` for rules.
 
 WrinkleFree implements **BitDistill** for training 1.58-bit (ternary) LLMs:
 
+### PyTorch Lightning (Recommended)
+
+The new Lightning-based trainer provides a cleaner, more maintainable training loop with auto batch size scaling:
+
+```bash
+# Basic Lightning training
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+
+# With auto batch size scaling (finds max batch that fits GPU)
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  training.auto_batch_size=true
+```
+
+**Key Features**:
+- `BatchSizeFinder` auto-probes GPU memory at startup
+- Built-in DDP/FSDP support
+- All objectives work unchanged (DLM, LRC, distillation)
+- Custom callbacks: GCS upload, ZClip, TokenCount, QKClip, LambdaWarmup
+
+### Legacy Stages (Still Supported)
+
 ```
 Stage 1: SubLN Insertion (packages/training)
     │   Convert model: add BitLinear + SubLN layers
@@ -34,7 +55,7 @@ Serve: Inference with BitNet.cpp (packages/inference)
 
 | Package | Type | Purpose | Key Entry Point |
 |---------|------|---------|-----------------|
-| `packages/training` | App | 1.58-bit training (all stages) + distillation + LRC | `scripts/train.py` |
+| `packages/training` | App | 1.58-bit training (all stages) + distillation + LRC | `scripts/train_lightning.py` |
 | `packages/architecture` | Lib | BitNet layers (BitLinear, BitLinearLRC, SubLN) & conversion | Import as library |
 | `packages/data_handler` | Lib | Data loading & influence functions | Import as library |
 | `packages/inference` | App | Model serving (sglang-bitnet) | `demo/serve_sglang.py` |

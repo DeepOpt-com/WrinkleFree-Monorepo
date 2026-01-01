@@ -949,7 +949,8 @@ def main(cfg: DictConfig) -> None:
             )
 
             # Run LRC training using ContinuedPretrainingTrainer
-            # The LRCReconstructionObjective will be created by the ObjectiveManager
+            # The teacher model will be loaded automatically by run_stage2
+            # since lrc_reconstruction objective is enabled
             model = run_stage2(
                 model=model,
                 train_dataloader=train_dataloader,

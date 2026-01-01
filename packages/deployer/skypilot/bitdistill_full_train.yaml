@@ -24,6 +24,8 @@ resources:
   memory: 64+
   use_spot: false
   cloud: runpod
+  # Exclude EU-NL-1 which had network issues
+  # region: EU-CZ-1
 
 # Sync from Refact worktree
 workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact

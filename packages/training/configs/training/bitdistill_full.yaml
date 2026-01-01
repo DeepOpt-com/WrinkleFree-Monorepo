@@ -55,9 +55,12 @@ scheduler:
 total_tokens: 1_000_000_000  # 1B tokens (distillation typically needs less)
 max_steps: null
 max_seq_length: 512
-batch_size: 32
-gradient_accumulation_steps: 16
+batch_size: 8  # Reduced for distillation (teacher + student + attention weights)
+gradient_accumulation_steps: 64  # Increased to maintain effective batch size
 gradient_clipping: 1.0
+
+# Gradient checkpointing to reduce memory
+gradient_checkpointing: true
 
 # Lambda warmup for gradual quantization
 lambda_warmup:

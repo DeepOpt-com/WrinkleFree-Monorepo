@@ -66,7 +66,8 @@ def setup_logging(rank: int) -> None:
 def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     """Load model and tokenizer from config."""
     model_name = cfg.model.name
-    model_path = cfg.model.get("path", model_name)
+    # Try 'path' first, then 'pretrained_name', fallback to name
+    model_path = cfg.model.get("path", cfg.model.get("pretrained_name", model_name))
 
     logger.info(f"Loading model: {model_path}")
 

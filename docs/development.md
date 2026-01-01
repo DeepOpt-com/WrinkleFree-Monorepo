@@ -125,7 +125,15 @@ git submodule status
 ### training (wrinklefree)
 
 ```bash
-# Run training smoke test
+# Run Lightning training (recommended)
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified training.max_steps=10
+
+# With auto batch size scaling
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified training.auto_batch_size=true
+
+# Legacy trainer (still supported)
 uv run --package wrinklefree python packages/training/scripts/train.py \
   model=smollm2_135m training=stage2_pretrain training.max_steps=10
 

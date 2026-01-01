@@ -108,6 +108,49 @@ uv run python scripts/train.py training=unified \
 #   strict_model_load: true/false (allow missing keys)
 ```
 
+### PyTorch Lightning Training (New)
+
+The Lightning-based trainer provides a cleaner, more maintainable training loop with auto batch size scaling:
+
+```bash
+# Basic Lightning training
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+
+# With auto batch size scaling (finds max batch that fits GPU)
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  training.auto_batch_size=true
+
+# All objectives work unchanged (DLM, LRC, distillation)
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  training.objectives.dlm.enabled=true \
+  training.objectives.dlm.weight=0.5
+```
+
+**Key Features**:
+- **Auto batch size**: `BatchSizeFinder` probes GPU memory at startup
+- **Built-in DDP/FSDP**: Seamless distributed training
+- **All objectives work**: ObjectiveManager reused unchanged
+- **Custom callbacks**: GCS upload, ZClip, TokenCount, QKClip, LambdaWarmup
+
+**Lightning Components** (`src/wrinklefree/lightning/`):
+| File | Purpose |
+|------|---------|
+| `module.py` | `WrinkleFreeLightningModule` - wraps model + ObjectiveManager |
+| `datamodule.py` | `WrinkleFreeDataModule` - wraps existing dataloaders |
+| `callbacks.py` | Custom callbacks (GCS, ZClip, TokenCount, etc.) |
+
+**Smoke Tests** (L40 GPU):
+```bash
+cd packages/deployer
+source credentials/.env
+
+# Run specific objective combo
+sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
+  --env OBJECTIVE_COMBO=dlm
+
+# Available combos: ce_only, dlm, distill, bitdistill, lrc
+```
+
 ### Influence-Based Data Remixing
 
 Dynamic dataset weight optimization during training (MobileLLM-R1 methodology):

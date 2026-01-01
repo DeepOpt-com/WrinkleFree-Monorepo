@@ -57,6 +57,19 @@
 
 ### Training Pipeline
 
+The training package supports two approaches:
+
+#### PyTorch Lightning (Recommended)
+The new Lightning-based trainer provides a cleaner, more maintainable training loop:
+- Auto batch size scaling via `BatchSizeFinder`
+- Built-in DDP/FSDP support
+- All objectives work unchanged (DLM, LRC, distillation)
+
+```bash
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+```
+
+#### Legacy Stages (Still Supported)
 1. **Stage 1**: SubLN insertion (training package)
 2. **Stage 1.9**: Layer-wise distillation (training package)
 3. **Stage 2**: Continue pre-training with QAT (training package)
@@ -103,6 +116,7 @@ Note: Distillation is now done via training objectives:
 ### Key Libraries
 
 - **torch**: Core training framework
+- **pytorch-lightning**: Training loop, auto batch size, distributed
 - **transformers**: Model architectures (Llama, Qwen)
 - **hydra-core**: Configuration management
 - **datasets**: HuggingFace data loading

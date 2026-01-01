@@ -201,6 +201,9 @@ class HiddenStateTeacher(nn.Module):
         offload_to_cpu: Offload model to CPU between forward passes
         load_in_4bit: Load model in 4-bit NF4 quantization for 3x memory reduction
         use_flash_attention: Use Flash Attention 2 for faster attention
+            (set False for attention distillation which needs attention weights)
+        use_eager_attention: Use eager attention instead of SDPA/Flash
+            (required for attention distillation, as SDPA doesn't return attention weights)
     """
 
     def __init__(
@@ -211,6 +214,7 @@ class HiddenStateTeacher(nn.Module):
         offload_to_cpu: bool = False,
         load_in_4bit: bool = False,
         use_flash_attention: bool = True,
+        use_eager_attention: bool = False,
     ):
         super().__init__()
 
@@ -244,8 +248,13 @@ class HiddenStateTeacher(nn.Module):
             except ImportError:
                 logger.warning("bitsandbytes not available, falling back to BF16")
 
-        # Add Flash Attention 2 if requested (15-25% speedup)
-        if use_flash_attention:
+        # Set attention implementation based on config
+        # Priority: use_eager_attention > use_flash_attention
+        # Eager is required for attention distillation (SDPA/Flash don't return attention weights)
+        if use_eager_attention:
+            model_kwargs["attn_implementation"] = "eager"
+            logger.info("Using eager attention for teacher (required for attention distillation)")
+        elif use_flash_attention:
             model_kwargs["attn_implementation"] = "flash_attention_2"
             logger.info("Using Flash Attention 2 for teacher")
 

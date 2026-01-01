@@ -15,8 +15,13 @@ uv sync --all-packages
 # Run tests
 uv run pytest
 
-# Run training (example)
-uv run --package wrinklefree python packages/training/scripts/train.py model=smollm2_135m training=stage2_pretrain
+# Run training with Lightning (recommended)
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified
+
+# With auto batch size scaling
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified training.auto_batch_size=true
 ```
 
 ## Structure
@@ -45,7 +50,7 @@ WrinkleFree-Monorepo/
 
 | Package | Purpose | Key Entry |
 |---------|---------|-----------|
-| `training` | 1.58-bit training pipeline + distillation objectives (BitDistill, LRC) | `scripts/train.py` |
+| `training` | 1.58-bit training pipeline + distillation objectives (BitDistill, LRC) | `scripts/train_lightning.py` |
 | `architecture` | BitNet layers (BitLinear, BitLinearLRC, SubLN) & model conversion | Imported as library |
 | `data_handler` | Data loading, influence functions, mixture optimization | Imported as library |
 | `inference` | Model serving with sglang-bitnet | `demo/serve_sglang.py` |

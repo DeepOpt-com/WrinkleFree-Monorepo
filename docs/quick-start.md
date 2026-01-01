@@ -46,6 +46,29 @@ uv run pytest packages/data_handler/tests/ -v --tb=short
 
 ### Training a Model
 
+#### PyTorch Lightning (Recommended)
+
+```bash
+# SmolLM2-135M with Lightning trainer
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=unified
+
+# With auto batch size scaling (finds max batch that fits GPU)
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=unified \
+  training.auto_batch_size=true
+
+# With limited steps for smoke test
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=unified \
+  training.max_steps=100
+```
+
+#### Legacy Trainer (Still Supported)
+
 ```bash
 # SmolLM2-135M (smallest, good for testing)
 uv run --package wrinklefree python packages/training/scripts/train.py \

@@ -891,13 +891,33 @@ def run_stage2(
     rank, local_rank, world_size = setup_distributed()
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
-    # Load teacher model if pre_stage_2 is enabled
+    # Check if any distillation objectives require a teacher
+    # This includes: logits_distill, attention_distill, tcs_distill, block_attention_distill, bitdistill, lrc_reconstruction
+    distill_objectives = {"logits_distill", "attention_distill", "tcs_distill", "block_attention_distill", "bitdistill", "lrc_reconstruction"}
+    objectives_config = getattr(config.training, "objectives", {})
+    needs_teacher_for_objectives = any(
+        getattr(objectives_config.get(obj, {}), "enabled", False)
+        for obj in distill_objectives
+        if hasattr(objectives_config, "get") or obj in objectives_config
+    )
+    # Handle OmegaConf DictConfig
+    if hasattr(objectives_config, "keys"):
+        needs_teacher_for_objectives = any(
+            obj in objectives_config and getattr(objectives_config[obj], "enabled", False)
+            for obj in distill_objectives
+        )
+
+    # Load teacher model if pre_stage_2 is enabled OR distillation objectives need it
     teacher = None
-    if pre_stage_2_enabled:
+    teacher_cfg_section = getattr(config.training, "teacher", None)
+    if pre_stage_2_enabled or needs_teacher_for_objectives or teacher_cfg_section is not None:
         # Get teacher model name from argument or config
         if teacher_model_name is None:
+            # Try config.training.teacher.model_name first (BitDistill style)
+            if teacher_cfg_section is not None:
+                teacher_model_name = getattr(teacher_cfg_section, "model_name", None)
             # Try to get from model.teacher.pretrained config
-            if hasattr(config, "model") and hasattr(config.model, "teacher"):
+            if teacher_model_name is None and hasattr(config, "model") and hasattr(config.model, "teacher"):
                 teacher_model_name = getattr(config.model.teacher, "pretrained", None)
             # Fallback to model.pretrained_name (same as original model)
             if teacher_model_name is None and hasattr(config, "model"):
@@ -905,19 +925,46 @@ def run_stage2(
 
         if teacher_model_name is None:
             raise ValueError(
-                "pre_stage_2.enabled=true but no teacher model specified. "
-                "Set model.teacher.pretrained in config or pass teacher_model_name argument."
+                "Distillation objectives enabled but no teacher model specified. "
+                "Set training.teacher.model_name or model.pretrained_name in config."
             )
 
-        # Get teacher loading settings
-        teacher_cfg = pre_stage_2_config.get("teacher", {})
+        # Get teacher loading settings from training.teacher or pre_stage_2.teacher
+        if teacher_cfg_section is not None:
+            teacher_cfg = teacher_cfg_section
+        elif pre_stage_2_config is not None:
+            teacher_cfg = pre_stage_2_config.get("teacher", {})
+        else:
+            teacher_cfg = {}
+
+        # Use eager attention for attention distillation (required for attention weights)
+        # Auto-detect: if attention_distill or block_attention_distill is enabled, force eager attention
+        attn_distill_objectives = {"attention_distill", "block_attention_distill", "bitdistill"}
+        needs_eager_for_teacher = any(
+            obj in objectives_config and getattr(objectives_config[obj], "enabled", False)
+            for obj in attn_distill_objectives
+        ) if hasattr(objectives_config, "keys") else False
+
+        # Manual override from config takes precedence
+        use_eager = getattr(teacher_cfg, "use_eager_attention", needs_eager_for_teacher)
+        use_flash = getattr(teacher_cfg, "use_flash_attention", False) if not use_eager else False
+
+        if needs_eager_for_teacher and not use_eager:
+            logger.warning(
+                "Attention distillation enabled but teacher.use_eager_attention=False. "
+                "Forcing eager attention for teacher model."
+            )
+            use_eager = True
+            use_flash = False
+
         teacher = HiddenStateTeacher(
             model_name_or_path=teacher_model_name,
             device=device,
-            load_in_fp16=teacher_cfg.get("fp16", True),
-            offload_to_cpu=teacher_cfg.get("offload_to_cpu", False),
-            load_in_4bit=teacher_cfg.get("load_in_4bit", False),
-            use_flash_attention=teacher_cfg.get("use_flash_attention", False),
+            load_in_fp16=getattr(teacher_cfg, "fp16", True),
+            offload_to_cpu=getattr(teacher_cfg, "offload_to_cpu", False),
+            load_in_4bit=getattr(teacher_cfg, "load_in_4bit", False),
+            use_flash_attention=use_flash,
+            use_eager_attention=use_eager,
         )
         logger.info(f"Teacher model loaded: {teacher_model_name}")
 
@@ -936,6 +983,21 @@ def run_stage2(
             logger.info("On-the-fly BitNet conversion complete")
         else:
             logger.info("Model already contains BitLinear layers, skipping conversion")
+
+    # Force eager attention if attention distillation is needed
+    # SDPA/Flash Attention don't return attention weights, so we need eager attention
+    attn_distill_objectives = {"attention_distill", "block_attention_distill", "bitdistill"}
+    needs_eager_attention = any(
+        obj in objectives_config and getattr(objectives_config[obj], "enabled", False)
+        for obj in attn_distill_objectives
+    ) if hasattr(objectives_config, "keys") else False
+
+    if needs_eager_attention:
+        if hasattr(model, "config"):
+            model.config._attn_implementation = "eager"
+            logger.info("Forcing eager attention for attention distillation (SDPA doesn't return attention weights)")
+        else:
+            logger.warning("Model has no config attribute, cannot set eager attention")
 
     # Move model to device with uniform dtype (required for FSDP)
     # FSDP requires all tensors to have the same dtype before wrapping
@@ -1171,7 +1233,7 @@ def run_stage2(
         train_dataloader=train_dataloader,
         config=config,
         objective_manager=objective_manager,
-        teacher=teacher if pre_stage_2_enabled else None,
+        teacher=teacher,  # Pass teacher if loaded (for pre_stage_2 or distillation objectives)
         pre_stage_2_config=pre_stage_2_config if pre_stage_2_enabled else None,
         device=device,
         rank=rank,
