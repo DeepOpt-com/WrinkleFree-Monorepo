@@ -32,8 +32,11 @@ from pytorch_lightning.callbacks import (
     RichProgressBar,
 )
 from pytorch_lightning.loggers import WandbLogger
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# PyTorch 2.6+ requires explicit safe globals for omegaconf types in checkpoints
+torch.serialization.add_safe_globals([DictConfig, ListConfig])
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
