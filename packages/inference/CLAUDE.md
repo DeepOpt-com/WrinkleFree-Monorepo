@@ -72,33 +72,39 @@ curl http://localhost:30000/v1/chat/completions \
   -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
 ```
 
-## Native sgl-kernel Server (RECOMMENDED - 29+ tok/s)
+## BitNet.cpp + I2_S GGUF (RECOMMENDED - 24-27 tok/s)
 
-The native server uses sgl-kernel's optimized SIMD kernels (AVX2/AVX512) for maximum CPU throughput.
+The fastest CPU inference uses Microsoft's BitNet.cpp with I2_S format.
 
 **Key optimizations:**
-- `bitnet_gemv` for single-token decode (8x faster than gemm)
-- Greedy decoding by default (eliminates sampling overhead)
-- Repetition penalty to reduce output loops
-- KV cache for efficient autoregressive generation
+- SIMD-optimized ternary kernels (AVX512 on GCP C3D)
+- Pre-converted I2_S GGUF from Microsoft (no conversion needed)
+- llama.cpp server with KV cache
 
-### Quick Start (One Command)
+### Quick Start
 
 ```bash
-# Download checkpoint from GCS (one-time, excludes optimizer state)
-mkdir -p models/dlm-bitnet-2b
-gcloud storage cp \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.json' \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.safetensors' \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.jinja' \
-    models/dlm-bitnet-2b/
+# 1. Build BitNet.cpp (one-time)
+cd extern/BitNet
+cmake -B build -DBITNET_X86_TL2=ON
+cmake --build build --config Release -j4
 
-# Start server (auto-converts to .bin if needed)
-./scripts/serve_native.sh models/dlm-bitnet-2b
+# 2. Download pre-converted I2_S GGUF from Microsoft
+huggingface-cli download microsoft/BitNet-b1.58-2B-4T-gguf \
+  --local-dir models/BitNet-b1.58-2B-4T-gguf
 
-# Start Streamlit UI (in another terminal)
+# 3. Start server (~24-27 tok/s on 8 cores)
+./build/bin/llama-server \
+  -m models/BitNet-b1.58-2B-4T-gguf/ggml-model-i2_s.gguf \
+  --host 0.0.0.0 --port 30000 -t 8
+
+# 4. Start Streamlit UI (in another terminal)
 uv run streamlit run demo/serve_sglang.py --server.port 7860
 ```
+
+**Performance:** ~24-27 tok/s on 8-core CPU with AVX512
+
+**See also:** `docs/sglang-bitnet-investigation.md` for detailed analysis of different approaches.
 
 ### Full Workflow
 

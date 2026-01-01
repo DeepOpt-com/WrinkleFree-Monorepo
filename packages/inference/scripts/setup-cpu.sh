@@ -59,13 +59,26 @@ $PIP install \
     pybase64 partial_json_parser openai==2.6.1 IPython \
     compressed-tensors xgrammar==0.1.27
 
-# Step 5: Build sgl-kernel (CPU-only)
-echo "[5/6] Building sgl-kernel with BitNet kernels..."
+# Step 5: Build sgl-kernel (BitNet-only, avoids brgemm/exp_u20 API issues)
+echo "[5/6] Building sgl-kernel with BitNet-only kernels..."
 cd extern/sglang-bitnet/sgl-kernel
 cp pyproject_cpu.toml pyproject.toml
+
+# Use BitNet-only CMakeLists to avoid PyTorch 2.9.1 API incompatibilities
+# The full build uses brgemm/exp_u20 APIs that aren't available in all PyTorch versions
+echo "    Using BitNet-only build (avoids brgemm/exp_u20 dependencies)..."
+cp csrc/cpu/CMakeLists.txt csrc/cpu/CMakeLists_full.txt.bak 2>/dev/null || true
+cp csrc/cpu/CMakeLists_bitnet_only.txt csrc/cpu/CMakeLists.txt
+
+# Clean previous build artifacts
+rm -rf build _skbuild dist *.egg-info 2>/dev/null || true
+
 $PIP install scikit-build-core cmake ninja pybind11
 taskset -c 0-7 $PIP install -e . --no-build-isolation 2>&1 || \
     taskset -c 0-7 $PIP install . --no-build-isolation
+
+# Restore original CMakeLists (for reference)
+mv csrc/cpu/CMakeLists_full.txt.bak csrc/cpu/CMakeLists_full.txt 2>/dev/null || true
 cd "$PROJECT_DIR"
 
 # Step 6: Copy .so for editable install

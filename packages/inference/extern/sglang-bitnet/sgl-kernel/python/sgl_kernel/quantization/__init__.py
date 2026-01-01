@@ -9,6 +9,7 @@ from .gguf import (
 
 from .bitnet import (
     check_kernel_available as bitnet_check_kernel_available,
+    get_cpu_capabilities as bitnet_get_cpu_capabilities,
     bitnet_gemv,
     bitnet_gemm,
     quantize_activations_i8 as bitnet_quantize_activations,
