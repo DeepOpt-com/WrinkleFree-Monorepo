@@ -402,116 +402,88 @@ void bitnet_vec_dot_i2_i8(
 #endif
 
 #if defined(BITNET_HAS_X86_SIMD) && defined(__AVX512F__) && defined(__AVX512BW__)
-    // AVX-512 implementation - processes 64 bytes at a time (2x throughput vs AVX2)
-    // Process 256 ternary weights per iteration (64 packed bytes)
+    // AVX-512 implementation optimized for typical model dimensions (K=2560)
+    // Processes 2 blocks (256 weights) per iteration using full 512-bit width
     const __m512i mask = _mm512_set1_epi8(0x03);
     __m512i accu = _mm512_setzero_si512();
 
-    // Process pairs of 32-block groups (64 packed bytes = 256 weights)
-    const int group64_num = nb / 64;  // How many full 64-block groups
+    // Process 2 blocks at a time (64 packed bytes = 256 weights)
+    const int pairs = nb / 2;
 
-    for (int i = 0; i < group64_num; i++) {
-        __m512i accu64 = _mm512_setzero_si512();
+    for (int i = 0; i < pairs; i++) {
+        const int base_w = i * 64;   // 2 blocks × 32 bytes
+        const int base_a = i * 256;  // 2 blocks × 128 activations
 
-        for (int j = 0; j < 64; j++) {
-            // Load 64 packed bytes = 256 ternary weights
-            __m512i xq8_3 = _mm512_loadu_si512(
-                (const __m512i*)(packed_weights + i * 64 * 64 + j * 64)
-            );
+        // Load 64 packed bytes (2 consecutive 32-byte blocks)
+        __m512i xq8_3 = _mm512_loadu_si512((const __m512i*)(packed_weights + base_w));
 
-            // Unpack 4 groups of 64 weights each
-            __m512i xq8_2 = _mm512_srli_epi16(xq8_3, 2);
-            __m512i xq8_1 = _mm512_srli_epi16(xq8_3, 4);
-            __m512i xq8_0 = _mm512_srli_epi16(xq8_3, 6);
+        // Unpack 4 groups: bits 6-7, 4-5, 2-3, 0-1
+        __m512i xq8_2 = _mm512_and_si512(_mm512_srli_epi16(xq8_3, 2), mask);
+        __m512i xq8_1 = _mm512_and_si512(_mm512_srli_epi16(xq8_3, 4), mask);
+        __m512i xq8_0 = _mm512_and_si512(_mm512_srli_epi16(xq8_3, 6), mask);
+        xq8_3 = _mm512_and_si512(xq8_3, mask);
 
-            xq8_3 = _mm512_and_si512(xq8_3, mask);
-            xq8_2 = _mm512_and_si512(xq8_2, mask);
-            xq8_1 = _mm512_and_si512(xq8_1, mask);
-            xq8_0 = _mm512_and_si512(xq8_0, mask);
+        // Load 256 activations (4 × 64 bytes)
+        __m512i yq8_0 = _mm512_loadu_si512((const __m512i*)(activations + base_a + 0));
+        __m512i yq8_1 = _mm512_loadu_si512((const __m512i*)(activations + base_a + 64));
+        __m512i yq8_2 = _mm512_loadu_si512((const __m512i*)(activations + base_a + 128));
+        __m512i yq8_3 = _mm512_loadu_si512((const __m512i*)(activations + base_a + 192));
 
-            // Load corresponding activations (256 int8 values)
-            __m512i yq8_0 = _mm512_loadu_si512(
-                (const __m512i*)(activations + i * 256 * 64 + j * 256 + 0)
-            );
-            __m512i yq8_1 = _mm512_loadu_si512(
-                (const __m512i*)(activations + i * 256 * 64 + j * 256 + 64)
-            );
-            __m512i yq8_2 = _mm512_loadu_si512(
-                (const __m512i*)(activations + i * 256 * 64 + j * 256 + 128)
-            );
-            __m512i yq8_3 = _mm512_loadu_si512(
-                (const __m512i*)(activations + i * 256 * 64 + j * 256 + 192)
-            );
+#if defined(__AVX512VNNI__)
+        // VNNI path: Use dpbusd for faster int8 dot products
+        // dpbusd multiplies 4 u8×i8 pairs per 32-bit lane and accumulates
+        // But our unpacked weights need reordering for dpbusd...
+        // For now, use maddubs which works with current layout
+        xq8_0 = _mm512_maddubs_epi16(xq8_0, yq8_0);
+        xq8_1 = _mm512_maddubs_epi16(xq8_1, yq8_1);
+        xq8_2 = _mm512_maddubs_epi16(xq8_2, yq8_2);
+        xq8_3 = _mm512_maddubs_epi16(xq8_3, yq8_3);
+#else
+        // Standard maddubs path
+        xq8_0 = _mm512_maddubs_epi16(xq8_0, yq8_0);
+        xq8_1 = _mm512_maddubs_epi16(xq8_1, yq8_1);
+        xq8_2 = _mm512_maddubs_epi16(xq8_2, yq8_2);
+        xq8_3 = _mm512_maddubs_epi16(xq8_3, yq8_3);
+#endif
 
-            // Multiply-accumulate using maddubs
-            xq8_0 = _mm512_maddubs_epi16(xq8_0, yq8_0);
-            xq8_1 = _mm512_maddubs_epi16(xq8_1, yq8_1);
-            xq8_2 = _mm512_maddubs_epi16(xq8_2, yq8_2);
-            xq8_3 = _mm512_maddubs_epi16(xq8_3, yq8_3);
-
-            accu64 = _mm512_add_epi16(accu64, _mm512_add_epi16(xq8_0, xq8_1));
-            accu64 = _mm512_add_epi16(accu64, _mm512_add_epi16(xq8_2, xq8_3));
-        }
-
-        accu = _mm512_add_epi32(
-            _mm512_madd_epi16(accu64, _mm512_set1_epi16(1)),
-            accu
-        );
+        // Sum all 4 results and widen to 32-bit
+        __m512i sum16 = _mm512_add_epi16(_mm512_add_epi16(xq8_0, xq8_1),
+                                          _mm512_add_epi16(xq8_2, xq8_3));
+        accu = _mm512_add_epi32(accu, _mm512_madd_epi16(sum16, _mm512_set1_epi16(1)));
     }
 
-    // Handle remaining blocks with AVX2 fallback
-    const int remaining_blocks = nb - group64_num * 64;
-    if (remaining_blocks > 0) {
+    // Handle odd remaining block with AVX2
+    if (nb % 2 == 1) {
+        const int j = nb - 1;
         __m256i mask256 = _mm256_set1_epi8(0x03);
-        __m256i accu_rem = _mm256_setzero_si256();
-        const int start_offset = group64_num * 64;
 
-        for (int j = 0; j < remaining_blocks; j++) {
-            __m256i xq8_3 = _mm256_loadu_si256(
-                (const __m256i*)(packed_weights + (start_offset + j) * 32)
-            );
-            __m256i xq8_2 = _mm256_srli_epi16(xq8_3, 2);
-            __m256i xq8_1 = _mm256_srli_epi16(xq8_3, 4);
-            __m256i xq8_0 = _mm256_srli_epi16(xq8_3, 6);
+        __m256i xq8_3 = _mm256_loadu_si256((const __m256i*)(packed_weights + j * 32));
+        __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 2), mask256);
+        __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 4), mask256);
+        __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 6), mask256);
+        xq8_3 = _mm256_and_si256(xq8_3, mask256);
 
-            xq8_3 = _mm256_and_si256(xq8_3, mask256);
-            xq8_2 = _mm256_and_si256(xq8_2, mask256);
-            xq8_1 = _mm256_and_si256(xq8_1, mask256);
-            xq8_0 = _mm256_and_si256(xq8_0, mask256);
+        __m256i yq8_0 = _mm256_loadu_si256((const __m256i*)(activations + j * 128 + 0));
+        __m256i yq8_1 = _mm256_loadu_si256((const __m256i*)(activations + j * 128 + 32));
+        __m256i yq8_2 = _mm256_loadu_si256((const __m256i*)(activations + j * 128 + 64));
+        __m256i yq8_3 = _mm256_loadu_si256((const __m256i*)(activations + j * 128 + 96));
 
-            __m256i yq8_0 = _mm256_loadu_si256(
-                (const __m256i*)(activations + (start_offset + j) * 128 + 0)
-            );
-            __m256i yq8_1 = _mm256_loadu_si256(
-                (const __m256i*)(activations + (start_offset + j) * 128 + 32)
-            );
-            __m256i yq8_2 = _mm256_loadu_si256(
-                (const __m256i*)(activations + (start_offset + j) * 128 + 64)
-            );
-            __m256i yq8_3 = _mm256_loadu_si256(
-                (const __m256i*)(activations + (start_offset + j) * 128 + 96)
-            );
+        xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
+        xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
+        xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
+        xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
 
-            xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
-            xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
-            xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
-            xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
+        __m256i sum = _mm256_add_epi16(_mm256_add_epi16(xq8_0, xq8_1),
+                                        _mm256_add_epi16(xq8_2, xq8_3));
+        __m256i sum32 = _mm256_madd_epi16(sum, _mm256_set1_epi16(1));
 
-            __m256i sum = _mm256_add_epi16(xq8_0, xq8_1);
-            sum = _mm256_add_epi16(sum, _mm256_add_epi16(xq8_2, xq8_3));
-            accu_rem = _mm256_add_epi32(accu_rem, _mm256_madd_epi16(sum, _mm256_set1_epi16(1)));
-        }
-
-        // Combine with main accumulator
-        __m256i lo = _mm512_castsi512_si256(accu);
-        __m256i hi = _mm512_extracti64x4_epi64(accu, 1);
-        accu_rem = _mm256_add_epi32(accu_rem, _mm256_add_epi32(lo, hi));
-        // Bias correction: subtract sum of activations
-        *result = (float)(hsum_i32_8(accu_rem) - sum_activations);
-    } else {
-        // Bias correction: subtract sum of activations
-        *result = (float)(hsum_i32_16(accu) - sum_activations);
+        // Add to accumulator (widen to 512-bit)
+        __m512i sum512 = _mm512_castsi256_si512(sum32);
+        accu = _mm512_add_epi32(accu, sum512);
     }
+
+    // Bias correction: subtract sum of activations
+    *result = (float)(_mm512_reduce_add_epi32(accu) - sum_activations);
 
 #elif defined(BITNET_HAS_X86_SIMD) && defined(__AVX2__)
     // AVX2 implementation with 4 independent accumulators for latency hiding
