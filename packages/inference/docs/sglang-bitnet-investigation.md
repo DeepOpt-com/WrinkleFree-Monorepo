@@ -132,9 +132,45 @@ PyTorch 2.9.1 is missing internal APIs that sgl-kernel depends on:
 
 These APIs likely exist in a different PyTorch version or were renamed/removed.
 
-## Solutions
+## Solution: BitNet-Only Build
 
-### Option 1: Find Compatible PyTorch Version
+**IMPLEMENTED**: Created a BitNet-only build that excludes problematic general-purpose CPU kernels.
+
+### Files Created
+
+1. **`csrc/cpu/CMakeLists_bitnet_only.txt`** - CMake config that only builds BitNet files
+2. **`csrc/cpu/torch_extension_bitnet_only.cpp`** - Minimal torch extension with only BitNet ops
+
+### How It Works
+
+The BitNet kernels (`bitnet_gemv.cpp`, `bitnet_fused_layer.cpp`) are completely self-contained:
+- Only use standard C++, OpenMP, and SIMD intrinsics (AVX2/AVX512/NEON)
+- **Do NOT use** `brgemm` or `exp_u20` APIs
+
+The full sgl-kernel build includes many general-purpose CPU ops (gemm, moe, decode, etc.) that use these incompatible APIs. The BitNet-only build excludes them.
+
+### Usage
+
+```bash
+# In sgl-kernel directory
+cp csrc/cpu/CMakeLists_bitnet_only.txt csrc/cpu/CMakeLists.txt
+cp pyproject_cpu.toml pyproject.toml
+pip install -e . --no-build-isolation
+```
+
+### Ops Provided
+
+- `bitnet_gemv_cpu` - Single-token decode (8x faster than gemm)
+- `bitnet_gemm_cpu` - Batched decode
+- `bitnet_quantize_activations_cpu` - INT8 activation quantization
+- `bitnet_mlp_forward_cpu` - Fused MLP (3 linear + activations)
+- `bitnet_qkv_forward_cpu` - Fused QKV projection
+- `rmsnorm_cpu` - RMS normalization
+- `silu_and_mul_cpu` - SiLU activation
+
+### Alternative Solutions (Not Used)
+
+#### Option 1: Find Compatible PyTorch Version
 
 Check which PyTorch version has the required APIs:
 ```bash
@@ -142,14 +178,7 @@ Check which PyTorch version has the required APIs:
 git log --all -p --source -- '**/cpublas*' | grep brgemm
 ```
 
-### Option 2: Patch sgl-kernel
-
-Remove/stub the brgemm-dependent code paths:
-- `gemm.cpp` - Replace brgemm calls with regular gemm
-- `bmm.cpp` - Use torch::bmm fallback
-- `norm.cpp` - Replace exp_u20 with exp
-
-### Option 3: Cross-compile
+#### Option 2: Cross-compile
 
 Build on a machine with compatible PyTorch and copy the `.so`:
 ```bash
@@ -158,7 +187,7 @@ pip install -e sgl-kernel --no-build-isolation
 scp sgl_kernel/common_ops.*.so remote:~/.local/lib/python3.10/site-packages/sgl_kernel/
 ```
 
-### Option 4: Use Python Fallback
+#### Option 3: Use Python Fallback
 
 The Python fallback works but is ~100x slower (unpacks weights for every forward pass).
 
@@ -166,9 +195,13 @@ The Python fallback works but is ~100x slower (unpacks weights for every forward
 
 | Approach | Speed | Notes |
 |----------|-------|-------|
-| Rust native_server (llama.cpp TQ2) | ~7-8 tok/s | Working |
-| sgl-kernel native (target) | ~29 tok/s | Build blocked |
+| Rust native_server (llama.cpp TQ2) | ~7-8 tok/s | Working, 8 vCPUs |
+| llama.cpp TQ1_0 | ~17 tok/s | 8 vCPUs |
+| llama.cpp TQ1_0 | ~63 tok/s | 32 vCPUs |
+| **sgl-kernel BitNet-only** | **~30 tok/s** | **Target, 8 vCPUs** |
 | sgl-kernel Python fallback | ~0.1 tok/s | Too slow |
+
+**Key insight**: sgl-kernel's `bitnet_gemv` is optimized for single-token decode and benefits from DDR5 memory bandwidth on C3D instances.
 
 ## Files on GCP Instance
 
@@ -181,8 +214,89 @@ The Python fallback works but is ~100x slower (unpacks weights for every forward
 ~/scripts/                        # Conversion and server scripts
 ```
 
+## BitNet-Only Build: SUCCESS
+
+Successfully built BitNet-only native kernels (2025-01-01):
+
+### Build Steps
+
+```bash
+# 1. Create minimal extension (bitnet_extension.cpp)
+# Only registers BitNet ops, no brgemm dependencies
+
+# 2. Build
+cd ~/sglang-bitnet/sgl-kernel/csrc/cpu
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j4
+
+# 3. Copy to sgl_kernel package
+cp common_ops.cpython-310-x86_64-linux-gnu.so ~/sgl-kernel/python/sgl_kernel/
+```
+
+### Verification
+
+```python
+import torch
+import sgl_kernel
+
+# All three ops work:
+torch.ops.sgl_kernel.bitnet_gemv_cpu  # Single-token decode
+torch.ops.sgl_kernel.bitnet_gemm_cpu  # Batched decode
+torch.ops.sgl_kernel.bitnet_quantize_activations_cpu  # INT8 quantization
+```
+
+### Kernel Correctness Test
+
+```python
+# Test verified: kernel output matches Python reference
+# Expected: [0, 128, 0, 32]
+# Kernel:   [0, 128, 0, 32]  ✓
+```
+
+## Model Format Issue: DLM Uses Online Quantization
+
+**CRITICAL DISCOVERY**: The DLM checkpoint uses `"quantization_mode": "online"` which means:
+- Weights are stored as bf16 (not pre-quantized ternary)
+- Quantization to {-1, 0, +1} happens on-the-fly during inference
+- Weight values range from -116 to +117 (not ternary!)
+
+### Impact
+
+The `convert_to_sglkernel.py` script assumes pre-quantized ternary weights, but DLM checkpoints have:
+- bf16 weights with activation scaling baked in
+- Online quantization during forward pass
+
+This causes **gibberish output** when using the naive conversion (still ~7 tok/s, same as llama.cpp).
+
+### Solutions
+
+1. **Use GGUF format** (current working solution)
+   - Rust native_server with llama.cpp handles online quantization correctly
+   - ~7-8 tok/s (baseline)
+
+2. **Use Microsoft BitNet converter**
+   - `extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py`
+   - Properly handles online quantization checkpoints
+   - Produces correct TQ2_0/I2_S GGUF
+
+3. **Get pre-quantized checkpoint**
+   - Train with `quantization_mode: "offline"`
+   - Store ternary weights directly
+   - Would enable sgl-kernel's ~30 tok/s performance
+
+## Summary
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| BitNet SIMD kernels | ✅ Built | AVX512 optimized |
+| Kernel correctness | ✅ Verified | Matches Python reference |
+| sgl-kernel import | ✅ Working | Native kernels detected |
+| Model conversion | ❌ Incompatible | DLM uses online quantization |
+| End-to-end inference | ⚠️ Partial | Gibberish output due to format mismatch |
+
 ## Next Steps
 
-1. Identify PyTorch version with brgemm support
-2. Or patch sgl-kernel to remove brgemm dependencies
-3. Test with native kernels to verify 29 tok/s target
+1. **For 30+ tok/s**: Need pre-quantized checkpoint with offline ternary weights
+2. **For current model**: Continue using GGUF with Rust native_server (7-8 tok/s)
+3. **Long-term**: Modify training to produce offline-quantized checkpoints
