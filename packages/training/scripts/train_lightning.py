@@ -149,9 +149,9 @@ def create_callbacks(cfg: DictConfig) -> list:
             )
         )
 
-    # ZClip adaptive gradient clipping
+    # ZClip adaptive gradient clipping (only if gradient_clipping is a dict with type=zclip)
     zclip_cfg = cfg.training.get("gradient_clipping", {})
-    if zclip_cfg.get("type", "fixed") == "zclip":
+    if isinstance(zclip_cfg, dict) and zclip_cfg.get("type", "fixed") == "zclip":
         callbacks.append(
             ZClipCallback(
                 z_threshold=zclip_cfg.get("z_threshold", 3.0),
