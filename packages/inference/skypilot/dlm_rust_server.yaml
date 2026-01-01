@@ -1,0 +1,116 @@
+# SkyPilot configuration for DLM inference with Rust dlm_server
+# Uses Fast-dLLM v2 block diffusion for ~2.5x speedup
+# ~$0.50/hour, 16 vCPUs (AMD EPYC Genoa with AVX512), 64GB DDR5
+
+name: dlm-rust
+
+resources:
+  cloud: gcp
+  instance_type: c3d-highcpu-16
+  region: us-central1
+  disk_size: 100
+  disk_tier: high
+  use_spot: false
+  ports:
+    - 30000
+    - 7860
+
+workdir: .
+
+file_mounts:
+  /opt/models/dlm-bitnet-2b.gguf:
+    source: gs://wrinklefree-checkpoints/dlm/dlm-bitnet-2b-i2s.gguf
+    mode: COPY
+
+setup: |
+  set -ex
+  echo "=== DLM Rust Server Setup (Fast-dLLM v2) ==="
+
+  # Show CPU info
+  lscpu | grep -E "(Model name|CPU|Thread|Core|Cache|AVX)" | head -15 || true
+  cat /proc/cpuinfo | grep -m1 "flags" | tr ' ' '\n' | grep -E "^avx" || true
+
+  # Install build dependencies
+  sudo apt-get update && sudo apt-get install -y \
+    clang cmake ccache git curl build-essential ninja-build \
+    python3-pip python3-venv pkg-config libssl-dev protobuf-compiler
+
+  # Install Rust
+  if ! command -v cargo &> /dev/null; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  fi
+  source ~/.cargo/env
+
+  # Use the synced monorepo code (workdir mounts to ~/sky_workdir)
+  cd ~/sky_workdir/packages/inference/extern/sglang-bitnet
+
+  # Initialize submodules if needed
+  git submodule update --init --recursive 3rdparty/llama.cpp || true
+
+  # Build llama.cpp with native SIMD
+  cd 3rdparty/llama.cpp
+
+  # Create build-info files (workaround for missing cmake submodule)
+  mkdir -p common/cmake
+  cat > common/cmake/build-info-gen-cpp.cmake << 'CMAKE_EOF'
+  file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/common/build-info.cpp"
+  "int LLAMA_BUILD_NUMBER = 0;
+  char const *LLAMA_COMMIT = \"unknown\";
+  char const *LLAMA_COMPILER = \"clang\";
+  char const *LLAMA_BUILD_TARGET = \"x86_64-linux-gnu\";
+  ")
+  CMAKE_EOF
+
+  cat > common/build-info.cpp << 'CPP_EOF'
+  int LLAMA_BUILD_NUMBER = 0;
+  char const *LLAMA_COMMIT = "unknown";
+  char const *LLAMA_COMPILER = "clang";
+  char const *LLAMA_BUILD_TARGET = "x86_64-linux-gnu";
+  CPP_EOF
+
+  cmake -B build \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_C_FLAGS="-march=native -mtune=native -O3" \
+    -DCMAKE_CXX_FLAGS="-march=native -mtune=native -O3" \
+    -DLLAMA_NATIVE=ON \
+    -DGGML_NATIVE=ON \
+    -G Ninja
+  ninja -C build -j8
+
+  # Build Rust dlm_server with native-inference
+  cd ~/sky_workdir/packages/inference/extern/sglang-bitnet/sgl-model-gateway
+  NATIVE_SIMD=1 RUSTFLAGS="-C target-cpu=native" \
+    cargo build --release --features native-inference --bin dlm_server
+
+  # Install streamlit for UI
+  pip3 install streamlit openai
+
+  echo "=== Setup Complete ==="
+
+run: |
+  set -ex
+  source ~/.cargo/env
+
+  echo "=== DLM Server (Fast-dLLM v2 Block Diffusion) ==="
+  echo "API: http://0.0.0.0:30000"
+  echo "UI:  http://0.0.0.0:7860"
+
+  # Set library path for llama.cpp
+  export LD_LIBRARY_PATH=~/sky_workdir/packages/inference/extern/sglang-bitnet/3rdparty/llama.cpp/build/src:~/sky_workdir/packages/inference/extern/sglang-bitnet/3rdparty/llama.cpp/build/ggml/src:$LD_LIBRARY_PATH
+
+  # Start dlm_server with block diffusion
+  ~/sky_workdir/packages/inference/extern/sglang-bitnet/sgl-model-gateway/target/release/dlm_server \
+    --model-path /opt/models/dlm-bitnet-2b.gguf \
+    --host 0.0.0.0 \
+    --port 30000 \
+    --block-size 32 \
+    --threshold 0.95 \
+    --small-block-size 8 \
+    --max-sequences 16 &
+
+  sleep 5
+
+  # Create Streamlit chat UI (using one-liner to avoid YAML issues)
+  echo 'import streamlit as st; from openai import OpenAI; st.title("DLM Chat"); client = OpenAI(base_url="http://localhost:30000/v1", api_key="x"); st.session_state.setdefault("msgs", []); [st.chat_message(m["role"]).markdown(m["content"]) for m in st.session_state.msgs]; p = st.chat_input(); exec("if p: st.session_state.msgs.append({\"role\": \"user\", \"content\": p}); st.chat_message(\"user\").markdown(p); r = client.chat.completions.create(model=\"x\", messages=st.session_state.msgs, max_tokens=256).choices[0].message.content; st.chat_message(\"assistant\").markdown(r); st.session_state.msgs.append({\"role\": \"assistant\", \"content\": r})")' > /tmp/app.py
+  streamlit run /tmp/app.py --server.port 7860 --server.address 0.0.0.0 --server.headless true

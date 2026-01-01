@@ -147,9 +147,10 @@ def load_sglkernel_binary(path: Path) -> Tuple[BitNetConfig, dict]:
             ndims = struct.unpack('<I', f.read(4))[0]
             shape = [struct.unpack('<I', f.read(4))[0] for _ in range(ndims)]
 
-            # Scale
+            # Scale - always read 4 bytes (converter always writes them)
             has_scale = struct.unpack('<I', f.read(4))[0]
-            scale = struct.unpack('<f', f.read(4))[0] if has_scale else None
+            scale_bytes = f.read(4)  # Always consume 4 bytes
+            scale = struct.unpack('<f', scale_bytes)[0] if has_scale else None
 
             # Data
             data_size = struct.unpack('<Q', f.read(8))[0]
