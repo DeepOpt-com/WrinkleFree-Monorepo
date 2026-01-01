@@ -58,6 +58,7 @@ max_seq_length: 512
 batch_size: 32
 gradient_accumulation_steps: 16
 gradient_clipping: 1.0
+auto_batch_size: false  # Enable for Lightning BatchSizeFinder
 
 # Lambda warmup for gradual quantization
 lambda_warmup:
