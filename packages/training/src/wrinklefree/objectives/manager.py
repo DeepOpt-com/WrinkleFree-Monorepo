@@ -352,18 +352,26 @@ class ObjectiveManager(nn.Module):
 
         return metrics
 
-    def state_dict(self) -> dict:
-        """Get state for checkpointing."""
-        state = {"objectives": {name: obj.state_dict() for name, obj in self.objectives.items()}}
+    def state_dict(self, destination=None, prefix='', keep_vars=False) -> dict:
+        """Get state for checkpointing (PyTorch-compatible signature)."""
+        # Get standard nn.Module state (for any registered parameters/buffers)
+        state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        # Add custom objective state
+        state["_objectives"] = {name: obj.state_dict() for name, obj in self.objectives.items()}
         if self.curriculum is not None:
-            state["curriculum"] = self.curriculum.state_dict()
+            state["_curriculum"] = self.curriculum.state_dict()
         return state
 
-    def load_state_dict(self, state_dict: dict) -> None:
-        """Load state from checkpoint."""
-        if "objectives" in state_dict:
-            for name, obj_state in state_dict["objectives"].items():
+    def load_state_dict(self, state_dict: dict, strict: bool = True) -> None:
+        """Load state from checkpoint (PyTorch-compatible signature)."""
+        # Load custom objective state
+        if "_objectives" in state_dict:
+            for name, obj_state in state_dict["_objectives"].items():
                 if name in self.objectives:
                     self.objectives[name].load_state_dict(obj_state)
-        if "curriculum" in state_dict and self.curriculum is not None:
-            self.curriculum.load_state_dict(state_dict["curriculum"])
+        if "_curriculum" in state_dict and self.curriculum is not None:
+            self.curriculum.load_state_dict(state_dict["_curriculum"])
+        # Load standard nn.Module state (filter out custom keys)
+        module_state = {k: v for k, v in state_dict.items() if not k.startswith("_")}
+        if module_state:
+            super().load_state_dict(module_state, strict=strict)
