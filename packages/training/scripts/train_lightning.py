@@ -33,10 +33,12 @@ from pytorch_lightning.callbacks import (
 )
 from pytorch_lightning.loggers import WandbLogger
 from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf.base import ContainerMetadata
+from omegaconf._utils import ValueKind
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # PyTorch 2.6+ requires explicit safe globals for omegaconf types in checkpoints
-torch.serialization.add_safe_globals([DictConfig, ListConfig])
+torch.serialization.add_safe_globals([DictConfig, ListConfig, ContainerMetadata, ValueKind])
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
