@@ -113,8 +113,12 @@ class WrinkleFreeDataModule(pl.LightningDataModule):
             raise RuntimeError("Call setup() before accessing train_dataloader")
         return self.train_dataloader_instance
 
-    def val_dataloader(self) -> Optional[DataLoader]:
-        """Return validation dataloader if configured."""
+    def val_dataloader(self):
+        """Return validation dataloader if configured, empty list otherwise."""
+        # Return empty list (not None) to indicate no validation
+        # None causes issues with BatchSizeFinder
+        if self.val_dataloader_instance is None:
+            return []
         return self.val_dataloader_instance
 
     def get_mixed_dataset(self):
