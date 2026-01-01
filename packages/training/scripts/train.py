@@ -869,6 +869,97 @@ def main(cfg: DictConfig) -> None:
 
             logger.info("Unified training complete!")
 
+        elif stage == "lrc_calibration":
+            # LRC Calibration: Post-quantization recovery using low-rank correction
+            # Based on arxiv.org/abs/2412.07902
+            logger.info("Running LRC Calibration (Low-Rank Correction)")
+
+            from bitnet_arch import (
+                BitLinearLRC,
+                convert_bitlinear_to_lrc,
+                freeze_model_except_lrc,
+                get_lrc_stats,
+            )
+            from bitnet_arch.conversion import auto_convert_if_needed, is_bitnet_model
+
+            # Load model
+            model = AutoModelForCausalLM.from_pretrained(
+                cfg.model.teacher.pretrained,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                cfg.model.teacher.pretrained,
+                trust_remote_code=True,
+            )
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            # Auto-convert to BitNet if needed (same as unified training)
+            if not is_bitnet_model(model):
+                logger.info("Model is not BitNet, auto-converting...")
+                auto_convert_cfg = getattr(cfg.training, "auto_convert", None)
+                exclude_layers = []
+                if auto_convert_cfg is not None:
+                    exclude_layers = list(getattr(auto_convert_cfg, "exclude_layers", []))
+                model = auto_convert_if_needed(
+                    model,
+                    hidden_size=model.config.hidden_size,
+                    intermediate_size=model.config.intermediate_size,
+                    exclude_layers=exclude_layers,
+                )
+                logger.info("Model converted to BitNet")
+
+            # Get LRC config
+            lrc_cfg = getattr(cfg, "lrc", None) or {}
+            rank_percentage = lrc_cfg.get("rank_percentage", 0.1)
+            init_method = lrc_cfg.get("init_method", "zeros")
+
+            # Convert BitLinear -> BitLinearLRC
+            logger.info(f"Converting BitLinear layers to BitLinearLRC (rank={rank_percentage*100:.0f}%)")
+            model = convert_bitlinear_to_lrc(
+                model,
+                rank_percentage=rank_percentage,
+                init_method=init_method,
+            )
+
+            # Freeze everything except LRC matrices (U, V)
+            logger.info("Freezing all parameters except LRC matrices (U, V)")
+            freeze_stats = freeze_model_except_lrc(model)
+            logger.info(f"  Trainable: {freeze_stats['trainable']:,} params")
+            logger.info(f"  Frozen: {freeze_stats['frozen']:,} params")
+
+            # Get LRC layer stats
+            lrc_stats = get_lrc_stats(model)
+            logger.info(f"  LRC layers: {lrc_stats['num_lrc_layers']}")
+            logger.info(f"  Avg rank: {lrc_stats['average_rank']:.1f}")
+
+            # Create dataloader
+            config_name = cfg.data.get("config_name", "fineweb")
+            logger.info(f"Loading data config '{config_name}' from data_handler")
+            train_dataloader, mixed_dataset, probe_dataloaders = create_pretraining_dataloader(
+                tokenizer=tokenizer,
+                batch_size=cfg.training.batch_size,
+                max_length=cfg.training.max_seq_length,
+                config_name=config_name,
+                with_probes=False,
+                world_size=world_size,
+                rank=rank,
+                packed=cfg.training.packing.enabled,
+            )
+
+            # Run LRC training using ContinuedPretrainingTrainer
+            # The LRCReconstructionObjective will be created by the ObjectiveManager
+            model = run_stage2(
+                model=model,
+                train_dataloader=train_dataloader,
+                config=cfg,
+                output_dir=output_dir / "lrc_calibration_checkpoint",
+                run_manager=run_manager,
+            )
+
+            logger.info("LRC Calibration complete!")
+
         else:
             raise ValueError(f"Unknown training stage: {stage}")
 

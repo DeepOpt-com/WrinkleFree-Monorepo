@@ -20,6 +20,7 @@ from wrinklefree.objectives.attention_distill import AttentionRelationDistillati
 from wrinklefree.objectives.tcs_distill import TCSDistillationObjective
 from wrinklefree.objectives.block_attention_distill import BlockAttentionDistillationObjective
 from wrinklefree.objectives.bitdistill import BitDistillObjective
+from wrinklefree.objectives.lrc_reconstruction import LRCReconstructionObjective, LRCLossType
 from wrinklefree.objectives.manager import (
     CurriculumPhase,
     CurriculumScheduler,
@@ -88,6 +89,14 @@ def create_objective(name: str, config: dict[str, Any]) -> Objective:
             temperature=config.get("temperature", 5.0),
             distill_layer=config.get("distill_layer", -1),
             ignore_index=config.get("ignore_index", -100),
+        )
+    elif name == "lrc_reconstruction":
+        loss_type = config.get("loss_type", "mse")
+        return LRCReconstructionObjective(
+            loss_type=LRCLossType(loss_type) if isinstance(loss_type, str) else loss_type,
+            layer_weights=config.get("layer_weights"),
+            temperature=config.get("temperature", 1.0),
+            normalize=config.get("normalize", False),
         )
     else:
         raise ValueError(f"Unknown objective type: {name}")

@@ -78,7 +78,60 @@ training.activation_sparsity.enabled=true
 
 The ~35% training overhead pays off at inference where 61% of activations can be skipped, compounding with 1.58-bit weight quantization.
 
-### 3. Influence Integration
+### 3. LRC Calibration (Post-Quantization Recovery)
+
+Low-Rank Correction (LRC) provides post-training quantization error recovery by adding trainable low-rank matrices.
+
+Based on paper: [Low-Rank Correction for Quantized LLMs](https://arxiv.org/abs/2412.07902)
+
+**Key Idea**: Add trainable U, V matrices that operate on unquantized activations to correct quantization errors.
+
+```
+output = W_quant @ Q_a(X) + U @ V^T @ X
+         ─────────────────   ───────────
+         Frozen quantized     Trainable LRC
+         path                 correction
+```
+
+**LRC Training**:
+1. Convert BitLinear → BitLinearLRC (adds U, V matrices)
+2. Freeze ALL parameters except U, V
+3. Train using hidden state matching loss vs. fp16 teacher
+
+**Loss Function**: `||h_teacher - h_student||²` per layer
+- h_teacher: Hidden states from original fp16 model
+- h_student: Hidden states from LRC-corrected quantized model
+
+**Parameter Counts** (Qwen3-4B example):
+| Component | Parameters | Trainable |
+|-----------|------------|-----------|
+| Frozen weights | ~4B | ❌ No |
+| LRC U, V | ~400M (10% rank) | ✅ Yes |
+| Embeddings | ~200M | ❌ No |
+
+**Usage**:
+```bash
+uv run python scripts/train.py \
+  model=smollm2_135m \
+  training=lrc_calibration \
+  data=fineweb
+```
+
+**Config** (`lrc_calibration.yaml`):
+```yaml
+lrc:
+  rank_percentage: 0.1    # 10% of min(in, out) per layer
+  init_method: zeros      # or "svd_residual"
+
+objectives:
+  lrc_reconstruction:
+    enabled: true
+    weight: 1.0
+    loss_type: mse
+    layer_weights: progressive
+```
+
+### 4. Influence Integration
 The system integrates with `WrinkleFree-CheaperTraining` to optimize data selection:
 - **InfluenceAwareOptimizer**: Wraps the standard optimizer to intercept steps.
 - **DataInfCalculator**: Computes influence scores of training data on a validation "probe" set.
