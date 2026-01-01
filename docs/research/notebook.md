@@ -1,3 +1,219 @@
+## 01-01-2026 (Continued)
+
+### DLM Block Diffusion Performance (TESTED)
+
+**Key Finding**: DLM block diffusion achieves ~28 tok/s with TQ1_0 on GCP C3D.
+
+**What is DLM Block Diffusion?**
+- DLM (Diffusion Language Model) generates multiple tokens per forward pass
+- Uses block-parallel decoding with confidence-based refinement
+- Block size of 16-32 tokens per iteration
+
+**Performance Comparison (GCP c3d-highcpu-16, AMD EPYC Genoa)**:
+
+| Backend | Mode | Quantization | Speed | Notes |
+|---------|------|--------------|-------|-------|
+| DLM Server | Block Diffusion | TQ1_0 | **~28 tok/s** | block_size=16 |
+| llama.cpp | Autoregressive | TQ1_0 | **30.3 tok/s** | 8 threads |
+| sgl-kernel | Autoregressive | Packed 2-bit | **16.8 tok/s** | 8 threads, optimized |
+
+**DLM Block Diffusion Analysis**:
+- 128 tokens generated in ~4.5 seconds
+- Effective throughput: ~28 tok/s (comparable to llama.cpp autoregressive!)
+- Output quality with TQ1_0: Poor (repetitive, incoherent) - needs proper DLM checkpoint
+
+**Why DLM is Promising**:
+1. Block-parallel decoding reduces latency-per-token
+2. Ternary weights (BitNet) reduce memory bandwidth
+3. Combined: potential for high throughput on CPU
+
+**Current Limitation**: TQ1_0 quantization destroys DLM model quality. Need:
+- Native sgl-kernel support for DLM scheduler
+- Use packed 2-bit format instead of GGUF TQ1_0
+
+---
+
+### SIMD Kernel Optimization: maddubs vs LUT-based Approaches
+
+**Goal**: Improve sgl-kernel inference speed from ~15 tok/s to match llama.cpp TQ1_0 (~29 tok/s).
+
+**Instance**: GCP c3d-highcpu-16 (AMD EPYC 9B14 Genoa, AVX-512 VNNI/BF16)
+
+#### Performance Benchmarks (sgl-kernel vs llama.cpp)
+
+| Backend | Format | Quantization | Speed | Notes |
+|---------|--------|--------------|-------|-------|
+| **llama.cpp** | TQ1_0 | Base-3 (1.69 bpw) | **29.03 tok/s** | llama-bench, 8 threads |
+| **llama.cpp** | I2_S | 2-bit (2 bpw) | **28.34 tok/s** | llama-bench, 8 threads |
+| sgl-kernel | packed 2-bit | maddubs | **14.79 tok/s** | 8 threads |
+| sgl-kernel | packed 2-bit | maddubs | **15.05 tok/s** | 4 threads (optimal) |
+
+**Key Finding**: llama.cpp TQ1_0 is **~2x faster** than our sgl-kernel maddubs implementation.
+
+#### OpenMP Thread Scaling
+
+| Threads | sgl-kernel (tok/s) | Speedup | Notes |
+|---------|-------------------|---------|-------|
+| 1 | 7.53 | 1.0x | Baseline |
+| 2 | 11.47 | 1.52x | Good scaling |
+| 4 | 15.05 | 2.0x | **Optimal** |
+| 8 | 14.48 | 1.92x | Slight degradation |
+| 16 | 8.26 | 1.10x | Thread contention |
+
+**Insight**: 4 threads optimal on 8-core (16 vCPU) machine. Hyperthreading hurts performance.
+
+#### LUT-based Kernel Analysis (TL2 approach)
+
+**How TL2 works**:
+1. Quantize activations to int8
+2. Build 16-entry LUT from activation pairs: `LUT[idx] = (w0-1)*a0 + (w1-1)*a1`
+3. Use `_mm256_shuffle_epi8` for 32 parallel 4-bit table lookups
+4. Weight pattern (4 bits) indexes the precomputed sum
+
+**Why it's faster**:
+- Avoids unpacking 2-bit weights to 8-bit
+- Uses shuffle (1 cycle) instead of maddubs (5 cycles on AMD)
+- Better instruction-level parallelism
+
+**Our weight layout challenges**:
+```
+byte[k] bits 6-7 → weight for activation[k]      (xq8_0)
+byte[k] bits 4-5 → weight for activation[k+32]   (xq8_1)
+byte[k] bits 2-3 → weight for activation[k+64]   (xq8_2)
+byte[k] bits 0-1 → weight for activation[k+96]   (xq8_3)
+```
+
+Non-adjacent activation mapping complicates LUT construction. Would require:
+- Building 4 separate 16-entry LUTs per 32-position block
+- Repacking weights at load time (one-time cost)
+
+#### TQ1_0 vs 2-bit packing
+
+| Format | Weights/byte | Encoding | LUT-friendly |
+|--------|--------------|----------|--------------|
+| TQ1_0 | 5 (base-3) | `pow3[n]` | Yes (via mul) |
+| I2_S | 4 (2-bit) | Bitshift | Partial |
+| Our packed | 4 (2-bit) | Bitshift | Complex |
+
+**TQ1_0 encoding**: `index = w0 + 3*w1 + 9*w2 + 27*w3 + 81*w4` (81 values in 8 bits)
+- Uses integer multiplication to extract values: `((uint16_t) q * 3) >> 8`
+- More compact but requires multiply-extract
+
+#### Recommendations
+
+1. **For production**: Use llama.cpp TQ1_0/I2_S format (~29 tok/s)
+2. **For development**: sgl-kernel with 4 threads (~15 tok/s)
+3. **Future optimization**: Implement TL2-style LUT kernel with weight repacking
+
+#### Output Verification
+
+**sgl-kernel output (DLM model, 4 threads, greedy decoding)**:
+```
+Hello, my name is → John and I am a student of the University of California,
+Los Angeles. I am working on a project that involves the use of a microcontroller.
+I would like to know if you could provide me with some advice...
+```
+**Result**: Coherent English text
+
+**llama.cpp I2_S output (Microsoft BitNet model)**:
+```
+Hello, my name is → Sarah, and I'm a freelance writer and editor. I'm currently
+working on a book, and I'd love to get your feedback...
+```
+**Result**: Coherent English text
+
+**Note**: DLM models with llama.cpp autoregressive decoding produce repetitive output ("I'm happy is a car...") - this is expected since DLM was trained for block diffusion, not autoregressive generation.
+
+#### Next Steps for LUT Optimization
+
+1. Add weight repacking at model load time (group adjacent activations)
+2. Implement 16-entry LUT builder for activation pairs
+3. Use `_mm256_shuffle_epi8` for parallel lookup
+4. Expected improvement: ~1.5-2x over maddubs
+
+### AVX-512 VNNI Kernel (IMPLEMENTED)
+
+**Date**: 01-01-2026
+
+**Goal**: Use AVX-512 VNNI `dpbusd` instruction to replace `maddubs + madd` sequence.
+
+**Implementation**:
+- Added `bitnet_vec_dot_vnni()` kernel using `_mm256_dpbusd_epi32`
+- Auto-selected when `__AVX512VNNI__` is available at compile time
+- Same unrolling strategy (4 blocks per iteration) as existing kernel
+
+**Benchmark Results (Desktop - AMD Ryzen 7 7700, 8 threads)**:
+
+| Layer Type | M | K | Time/call | GOPS |
+|------------|---|---|-----------|------|
+| Attention Q/K/V | 2560 | 2560 | 0.041 ms | 320.72 |
+| Attention Output | 2560 | 2560 | 0.040 ms | 325.82 |
+| FFN Gate/Up | 6912 | 2560 | 0.068 ms | 524.20 |
+| FFN Down | 2560 | 6912 | 0.101 ms | 348.90 |
+
+**Estimated linear-only throughput**: 148.5 tok/s (no attention/KV cache overhead)
+
+**End-to-end comparison**:
+
+| Backend | Hardware | Speed | Notes |
+|---------|----------|-------|-------|
+| llama.cpp TQ1_0 | Desktop (Ryzen 7700) | **24.6 tok/s** | 100 tokens |
+| sgl-kernel VNNI | Desktop (Ryzen 7700) | ~17 tok/s (est) | Based on kernel GOPS |
+| llama.cpp TQ1_0 | GCP C3D (EPYC Genoa) | **30.3 tok/s** | Previous benchmark |
+
+**Analysis**:
+- VNNI kernel achieves 320-520 GOPS depending on matrix size
+- llama.cpp TQ1_0 still ~30-40% faster for end-to-end inference
+- The gap is likely due to:
+  1. Weight unpacking overhead (4 shift+mask ops per 32 bytes)
+  2. TQ1_0 uses base-3 encoding which is more compact
+  3. llama.cpp has better memory layout and prefetching
+
+**Files Changed**:
+- `sgl-kernel/csrc/bitnet/bitnet_gemv.cpp`: Added `bitnet_vec_dot_vnni()` with `#ifdef __AVX512VNNI__`
+
+### Sum Pre-computation Optimization (IMPLEMENTED)
+
+**Key Optimization**: Pre-compute sum of activations once per layer instead of once per row.
+
+**Problem**: The bias correction formula `sum((w-1)*a) = sum(w*a) - sum(a)` required computing `sum(a)` for every row. For FFN layers with M=6912 rows, this was computing the same sum 6912 times!
+
+**Solution**:
+1. Added `bitnet_sum_activations(K, activations)` function
+2. Added `bitnet_vec_dot_i2_i8_with_sum(..., sum_activations)` that takes pre-computed sum
+3. Updated `bitnet_linear()` to compute sum once before the parallel loop
+
+**Results (GCP c3d-highcpu-16)**:
+
+| Threads | Before (tok/s) | After (tok/s) | Improvement |
+|---------|----------------|---------------|-------------|
+| 1 | 7.54 | **12.24** | **+62%** |
+| 2 | 11.62 | 16.04 | +38% |
+| 4 | 15.33 | 16.72 | +9% |
+| 8 | 15.98 | **16.81** | +5% |
+
+**Key Insights**:
+- Single-threaded performance improved by 62% (from 7.54 to 12.24 tok/s)
+- Multi-threaded scaling changed: now more memory-bound
+- llama.cpp TQ1_0 still ~80% faster (30.29 vs 16.81 tok/s at 8 threads)
+
+**Files Changed**:
+- `sgl-kernel/csrc/bitnet/bitnet_gemv.cpp`: Added `bitnet_sum_activations()` and `bitnet_vec_dot_i2_i8_with_sum()`
+- `sgl-kernel/csrc/bitnet/bitnet_gemv.h`: Added function declarations
+- `sgl-kernel/csrc/inference/bitnet_engine.cpp`: Updated `bitnet_linear()` to use optimized path
+
+**Remaining Gap with llama.cpp**:
+- Our kernel: 16.81 tok/s (8 threads)
+- llama.cpp TQ1_0: 30.29 tok/s (8 threads)
+- Gap: 45% slower
+
+Likely causes:
+1. Weight layout requires unpacking (4 shift+mask ops per 32 bytes)
+2. TQ1_0 format may have more efficient memory access pattern
+3. llama.cpp may have better thread scheduling or cache utilization
+
+---
+
 ## 01-01-2026
 
 ### DLM Server Deployment on GCP C3D

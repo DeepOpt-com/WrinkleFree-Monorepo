@@ -48,28 +48,32 @@ namespace sgl_kernel { namespace bitnet {
         }
     }
 
-    // SIMD-compatible block-interleaved unpacking
-    // Block size: 128 elements = 32 packed bytes
-    // byte[j].bits[6:7] = weight for activation[j+0]
-    // byte[j].bits[4:5] = weight for activation[j+32]
-    // byte[j].bits[2:3] = weight for activation[j+64]
-    // byte[j].bits[0:1] = weight for activation[j+96]
-    inline void bitnet_vec_dot_i2_i8(int K, float* out, const uint8_t* packed_weights, const int8_t* quant_input) {
-        constexpr int QK_BLOCK = 128;  // Block size for SIMD packing
+    // Compute sum of activations (for bias correction)
+    inline int32_t bitnet_sum_activations(int K, const int8_t* quant_input) {
+        int32_t sum = 0;
+        for (int i = 0; i < K; i++) {
+            sum += quant_input[i];
+        }
+        return sum;
+    }
+
+    // SIMD-compatible block-interleaved unpacking with pre-computed sum
+    inline void bitnet_vec_dot_i2_i8_with_sum(int K, float* out, const uint8_t* packed_weights,
+                                               const int8_t* quant_input, int32_t sum_activations) {
+        constexpr int QK_BLOCK = 128;
         int sum = 0;
         int num_blocks = K / QK_BLOCK;
 
         for (int block = 0; block < num_blocks; block++) {
-            int base_w = block * 32;   // 32 packed bytes per 128-element block
-            int base_a = block * 128;  // 128 activations per block
+            int base_w = block * 32;
+            int base_a = block * 128;
 
             for (int j = 0; j < 32; j++) {
                 uint8_t packed = packed_weights[base_w + j];
-                // Extract 4 weights from positions j, j+32, j+64, j+96 within block
-                int w0 = static_cast<int>((packed >> 6) & 0x03) - 1;  // bits 6-7 → activation[j+0]
-                int w1 = static_cast<int>((packed >> 4) & 0x03) - 1;  // bits 4-5 → activation[j+32]
-                int w2 = static_cast<int>((packed >> 2) & 0x03) - 1;  // bits 2-3 → activation[j+64]
-                int w3 = static_cast<int>((packed >> 0) & 0x03) - 1;  // bits 0-1 → activation[j+96]
+                int w0 = static_cast<int>((packed >> 6) & 0x03);
+                int w1 = static_cast<int>((packed >> 4) & 0x03);
+                int w2 = static_cast<int>((packed >> 2) & 0x03);
+                int w3 = static_cast<int>((packed >> 0) & 0x03);
 
                 sum += w0 * static_cast<int>(quant_input[base_a + j + 0]);
                 sum += w1 * static_cast<int>(quant_input[base_a + j + 32]);
@@ -77,7 +81,14 @@ namespace sgl_kernel { namespace bitnet {
                 sum += w3 * static_cast<int>(quant_input[base_a + j + 96]);
             }
         }
-        *out = static_cast<float>(sum);
+        // Bias correction: sum(w*a) - sum(a) = sum((w-1)*a)
+        *out = static_cast<float>(sum - sum_activations);
+    }
+
+    // Wrapper for backward compatibility
+    inline void bitnet_vec_dot_i2_i8(int K, float* out, const uint8_t* packed_weights, const int8_t* quant_input) {
+        int32_t sum_activations = bitnet_sum_activations(K, quant_input);
+        bitnet_vec_dot_i2_i8_with_sum(K, out, packed_weights, quant_input, sum_activations);
     }
 }}
 #endif
@@ -311,12 +322,16 @@ static void bitnet_linear(float* output, const float* input, int8_t* quant_input
     const int K_packed = K / 4;  // 4 weights per byte
     const float scale_factor = weight.scale * (*quant_scale);
 
+    // OPTIMIZATION: Pre-compute sum of activations once (used for bias correction)
+    // This avoids recomputing sum M times (M can be 6912 for FFN layers)
+    const int32_t sum_activations = bitnet_sum_activations(K, quant_input);
+
     // Parallelize across output rows (each row is independent)
     #pragma omp parallel for schedule(static) if(M >= 64)
     for (int m = 0; m < M; m++) {
-        bitnet_vec_dot_i2_i8(K, &output[m],
-                             weight.packed_data.data() + m * K_packed,
-                             quant_input);
+        bitnet_vec_dot_i2_i8_with_sum(K, &output[m],
+                                       weight.packed_data.data() + m * K_packed,
+                                       quant_input, sum_activations);
         // Apply weight scale and activation scale
         output[m] *= scale_factor;
     }
