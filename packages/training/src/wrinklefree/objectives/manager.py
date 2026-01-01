@@ -200,6 +200,9 @@ class ObjectiveManager(nn.Module):
         self._requires_hidden_states = any(
             obj.requires_hidden_states for obj in objectives.values()
         )
+        self._requires_attentions = any(
+            getattr(obj, "requires_attentions", False) for obj in objectives.values()
+        )
         self._has_input_modifiers = any(obj.modifies_input for obj in objectives.values())
 
         logger.info(f"ObjectiveManager initialized with {len(objectives)} objectives:")
@@ -216,6 +219,11 @@ class ObjectiveManager(nn.Module):
     def requires_hidden_states(self) -> bool:
         """Whether any objective requires hidden states."""
         return self._requires_hidden_states
+
+    @property
+    def requires_attentions(self) -> bool:
+        """Whether any objective requires attention weights."""
+        return self._requires_attentions
 
     @property
     def any_modifies_input(self) -> bool:

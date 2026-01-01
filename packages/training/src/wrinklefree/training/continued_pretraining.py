@@ -42,8 +42,8 @@ from wrinklefree.distillation import (
     LayerwiseLossType,
 )
 
-# HiddenStateTeacher moved to distillation package (for layer-wise distillation)
-from distillation.teachers import HiddenStateTeacher
+# Teachers for distillation objectives
+from wrinklefree.teachers import HiddenStateTeacher
 from wrinklefree.training.fsdp_wrapper import setup_distributed, wrap_model_fsdp
 from wrinklefree.training.trainer import Trainer, create_optimizer, create_scheduler
 

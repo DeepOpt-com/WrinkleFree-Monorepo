@@ -1,0 +1,14 @@
+# TCS Distillation Objective (for DLM students)
+# Target Concrete Score with top-K sparse estimation
+# NO logit shifting - DLM predicts masked tokens, not next tokens
+enabled: false  # Off by default
+weight: 1.0
+
+# Temperature for KL divergence
+temperature: 5.0
+
+# Number of top tokens for sparse TCS estimation
+top_k: 100
+
+# Index to ignore in labels (padding)
+ignore_index: -100

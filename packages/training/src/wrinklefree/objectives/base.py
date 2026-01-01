@@ -50,6 +50,7 @@ class Objective(nn.Module, ABC):
     # Class attributes - override in subclasses as needed
     requires_teacher: bool = False
     requires_hidden_states: bool = False
+    requires_attentions: bool = False  # For attention distillation
     modifies_input: bool = False
 
     @property
@@ -104,6 +105,8 @@ class Objective(nn.Module, ABC):
             flags.append("requires_teacher")
         if self.requires_hidden_states:
             flags.append("requires_hidden_states")
+        if self.requires_attentions:
+            flags.append("requires_attentions")
         if self.modifies_input:
             flags.append("modifies_input")
         return f"name={self.name}, " + ", ".join(flags) if flags else f"name={self.name}"
