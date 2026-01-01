@@ -45,6 +45,25 @@ def check_kernel_available() -> bool:
     return _kernel_available
 
 
+def bitnet_check_kernel_available() -> bool:
+    """Check if BitNet kernels are available (alias for check_kernel_available)."""
+    return _kernel_available
+
+
+def get_cpu_capabilities() -> str:
+    """Get detected CPU SIMD capabilities.
+
+    Returns:
+        String describing available SIMD extensions (e.g., "AVX2 AVX512").
+    """
+    if _kernel_available:
+        try:
+            return torch.ops.sgl_kernel.bitnet_get_cpu_capabilities()
+        except Exception:
+            pass
+    return "Unknown (kernel not available)"
+
+
 def _unpack_ternary_weights(packed_weights: torch.Tensor) -> torch.Tensor:
     """Unpack 2-bit packed weights to ternary {-1, 0, +1} values.
 
@@ -206,6 +225,8 @@ def auto_tune_tiles(
 # Export public API
 __all__ = [
     "check_kernel_available",
+    "bitnet_check_kernel_available",
+    "get_cpu_capabilities",
     "bitnet_gemv",
     "bitnet_gemm",
     "quantize_activations_i8",

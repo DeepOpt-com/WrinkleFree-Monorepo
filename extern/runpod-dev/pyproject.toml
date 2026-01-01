@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "runpod-dev"
+version = "0.1.0"
+description = "Rapid GPU development workflow for RunPod - launch, sync, and develop on remote GPU instances"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "DeepOpt", email = "dev@deepopt.com" }
+]
+keywords = ["runpod", "gpu", "development", "sync", "mutagen", "remote"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+    "runpod>=1.8.1",
+    "click>=8.1.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.3.0",
+]
+
+[project.scripts]
+runpod-dev = "runpod_dev.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/DeepOpt-com/runpod-dev"
+Repository = "https://github.com/DeepOpt-com/runpod-dev"
+Issues = "https://github.com/DeepOpt-com/runpod-dev/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/runpod_dev"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

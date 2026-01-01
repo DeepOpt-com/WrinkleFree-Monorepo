@@ -35,7 +35,36 @@ struct TileConfig {
 };
 
 /**
+ * Compute sum of INT8 activations (for bias correction).
+ * Call once before processing multiple rows with the same activations.
+ *
+ * @param n Number of elements
+ * @param activations INT8 activations
+ * @return Sum of all activation values
+ */
+int32_t bitnet_sum_activations(int n, const int8_t* activations);
+
+/**
+ * BitNet GEMV with pre-computed activation sum: y = W * x
+ * More efficient when calling multiple times with the same activations.
+ *
+ * @param n Input dimension (must be multiple of QK_I2_S)
+ * @param result Output scalar (dot product result)
+ * @param packed_weights Packed 2-bit ternary weights
+ * @param activations INT8 activations
+ * @param sum_activations Pre-computed sum from bitnet_sum_activations()
+ */
+void bitnet_vec_dot_i2_i8_with_sum(
+    int n,
+    float* result,
+    const uint8_t* packed_weights,
+    const int8_t* activations,
+    int32_t sum_activations
+);
+
+/**
  * BitNet GEMV: y = W * x
+ * Convenience wrapper that computes sum internally.
  *
  * @param n Input dimension (must be multiple of QK_I2_S)
  * @param result Output scalar (dot product result)

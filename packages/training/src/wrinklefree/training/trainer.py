@@ -1,5 +1,8 @@
 """Main training loop for BitNet models."""
 
+# Patch muon_fsdp2 before importing it (fixes missing muon_update function)
+import wrinklefree.training.muon_patch  # noqa: F401
+
 import logging
 import os
 import time
@@ -241,6 +244,20 @@ class Trainer:
         if self.rank == 0:
             logger.info(f"Starting training for {self.max_steps} steps")
 
+        # Verify dataloader lengths match across ranks (FSDP debug helper)
+        if self.world_size > 1 and self.train_dataloader is not None:
+            import torch.distributed as dist
+            local_len = torch.tensor(len(self.train_dataloader), device=self.device)
+            gathered = [torch.zeros_like(local_len) for _ in range(self.world_size)]
+            dist.all_gather(gathered, local_len)
+            if self.rank == 0:
+                logger.info(f"Train batches per rank: {[x.item() for x in gathered]}")
+            if not all(x == gathered[0] for x in gathered):
+                raise RuntimeError(
+                    f"Dataloader batch count mismatch across ranks: {[x.item() for x in gathered]}. "
+                    "This will cause FSDP collective operation hangs."
+                )
+
         pbar = tqdm(
             total=self.max_steps,
             desc="Training",
@@ -355,8 +372,8 @@ class Trainer:
 
                     if eval_loss < self.best_eval_loss:
                         self.best_eval_loss = eval_loss
-                        if self.rank == 0:
-                            self.save_checkpoint("best")
+                        # All ranks must call save_checkpoint for FSDP (collective op)
+                        self.save_checkpoint("best")
 
                 # Checkpointing
                 # NOTE: All ranks must call save_checkpoint for FSDP state dict gathering
@@ -464,6 +481,14 @@ class Trainer:
         self.model.train()
 
         avg_loss = total_loss / max(num_batches, 1)
+
+        # Sync loss across ranks for consistent save decisions (FSDP requirement)
+        if self.world_size > 1:
+            import torch.distributed as dist
+            loss_tensor = torch.tensor(avg_loss, device=self.device)
+            dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+            avg_loss = loss_tensor.item()
+
         self.eval_losses.append(avg_loss)
         return avg_loss
 
@@ -528,12 +553,17 @@ class Trainer:
         if dist.is_initialized() and self.world_size > 1:
             dist.barrier()
 
-    def load_checkpoint(self, path: Path) -> None:
+    def load_checkpoint(self, path: Path, resume_config: Optional[DictConfig] = None) -> None:
         """
-        Load a checkpoint.
+        Load a checkpoint with configurable state loading.
 
         Args:
             path: Path to checkpoint directory or file
+            resume_config: Optional resume configuration with:
+                - load_optimizer_state: bool (default: True)
+                - load_scheduler_state: bool (default: True)
+                - load_training_state: bool (default: True)
+                - strict_model_load: bool (default: True)
         """
         if path.is_dir():
             checkpoint_path = path / "checkpoint.pt"
@@ -542,6 +572,21 @@ class Trainer:
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
+        # Get resume config (from argument, self.config, or defaults)
+        if resume_config is None:
+            training_config = getattr(self.config, "training", self.config) if self.config else {}
+            resume_config = getattr(training_config, "resume", {})
+
+        load_optimizer = getattr(resume_config, "load_optimizer_state", True)
+        load_scheduler = getattr(resume_config, "load_scheduler_state", True)
+        load_training_state = getattr(resume_config, "load_training_state", True)
+        strict_load = getattr(resume_config, "strict_model_load", True)
+
+        # Backward compatibility: env var overrides config
+        if os.environ.get("RESUME_OPTIMIZER", "").lower() == "false":
+            load_optimizer = False
+            load_scheduler = False
+
         # Load model state
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
@@ -549,13 +594,12 @@ class Trainer:
             from wrinklefree.training.fsdp_wrapper import load_fsdp_state_dict
             load_fsdp_state_dict(self.model, checkpoint["model_state_dict"])
         else:
-            self.model.load_state_dict(checkpoint["model_state_dict"])
+            self.model.load_state_dict(checkpoint["model_state_dict"], strict=strict_load)
 
-        # Load optimizer state (skip if RESUME_OPTIMIZER=false or optimizer type changed)
-        skip_optimizer = os.environ.get("RESUME_OPTIMIZER", "true").lower() == "false"
-        if skip_optimizer:
+        # Load optimizer state
+        if not load_optimizer:
             if self.rank == 0:
-                logger.info("Skipping optimizer state load (RESUME_OPTIMIZER=false)")
+                logger.info("Skipping optimizer state load (resume.load_optimizer_state=false)")
         elif "optimizer_state_dict" in checkpoint:
             try:
                 self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -589,8 +633,11 @@ class Trainer:
                 if self.rank == 0:
                     logger.info(f"Reset LR from checkpoint value {old_lr} to config value {config_lr}")
 
-        # Load scheduler state (skip if switching optimizers)
-        if self.scheduler is not None and "scheduler_state_dict" in checkpoint and not skip_optimizer:
+        # Load scheduler state
+        if not load_scheduler:
+            if self.rank == 0:
+                logger.info("Skipping scheduler state load (resume.load_scheduler_state=false)")
+        elif self.scheduler is not None and "scheduler_state_dict" in checkpoint:
             try:
                 self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             except Exception as e:
@@ -610,12 +657,21 @@ class Trainer:
                     for sub_sched in self.scheduler._schedulers:
                         _update_sched_lr(sub_sched)
 
-        # Load training state
-        self.global_step = checkpoint.get("global_step", 0)
-        self.epoch = checkpoint.get("epoch", 0)
-        self.best_eval_loss = checkpoint.get("best_eval_loss", float("inf"))
-        self.train_losses = checkpoint.get("train_losses", [])
-        self.eval_losses = checkpoint.get("eval_losses", [])
+        # Load training state (step, epoch, metrics)
+        if load_training_state:
+            self.global_step = checkpoint.get("global_step", 0)
+            self.epoch = checkpoint.get("epoch", 0)
+            self.best_eval_loss = checkpoint.get("best_eval_loss", float("inf"))
+            self.train_losses = checkpoint.get("train_losses", [])
+            self.eval_losses = checkpoint.get("eval_losses", [])
+        else:
+            if self.rank == 0:
+                logger.info("Starting from step 0 (resume.load_training_state=false)")
+            self.global_step = 0
+            self.epoch = 0
+            self.best_eval_loss = float("inf")
+            self.train_losses = []
+            self.eval_losses = []
 
         if self.rank == 0:
             logger.info(f"Loaded checkpoint from {checkpoint_path} at step {self.global_step}")
@@ -649,53 +705,37 @@ def create_optimizer(
 
     if optimizer_type == "muonclip":
         try:
-            from muon import MuonClip, MuonConfig
+            # Use muon_fsdp2 - FSDP-compatible Muon optimizer
+            # This uses gather-scatter instead of broadcast for sharded parameters
+            from muon_fsdp2 import Muon
 
-            enable_clipping = kwargs.get("enable_clipping", True)
-            model_config = kwargs.get("model_config", None)
-
-            # QK-clipping requires model config with attention head info
-            if enable_clipping and model_config is None:
-                # Try to get config from model if it has one
-                if hasattr(model, "config"):
-                    model_config = model.config
+            # Separate parameters: Muon for 2D weights, Adam for 1D (bias, norm)
+            muon_params = []
+            adam_params = []
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                # Muon works on 2D+ matrices, use Adam for embeddings and 1D params
+                if param.ndim >= 2 and "embed" not in name.lower():
+                    muon_params.append(param)
                 else:
-                    logger.warning(
-                        "QK-clipping requires model_config with attention head info. "
-                        "Disabling clipping."
-                    )
-                    enable_clipping = False
+                    adam_params.append(param)
 
-            # Check for separate LRs (lr_muon, lr_adam) vs unified LR
             lr_muon = kwargs.get("lr_muon", learning_rate)
             lr_adam = kwargs.get("lr_adam", learning_rate)
-            use_unified_lr = (lr_muon == lr_adam)
 
-            config = MuonConfig(
-                unified_lr=use_unified_lr,
-                lr=learning_rate if use_unified_lr else None,
-                lr_muon=lr_muon if not use_unified_lr else None,
-                lr_adam=lr_adam if not use_unified_lr else None,
-                muon_beta=kwargs.get("momentum", 0.95),
-                muon_decay=weight_decay,
-                adam_betas=betas,
-                adam_eps=kwargs.get("eps", 1e-8),
-                adam_decay=weight_decay,
-                enable_clipping=enable_clipping,
-                clipping_threshold=kwargs.get("clipping_threshold", 50.0),
-                clipping_alpha=kwargs.get("clipping_alpha", 0.5),
-                # NOTE: muon-clip has a bug where writer is only created if log_dir is empty!
-                # See: if not muon_config.log_dir : self.writer = SummaryWriter(...)
-                # So we pass empty string to create the writer, otherwise flush_metrics() crashes
-                log_dir="",  # Empty string triggers writer creation (muon-clip bug workaround)
-            )
-            lr_info = f"unified_lr={learning_rate}" if use_unified_lr else f"lr_muon={lr_muon}, lr_adam={lr_adam}"
+            # muon_fsdp2 API: only param_groups, parameters set per-group
+            optimizer = Muon([
+                {"params": muon_params, "lr": lr_muon, "use_muon": True},
+                {"params": adam_params, "lr": lr_adam, "use_muon": False}
+            ])
             logger.info(
-                f"Using MuonClip optimizer ({lr_info}, QK-clipping={'enabled' if enable_clipping else 'disabled'})"
+                f"Using Muon (FSDP2) optimizer: {len(muon_params)} Muon params (lr={lr_muon}), "
+                f"{len(adam_params)} Adam params (lr={lr_adam})"
             )
-            return MuonClip(model, model_config, config)
+            return optimizer
         except ImportError:
-            logger.warning("muon-clip not available, falling back to AdamW 8-bit")
+            logger.warning("muon_fsdp2 not available, falling back to AdamW 8-bit")
             optimizer_type = "adamw_8bit"
 
     # Separate parameters with and without weight decay

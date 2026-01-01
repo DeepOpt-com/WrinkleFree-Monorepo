@@ -46,9 +46,10 @@ from wrinklefree.training import (
     run_stage1,
     run_stage1_9,
     run_stage2,
-    run_stage3,
     setup_distributed,
 )
+# NOTE: Stage 3 distillation has been moved to the separate `distillation` package.
+# Use: uv run --package wrinklefree-distillation python scripts/distill.py
 from wrinklefree.utils import (
     AuditLogger,
     CredentialsError,
@@ -556,6 +557,8 @@ def main(cfg: DictConfig) -> None:
                     config_name=warmup_config,
                     with_probes=False,
                     seed=cfg.seed,
+                    rank=rank,
+                    world_size=world_size,
                 )
 
                 # Phase 2: Load in background thread (mixed_pretrain takes longer)
@@ -568,6 +571,8 @@ def main(cfg: DictConfig) -> None:
                         config_name=config_name,
                         with_probes=influence_enabled,
                         seed=cfg.seed,
+                        rank=rank,
+                        world_size=world_size,
                     )
 
                 executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -583,6 +588,8 @@ def main(cfg: DictConfig) -> None:
                     config_name=config_name,
                     with_probes=influence_enabled,
                     seed=cfg.seed,
+                    rank=rank,
+                    world_size=world_size,
                 )
 
             # Extract first probe loader for legacy interface (stage2 trainer expects single loader)
@@ -795,10 +802,24 @@ def main(cfg: DictConfig) -> None:
             logger.info("Stage 2 complete!")
 
         elif stage == "distillation":
-            # Stage 3: Distillation fine-tuning
-            logger.info("Running Stage 3: Distillation Fine-tuning")
+            # Stage 3 has been moved to the separate `distillation` package
+            raise ValueError(
+                "Stage 3 distillation has been moved to the separate `distillation` package.\n"
+                "Use: uv run --package wrinklefree-distillation python scripts/distill.py \\\n"
+                "       student.checkpoint_path=outputs/stage2/checkpoint.pt"
+            )
 
-            # Load tokenizer
+        elif stage == "unified":
+            # Unified training: auto-convert + continue pretraining with composable objectives
+            logger.info("Running Unified Training (auto-convert + objectives)")
+
+            # Load model - will be auto-converted to BitNet if needed
+            # NOTE: AutoModelForCausalLM, AutoTokenizer already imported at module level
+            model = AutoModelForCausalLM.from_pretrained(
+                cfg.model.teacher.pretrained,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
             tokenizer = AutoTokenizer.from_pretrained(
                 cfg.model.teacher.pretrained,
                 trust_remote_code=True,
@@ -806,122 +827,139 @@ def main(cfg: DictConfig) -> None:
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
 
-            # Create dataloaders
-            train_dataloader = create_finetune_dataloader(
-                dataset_path=cfg.data.dataset.path,
+            # Create dataloader
+            config_name = cfg.data.get("config_name", "mixed_pretrain")
+            logger.info(f"Loading data config '{config_name}' from data_handler")
+            train_dataloader, mixed_dataset, probe_dataloaders = create_pretraining_dataloader(
                 tokenizer=tokenizer,
                 batch_size=cfg.training.batch_size,
                 max_length=cfg.training.max_seq_length,
-                dataset_name=cfg.data.dataset.get("name"),
-                text_column=cfg.data.preprocessing.get("text_column", "sentence"),
-                label_column=cfg.data.preprocessing.get("label_column", "label"),
-                num_workers=cfg.data.dataloader.get("num_workers", 2),
-                is_generation=cfg.data.preprocessing.get("is_generation", False),
+                config_name=config_name,
+                with_probes=False,
+                world_size=world_size,
+                rank=rank,
+                packed=cfg.training.packing.enabled,
             )
 
-            eval_dataloader = None
-            if hasattr(cfg.data, "eval_dataset"):
-                eval_dataloader = create_finetune_dataloader(
-                    dataset_path=cfg.data.eval_dataset.path,
-                    tokenizer=tokenizer,
-                    batch_size=cfg.training.batch_size,
-                    max_length=cfg.training.max_seq_length,
-                    dataset_name=cfg.data.eval_dataset.get("name"),
-                    split=cfg.data.eval_dataset.get("split", "validation"),
-                    text_column=cfg.data.preprocessing.get("text_column", "sentence"),
-                    label_column=cfg.data.preprocessing.get("label_column", "label"),
-                    is_generation=cfg.data.preprocessing.get("is_generation", False),
-                    shuffle=False,
-                )
-
-            # Load model from stage 2 (local, Hub, or GCS)
-            cache_dir = output_dir / ".hub_cache"
-
-            stage2_path = get_or_download_checkpoint(
-                local_path=output_dir / "stage2_checkpoint" / "checkpoints" / "final",
-                hub_repo_id=hub_repo_id,
-                stage="stage2_checkpoint",
-                cache_dir=cache_dir,
-                gcs_bucket=gcs_bucket,
-                gcs_prefix=f"checkpoints/{cfg.experiment_name}",
-            )
-
-            if stage2_path:
-                # Try multiple possible checkpoint paths (GCS preserves directory structure)
-                possible_paths = [
-                    stage2_path / "checkpoint.pt",
-                    stage2_path / "checkpoints" / "final" / "checkpoint.pt",
-                    stage2_path / "checkpoints" / "latest" / "checkpoint.pt",
-                ]
-                checkpoint_file = None
-                for path in possible_paths:
-                    print(f"[DEBUG Stage 3] Checking path: {path} exists={path.exists()}")
-                    if path.exists():
-                        checkpoint_file = path
-                        break
-
-                # Fallback: glob for any .pt file
-                if checkpoint_file is None:
-                    for f in stage2_path.glob("**/*.pt"):
-                        print(f"[DEBUG Stage 3] Found via glob: {f}")
-                        checkpoint_file = f
-                        break
-
-                if checkpoint_file and checkpoint_file.exists():
-                    checkpoint = torch.load(checkpoint_file, map_location="cpu")
-                    from wrinklefree.models import BitNetLlama, BitNetConfig
-
-                    # Disable flash attention if attention distillation is enabled
-                    # Flash/SDPA doesn't return attention weights
-                    needs_attention_weights = cfg.distillation.gamma_attention > 0
-                    use_flash = cfg.model.get("use_flash_attention", True)
-                    if needs_attention_weights and use_flash:
-                        print("[DEBUG Stage 3] Disabling flash attention (required for attention distillation)")
-                        use_flash = False
-
-                    model_config = BitNetConfig(
-                        vocab_size=cfg.model.vocab_size,
-                        hidden_size=cfg.model.hidden_size,
-                        intermediate_size=cfg.model.intermediate_size,
-                        num_hidden_layers=cfg.model.num_hidden_layers,
-                        num_attention_heads=cfg.model.num_attention_heads,
-                        num_kv_heads=cfg.model.num_kv_heads,
-                        use_flash_attention=use_flash,
+            # Auto-convert to BitNet if enabled and model isn't already BitNet
+            auto_convert_cfg = getattr(cfg.training, "auto_convert", None)
+            if auto_convert_cfg is not None and getattr(auto_convert_cfg, "enabled", False):
+                from bitnet_arch.conversion import auto_convert_if_needed, is_bitnet_model
+                if not is_bitnet_model(model):
+                    logger.info("Auto-converting model to BitNet...")
+                    exclude_layers = list(getattr(auto_convert_cfg, "exclude_layers", []))
+                    model = auto_convert_if_needed(
+                        model,
+                        hidden_size=model.config.hidden_size,
+                        intermediate_size=model.config.intermediate_size,
+                        exclude_layers=exclude_layers,
                     )
-                    model = BitNetLlama(model_config)
-                    state_dict = checkpoint.get("model_state_dict", checkpoint)
-                    model.load_state_dict(state_dict, strict=False)
-                    print(f"[DEBUG Stage 3] ✓ Loaded Stage 2 checkpoint from {checkpoint_file}")
-                    logger.info(f"Loaded Stage 2 checkpoint from {checkpoint_file}")
+                    logger.info("Model converted to BitNet")
                 else:
-                    # List what's actually in the directory for debugging
-                    contents = list(stage2_path.glob("**/*"))
-                    print(f"[DEBUG Stage 3] ✗ No checkpoint found! Directory contents:")
-                    for c in contents[:20]:
-                        print(f"  - {c}")
-                    raise FileNotFoundError(f"No checkpoint.pt found in {stage2_path}. Checked: {possible_paths}")
-            else:
-                raise FileNotFoundError(
-                    "Stage 2 checkpoint not found locally or on Hub. Run stage 2 first."
-                )
+                    logger.info("Model is already BitNet, skipping conversion")
 
-            # Run stage 3
-            model = run_stage3(
-                student_model=model,
-                teacher_model_name=cfg.model.teacher.pretrained,
+            # Run unified training using ContinuedPretrainingTrainer (same as stage2)
+            model = run_stage2(
+                model=model,
                 train_dataloader=train_dataloader,
-                eval_dataloader=eval_dataloader,
                 config=cfg,
-                distill_config=cfg.distillation,
-                output_dir=output_dir / "stage3_checkpoint",
+                output_dir=output_dir / "unified_checkpoint",
                 run_manager=run_manager,
-                experiment_name=cfg.experiment_name,
             )
 
-            # Update metadata with wandb URL (after trainer initialized wandb)
-            update_wandb_metadata(run_manager, rank)
+            logger.info("Unified training complete!")
 
-            logger.info("Stage 3 complete!")
+        elif stage == "lrc_calibration":
+            # LRC Calibration: Post-quantization recovery using low-rank correction
+            # Based on arxiv.org/abs/2412.07902
+            logger.info("Running LRC Calibration (Low-Rank Correction)")
+
+            from bitnet_arch import (
+                BitLinearLRC,
+                convert_bitlinear_to_lrc,
+                freeze_model_except_lrc,
+                get_lrc_stats,
+            )
+            from bitnet_arch.conversion import auto_convert_if_needed, is_bitnet_model
+
+            # Load model
+            model = AutoModelForCausalLM.from_pretrained(
+                cfg.model.teacher.pretrained,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                cfg.model.teacher.pretrained,
+                trust_remote_code=True,
+            )
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            # Auto-convert to BitNet if needed (same as unified training)
+            if not is_bitnet_model(model):
+                logger.info("Model is not BitNet, auto-converting...")
+                auto_convert_cfg = getattr(cfg.training, "auto_convert", None)
+                exclude_layers = []
+                if auto_convert_cfg is not None:
+                    exclude_layers = list(getattr(auto_convert_cfg, "exclude_layers", []))
+                model = auto_convert_if_needed(
+                    model,
+                    hidden_size=model.config.hidden_size,
+                    intermediate_size=model.config.intermediate_size,
+                    exclude_layers=exclude_layers,
+                )
+                logger.info("Model converted to BitNet")
+
+            # Get LRC config
+            lrc_cfg = getattr(cfg, "lrc", None) or {}
+            rank_percentage = lrc_cfg.get("rank_percentage", 0.1)
+            init_method = lrc_cfg.get("init_method", "zeros")
+
+            # Convert BitLinear -> BitLinearLRC
+            logger.info(f"Converting BitLinear layers to BitLinearLRC (rank={rank_percentage*100:.0f}%)")
+            model = convert_bitlinear_to_lrc(
+                model,
+                rank_percentage=rank_percentage,
+                init_method=init_method,
+            )
+
+            # Freeze everything except LRC matrices (U, V)
+            logger.info("Freezing all parameters except LRC matrices (U, V)")
+            freeze_stats = freeze_model_except_lrc(model)
+            logger.info(f"  Trainable: {freeze_stats['trainable']:,} params")
+            logger.info(f"  Frozen: {freeze_stats['frozen']:,} params")
+
+            # Get LRC layer stats
+            lrc_stats = get_lrc_stats(model)
+            logger.info(f"  LRC layers: {lrc_stats['num_lrc_layers']}")
+            logger.info(f"  Avg rank: {lrc_stats['average_rank']:.1f}")
+
+            # Create dataloader
+            config_name = cfg.data.get("config_name", "fineweb")
+            logger.info(f"Loading data config '{config_name}' from data_handler")
+            train_dataloader, mixed_dataset, probe_dataloaders = create_pretraining_dataloader(
+                tokenizer=tokenizer,
+                batch_size=cfg.training.batch_size,
+                max_length=cfg.training.max_seq_length,
+                config_name=config_name,
+                with_probes=False,
+                world_size=world_size,
+                rank=rank,
+                packed=cfg.training.packing.enabled,
+            )
+
+            # Run LRC training using ContinuedPretrainingTrainer
+            # The teacher model will be loaded automatically by run_stage2
+            # since lrc_reconstruction objective is enabled
+            model = run_stage2(
+                model=model,
+                train_dataloader=train_dataloader,
+                config=cfg,
+                output_dir=output_dir / "lrc_calibration_checkpoint",
+                run_manager=run_manager,
+            )
+
+            logger.info("LRC Calibration complete!")
 
         else:
             raise ValueError(f"Unknown training stage: {stage}")

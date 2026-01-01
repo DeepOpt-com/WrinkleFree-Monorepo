@@ -53,6 +53,9 @@ class Credentials(BaseModel):
     # RunPod
     runpod_api_key: Optional[str] = Field(default=None, description="RunPod API key")
 
+    # Vast.ai
+    vastai_api_key: Optional[str] = Field(default=None, description="Vast.ai API key")
+
     # Model/Training
     checkpoint_bucket: Optional[str] = Field(
         default=None, description="Checkpoint bucket name"
@@ -111,6 +114,7 @@ class Credentials(BaseModel):
                 else []
             ),
             runpod_api_key=get("RUNPOD_API_KEY"),
+            vastai_api_key=get("VASTAI_API_KEY"),
             checkpoint_bucket=get("CHECKPOINT_BUCKET"),
             checkpoint_store=get("CHECKPOINT_STORE") or "s3",
             wandb_api_key=get("WANDB_API_KEY"),
@@ -147,6 +151,8 @@ class Credentials(BaseModel):
             os.environ["HETZNER_API_TOKEN"] = self.hetzner_api_token
         if self.runpod_api_key:
             os.environ["RUNPOD_API_KEY"] = self.runpod_api_key
+        if self.vastai_api_key:
+            os.environ["VASTAI_API_KEY"] = self.vastai_api_key
         if self.wandb_api_key:
             os.environ["WANDB_API_KEY"] = self.wandb_api_key
 
@@ -165,3 +171,7 @@ class Credentials(BaseModel):
     def has_runpod(self) -> bool:
         """Check if RunPod credentials are configured."""
         return bool(self.runpod_api_key)
+
+    def has_vastai(self) -> bool:
+        """Check if Vast.ai credentials are configured."""
+        return bool(self.vastai_api_key)

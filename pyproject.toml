@@ -4,12 +4,13 @@ version = "0.1.0"
 description = "WrinkleFree monorepo for 1.58-bit quantized LLM research"
 requires-python = ">=3.10"
 dependencies = [
+    "google-api-python-client>=2.187.0",
     "muon-clip",
-    "muon-optimizer>=0.1.0",
 ]
 
 [tool.uv.workspace]
 members = ["packages/*"]
+exclude = ["packages/_legacy"]
 
 [tool.uv.sources]
 muon-clip = { git = "https://github.com/GAD-cell/muon-clip.git", rev = "main" }
@@ -33,10 +34,24 @@ select = ["E", "F", "I", "N", "W", "UP"]
 testpaths = ["packages/*/tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --cov=packages --cov-report=term-missing --cov-report=html:coverage_html --cov-fail-under=0"
 markers = [
     "smoke: Quick smoke tests",
     "integration: Integration tests",
     "slow: Slow tests",
     "gpu: GPU-required tests",
 ]
+
+[tool.coverage.run]
+source = ["packages/*/src"]
+omit = ["*/_legacy/*", "*/tests/*", "*/__pycache__/*"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+]
+show_missing = true

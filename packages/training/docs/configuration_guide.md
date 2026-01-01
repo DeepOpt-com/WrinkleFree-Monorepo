@@ -50,6 +50,14 @@ The training process is sequential. You must complete earlier stages to generate
     *   **Input**: Stage 2 checkpoint.
     *   **Time**: Hours.
 
+5.  **LRC Calibration** (`lrc_calibration`)
+    *   **What it does**: Post-training recovery using Low-Rank Correction matrices.
+    *   **Input**: Any BitNet model (Stage 1.9, 2, or 3 checkpoint).
+    *   **Trainable params**: Only U, V matrices (~10% of min(in, out) per layer).
+    *   **Frozen params**: ALL other parameters (quantized weights, embeddings, norms).
+    *   **Time**: ~1-2 hours (short calibration run, ~50M tokens).
+    *   **Use case**: Quick recovery of quantization errors without full retraining.
+
 ## Step 3: Choose Hardware Strategy (`distributed=...`)
 
 | Config Name | Description |
@@ -94,6 +102,36 @@ uv run python scripts/train.py \
     model=qwen3_4b \
     training=stage2_pretrain \
     distributed=fsdp_multi
+```
+
+### 3. LRC Calibration (Quick Post-Training Recovery)
+Recover quantization errors without full retraining.
+
+```bash
+# After Stage 1.9 or Stage 2, run LRC calibration
+uv run python scripts/train.py \
+    model=smollm2_135m \
+    training=lrc_calibration \
+    data=fineweb \
+    training.max_steps=5000
+
+# Key points:
+# - Only U, V matrices train (~10% of hidden dim each)
+# - All other params frozen (quantized weights, embeddings, norms)
+# - Uses hidden state matching loss vs. fp16 teacher
+# - Short calibration run (~50M tokens)
+```
+
+**LRC Configuration Options**:
+```bash
+# Change rank percentage (default 10%)
+lrc.rank_percentage=0.2
+
+# Use SVD initialization (better starting point)
+lrc.init_method=svd_residual
+
+# Adjust layer weighting
+objectives.lrc_reconstruction.layer_weights=uniform  # or "progressive"
 ```
 
 ## How to Override Defaults

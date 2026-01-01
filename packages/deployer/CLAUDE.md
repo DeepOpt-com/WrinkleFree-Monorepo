@@ -2,7 +2,32 @@
 
 Training job launcher for 1.58-bit quantized LLMs. Uses SkyPilot for managed GPU jobs with spot recovery.
 
-**For detailed AI discovery docs, see `docs/AIDEV.md`.**
+## CRITICAL Rules
+
+1. **RUN FROM DEPLOYER DIR**: All `wf` and `sky` commands must run from `packages/deployer`
+2. **SOURCE CREDENTIALS FIRST**: Always `source credentials/.env` before any cloud command
+3. **NEVER CANCEL OTHERS' JOBS**: Only cancel SkyPilot jobs you started in this session
+4. **USE NEBIUS**: Prefer Nebius over RunPod/GCP (better availability, lower cost)
+5. **CLEAN BEFORE RETRY**: Run `sky exec <cluster> "rm -rf /tmp/checkpoints/*"` before retrying failed jobs
+
+## Quick Smoke Test (Lightning)
+
+```bash
+cd packages/deployer
+source credentials/.env
+
+# Launch Lightning smoke test with auto batch size
+sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke --env OBJECTIVE_COMBO=dlm
+
+# Monitor
+sky logs lightning-smoke
+
+# Re-run on existing cluster (faster)
+sky exec lightning-smoke skypilot/smoke_test_lightning.yaml --env OBJECTIVE_COMBO=dlm
+
+# Teardown
+sky down lightning-smoke -y
+```
 
 ## Monorepo Integration
 
@@ -11,11 +36,11 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 **Orchestrates**:
 | Command | Package | Description |
 |---------|---------|-------------|
-| `wf train` | `training` | 1.58-bit quantization training |
-| `wf fairy2` | `fairy2` | Complex-valued quantization |
-| `wf dlm` | `converter` | DLM format conversion |
+| `wf train` | `training` | 1.58-bit quantization training (all stages) |
 | `wf serve` | `inference` | Model serving |
 | `wf eval` | `eval` | Model evaluation |
+
+> **Note**: Distillation is now done via training objectives (`training=bitdistill_full` or `training=lrc_calibration`).
 
 **Running commands**:
 ```bash
@@ -41,6 +66,14 @@ uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --cloud nebius
 # With specific scale (4x H100)
 uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --scale large
 
+# BitDistill distillation (via training objectives)
+uv run --package wrinklefree-deployer wf train -m qwen3_4b \
+  --training bitdistill_full --cloud nebius
+
+# LRC calibration (post-quantization recovery)
+uv run --package wrinklefree-deployer wf train -m qwen3_4b \
+  --training lrc_calibration --cloud nebius
+
 # Check logs
 uv run --package wrinklefree-deployer wf logs <run_id>
 
@@ -57,12 +90,56 @@ uv run --package wrinklefree-deployer sky jobs queue
 | File | Purpose |
 |------|---------|
 | `src/wf_deployer/constants.py` | All magic strings, defaults, scales, GAR config |
-| `src/wf_deployer/core.py` | Main API: train(), logs(), cancel() |
+| `src/wf_deployer/core.py` | Main API: train(), logs() |
 | `src/wf_deployer/cli.py` | CLI commands |
 | `skypilot/train.yaml` | SkyPilot training job template |
 | `skypilot/service.yaml` | SkyServe inference template |
+| `skypilot/smoke_test_lightning.yaml` | **Smoke test: Lightning + auto batch (RECOMMENDED)** |
+| `skypilot/smoke_test_unified_1gpu.yaml` | Smoke test: 1x L40 unified training (legacy) |
+| `skypilot/smoke_test_unified_2gpu.yaml` | Smoke test: 2x L40 with FSDP |
+| `skypilot/smoke_test_bitdistill.yaml` | Smoke test: BitDistill distillation |
+| `skypilot/smoke_test_lrc.yaml` | Smoke test: LRC calibration (1x L40) |
 | `credentials/.env` | Local credentials (gitignored) |
 | `credentials/gcp-service-account.json` | GCP service account for GCS + Docker auth |
+
+## Smoke Tests
+
+Quick validation of the training pipeline (~5 minutes):
+
+```bash
+cd packages/deployer
+
+# 1x L40 smoke test (20 steps with influence remixing)
+sky launch skypilot/smoke_test_unified_1gpu.yaml -y --cluster unified-1gpu
+
+# 2x L40 smoke test (FSDP data parallelism)
+sky launch skypilot/smoke_test_unified_2gpu.yaml -y --cluster unified-2gpu
+
+# LRC calibration smoke test (Low-Rank Correction)
+source credentials/.env
+export SKYPILOT_DOCKER_PASSWORD=$(cat credentials/gcp-service-account.json)
+sky launch skypilot/smoke_test_lrc.yaml -y --secret WANDB_API_KEY --secret SKYPILOT_DOCKER_PASSWORD
+
+# Monitor
+sky logs unified-1gpu
+sky logs unified-2gpu
+sky logs wf-smoke-lrc
+
+# Teardown
+sky down unified-1gpu unified-2gpu wf-smoke-lrc -y
+```
+
+**Test Configuration**:
+- **Steps**: 20 total (4 warmup + 16 with influence)
+- **First 20%**: Warmup on fineweb-edu, no influence updates
+- **Remaining 80%**: Mixed data with influence-based remixing
+- **Checkpoints**: GCS upload every 10 steps
+- **Verifies**: Loss decreases, MuonClip works, GCS/WandB logging
+
+**Expected Results**:
+- First loss: ~10-12
+- Last loss: ~6-8 (should decrease!)
+- Checkpoints in GCS: step_10/, step_20/, final/
 
 ## Credential Management
 
@@ -124,6 +201,7 @@ Build and push with:
 | Nebius | `--cloud nebius` | $1.99/hr H100, recommended |
 | RunPod | `--cloud runpod` | Flexible, spot available |
 | GCP | `--cloud gcp` | A100/H100, expensive |
+| Vast.ai | `--cloud vast` | Cheap H100s, marketplace pricing |
 
 ## Troubleshooting
 
@@ -143,7 +221,17 @@ cat ~/.boto
 sky check
 
 # Re-authenticate
-sky check nebius  # or runpod, gcp
+sky check nebius  # or runpod, gcp, vast
+```
+
+### Vast.ai setup
+```bash
+# 1. Get API key from https://vast.ai/console/cli/
+# 2. Configure SkyPilot
+sky check vast
+
+# 3. Add to credentials/.env
+echo "VASTAI_API_KEY=your_key_here" >> credentials/.env
 ```
 
 ### Docker auth failures on Nebius/RunPod

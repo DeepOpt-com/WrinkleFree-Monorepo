@@ -21,13 +21,14 @@ dependencies = [
     "safetensors>=0.4.0",
     "accelerate>=0.27.0",
     "zstandard>=0.22.0",
-    "muon-optimizer>=0.1.0", # Muon optimizer
     "huggingface_hub>=0.20.0", # Checkpoint uploads to HF Hub
     "hf_transfer>=0.1.0", # Fast HF downloads
     "google-cloud-storage>=2.14.0", # GCS checkpoint uploads
     "torchao>=0.7.0", # TorchAO for FP8 training (DeepSeek-V3 style)
-    "cheapertraining", # Unified data layer (install: pip install -e ../WrinkleFree-CheaperTraining)
-    "muon-clip",
+    "data-handler",  # Data handling (streaming datasets, packing, influence mixing)
+    "bitnet-arch",  # BitNet architecture package (workspace)
+    "muon-fsdp2",  # FSDP-compatible Muon optimizer
+    "pytorch-lightning>=2.6.0",
 ]
 
 [project.optional-dependencies]
@@ -86,7 +87,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --cov=wrinklefree --cov-report=term-missing --cov-report=html"
 markers = [
     "smoke: Quick smoke tests",
     "integration: Integration tests requiring GPU or external services",
@@ -111,5 +112,6 @@ fail_under = 0
 directory = "htmlcov"
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }
-muon-clip = { git = "https://github.com/GAD-cell/muon-clip" }
+data-handler = { workspace = true }
+bitnet-arch = { workspace = true }
+

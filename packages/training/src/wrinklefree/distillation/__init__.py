@@ -1,50 +1,24 @@
-"""Distillation losses for BitDistill training."""
+"""Distillation losses for BitDistill training.
 
-from wrinklefree.distillation.attention_loss import (
-    AttentionDistillationLoss,
-    AttentionRelationDistillationLoss,
-    HiddenStateDistillationLoss,
-)
-from wrinklefree.distillation.combined_loss import (
-    BitDistillLoss,
-    ClassificationDistillLoss,
-    ContinuePretrainLoss,
-)
+NOTE: Stage 3 distillation has been moved to the separate `distillation` package.
+This module now only contains:
+- LayerwiseDistillationLoss - Used by Stage 1.9 layer-wise distillation
+- ContinuePretrainLoss - Used by Stage 2 continue pre-training
+
+For Stage 3 distillation (logits + attention), use:
+    from distillation import BitDistillLoss, LocalTeacher, DistillationTrainer
+"""
+
+from wrinklefree.distillation.combined_loss import ContinuePretrainLoss
 from wrinklefree.distillation.layerwise_loss import (
     LayerwiseDistillationLoss,
     LayerwiseLossType,
 )
-from wrinklefree.distillation.logits_loss import (
-    LogitsDistillationLoss,
-    SoftTargetCrossEntropy,
-)
-from wrinklefree.distillation.vllm_teacher import (
-    VLLMTeacherWrapper,
-    VLLMTeacherWithPrefetch,
-    VLLMConfig,
-    create_vllm_or_inprocess_teacher,
-)
-from wrinklefree.distillation.teacher_wrapper import (
-    HiddenStateTeacherWrapper,
-)
 
 __all__ = [
-    "LogitsDistillationLoss",
-    "SoftTargetCrossEntropy",
-    "AttentionDistillationLoss",
-    "AttentionRelationDistillationLoss",
-    "HiddenStateDistillationLoss",
-    "BitDistillLoss",
-    "ContinuePretrainLoss",
-    "ClassificationDistillLoss",
     # Stage 1.9: Layer-wise distillation
     "LayerwiseDistillationLoss",
     "LayerwiseLossType",
-    # vLLM teacher for Stage 3
-    "VLLMTeacherWrapper",
-    "VLLMTeacherWithPrefetch",
-    "VLLMConfig",
-    "create_vllm_or_inprocess_teacher",
-    # Hidden state teacher for pre_stage_2 distillation
-    "HiddenStateTeacherWrapper",
+    # Stage 2: Continue pre-training
+    "ContinuePretrainLoss",
 ]

@@ -4,6 +4,21 @@ project(sgl_kernel_inference LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Build options
+option(USE_LLAMA_CPP "Use llama.cpp backend (requires GGUF models)" OFF)
+option(USE_SIMD_KERNELS "Use sgl-kernel SIMD backend (requires .bin models)" ON)
+
+if(USE_LLAMA_CPP AND USE_SIMD_KERNELS)
+    message(FATAL_ERROR "Cannot enable both USE_LLAMA_CPP and USE_SIMD_KERNELS")
+endif()
+
+if(USE_SIMD_KERNELS)
+    add_compile_definitions(USE_SIMD_KERNELS)
+    message(STATUS "Inference: Using sgl-kernel SIMD backend (fast, .bin format)")
+else()
+    message(STATUS "Inference: Using llama.cpp backend (GGUF format)")
+endif()
+
 # SIMD flags (same as bitnet library)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx2 -mfma")
@@ -49,12 +64,24 @@ if(OpenMP_CXX_FOUND)
     message(STATUS "Inference: OpenMP enabled")
 endif()
 
-# Source files
+# Source files - conditional based on backend
 set(INFERENCE_SOURCES
-    bitnet_engine.cpp
-    bitnet_batch.cpp
     kv_cache.cpp
 )
+
+if(USE_SIMD_KERNELS)
+    # sgl-kernel SIMD backend (fast, uses .bin format)
+    list(APPEND INFERENCE_SOURCES
+        bitnet_engine.cpp
+        bitnet_batch_simd.cpp
+    )
+else()
+    # llama.cpp backend (uses GGUF format)
+    list(APPEND INFERENCE_SOURCES
+        llama_engine.cpp
+        bitnet_batch.cpp
+    )
+endif()
 
 # Build as both static and shared library
 add_library(sgl_kernel_inference_static STATIC ${INFERENCE_SOURCES})
@@ -91,3 +118,20 @@ install(TARGETS sgl_kernel_inference sgl_kernel_inference_static
     RUNTIME DESTINATION bin
 )
 install(FILES bitnet_engine.h bitnet_batch.h kv_cache.h DESTINATION include/sgl_kernel/inference)
+
+# Test executables
+if(USE_SIMD_KERNELS)
+    # Basic engine test
+    add_executable(test_engine test_main.cpp)
+    target_link_libraries(test_engine PRIVATE sgl_kernel_inference_static sgl_kernel_bitnet)
+    target_include_directories(test_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Batch engine test
+    add_executable(test_batch_simd test_batch_simd.cpp)
+    target_link_libraries(test_batch_simd PRIVATE sgl_kernel_inference_static sgl_kernel_bitnet)
+    target_include_directories(test_batch_simd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Debug loader test
+    add_executable(test_loader test_loader.cpp)
+    target_include_directories(test_loader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+endif()

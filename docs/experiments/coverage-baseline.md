@@ -2,16 +2,21 @@
 
 Generated: 2025-12-26 (Updated)
 
+> **Note**: Package renames since this baseline:
+> - `WrinkleFree-1.58Quant` → `packages/training` (wrinklefree)
+> - `WrinkleFree-CheaperTraining` → `packages/data_handler` (data-handler)
+> - `WrinkleFree-Fairy2` → `packages/distillation` (wrinklefree-distillation)
+
 ## Summary
 
 | Sub-Repo | Tests | Passing | Coverage | Status |
 |----------|-------|---------|----------|--------|
-| **WrinkleFree-1.58Quant** | 324 | 315 | **36%** | MoE router at 95%, 9 equivalence failures |
-| **WrinkleFree-CheaperTraining** | 37 | 37 | **~15%** | Data/influence tests added |
-| **WrinkleFree-Deployer** | 260 | 236 | **47%** | Source tests added, constants/config 100% |
-| **WrinkleFree-Inference-Engine** | TBD | TBD | TBD | Submodule conflicts |
-| **WrinkleFree-Eval** | TBD | TBD | TBD | Submodule conflicts |
-| **WrinkleFree-DLM-Converter** | 28 | 28 | **25%** | Source tests added, constants 100% |
+| **training** (was 1.58Quant) | 324 | 315 | **36%** | MoE router at 95%, 9 equivalence failures |
+| **data_handler** (was CheaperTraining) | 37 | 37 | **~15%** | Data/influence tests added |
+| **deployer** | 260 | 236 | **47%** | Source tests added, constants/config 100% |
+| **inference** | TBD | TBD | TBD | Submodule conflicts |
+| **eval** | TBD | TBD | TBD | Submodule conflicts |
+| **converter** | 28 | 28 | **25%** | Source tests added, constants 100% |
 
 **Target**: 70% coverage across all repos
 

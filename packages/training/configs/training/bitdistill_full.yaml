@@ -1,0 +1,183 @@
+# BitDistill Full Training Configuration
+# Combines CE + logits distillation + attention distillation
+# Based on arxiv.org/abs/2510.13998
+
+stage: unified  # Uses unified trainer with distillation objectives
+
+# Auto-convert: Converts model to BitNet on-the-fly if not already converted
+auto_convert:
+  enabled: true
+  exclude_layers:
+    - embed_tokens
+    - lm_head
+    - embed_positions
+
+# torch.compile for 2.9x training speedup
+torch_compile:
+  enabled: true
+  mode: default
+
+# FP8 GEMM acceleration (H100/H200 only, auto-fallback to BF16)
+fp8:
+  enabled: true
+  recipe: rowwise
+  accumulator_dtype: bfloat16
+  min_gemm_size: 512
+  exclude_patterns:
+    - embed_tokens
+    - lm_head
+    - norm
+    - subln
+
+# Sequence packing
+packing:
+  enabled: true
+
+# Optimization (MuonClip for BitNet stability)
+optimizer:
+  type: muonclip
+  lr_muon: 0.005
+  lr_adam: 5e-5
+  weight_decay: 0.0
+  momentum: 0.95
+  enable_clipping: true
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
+
+scheduler:
+  type: wsd
+  warmup_steps: 550
+  decay_ratio: 0.2
+  decay_type: linear
+  min_lr_ratio: 0.0
+
+# Training parameters
+total_tokens: 1_000_000_000  # 1B tokens (distillation typically needs less)
+max_steps: null
+max_seq_length: 512
+batch_size: 8  # Reduced for distillation (teacher + student + attention weights)
+gradient_accumulation_steps: 64  # Increased to maintain effective batch size
+gradient_clipping: 1.0
+
+# Gradient checkpointing to reduce memory
+gradient_checkpointing: true
+
+# Lambda warmup for gradual quantization
+lambda_warmup:
+  enabled: true
+  warmup_steps: 500
+  schedule: linear
+
+# === RESUME CONFIGURATION ===
+resume:
+  checkpoint_path: null
+  load_optimizer_state: true
+  load_scheduler_state: true
+  load_training_state: true
+  strict_model_load: true
+
+# === OBJECTIVES SYSTEM ===
+# BitDistill: CE + logits distillation + attention distillation
+objectives:
+  continue_pretrain:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+  logits_distill:
+    enabled: true
+    weight: 10.0
+    temperature: 5.0
+    ignore_index: -100
+    shift_labels: true
+
+  attention_distill:
+    enabled: true
+    weight: 1.0e-5
+    distill_layer: -1
+    temperature: 1.0
+    ignore_index: -100
+
+  # Disabled by default for BitDistill
+  dlm:
+    enabled: false
+    weight: 0.5
+    mask_prob: 0.15
+    mask_token_id: 0
+
+# === CURRICULUM SCHEDULE ===
+# Ramp up distillation weight after warmup
+curriculum:
+  enabled: true
+  interpolation: cosine
+  phases:
+    # Phase 1: Warmup - CE only (first 10%)
+    - name: warmup
+      end_ratio: 0.1
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0
+        logits_distill: 0.0
+        attention_distill: 0.0
+
+    # Phase 2: Ramp up distillation (10% - 30%)
+    - name: distill_ramp
+      end_ratio: 0.3
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 1.0
+        logits_distill: 5.0
+        attention_distill: 5.0e-6
+
+    # Phase 3: Main distillation (30% - 100%)
+    - name: main
+      end_ratio: 1.0
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 1.0
+        logits_distill: 10.0
+        attention_distill: 1.0e-5
+
+# Teacher model configuration
+teacher:
+  model_name: null  # Auto-detect from student's original model
+  use_vllm: false
+  fp16: true
+  offload_to_cpu: false
+  load_in_4bit: false
+  use_flash_attention: false  # Must be false for attention distillation
+  use_eager_attention: true   # Required for attention weights
+
+# Checkpointing
+checkpoint:
+  save_interval: 200
+  keep_last_n: 5
+  save_optimizer: true
+
+# Logging
+logging:
+  log_interval: 10
+  wandb:
+    enabled: true
+    project: wrinklefree
+    entity: null
+    name: null
+    tags: [bitdistill, bitnet]
+
+# Early stopping
+early_stopping:
+  enabled: false
+  patience: 5
+  min_delta: 0.01
+  min_evals: 10
+
+# Influence-based data selection
+influence:
+  enabled: true
+  update_interval: 1000
+  learning_rate: 0.2
+  config:
+    lambda_val: 0.1
+    gamma_val: 0.1
+    temperature: 1.0

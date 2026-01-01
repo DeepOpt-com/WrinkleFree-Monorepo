@@ -1,0 +1,171 @@
+# ============================================================================
+# DLM BitNet 2B - llama.cpp Server (Rust/C++ Native)
+# ============================================================================
+#
+# Uses llama.cpp with BitNet TQ1_0 quantization for maximum CPU throughput.
+# No Python in the inference path - pure C++ SIMD kernels.
+#
+# USAGE:
+#   sky launch dlm_llamacpp_8vcpu.yaml
+#
+# PERFORMANCE: 60+ tok/s on 8 vCPUs (AMD EPYC Genoa with AVX512)
+# ============================================================================
+
+name: dlm-llamacpp
+
+resources:
+  cloud: gcp
+  instance_type: c3d-standard-8  # 8 vCPUs, 32GB DDR5, high memory bandwidth
+  region: europe-west4
+  disk_size: 100
+  disk_tier: high
+  use_spot: false
+  ports:
+    - 30000  # API server
+    - 7860   # Streamlit UI
+
+# Use workdir to sync current directory
+workdir: .
+
+# No additional file_mounts - BitNet cloned in setup
+
+envs:
+  # Model source from GCS
+  GCS_CHECKPOINT: gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-3600
+
+  # OpenMP settings for 8 vCPUs
+  OMP_NUM_THREADS: "8"
+  OMP_PROC_BIND: "close"
+  OMP_PLACES: "cores"
+
+setup: |
+  set -ex
+
+  echo "============================================"
+  echo "DLM BitNet llama.cpp Setup"
+  echo "Target: 60+ tok/s on 8 vCPUs"
+  echo "============================================"
+
+  # Show CPU info
+  lscpu | grep -E "(Model name|CPU|Thread|Core)" | head -5
+  grep -m1 flags /proc/cpuinfo | tr ' ' '\n' | grep -E "^avx" | head -5 || echo "No AVX flags found"
+
+  # Install system dependencies
+  sudo apt-get update && sudo apt-get install -y \
+    build-essential cmake ninja-build clang \
+    python3-pip python3-venv libomp-dev git curl \
+    libcurl4-openssl-dev
+
+  # Clone BitNet with submodules for converter script
+  echo "--- Cloning BitNet ---"
+  git clone --recursive --depth 1 https://github.com/microsoft/BitNet.git ~/BitNet
+
+  # Create venv for conversion tools
+  echo "--- Setting up Python environment ---"
+  python3 -m venv ~/.venv
+  source ~/.venv/bin/activate
+  pip install --upgrade pip wheel setuptools
+
+  # Install CPU-only PyTorch for conversion
+  pip install torch --index-url https://download.pytorch.org/whl/cpu
+  pip install safetensors transformers numpy gguf sentencepiece
+
+  # Clone and build llama.cpp with native SIMD optimizations
+  echo "--- Cloning llama.cpp ---"
+  git clone --depth 1 https://github.com/ggml-org/llama.cpp.git ~/llama.cpp
+  cd ~/llama.cpp
+
+  echo "--- Building llama.cpp ---"
+  # Use znver4 for AMD EPYC Genoa (AVX-512 without BF16 issues)
+  cmake -B build \
+    -DCMAKE_C_COMPILER=gcc \
+    -DCMAKE_CXX_COMPILER=g++ \
+    -DCMAKE_C_FLAGS="-march=znver3 -mtune=znver3 -O3" \
+    -DCMAKE_CXX_FLAGS="-march=znver3 -mtune=znver3 -O3" \
+    -DGGML_NATIVE=OFF \
+    -G Ninja
+
+  ninja -C build -j8
+
+  # Verify build
+  ls -la build/bin/llama-server
+  ./build/bin/llama-server --version || true
+
+  # Download checkpoint from GCS
+  echo "--- Downloading checkpoint ---"
+  mkdir -p ~/models/dlm-bitnet-2b
+  gcloud storage cp "${GCS_CHECKPOINT}/*.json" ~/models/dlm-bitnet-2b/
+  gcloud storage cp "${GCS_CHECKPOINT}/*.safetensors" ~/models/dlm-bitnet-2b/
+  gcloud storage cp "${GCS_CHECKPOINT}/*.jinja" ~/models/dlm-bitnet-2b/ 2>/dev/null || true
+
+  # Download tokenizer.model from GCS (same checkpoint location)
+  echo "--- Downloading tokenizer.model ---"
+  gcloud storage cp "${GCS_CHECKPOINT}/tokenizer.model" ~/models/dlm-bitnet-2b/
+
+  # Fix architecture name (BitNetForCausalLM -> BitnetForCausalLM)
+  echo "--- Fixing architecture name ---"
+  sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' ~/models/dlm-bitnet-2b/config.json
+  grep architectures ~/models/dlm-bitnet-2b/config.json
+
+  # Convert to GGUF with F16 (slower but works, optimized format can come later)
+  echo "--- Converting to GGUF (F16) ---"
+  cd ~/BitNet
+
+  # Install BitNet's gguf and dependencies
+  pip install -e 3rdparty/llama.cpp/gguf-py
+
+  # Use BitNet's converter with f16 (handles DLM-specific tensors like ffn_sub_norm)
+  python utils/convert-hf-to-gguf-bitnet.py \
+    ~/models/dlm-bitnet-2b \
+    --outtype f16 \
+    --outfile ~/models/dlm-bitnet-2b.gguf
+
+  ls -lh ~/models/dlm-bitnet-2b.gguf
+
+  # Verify GGUF header
+  echo "--- Verifying GGUF ---"
+  xxd ~/models/dlm-bitnet-2b.gguf | head -5
+
+  echo "============================================"
+  echo "Setup Complete"
+  echo "============================================"
+
+run: |
+  set -ex
+  source ~/.venv/bin/activate
+
+  export OMP_NUM_THREADS=8
+  export OMP_PROC_BIND=close
+  export OMP_PLACES=cores
+
+  echo "============================================"
+  echo "Starting llama.cpp Server"
+  echo "Model: ~/models/dlm-bitnet-2b.gguf"
+  echo "Threads: ${OMP_NUM_THREADS}"
+  echo "============================================"
+
+  # Start llama-server
+  ~/llama.cpp/build/bin/llama-server \
+    -m ~/models/dlm-bitnet-2b.gguf \
+    --host 0.0.0.0 \
+    --port 30000 \
+    -t 8 \
+    -c 4096 &
+
+  # Wait for server to start
+  sleep 10
+
+  # Health check
+  echo "--- Health Check ---"
+  curl -s http://localhost:30000/health || echo "Health endpoint not available"
+
+  # Benchmark
+  echo "--- Benchmark ---"
+  curl -s http://localhost:30000/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{"model": "bitnet", "messages": [{"role": "user", "content": "Hello, how are you?"}], "max_tokens": 50}' \
+    | python -c "import sys,json; r=json.load(sys.stdin); print(f'Response: {r}')"
+
+  # Keep server running
+  echo "Server running on port 30000"
+  wait

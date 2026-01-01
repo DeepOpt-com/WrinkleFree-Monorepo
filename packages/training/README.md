@@ -59,13 +59,10 @@ uv run python scripts/train.py \
     data=fineweb \
     distributed=fsdp_multi
 
-# Stage 3: Self-distillation with Qwen3-4B as teacher
-uv run python scripts/train.py \
-    model=qwen3_4b \
-    training=stage3_distill \
-    data=downstream \
-    distillation=classification \
-    distributed=fsdp_multi
+# Stage 3: Distillation (use distillation package)
+# See packages/distillation/README.md for details
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+    student.checkpoint_path=outputs/stage2/checkpoint.pt
 ```
 
 ### Qwen3-4B Memory Requirements
@@ -75,7 +72,6 @@ uv run python scripts/train.py \
 | Stage 1 | ~12 GB | 8 | 1024 |
 | Stage 1.9 | ~18 GB | 16 | 512 |
 | Stage 2 | ~20 GB | 4 | 1024 |
-| Stage 3 | ~24 GB | 4 | 1024 |
 
 ---
 
@@ -97,13 +93,10 @@ uv run python scripts/train.py \
     data=fineweb \
     distributed=single_gpu
 
-# Stage 3: Distillation fine-tuning with teacher guidance
-uv run python scripts/train.py \
-    model=smollm2_135m \
-    training=stage3_distill_smollm2 \
-    data=downstream \
-    distillation=classification \
-    distributed=single_gpu
+# Stage 3: Distillation (use distillation package)
+# See packages/distillation/README.md for details
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+    student.checkpoint_path=outputs/stage2/checkpoint.pt
 ```
 
 ### SmolLM2-135M Memory Requirements
@@ -112,14 +105,13 @@ uv run python scripts/train.py \
 |-------|------------|------------|------------|
 | Stage 1 | ~8 GB | 16 | 1024 |
 | Stage 2 | ~12 GB | 8 | 1024 |
-| Stage 3 | ~16 GB | 8 | 1024 |
 
 For GPUs with limited memory, reduce `batch_size` or `max_seq_length` via Hydra overrides:
 
 ```bash
 uv run python scripts/train.py \
     model=smollm2_135m \
-    training=stage3_distill_smollm2 \
+    training=stage2_pretrain \
     training.batch_size=4 \
     training.max_seq_length=512 \
     distributed=single_gpu
@@ -127,7 +119,7 @@ uv run python scripts/train.py \
 
 ## Training Pipeline
 
-WrinkleFree implements the 4-stage BitDistill training approach, with optional CheaperTraining integration for influence-based data selection.
+WrinkleFree implements the 4-stage BitDistill training approach, with optional data_handler integration for influence-based data selection. **Note**: Stage 3 (distillation) has been moved to the dedicated `distillation` package.
 
 ```mermaid
 graph LR
@@ -205,7 +197,7 @@ Step 0-1000:    lambda = step/1000 (linear warmup)
 Step 1000+:     lambda = 1.0 (full quantization)
 ```
 
-**CheaperTraining Integration**: During Stage 2, if `influence.enabled=true` in config, the optimizer is wrapped with `InfluenceAwareOptimizer` to perform influence-based data selection:
+**Data Handler Integration**: During Stage 2, if `influence.enabled=true` in config, the optimizer is wrapped with `InfluenceAwareOptimizer` to perform influence-based data selection:
 
 ```yaml
 # configs/training/stage2_pretrain.yaml
@@ -225,53 +217,33 @@ influence:
 
 ### Stage 3: Distillation Fine-Tuning
 
-Fine-tunes with knowledge distillation from the full-precision teacher model.
+> **Important**: Stage 3 distillation has been moved to the dedicated **distillation package**.
 
-#### Loss Function
-
-```
-L = L_CE + λ * L_LD + γ * L_AD
-```
-
-| Component | Description | Default Weight |
-|-----------|-------------|----------------|
-| `L_CE` | Cross-entropy loss on target tokens | 1.0 |
-| `L_LD` | KL divergence on logits (temperature-scaled) | λ = 10.0 |
-| `L_AD` | MiniLM-style attention distribution distillation | γ = 1e-5 |
-
-#### Task-Specific Coefficients
-
-| Task | λ (logits) | γ (attention) | Temperature |
-|------|------------|---------------|-------------|
-| Classification | 10.0 | 1e-5 | 5.0 |
-| Summarization | 1.0 | 1e-3 | 5.0 |
-
-#### Running Stage 3
+For knowledge distillation from full-precision teacher models, use the distillation package:
 
 ```bash
-# With default settings
-uv run python scripts/train.py \
-    training=stage3_distill \
-    model=smollm2_135m \
-    data=downstream
+# BitDistill distillation (logits + attention)
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+    student.checkpoint_path=outputs/stage2/checkpoint.pt
 
-# With custom distillation coefficients
-uv run python scripts/train.py \
-    training=stage3_distill \
-    model=smollm2_135m \
-    distillation.lambda_logits=5.0 \
-    distillation.gamma_attention=1e-4
+# Logits-only distillation
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+    student.checkpoint_path=outputs/stage2/checkpoint.pt \
+    distillation=logits_only
+
+# TCS distillation for DLM students
+uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
+    distillation=tcs \
+    student.checkpoint_path=outputs/dlm/checkpoint.pt
 ```
 
-**CheaperTraining Integration**: Stage 3 also supports influence-aware training via `influence.enabled=true` in the config. This wraps the optimizer to dynamically adjust dataset mixture weights based on gradient-based influence scores.
-
-**Output**: `outputs/bitdistill_<model>_distillation/`
+See `packages/distillation/README.md` for full distillation documentation.
 
 ---
 
-### CheaperTraining Integration
+### Data Handler Integration
 
-[CheaperTraining](https://github.com/your-org/WrinkleFree-CheaperTraining) provides influence-based data selection for more efficient training.
+The [data_handler](../data_handler) package provides influence-based data selection for more efficient training.
 
 #### Architecture
 
@@ -301,7 +273,7 @@ uv run python scripts/train.py \
 #### Configuration
 
 ```yaml
-# In stage2_pretrain.yaml or stage3_distill.yaml
+# In stage2_pretrain.yaml
 influence:
   enabled: true
   update_interval: 1000    # Steps between weight updates
@@ -314,17 +286,12 @@ influence:
 
 #### Installation
 
-CheaperTraining is installed as a local dependency:
+data_handler is installed as a workspace dependency:
 
-```bash
+```toml
 # In pyproject.toml
-cheapertraining @ file:///path/to/WrinkleFree-CheaperTraining
-```
-
-Or install separately:
-
-```bash
-pip install -e /path/to/WrinkleFree-CheaperTraining
+[tool.uv.sources]
+data-handler = { workspace = true }
 ```
 
 ## Multi-GPU Training
@@ -335,13 +302,13 @@ For larger models, use FSDP distributed training:
 # Multi-GPU with FSDP
 uv run torchrun --nproc_per_node=4 scripts/train.py \
     model=llama_7b \
-    training=stage3_distill \
+    training=stage2_pretrain \
     distributed=fsdp_multi
 
 # Large-scale (8+ GPUs)
 uv run torchrun --nproc_per_node=8 scripts/train.py \
     model=llama_7b \
-    training=stage3_distill \
+    training=stage2_pretrain \
     distributed=fsdp_large
 ```
 
@@ -386,9 +353,7 @@ configs/
 ├── training/            # Training stage configs
 │   ├── stage1_subln.yaml
 │   ├── stage1_9_layerwise.yaml
-│   ├── stage2_pretrain.yaml
-│   ├── stage3_distill.yaml
-│   └── stage3_distill_smollm2.yaml
+│   └── stage2_pretrain.yaml
 ├── data/                # Dataset configs
 │   ├── falcon.yaml
 │   ├── fineweb.yaml
@@ -397,9 +362,11 @@ configs/
 │   ├── single_gpu.yaml
 │   ├── fsdp_multi.yaml
 │   └── fsdp_large.yaml
-└── distillation/        # Loss coefficients
-    ├── classification.yaml
-    └── summarization.yaml
+└── objectives/          # Training objectives
+    ├── continue_pretrain.yaml
+    └── layerwise_distill.yaml
+
+# Distillation configs are in packages/distillation/configs/
 
 benchmark/config/        # Ax optimization configs
 ├── benchmark.yaml       # Runner settings (trials, steps, etc.)

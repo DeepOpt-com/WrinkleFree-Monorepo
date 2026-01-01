@@ -5,12 +5,42 @@ All notable changes to the WrinkleFree monorepo.
 ## [Unreleased]
 
 ### Added
-- Root documentation: `docs/architecture.md`, `docs/quick-start.md`, `docs/dependencies.md`, `docs/development.md`
-- Monorepo integration sections in all package CLAUDE.md files
-- `packages/cheapertraining/CLAUDE.md` (was missing)
-- "Part of WrinkleFree Monorepo" notes in all package READMEs
+- `packages/architecture/` - BitNet layers package
+  - `BitLinear`: Ternary weight quantization with 8-bit activation quantization
+  - `BitLinearLRC`: Low-Rank Correction layer for post-quantization recovery
+  - `SubLN`: Sub-Layer Normalization for training stability
+  - `LambdaWarmup`: Gradual quantization schedule management
+  - `convert_model_to_bitnet()`: On-the-fly model conversion
+  - `convert_bitlinear_to_lrc()`: Convert BitLinear to BitLinearLRC
+- `packages/training/src/wrinklefree/objectives/` - Composable objectives system
+  - `ObjectiveManager`: Combines multiple objectives with weights
+  - `CurriculumScheduler`: Phase-based weight transitions
+  - `logits_distill.py`: KL divergence on teacher logits
+  - `attention_distill.py`: Attention relation matching
+  - `tcs_distill.py`: Target Concrete Score for DLM students
+  - `bitdistill.py`: Combined BitDistill (logits + attention)
+  - `lrc_reconstruction.py`: Low-Rank Correction training
+- New training configs:
+  - `training=bitdistill_full` - Full BitDistill with curriculum
+  - `training=lrc_calibration` - LRC adapter training
+- `packages/mobile/` - Android inference with BitNet.cpp
 
 ### Changed
+- **Distillation integrated into training package** via objectives system
+  - Legacy `distillation` package moved to `packages/_legacy/distillation/`
+  - Use `training=bitdistill_full` instead of separate distillation commands
+- Legacy packages archived to `packages/_legacy/`:
+  - `distillation/` - Knowledge distillation (now integrated into training)
+  - `converter/` - DLM conversion (functionality distributed)
+  - `cheapertraining/` - Renamed to `data_handler`
+- Updated all documentation to reflect integrated distillation
+- Removed `wf distill` and `wf tcs-distill` commands (use training objectives)
+
+### Previous Changes
+- Root documentation: `docs/architecture.md`, `docs/quick-start.md`, `docs/dependencies.md`, `docs/development.md`
+- Monorepo integration sections in all package CLAUDE.md files
+- `packages/data_handler/CLAUDE.md` (was missing)
+- "Part of WrinkleFree Monorepo" notes in all package READMEs
 - Updated all documentation to use monorepo paths (`packages/*`)
 - Standardized clone instructions across all READMEs
 - Expanded `packages/deployer/CLAUDE.md` with troubleshooting

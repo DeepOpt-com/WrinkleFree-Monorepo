@@ -1664,7 +1664,11 @@ class BitnetModel(Model):
     model_arch = gguf.MODEL_ARCH.BITNET
 
     def set_vocab(self):
-        self._set_vocab_sentencepiece()
+        # Try GPT2/tiktoken first (used by DLM models), fall back to sentencepiece
+        try:
+            self._set_vocab_gpt2()
+        except Exception:
+            self._set_vocab_sentencepiece()
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()

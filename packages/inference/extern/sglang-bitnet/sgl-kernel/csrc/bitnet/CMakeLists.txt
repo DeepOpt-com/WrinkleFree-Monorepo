@@ -15,6 +15,20 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     if(COMPILER_SUPPORTS_AVX512)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx512f -mavx512bw -mavx512vl")
         message(STATUS "BitNet: Enabling AVX512 support")
+
+        # Check for AVX-512 VNNI (fast int8 dot products)
+        check_cxx_compiler_flag("-mavx512vnni" COMPILER_SUPPORTS_AVX512_VNNI)
+        if(COMPILER_SUPPORTS_AVX512_VNNI)
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx512vnni")
+            message(STATUS "BitNet: Enabling AVX512-VNNI support (fast int8)")
+        endif()
+
+        # Check for AVX-512 BF16
+        check_cxx_compiler_flag("-mavx512bf16" COMPILER_SUPPORTS_AVX512_BF16)
+        if(COMPILER_SUPPORTS_AVX512_BF16)
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx512bf16")
+            message(STATUS "BitNet: Enabling AVX512-BF16 support")
+        endif()
     endif()
 
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")

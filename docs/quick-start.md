@@ -35,15 +35,39 @@ uv sync --package wrinklefree
 ```bash
 # Check imports work
 uv run --package wrinklefree python -c "import wrinklefree; print('training: ok')"
-uv run --package cheapertraining python -c "import cheapertraining; print('cheapertraining: ok')"
+uv run --package data-handler python -c "import data_handler; print('data_handler: ok')"
+uv run --package bitnet-arch python -c "import bitnet_arch; print('bitnet_arch: ok')"
 
 # Run tests
-uv run pytest packages/cheapertraining/tests/ -v --tb=short
+uv run pytest packages/data_handler/tests/ -v --tb=short
 ```
 
 ## Common Tasks
 
 ### Training a Model
+
+#### PyTorch Lightning (Recommended)
+
+```bash
+# SmolLM2-135M with Lightning trainer
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=unified
+
+# With auto batch size scaling (finds max batch that fits GPU)
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=unified \
+  training.auto_batch_size=true
+
+# With limited steps for smoke test
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=unified \
+  training.max_steps=100
+```
+
+#### Legacy Trainer (Still Supported)
 
 ```bash
 # SmolLM2-135M (smallest, good for testing)
@@ -57,6 +81,24 @@ uv run --package wrinklefree python packages/training/scripts/train.py \
   model=smollm2_135m \
   training=stage2_pretrain \
   training.max_steps=100
+```
+
+### Running Distillation (Stage 3)
+
+Distillation is now integrated into the training package via the objectives system:
+
+```bash
+# BitDistill distillation (logits + attention)
+uv run --package wrinklefree python packages/training/scripts/train.py \
+  model=smollm2_135m \
+  training=bitdistill_full \
+  data=mixed_pretrain
+
+# LRC Calibration (post-quantization low-rank correction)
+uv run --package wrinklefree python packages/training/scripts/train.py \
+  model=smollm2_135m \
+  training=lrc_calibration \
+  data=fineweb
 ```
 
 ### Running Evaluation
@@ -79,13 +121,17 @@ wf train --model smollm2_135m --stage 2 --scale dev
 wf sky launch --config skypilot/train.yaml
 ```
 
-### Converting Models
+### Converting Models to GGUF
+
+See the root `CLAUDE.md` for the correct DLM GGUF conversion workflow. Key point: use TQ1_0 format, not TQ2_0.
 
 ```bash
-# Convert to DLM format
-uv run --package wf_dlm_converter python packages/converter/scripts/train_dlm.py \
-  model=smollm2_135m \
-  source.path=outputs/checkpoint
+# Convert using Microsoft BitNet's converter
+cd extern/reference/BitNet.cpp
+python utils/convert-hf-to-gguf-bitnet.py \
+    path/to/checkpoint \
+    --outtype tq1_0 \
+    --outfile output.gguf
 ```
 
 ## Package Commands
@@ -123,7 +169,8 @@ Ensure workspace dependencies are configured:
 ```toml
 # In packages/training/pyproject.toml
 [tool.uv.sources]
-cheapertraining = { workspace = true }
+data-handler = { workspace = true }
+bitnet-arch = { workspace = true }
 ```
 
 ## Next Steps

@@ -1,0 +1,89 @@
+# Real Training: Qwen3-4B Stage 2 on 8xH100
+# Full continued pretraining with MuonClip + Influence Rebalancing
+#
+# Key settings:
+# - MuonClip optimizer (Muon for 2D weights, AdamW for embeddings)
+# - Influence-based data rebalancing (enabled after 20% warmup)
+# - FSDP for 8-GPU training
+# - GCS checkpoint upload
+
+name: qwen3-4b-stage2-8xh100
+
+resources:
+  cloud: nebius
+  accelerators: H100:8
+  memory: 512+
+  disk_size: 200
+
+workdir: .
+
+file_mounts:
+  /credentials: ~/.config/.env.global
+  ~/.config/gcloud: ~/.config/gcloud
+
+setup: |
+  set -ex
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source ~/.cargo/env
+  fi
+
+  # Install all packages
+  cd ~/sky_workdir
+  uv sync --all-packages
+
+  # Set up credentials
+  echo "source /credentials" >> ~/.bashrc
+
+run: |
+  set -ex
+  source /credentials
+  cd ~/sky_workdir
+
+  # Export credentials
+  export WANDB_API_KEY
+  export HUGGINGFACE_WRITE_TOKEN
+  export RUNPOD_API_KEY
+  export GOOGLE_CLOUD_PROJECT=wrinklefree-481904
+
+  # Set HuggingFace token
+  export HF_TOKEN=$HUGGINGFACE_WRITE_TOKEN
+  uv run huggingface-cli login --token $HF_TOKEN || true
+
+  echo "=== Qwen3-4B Stage 2 Training (8xH100) ==="
+
+  # Disable Ray memory monitor to prevent OOM kills
+  export RAY_memory_monitor_refresh_ms=0
+
+  # Enable debug logging for FSDP
+  export TORCH_DISTRIBUTED_DEBUG=INFO
+  export NCCL_DEBUG=WARN
+
+  # Run training with FSDP
+  uv run torchrun --nproc_per_node=8 \
+    packages/training/scripts/train.py \
+    model=qwen3_4b \
+    training=stage2_pretrain \
+    distributed=fsdp_multi \
+    \
+    training.batch_size=2 \
+    training.gradient_accumulation_steps=32 \
+    training.max_seq_length=2048 \
+    \
+    training.curriculum.enabled=true \
+    training.influence.enabled=true \
+    \
+    training.checkpoint.save_interval=500 \
+    \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=wrinklefree \
+    'training.logging.wandb.tags=[qwen3-4b,stage2,8xH100,production]' \
+    training.logging.log_interval=10 \
+    \
+    training.torch_compile.enabled=false \
+    \
+    +data.num_workers=4
+
+  echo "=== Training Complete ==="

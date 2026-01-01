@@ -170,8 +170,16 @@ fn build_cpp_inference_engine() -> Result<(), Box<dyn std::error::Error>> {
         .file(kernel_dir.join("inference/bitnet_batch.cpp"));
 
     // Determine SIMD flags based on target architecture
+    // Use -march=native when NATIVE_SIMD env var is set for maximum optimization
     let target = std::env::var("TARGET").unwrap_or_default();
-    if target.contains("x86_64") {
+    let use_native = std::env::var("NATIVE_SIMD").is_ok();
+
+    if use_native {
+        // Maximum optimization: use all CPU features available
+        engine_build.flag("-march=native");
+        engine_build.flag("-mtune=native");
+        println!("cargo:warning=Building C++ with -march=native for maximum SIMD optimization");
+    } else if target.contains("x86_64") {
         engine_build.flag("-mavx2");
         engine_build.flag("-mfma");
     } else if target.contains("aarch64") {

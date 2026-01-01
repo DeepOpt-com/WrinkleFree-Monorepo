@@ -8,4 +8,4 @@
 #   - fineweb: Single-source FineWeb-Edu (no influence)
 #   - downstream: SFT/finetuning tasks (Stage 3)
 
-config_name: mixed_pretrain
+config_name: fineweb

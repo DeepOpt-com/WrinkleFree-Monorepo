@@ -11,7 +11,7 @@ cd WrinkleFree-Monorepo
 uv sync --all-packages
 
 # Verify setup
-uv run pytest packages/cheapertraining/tests/ -v
+uv run pytest packages/data_handler/tests/ -v
 ```
 
 ## Adding a New Package
@@ -54,11 +54,11 @@ To use another package from the workspace:
 # In packages/mypackage/pyproject.toml
 [project]
 dependencies = [
-    "cheapertraining",  # The package name
+    "data-handler",  # The package name
 ]
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }  # Resolve from workspace
+data-handler = { workspace = true }  # Resolve from workspace
 ```
 
 ## Running Tests
@@ -125,7 +125,15 @@ git submodule status
 ### training (wrinklefree)
 
 ```bash
-# Run training smoke test
+# Run Lightning training (recommended)
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified training.max_steps=10
+
+# With auto batch size scaling
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified training.auto_batch_size=true
+
+# Legacy trainer (still supported)
 uv run --package wrinklefree python packages/training/scripts/train.py \
   model=smollm2_135m training=stage2_pretrain training.max_steps=10
 
@@ -133,14 +141,24 @@ uv run --package wrinklefree python packages/training/scripts/train.py \
 uv run --package wrinklefree pytest packages/training/tests/unit/
 ```
 
-### cheapertraining
+### data_handler
 
 ```bash
 # Run all tests
-uv run --package cheapertraining pytest packages/cheapertraining/tests/
+uv run --package data-handler pytest packages/data_handler/tests/
 
 # Test data loading
-uv run --package cheapertraining python -c "from cheapertraining.data import get_loader; print('ok')"
+uv run --package data-handler python -c "from data_handler.data import create_dataloader; print('ok')"
+```
+
+### architecture (bitnet-arch)
+
+```bash
+# Run all tests
+uv run --package bitnet-arch pytest packages/architecture/tests/
+
+# Test layer imports
+uv run --package bitnet-arch python -c "from bitnet_arch.layers import BitLinear, BitLinearLRC; print('ok')"
 ```
 
 ### deployer
@@ -186,8 +204,11 @@ Only test affected packages:
 # If only training changed
 uv run --package wrinklefree pytest packages/training/tests/
 
-# If cheapertraining changed (affects training and fairy2)
-uv run pytest packages/cheapertraining/tests/ packages/training/tests/ packages/fairy2/tests/
+# If data_handler changed (affects training)
+uv run pytest packages/data_handler/tests/ packages/training/tests/
+
+# If architecture changed (affects training)
+uv run pytest packages/architecture/tests/ packages/training/tests/
 ```
 
 ## Debugging Tips
@@ -199,7 +220,7 @@ uv run pytest packages/cheapertraining/tests/ packages/training/tests/ packages/
 uv run python -c "import wrinklefree; print(wrinklefree.__file__)"
 
 # Check workspace resolution
-uv tree --package wrinklefree | grep cheapertraining
+uv tree --package wrinklefree | grep data-handler
 ```
 
 ### Dependency Conflicts

@@ -16,13 +16,13 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "cheapertraining",
+    "bitnet-arch",
+    "data-handler",
     "wrinklefree",
     "wrinklefree-deployer",
-    "wrinklefree-dlm-converter",
     "wrinklefree-eval",
-    "wrinklefree-fairy2",
     "wrinklefree-inference",
+    "wrinklefree-mobile",
     "wrinklefree-workspace",
 ]
 
@@ -432,6 +432,15 @@ wheels = [
 ]
 
 [[package]]
+name = "asyncio"
+version = "4.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/ea/26c489a11f7ca862d5705db67683a7361ce11c23a7b98fc6c2deaeccede2/asyncio-4.0.0.tar.gz", hash = "sha256:570cd9e50db83bc1629152d4d0b7558d6451bb1bfd5dfc2e935d96fc2f40329b", size = 5371, upload-time = "2025-08-05T02:51:46.605Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/64/eff2564783bd650ca25e15938d1c5b459cda997574a510f7de69688cb0b4/asyncio-4.0.0-py3-none-any.whl", hash = "sha256:c1eddb0659231837046809e68103969b2bef8b0400d59cfa6363f6b5ed8cc88b", size = 5555, upload-time = "2025-08-05T02:51:45.767Z" },
+]
+
+[[package]]
 name = "asyncpg"
 version = "0.31.0"
 source = { registry = "https://pypi.org/simple" }
@@ -760,6 +769,32 @@ wheels = [
 ]
 
 [[package]]
+name = "bitnet-arch"
+version = "0.1.0"
+source = { editable = "packages/architecture" }
+dependencies = [
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "safetensors", specifier = ">=0.4.0" },
+    { name = "torch", specifier = ">=2.4.0" },
+    { name = "transformers", specifier = ">=4.45.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "bitsandbytes"
 version = "0.49.0"
 source = { registry = "https://pypi.org/simple" }
@@ -783,6 +818,25 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/21/28/9b3f50ce0e048515135495f198351908d99540d69bfdc8c1d15b73dc55ce/blinker-1.9.0.tar.gz", hash = "sha256:b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf", size = 22460, upload-time = "2024-11-08T17:25:47.436Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/10/cb/f2ad4230dc2eb1a74edf38f1a38b9b52277f75bef262d8908e60d957e13c/blinker-1.9.0-py3-none-any.whl", hash = "sha256:ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc", size = 8458, upload-time = "2024-11-08T17:25:46.184Z" },
+]
+
+[[package]]
+name = "borb"
+version = "2.1.25"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "fonttools" },
+    { name = "lxml" },
+    { name = "pillow" },
+    { name = "python-barcode" },
+    { name = "qrcode", extra = ["pil"] },
+    { name = "requests" },
+    { name = "setuptools" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a1/f7/8efd8bbb1ae2c63bc62e1869c1edf312b7411c15c76f9a3058384ed89554/borb-2.1.25.tar.gz", hash = "sha256:813a25227b96f471d29244bf3c07a7b3df36d61d62bcbecf45b14944b8011ef4", size = 11589747, upload-time = "2024-08-03T11:43:30.403Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/fd/a270259e391e5e8a76cf28694c8a1ee01d2194b2bf9d6aa72eabb3c021f8/borb-2.1.25-py3-none-any.whl", hash = "sha256:708c6b14d298890d75567cda15027d874d818e533089d88637831e495f489088", size = 12323441, upload-time = "2024-08-03T11:43:27.352Z" },
 ]
 
 [[package]]
@@ -1195,79 +1249,6 @@ wheels = [
 ]
 
 [[package]]
-name = "cheapertraining"
-version = "0.1.0"
-source = { editable = "packages/cheapertraining" }
-dependencies = [
-    { name = "accelerate" },
-    { name = "datasets" },
-    { name = "datasketch" },
-    { name = "einops" },
-    { name = "hydra-core" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "omegaconf" },
-    { name = "safetensors" },
-    { name = "sentencepiece" },
-    { name = "tiktoken" },
-    { name = "torch" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "wandb" },
-]
-
-[package.optional-dependencies]
-apollo = [
-    { name = "apollo-torch" },
-]
-dev = [
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-    { name = "ruff" },
-]
-flash-attn = [
-    { name = "flash-attn" },
-]
-fp8 = [
-    { name = "transformer-engine" },
-]
-muon = [
-    { name = "muon" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "accelerate", specifier = ">=0.27.0" },
-    { name = "apollo-torch", marker = "extra == 'apollo'", specifier = ">=0.1.0" },
-    { name = "datasets", specifier = ">=2.18.0" },
-    { name = "datasketch", specifier = ">=1.6.0" },
-    { name = "einops", specifier = ">=0.7.0" },
-    { name = "flash-attn", marker = "extra == 'flash-attn'", specifier = ">=2.5.0" },
-    { name = "hydra-core", specifier = ">=1.3.0" },
-    { name = "muon", marker = "extra == 'muon'", specifier = ">=0.1.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
-    { name = "numpy", specifier = ">=1.26.0" },
-    { name = "omegaconf", specifier = ">=2.3.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.6.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.3.0" },
-    { name = "safetensors", specifier = ">=0.4.0" },
-    { name = "sentencepiece", specifier = ">=0.2.0" },
-    { name = "tiktoken", specifier = ">=0.7.0" },
-    { name = "torch", specifier = ">=2.4.0" },
-    { name = "tqdm", specifier = ">=4.66.0" },
-    { name = "transformer-engine", marker = "extra == 'fp8'", specifier = ">=1.0.0" },
-    { name = "transformers", specifier = ">=4.45.0" },
-    { name = "wandb", specifier = ">=0.16.0" },
-]
-provides-extras = ["dev", "flash-attn", "fp8", "apollo", "muon", "muonclip"]
-
-[[package]]
 name = "click"
 version = "8.1.8"
 source = { registry = "https://pypi.org/simple" }
@@ -1667,6 +1648,79 @@ sdist = { url = "https://files.pythonhosted.org/packages/a9/95/a3dbbb5028f35eafb
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e7/05/c19819d5e3d95294a6f5947fb9b9629efb316b96de511b418c53d245aae6/cycler-0.12.1-py3-none-any.whl", hash = "sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30", size = 8321, upload-time = "2023-10-07T05:32:16.783Z" },
 ]
+
+[[package]]
+name = "data-handler"
+version = "0.1.0"
+source = { editable = "packages/data_handler" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "datasets" },
+    { name = "datasketch" },
+    { name = "einops" },
+    { name = "hydra-core" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "omegaconf" },
+    { name = "safetensors" },
+    { name = "sentencepiece" },
+    { name = "tiktoken" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "transformers" },
+    { name = "wandb" },
+]
+
+[package.optional-dependencies]
+apollo = [
+    { name = "apollo-torch" },
+]
+dev = [
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+    { name = "ruff" },
+]
+flash-attn = [
+    { name = "flash-attn" },
+]
+fp8 = [
+    { name = "transformer-engine" },
+]
+muon = [
+    { name = "muon" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "accelerate", specifier = ">=0.27.0" },
+    { name = "apollo-torch", marker = "extra == 'apollo'", specifier = ">=0.1.0" },
+    { name = "datasets", specifier = ">=2.18.0" },
+    { name = "datasketch", specifier = ">=1.6.0" },
+    { name = "einops", specifier = ">=0.7.0" },
+    { name = "flash-attn", marker = "extra == 'flash-attn'", specifier = ">=2.5.0" },
+    { name = "hydra-core", specifier = ">=1.3.0" },
+    { name = "muon", marker = "extra == 'muon'", specifier = ">=0.1.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
+    { name = "numpy", specifier = ">=1.26.0" },
+    { name = "omegaconf", specifier = ">=2.3.0" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.6.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.3.0" },
+    { name = "safetensors", specifier = ">=0.4.0" },
+    { name = "sentencepiece", specifier = ">=0.2.0" },
+    { name = "tiktoken", specifier = ">=0.7.0" },
+    { name = "torch", specifier = ">=2.4.0" },
+    { name = "tqdm", specifier = ">=4.66.0" },
+    { name = "transformer-engine", marker = "extra == 'fp8'", specifier = ">=1.0.0" },
+    { name = "transformers", specifier = ">=4.45.0" },
+    { name = "wandb", specifier = ">=0.16.0" },
+]
+provides-extras = ["dev", "flash-attn", "fp8", "apollo", "muon", "muonclip"]
 
 [[package]]
 name = "dataproperty"
@@ -3723,6 +3777,20 @@ wheels = [
 ]
 
 [[package]]
+name = "lightning-utilities"
+version = "0.15.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "setuptools" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b8/39/6fc58ca81492db047149b4b8fd385aa1bfb8c28cd7cacb0c7eb0c44d842f/lightning_utilities-0.15.2.tar.gz", hash = "sha256:cdf12f530214a63dacefd713f180d1ecf5d165338101617b4742e8f22c032e24", size = 31090, upload-time = "2025-08-06T13:57:39.242Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/73/3d757cb3fc16f0f9794dd289bcd0c4a031d9cf54d8137d6b984b2d02edf3/lightning_utilities-0.15.2-py3-none-any.whl", hash = "sha256:ad3ab1703775044bbf880dbf7ddaaac899396c96315f3aa1779cec9d618a9841", size = 29431, upload-time = "2025-08-06T13:57:38.046Z" },
+]
+
+[[package]]
 name = "linear-operator"
 version = "0.6"
 source = { registry = "https://pypi.org/simple" }
@@ -4520,12 +4588,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "muon-optimizer"
-version = "0.1.0"
+name = "muon-fsdp2"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/02/8e/753080860c9c0f5333bfe20ebb194f293af77274cfaf3f2bd999511ecf6e/muon_optimizer-0.1.0.tar.gz", hash = "sha256:65c50441f29b7248e586383d371262eb9062653e820b11143c81a7a10ba48da7", size = 6563, upload-time = "2025-05-25T23:27:40.518Z" }
+dependencies = [
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0d/86/ef76622d6a59a4dc48fa79d947464d91f225e07f9feb376a003f4d1d6f82/muon_fsdp2-0.3.0.tar.gz", hash = "sha256:a230d86e9a839c43234cbc3b24fa3e4d5917787af5e670b0ab8dc95846b6efb3", size = 10183, upload-time = "2025-08-08T13:45:52.42Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e8/e7/ae0b654bb12f7dfeb688852695e3c54d9ce0ac51e6fdcbeebe8b8d95c0f1/muon_optimizer-0.1.0-py3-none-any.whl", hash = "sha256:4b8e22e7c1a8e73c254c8f6941128ad490af1aba883d4eec0c7f0b8e2f330735", size = 7091, upload-time = "2025-05-25T23:27:39.039Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/44/b4b024332e7dbcbc65469a4ea60f9552172ea51a3ad004858dc79e1ee7f4/muon_fsdp2-0.3.0-py3-none-any.whl", hash = "sha256:55387a0ffbcd90cc204341e570a8be7d546af4c06432b3c962af262dd34170d2", size = 13406, upload-time = "2025-08-08T13:45:51.247Z" },
 ]
 
 [[package]]
@@ -6584,6 +6655,15 @@ wheels = [
 ]
 
 [[package]]
+name = "python-barcode"
+version = "0.16.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/f2/4c0b07f100e1e184ba682021322c336bbba6aa7adfabd2616f70eff917d9/python_barcode-0.16.1.tar.gz", hash = "sha256:665ed09516b0088b5593061c5ac8662caa0b08d56bdad328388b1cab39939ac5", size = 233777, upload-time = "2025-08-27T11:05:45.614Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/34/810885dca784b02e5ad0f71ced9c06ba5e9d33a6493bc886f7470ce82a39/python_barcode-0.16.1-py3-none-any.whl", hash = "sha256:5776567478c9a0dae473374bb86631ba0b5ea99aaf302763b364e367ac51f367", size = 228046, upload-time = "2025-08-27T11:05:42.776Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -6649,6 +6729,25 @@ name = "python-terraform"
 version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/60/a2/10fa8a5d79096f96f0a1b9917fe3038b453e40b39cc22e07410a365f2dc3/python-terraform-0.10.1.tar.gz", hash = "sha256:0f4d1648c4fec61d5aa53142558ba3761c8f9ee7acce57505a1245d4dd85f5cf", size = 8746, upload-time = "2019-06-21T07:03:00.906Z" }
+
+[[package]]
+name = "pytorch-lightning"
+version = "2.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "fsspec", extra = ["http"] },
+    { name = "lightning-utilities" },
+    { name = "packaging" },
+    { name = "pyyaml" },
+    { name = "torch" },
+    { name = "torchmetrics" },
+    { name = "tqdm" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/07/d7/e3963d9669758f93b07941f4e2e82a394eb3d0980e29baa4764f3bad6689/pytorch_lightning-2.6.0.tar.gz", hash = "sha256:25b0d4f05e1f33b72be0920c34d0465777fe5f623228f9d6252b4b0f685d7037", size = 658853, upload-time = "2025-11-28T09:34:13.098Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/eb/cc6dbfe70d15318dbce82674b1e8057cef2634ca9f9121a16b8a06c630db/pytorch_lightning-2.6.0-py3-none-any.whl", hash = "sha256:ee72cff4b8c983ecfaae8599382544bd5236d9eb300adc7dd305f359195f4e79", size = 849476, upload-time = "2025-11-28T09:34:11.271Z" },
+]
 
 [[package]]
 name = "pytz"
@@ -6816,6 +6915,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/49/0e/3f0d0d335c6b3abb9b7b723776d0b21fa7f3a6c819a0db6097059aada160/pyzmq-27.1.0-pp311-pypy311_pp73-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:53b40f8ae006f2734ee7608d59ed661419f087521edbfc2149c3932e9c14808c", size = 567747, upload-time = "2025-09-08T23:09:52.698Z" },
     { url = "https://files.pythonhosted.org/packages/a1/cf/f2b3784d536250ffd4be70e049f3b60981235d70c6e8ce7e3ef21e1adb25/pyzmq-27.1.0-pp311-pypy311_pp73-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f605d884e7c8be8fe1aa94e0a783bf3f591b84c24e4bc4f3e7564c82ac25e271", size = 747371, upload-time = "2025-09-08T23:09:54.563Z" },
     { url = "https://files.pythonhosted.org/packages/01/1b/5dbe84eefc86f48473947e2f41711aded97eecef1231f4558f1f02713c12/pyzmq-27.1.0-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:c9f7f6e13dff2e44a6afeaf2cf54cee5929ad64afaf4d40b50f93c58fc687355", size = 544862, upload-time = "2025-09-08T23:09:56.509Z" },
+]
+
+[[package]]
+name = "qrcode"
+version = "8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/b2/7fc2931bfae0af02d5f53b174e9cf701adbb35f39d69c2af63d4a39f81a9/qrcode-8.2.tar.gz", hash = "sha256:35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c", size = 43317, upload-time = "2025-05-01T15:44:24.726Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/b8/d2d6d731733f51684bbf76bf34dab3b70a9148e8f2cef2bb544fccec681a/qrcode-8.2-py3-none-any.whl", hash = "sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f", size = 45986, upload-time = "2025-05-01T15:44:22.781Z" },
+]
+
+[package.optional-dependencies]
+pil = [
+    { name = "pillow" },
 ]
 
 [[package]]
@@ -8020,6 +8136,19 @@ runpod = [
     { name = "sqlalchemy-adapter" },
     { name = "tomli" },
 ]
+vast = [
+    { name = "aiohttp" },
+    { name = "aiosqlite" },
+    { name = "anyio" },
+    { name = "casbin" },
+    { name = "greenlet" },
+    { name = "grpcio" },
+    { name = "passlib" },
+    { name = "protobuf" },
+    { name = "pyjwt" },
+    { name = "sqlalchemy-adapter" },
+    { name = "vastai-sdk" },
+]
 
 [[package]]
 name = "smmap"
@@ -8539,6 +8668,22 @@ wheels = [
 ]
 
 [[package]]
+name = "torchmetrics"
+version = "1.8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "lightning-utilities" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "packaging" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/85/2e/48a887a59ecc4a10ce9e8b35b3e3c5cef29d902c4eac143378526e7485cb/torchmetrics-1.8.2.tar.gz", hash = "sha256:cf64a901036bf107f17a524009eea7781c9c5315d130713aeca5747a686fe7a5", size = 580679, upload-time = "2025-09-03T14:00:54.077Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/21/aa0f434434c48490f91b65962b1ce863fdcce63febc166ca9fe9d706c2b6/torchmetrics-1.8.2-py3-none-any.whl", hash = "sha256:08382fd96b923e39e904c4d570f3d49e2cc71ccabd2a94e0f895d1f0dac86242", size = 983161, upload-time = "2025-09-03T14:00:51.921Z" },
+]
+
+[[package]]
 name = "tornado"
 version = "6.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -8939,6 +9084,27 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/37/945b4ca0ac27e3dc4952642d4c900edd030b3da6c9634875af6e13ae80e5/uvloop-0.22.1-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b91328c72635f6f9e0282e4a57da7470c7350ab1c9f48546c0f2866205349d21", size = 4467065, upload-time = "2025-10-16T22:16:58.206Z" },
     { url = "https://files.pythonhosted.org/packages/97/cc/48d232f33d60e2e2e0b42f4e73455b146b76ebe216487e862700457fbf3c/uvloop-0.22.1-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:daf620c2995d193449393d6c62131b3fbd40a63bf7b307a1527856ace637fe88", size = 4328384, upload-time = "2025-10-16T22:16:59.36Z" },
     { url = "https://files.pythonhosted.org/packages/e4/16/c1fd27e9549f3c4baf1dc9c20c456cd2f822dbf8de9f463824b0c0357e06/uvloop-0.22.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:6cde23eeda1a25c75b2e07d39970f3374105d5eafbaab2a4482be82f272d5a5e", size = 4296730, upload-time = "2025-10-16T22:17:00.744Z" },
+]
+
+[[package]]
+name = "vastai-sdk"
+version = "0.2.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "asyncio" },
+    { name = "borb" },
+    { name = "jsonschema" },
+    { name = "pyparsing" },
+    { name = "python-dateutil" },
+    { name = "pytz" },
+    { name = "requests" },
+    { name = "urllib3" },
+    { name = "xdg" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e0/dc/cd49d074adaf96c94d0d239b1d2b6eb98557b0b888ab87839bbc89d9d899/vastai_sdk-0.2.5.tar.gz", hash = "sha256:2bc4baed89fdd1f8167d0d73bfa3d9b80a4fc7732cbe0883ca47b6426718b020", size = 68998, upload-time = "2025-11-19T01:14:45.576Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/4d/a801a53239c08aa81fcd144a1b0b58909febf503cb817c6b4da1cb23d29f/vastai_sdk-0.2.5-py3-none-any.whl", hash = "sha256:c8c4568554848cf6e439d754591fa83ec30cc4c380463bbdb2bf9d8549391e85", size = 72783, upload-time = "2025-11-19T01:14:44.331Z" },
 ]
 
 [[package]]
@@ -9353,19 +9519,20 @@ version = "0.1.0"
 source = { editable = "packages/training" }
 dependencies = [
     { name = "accelerate" },
+    { name = "bitnet-arch" },
     { name = "bitsandbytes" },
-    { name = "cheapertraining" },
+    { name = "data-handler" },
     { name = "datasets" },
     { name = "einops" },
     { name = "google-cloud-storage" },
     { name = "hf-transfer" },
     { name = "huggingface-hub" },
     { name = "hydra-core" },
-    { name = "muon-clip" },
-    { name = "muon-optimizer" },
+    { name = "muon-fsdp2" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "omegaconf" },
+    { name = "pytorch-lightning" },
     { name = "safetensors" },
     { name = "torch" },
     { name = "torchao" },
@@ -9410,9 +9577,10 @@ requires-dist = [
     { name = "accelerate", specifier = ">=0.27.0" },
     { name = "apollo-torch", marker = "extra == 'benchmark'", specifier = ">=0.1.0" },
     { name = "ax-platform", marker = "extra == 'benchmark'", specifier = ">=0.3.0" },
+    { name = "bitnet-arch", editable = "packages/architecture" },
     { name = "bitsandbytes", specifier = ">=0.43.0" },
     { name = "botorch", marker = "extra == 'benchmark'", specifier = ">=0.9.0" },
-    { name = "cheapertraining", editable = "packages/cheapertraining" },
+    { name = "data-handler", editable = "packages/data_handler" },
     { name = "datasets", specifier = ">=2.18.0" },
     { name = "einops", specifier = ">=0.7.0" },
     { name = "fastapi", marker = "extra == 'serve'", specifier = ">=0.110.0" },
@@ -9421,8 +9589,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.20.0" },
     { name = "hydra-core", specifier = ">=1.3.0" },
     { name = "matplotlib", marker = "extra == 'benchmark'", specifier = ">=3.7.0" },
-    { name = "muon-clip", git = "https://github.com/GAD-cell/muon-clip" },
-    { name = "muon-optimizer", specifier = ">=0.1.0" },
+    { name = "muon-fsdp2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "omegaconf", specifier = ">=2.3.0" },
@@ -9431,6 +9598,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
+    { name = "pytorch-lightning", specifier = ">=2.6.0" },
     { name = "requests", marker = "extra == 'serve'", specifier = ">=2.31.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.3.0" },
     { name = "safetensors", specifier = ">=0.4.0" },
@@ -9468,7 +9636,7 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "runpod" },
-    { name = "skypilot", extra = ["nebius"] },
+    { name = "skypilot", extra = ["nebius", "vast"] },
     { name = "wandb" },
 ]
 
@@ -9536,7 +9704,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "runpod", specifier = ">=1.8.1" },
-    { name = "skypilot", extras = ["nebius"], specifier = ">=0.10.0" },
+    { name = "skypilot", extras = ["nebius", "vast"], specifier = ">=0.10.0" },
     { name = "wandb", specifier = ">=0.23.1" },
 ]
 provides-extras = ["dev", "test", "benchmark", "infra-test", "eval"]
@@ -9552,82 +9720,6 @@ dev = [
     { name = "pytest-cov", specifier = ">=4.1.0" },
     { name = "pytest-json-report", specifier = ">=1.5.0" },
     { name = "ruff", specifier = ">=0.1.0" },
-]
-
-[[package]]
-name = "wrinklefree-dlm-converter"
-version = "0.1.0"
-source = { editable = "packages/converter" }
-dependencies = [
-    { name = "accelerate" },
-    { name = "cheapertraining" },
-    { name = "click" },
-    { name = "datasets" },
-    { name = "einops" },
-    { name = "google-cloud-storage" },
-    { name = "huggingface-hub" },
-    { name = "hydra-core" },
-    { name = "modal" },
-    { name = "omegaconf" },
-    { name = "rich" },
-    { name = "safetensors" },
-    { name = "setuptools" },
-    { name = "torch" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "wandb" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-    { name = "ruff" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "accelerate", specifier = ">=0.27.0" },
-    { name = "cheapertraining", editable = "packages/cheapertraining" },
-    { name = "click", specifier = ">=8.1.0" },
-    { name = "datasets", specifier = ">=2.18.0" },
-    { name = "einops", specifier = ">=0.7.0" },
-    { name = "google-cloud-storage", specifier = ">=2.14.0" },
-    { name = "huggingface-hub", specifier = ">=0.20.0" },
-    { name = "hydra-core", specifier = ">=1.3.0" },
-    { name = "modal", specifier = ">=0.64.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
-    { name = "omegaconf", specifier = ">=2.3.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
-    { name = "rich", specifier = ">=13.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.3.0" },
-    { name = "safetensors", specifier = ">=0.4.0" },
-    { name = "setuptools" },
-    { name = "torch", specifier = ">=2.5.0" },
-    { name = "tqdm", specifier = ">=4.66.0" },
-    { name = "transformers", specifier = ">=4.40.0" },
-    { name = "wandb", specifier = ">=0.16.0" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy", specifier = ">=1.8.0" },
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "pytest-cov", specifier = ">=4.1.0" },
-    { name = "ruff", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -9702,66 +9794,6 @@ requires-dist = [
 provides-extras = ["dev", "bitnet", "wandb", "gcs", "all"]
 
 [[package]]
-name = "wrinklefree-fairy2"
-version = "0.1.0"
-source = { editable = "packages/fairy2" }
-dependencies = [
-    { name = "accelerate" },
-    { name = "cheapertraining" },
-    { name = "datasets" },
-    { name = "google-cloud-storage" },
-    { name = "hydra-core" },
-    { name = "omegaconf" },
-    { name = "safetensors" },
-    { name = "torch" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "wandb" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-    { name = "ruff" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "accelerate", specifier = ">=0.27.0" },
-    { name = "cheapertraining", editable = "packages/cheapertraining" },
-    { name = "datasets", specifier = ">=2.18.0" },
-    { name = "google-cloud-storage", specifier = ">=2.14.0" },
-    { name = "hydra-core", specifier = ">=1.3.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
-    { name = "omegaconf", specifier = ">=2.3.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.3.0" },
-    { name = "safetensors", specifier = ">=0.4.0" },
-    { name = "torch", specifier = ">=2.5.0" },
-    { name = "tqdm", specifier = ">=4.66.0" },
-    { name = "transformers", specifier = ">=4.40.0" },
-    { name = "wandb", specifier = ">=0.16.0" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=9.0.2" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-]
-
-[[package]]
 name = "wrinklefree-inference"
 version = "0.1.0"
 source = { editable = "packages/inference" }
@@ -9770,6 +9802,7 @@ dependencies = [
     { name = "click" },
     { name = "cmake" },
     { name = "fastapi" },
+    { name = "flask" },
     { name = "gguf" },
     { name = "google-cloud-storage" },
     { name = "gradio" },
@@ -9830,6 +9863,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "cmake", specifier = ">=4.2.1" },
     { name = "fastapi", specifier = ">=0.110.0" },
+    { name = "flask", specifier = ">=3.0.0" },
     { name = "gguf", specifier = ">=0.9.0" },
     { name = "google-cloud-storage", specifier = ">=2.14.0" },
     { name = "gradio", specifier = ">=6.2.0" },
@@ -9871,12 +9905,22 @@ requires-dist = [
 provides-extras = ["dev", "torch", "benchmark", "convert"]
 
 [[package]]
+name = "wrinklefree-mobile"
+version = "0.1.0"
+source = { virtual = "packages/mobile" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = []
+
+[[package]]
 name = "wrinklefree-workspace"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "google-api-python-client" },
     { name = "muon-clip" },
-    { name = "muon-optimizer" },
 ]
 
 [package.dev-dependencies]
@@ -9889,8 +9933,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "google-api-python-client", specifier = ">=2.187.0" },
     { name = "muon-clip", git = "https://github.com/GAD-cell/muon-clip.git?rev=main" },
-    { name = "muon-optimizer", specifier = ">=0.1.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -9911,6 +9955,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c7/79/12135bdf8b9c9367b8701c2c19a14c913c120b882d50b014ca0d38083c2c/wsproto-1.3.2.tar.gz", hash = "sha256:b86885dcf294e15204919950f666e06ffc6c7c114ca900b060d6e16293528294", size = 50116, upload-time = "2025-11-20T18:18:01.871Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a4/f5/10b68b7b1544245097b2a1b8238f66f2fc6dcaeb24ba5d917f52bd2eed4f/wsproto-1.3.2-py3-none-any.whl", hash = "sha256:61eea322cdf56e8cc904bd3ad7573359a242ba65688716b0710a5eb12beab584", size = 24405, upload-time = "2025-11-20T18:18:00.454Z" },
+]
+
+[[package]]
+name = "xdg"
+version = "6.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2a/b9/0e6e6f19fb75cf5e1758f4f33c1256738f718966700cffc0fde2f966218b/xdg-6.0.0.tar.gz", hash = "sha256:24278094f2d45e846d1eb28a2ebb92d7b67fc0cab5249ee3ce88c95f649a1c92", size = 3453, upload-time = "2023-02-27T19:27:44.309Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/54/3516c1cf349060fc3578686d271eba242f10ec00b4530c2985af9faac49b/xdg-6.0.0-py3-none-any.whl", hash = "sha256:df3510755b4395157fc04fc3b02467c777f3b3ca383257397f09ab0d4c16f936", size = 3855, upload-time = "2023-02-27T19:27:42.151Z" },
 ]
 
 [[package]]

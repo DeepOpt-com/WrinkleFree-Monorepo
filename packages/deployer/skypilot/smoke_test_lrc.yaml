@@ -1,0 +1,115 @@
+# LRC (Low-Rank Correction) Smoke Test - Nebius 1x L40S
+#
+# Tests the LRC calibration feature:
+# 1. Auto-converts model to BitNet (if needed)
+# 2. Converts BitLinear -> BitLinearLRC (adds U, V matrices)
+# 3. Freezes all params except U, V
+# 4. Trains using MuonClip + AdamW with LRC objective
+#
+# Launch:
+#   cd packages/deployer
+#   sky launch skypilot/smoke_test_lrc.yaml -y --cluster wf-smoke-lrc
+#
+# Monitor:
+#   sky logs wf-smoke-lrc
+#
+# Down:
+#   sky down wf-smoke-lrc -y
+
+name: wf-smoke-lrc
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  use_spot: false
+  cloud: nebius
+
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  WANDB_PROJECT: wrinklefree
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  uv sync --all-packages
+
+  # Verify LRC imports
+  echo "Verifying LRC imports..."
+  uv run python -c "from bitnet_arch import BitLinearLRC, convert_bitlinear_to_lrc, freeze_model_except_lrc; from wrinklefree.objectives import LRCReconstructionObjective; print('LRC imports OK!')"
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  set -a
+  source /tmp/credentials.env
+  set +a
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  echo "WANDB_API_KEY is set: $([ -n \"$WANDB_API_KEY\" ] && echo 'yes' || echo 'no')"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "=============================================="
+  echo "LRC (Low-Rank Correction) Smoke Test"
+  echo "=============================================="
+  echo "Model: ${MODEL}"
+  echo ""
+  echo "What will happen:"
+  echo "  1. Load SmolLM2-135M from HuggingFace"
+  echo "  2. Auto-convert to BitNet (insert BitLinear + SubLN)"
+  echo "  3. Convert BitLinear -> BitLinearLRC (add U, V)"
+  echo "  4. Freeze ALL params except U, V"
+  echo "  5. Train 100 steps with MuonClip + AdamW"
+  echo "=============================================="
+
+  uv run --package wrinklefree python packages/training/scripts/train.py \
+    model=${MODEL} \
+    training=lrc_calibration \
+    training.max_steps=100 \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=1 \
+    training.max_seq_length=256 \
+    training.logging.log_interval=10 \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=lrc_smoke \
+    distributed=single_gpu \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT}
+
+  echo ""
+  echo "=============================================="
+  echo "LRC SMOKE TEST COMPLETE!"
+  echo ""
+  echo "What was tested:"
+  echo "  - Auto BitNet conversion"
+  echo "  - BitLinearLRC layer creation"
+  echo "  - Parameter freezing (only U, V trainable)"
+  echo "  - MuonClip + AdamW optimizer"
+  echo "  - WandB logging"
+  echo "  - GCS checkpoint upload"
+  echo ""
+  echo "Check W&B: https://wandb.ai/${WANDB_PROJECT}"
+  echo "Check GCS: gs://${GCS_BUCKET}/"
+  echo "=============================================="

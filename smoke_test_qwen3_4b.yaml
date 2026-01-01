@@ -1,0 +1,115 @@
+# Smoke Test: Qwen3-4B Combined Continued Pretraining with Influence Rebalancing
+# Tests the pipeline with curriculum warmup on 8xH100
+#
+# Key settings:
+# - FineWeb-Edu: 1% weight (smoke test only) in mixed data
+# - Influence rebalancing: every 5 steps
+# - Checkpointing: every 5 steps with GCS
+# - WandB: enabled
+# - 20 training steps total
+# - Curriculum: 20% warmup on FineWeb-Edu, then mixed data
+#
+# NOTE: SFT transition is NOT yet implemented in train.py
+# The curriculum only supports 2 phases: warmup -> main
+
+name: qwen3-4b-smoke-test
+
+resources:
+  cloud: nebius
+  accelerators: H100:8
+  disk_size: 200
+
+workdir: .
+
+file_mounts:
+  /credentials: ~/.config/.env.global
+  /gcp-credentials: ~/.config/gcloud/application_default_credentials.json
+
+setup: |
+  set -ex
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source ~/.cargo/env
+  fi
+
+  # Install all packages
+  cd ~/sky_workdir
+  uv sync --all-packages
+
+  # Install gcloud CLI for GCS (to user home, no sudo needed)
+  if ! command -v gcloud &> /dev/null; then
+    curl -sSL https://sdk.cloud.google.com > /tmp/install_gcloud.sh
+    bash /tmp/install_gcloud.sh --disable-prompts --install-dir=$HOME
+    echo 'export PATH=$HOME/google-cloud-sdk/bin:$PATH' >> ~/.bashrc
+  fi
+  export PATH=$HOME/google-cloud-sdk/bin:$PATH
+
+  # Set up credentials
+  echo "source /credentials" >> ~/.bashrc
+  export GOOGLE_APPLICATION_CREDENTIALS=/gcp-credentials
+
+run: |
+  set -ex
+  source /credentials
+  cd ~/sky_workdir
+  export PATH=$HOME/google-cloud-sdk/bin:$PATH
+  export GOOGLE_APPLICATION_CREDENTIALS=/gcp-credentials
+  export GOOGLE_CLOUD_PROJECT=wrinklefree-481904
+
+  # Set HuggingFace token
+  export HF_TOKEN=$HUGGINGFACE_WRITE_TOKEN
+  uv run huggingface-cli login --token $HF_TOKEN || true
+
+  echo "=== Qwen3-4B Combined Continued Pretraining Smoke Test ==="
+  echo "=== 8xH100 with Influence Rebalancing + Curriculum ==="
+
+  # Enable debug logging for FSDP
+  export TORCH_DISTRIBUTED_DEBUG=INFO
+  export NCCL_DEBUG=WARN
+
+  # Run Stage 2 continued pre-training with:
+  # - Curriculum: 20% warmup on FineWeb-Edu, then mixed_pretrain
+  # - Influence rebalancing every 5 steps
+  # - Checkpoint every 5 steps with GCS
+  # - 20 total steps
+  # - Optimized batch sizes for full GPU utilization (8xH100)
+  uv run torchrun --nproc_per_node=8 \
+    packages/training/scripts/train.py \
+    model=qwen3_4b \
+    training=stage2_pretrain \
+    distributed=fsdp_multi \
+    \
+    training.max_steps=20 \
+    training.batch_size=16 \
+    training.gradient_accumulation_steps=4 \
+    training.max_seq_length=2048 \
+    \
+    training.curriculum.enabled=true \
+    training.curriculum.warmup_ratio=0.2 \
+    training.curriculum.warmup_data_config=fineweb \
+    \
+    training.influence.enabled=true \
+    training.influence.update_interval=5 \
+    training.influence.learning_rate=0.2 \
+    \
+    data.config_name=mixed_pretrain \
+    \
+    training.checkpoint.save_interval=5 \
+    training.checkpoint.keep_last_n=5 \
+    \
+    gcs.enabled=true \
+    gcs.bucket=wrinklefree-checkpoints \
+    \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=wrinklefree \
+    'training.logging.wandb.tags=[smoke-test,qwen3-4b,influence,curriculum]' \
+    training.logging.log_interval=1 \
+    \
+    training.torch_compile.enabled=true \
+    training.fp8.enabled=true
+
+  echo "=== Smoke Test Complete ==="
+  echo "Check WandB for training metrics"
+  echo "Check GCS bucket for checkpoints"

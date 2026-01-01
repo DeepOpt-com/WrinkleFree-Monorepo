@@ -58,7 +58,7 @@ def cli():
               type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
               help="GPU scale: dev (1xA10G), small (1xH100), medium (2xH100), large (4xH100), xlarge (8xH100)")
 @click.option("--resume", "-r", default=None, help="Resume from checkpoint (local path or gs://)")
-@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod"]), help="Cloud provider")
+@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod", "vast"]), help="Cloud provider")
 @click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
 @click.pass_context
 def train(ctx, model: str, stage: float, scale: str, resume: str, cloud: str, detach: bool):
@@ -102,46 +102,6 @@ def train(ctx, model: str, stage: float, scale: str, resume: str, cloud: str, de
         allow_extra_args=True,
     )
 )
-@click.option("--model", "-m", required=True, help="Model config (e.g., bitnet_2b, qwen3_4b)")
-@click.option("--source", "-s", default=None, help="Source checkpoint (hf://org/model, gs://, or local path)")
-@click.option("--scale", default=None,
-              type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
-              help="GPU scale profile")
-@click.option("--cloud", "-c", default="nebius", type=click.Choice(["nebius", "runpod", "gcp"]), help="Cloud provider")
-@click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
-@click.pass_context
-def dlm(ctx, model: str, source: str | None, scale: str, cloud: str, detach: bool):
-    """Launch DLM (Fast-dLLM v2) training for ~2.5x faster inference.
-
-    Converts a BitNet checkpoint to a Diffusion LLM using the
-    Fast-dLLM v2 SFT recipe. Auto-resumes from GCS checkpoint if available.
-
-    \b
-    Examples:
-        wf dlm -m bitnet_2b                     # Resume from checkpoint (Nebius)
-        wf dlm -m qwen3_4b -s hf://org/checkpoint
-        wf dlm -m qwen3_4b -s gs://bucket/checkpoint
-        wf dlm -m smollm2_135m --no-detach
-        wf dlm -m qwen3_4b conversion.total_tokens=500000000
-    """
-    overrides = ctx.args
-
-    core.train_dlm(
-        model=model,
-        source=source,
-        scale=scale,
-        overrides=overrides,
-        cloud=cloud,
-        detach=detach,
-    )
-
-
-@cli.command(
-    context_settings=dict(
-        ignore_unknown_options=True,
-        allow_extra_args=True,
-    )
-)
 @click.option("--model", "-m", required=True, help="Model config (e.g., smollm2_135m)")
 @click.option("--mode", default="w2", type=click.Choice(["w1", "w2"]),
               help="Quantization mode: w1 (1-bit) or w2 (2-bit)")
@@ -174,6 +134,104 @@ def fairy2(ctx, model: str, mode: str, scale: str, detach: bool):
         mode=mode,
         scale=scale,
         overrides=overrides,
+        detach=detach,
+    )
+
+
+@cli.command(
+    context_settings=dict(
+        ignore_unknown_options=True,
+        allow_extra_args=True,
+    )
+)
+@click.option("--model", "-m", required=True, help="Model config (e.g., qwen3_4b)")
+@click.option("--checkpoint", "-ckpt", required=True, help="Student checkpoint path (gs:// or local)")
+@click.option("--teacher", "-t", default=None, help="Teacher model (default: same as student original)")
+@click.option("--config", "-cfg", default="bitdistill",
+              type=click.Choice(["bitdistill", "logits_only", "classification"]),
+              help="Distillation config")
+@click.option("--scale", "-s", default=None,
+              type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
+              help="GPU scale profile")
+@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod", "vast"]), help="Cloud provider")
+@click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
+@click.pass_context
+def distill(ctx, model: str, checkpoint: str, teacher: str | None, config: str, scale: str, cloud: str, detach: bool):
+    """Launch distillation training on cloud GPU.
+
+    Distills a BitNet student model against a teacher using BitDistill-style
+    distillation (logits + attention relation loss).
+
+    \b
+    Configs:
+        bitdistill:     Logits + attention distillation (default)
+        logits_only:    Logits KL divergence only (no attention)
+        classification: For classification tasks
+
+    \b
+    Examples:
+        wf distill -m qwen3_4b -ckpt gs://bucket/stage2/checkpoint.pt
+        wf distill -m qwen3_4b -ckpt gs://bucket/checkpoint.pt --cloud vast
+        wf distill -m qwen3_4b -ckpt gs://bucket/checkpoint.pt -t meta-llama/Llama-3.2-3B
+        wf distill -m qwen3_4b -ckpt gs://bucket/checkpoint.pt --config logits_only
+        wf distill -m smollm2_135m -ckpt gs://bucket/checkpoint.pt training.max_steps=1000
+    """
+    overrides = list(ctx.args)
+
+    core.train_distill(
+        model=model,
+        checkpoint=checkpoint,
+        teacher=teacher,
+        config=config,
+        scale=scale,
+        overrides=overrides,
+        cloud=cloud,
+        detach=detach,
+    )
+
+
+@cli.command("tcs-distill",
+    context_settings=dict(
+        ignore_unknown_options=True,
+        allow_extra_args=True,
+    )
+)
+@click.option("--checkpoint", "-ckpt", required=True, help="DLM checkpoint path (gs:// or local)")
+@click.option("--teacher", "-t", default=None, help="Teacher model (default: from dlm_config.json)")
+@click.option("--scale", "-s", default=None,
+              type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
+              help="GPU scale profile")
+@click.option("--cloud", "-c", default="nebius", type=click.Choice(["nebius", "runpod", "vast"]), help="Cloud provider")
+@click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
+@click.pass_context
+def tcs_distill(ctx, checkpoint: str, teacher: str | None, scale: str, cloud: str, detach: bool):
+    """Launch TCS distillation for DLM students (block-wise attention enabled).
+
+    Distills a DLM (Diffusion Language Model) student against an AR teacher
+    using Target Concrete Score (TCS) with block-wise attention distillation.
+
+    \b
+    Key features:
+        - NO logit shifting (DLM predicts masked tokens, not next tokens)
+        - Top-K TCS estimation for sparse distribution matching
+        - Block-wise attention distillation (matches within bd_size blocks)
+        - GCS checkpoint uploads enabled by default
+
+    \b
+    Examples:
+        wf tcs-distill --checkpoint gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/
+        wf tcs-distill --checkpoint gs://... --teacher 1bitLLM/bitnet_b1_58-2B
+        wf tcs-distill --checkpoint gs://... --cloud runpod --scale medium
+        wf tcs-distill --checkpoint gs://... training.max_steps=1000
+    """
+    overrides = list(ctx.args)
+
+    core.train_tcs_distill(
+        checkpoint=checkpoint,
+        teacher=teacher,
+        scale=scale,
+        overrides=overrides,
+        cloud=cloud,
         detach=detach,
     )
 

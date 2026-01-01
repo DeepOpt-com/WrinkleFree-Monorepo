@@ -6,7 +6,9 @@ import torch
 from wrinklefree.models import BitLinear, SubLN, RMSNorm
 from wrinklefree.models.attention import BitNetAttention
 from wrinklefree.models.ffn import BitNetFFN
-from wrinklefree.distillation import (
+
+# Stage 3 distillation classes moved to distillation package
+from distillation.losses import (
     AttentionDistillationLoss,
     LogitsDistillationLoss,
     BitDistillLoss,

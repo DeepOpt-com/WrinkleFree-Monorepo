@@ -1,0 +1,111 @@
+# LRC Calibration: Low-Rank Correction for Quantized BitNet Models
+# Trains LRC adapters (U, V matrices) to minimize reconstruction error
+# between quantized model and original fp16 teacher.
+#
+# Based on: "Low-Rank Correction for Quantized LLMs" (arxiv 2412.07902)
+#
+# Usage:
+#   1. Start with a BitNet model (already quantized via Stage 1/2)
+#   2. Convert BitLinear -> BitLinearLRC (freezes weights, adds U/V)
+#   3. Train only U/V matrices on calibration data
+#
+# CRITICAL: Only LRC matrices (U, V) are trainable. All other params frozen.
+stage: lrc_calibration
+
+# LRC-specific configuration
+lrc:
+  enabled: true
+  # Rank as percentage of min(in_features, out_features)
+  # 10% = ~20% additional params, 50% reconstruction error reduction
+  # 30% = ~60% additional params, near-complete error recovery
+  rank_percentage: 0.1
+  # Initialization: "zeros" (default) or "svd_residual" (better starting point)
+  init_method: zeros
+
+# Teacher model (original fp16 model for reconstruction targets)
+teacher:
+  model_name: ${model.pretrained_name}
+  fp16: true
+  offload_to_cpu: false
+
+# Objectives: LRC reconstruction loss (hidden state matching)
+objectives:
+  lrc_reconstruction:
+    enabled: true
+    weight: 1.0
+    loss_type: mse
+    layer_weights: progressive
+    temperature: 1.0
+    normalize: false
+
+  # Optional: Add LM loss to maintain generation quality
+  continue_pretrain:
+    enabled: false  # Set true to add CE loss
+    weight: 0.1
+
+# No curriculum needed for calibration
+curriculum:
+  enabled: false
+
+# Optimizer: AdamW for low-rank matrices (no Muon - not 2D hidden weights)
+optimizer:
+  type: adamw
+  lr: 1e-4
+  weight_decay: 0.0
+  betas: [0.9, 0.999]
+
+# Scheduler: Cosine with short warmup
+scheduler:
+  type: cosine
+  warmup_steps: 100
+  min_lr_ratio: 0.01
+
+# Training: Short calibration run
+max_steps: 1000
+total_tokens: 50000000  # ~50M tokens
+max_seq_length: 512
+batch_size: 16
+gradient_accumulation_steps: 4  # Effective batch = 64
+gradient_clipping: 1.0
+
+# Sequence packing (required for tokenized batches)
+packing:
+  enabled: true
+
+# Auto-convert to BitNet if needed
+auto_convert:
+  enabled: true
+  exclude_layers: []
+
+# Early stopping (optional)
+early_stopping:
+  enabled: false
+
+# Output directory
+output_dir: outputs/lrc_calibration
+
+# Checkpointing
+checkpoint:
+  save_interval: 500
+  keep_last_n: 3
+  save_optimizer: false  # LRC params are small, don't need optimizer state
+
+# Logging
+logging:
+  log_interval: 50
+  wandb:
+    enabled: true
+    project: wrinklefree
+    entity: null
+    name: null
+    tags: [lrc, calibration, post_quant]
+
+# Memory optimization
+memory:
+  gradient_checkpointing: true
+  clear_cache_interval: 100
+
+# torch.compile for faster training
+torch_compile:
+  enabled: true
+  mode: default

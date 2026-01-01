@@ -6,7 +6,7 @@ See: https://huggingface.co/blog/sirluk/llm-sequence-packing
 import pytest
 import torch
 
-from wrinklefree.data.pretrain_dataset import PretrainDataset
+from wrinklefree.data._legacy.pretrain_dataset import PretrainDataset
 
 # Alias for backward compatibility in tests
 PackedPretrainDataset = PretrainDataset

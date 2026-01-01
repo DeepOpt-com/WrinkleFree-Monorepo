@@ -1,0 +1,1206 @@
+#!/usr/bin/env python
+"""Fast-dLLM v2 SFT Training Recipe.
+
+Implements the training recipe from the Fast-dLLM v2 paper (arXiv:2509.26328):
+- SFT on conversations with loss ONLY on assistant responses (prompts masked)
+- Adds mask token |<MASK>| to tokenizer vocabulary
+- Sets bd_size (block diffusion size) in model config
+- Pads response sequences to multiples of bd_size with mask token
+- Block diffusion (complementary masks, token shift) happens at INFERENCE, not training
+
+Dataset: nvidia/Llama-Nemotron-Post-Training-Dataset (CC-BY-4.0)
+
+Usage:
+    # Basic (uses Hydra configs from configs/)
+    uv run python scripts/train_dlm.py model=qwen3_4b source.path=hf://org/checkpoint
+
+    # With overrides
+    uv run python scripts/train_dlm.py model=smollm2_135m conversion.total_tokens=100000000
+
+    # With W&B logging
+    WANDB_API_KEY=xxx uv run python scripts/train_dlm.py model=qwen3_4b source.path=...
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import random
+import subprocess
+import time
+from pathlib import Path
+
+import hydra
+import numpy as np
+import torch
+from omegaconf import DictConfig, OmegaConf
+from torch.utils.data import DataLoader, IterableDataset
+from datasets import load_dataset, interleave_datasets
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    get_constant_schedule_with_warmup,
+    get_cosine_schedule_with_warmup,
+)
+from tqdm import tqdm
+
+from data_handler.training import PlateauEarlyStopping, ZClip
+from data_handler.training.optimizer import create_optimizer
+
+# Try to import wrinklefree for quantization control (BitNet integration)
+try:
+    from wrinklefree.quantization.lambda_warmup import LambdaWarmup, set_global_lambda_warmup
+    HAS_WRINKLEFREE = True
+except ImportError:
+    HAS_WRINKLEFREE = False
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+if not HAS_WRINKLEFREE:
+    logger.warning("Could not import wrinklefree. Quantization warmup will be disabled (lambda=1.0).")
+
+# Fast-dLLM v2 constants
+MASK_TOKEN = "|<MASK>|"
+DEFAULT_SEQ_LENGTH = 512  # Official script uses 512
+DEFAULT_WARMUP_RATIO = 0.03  # Official: 3% warmup
+# GCS_UPLOAD_INTERVAL is now read from config (checkpoint.save_interval)
+BATCH_PROBE_REDUCTION = 0.8  # Reduce batch by 20% on OOM
+
+# ChatML special tokens (Qwen3 style)
+IM_START = "<|im_start|>"
+IM_END = "<|im_end|>"
+
+
+def format_chatml(messages: list[dict], add_generation_prompt: bool = False) -> str:
+    """Format messages in ChatML without Qwen3's thinking tags.
+
+    Qwen3's default template adds <think></think> to every assistant response,
+    wasting 4 tokens per response. This function formats clean ChatML:
+
+        <|im_start|>system
+        {system}<|im_end|>
+        <|im_start|>user
+        {user}<|im_end|>
+        <|im_start|>assistant
+        {response}<|im_end|>
+
+    Args:
+        messages: List of {"role": str, "content": str} dicts
+        add_generation_prompt: If True, append "<|im_start|>assistant\n"
+
+    Returns:
+        Formatted ChatML string (no trailing newline after final <|im_end|>)
+    """
+    parts = []
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+        parts.append(f"{IM_START}{role}\n{content}{IM_END}\n")
+
+    text = "".join(parts)
+
+    if add_generation_prompt:
+        text += f"{IM_START}assistant\n"
+    else:
+        # Remove trailing newline (we want to end on <|im_end|>, not \n)
+        text = text.rstrip("\n")
+
+    return text
+
+
+def set_seed(seed: int):
+    """Set global random seeds for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    logger.info(f"Set global random seed to {seed}")
+
+
+def get_gpu_memory_gb() -> float:
+    """Get GPU VRAM in GB."""
+    if not torch.cuda.is_available():
+        return 0.0
+    return torch.cuda.get_device_properties(0).total_memory / (1024**3)
+
+
+def probe_batch_size(
+    model,
+    tokenizer,
+    starting_batch_size: int,
+    seq_length: int,
+    min_batch_size: int = 1,
+) -> int:
+    """Find maximum batch size that fits in GPU memory.
+
+    Runs a few probe forward/backward passes, reducing batch size on OOM.
+    Returns a safe batch size (95% of max to leave headroom).
+    """
+    import gc
+
+    batch_size = starting_batch_size
+    pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+
+    logger.info(f"Probing batch size (starting={starting_batch_size}, seq_len={seq_length})")
+    logger.info(f"GPU: {torch.cuda.get_device_name(0)} ({get_gpu_memory_gb():.1f}GB)")
+
+    while batch_size >= min_batch_size:
+        try:
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            # Create dummy batch
+            dummy_ids = torch.full((batch_size, seq_length), pad_id, dtype=torch.long, device="cuda")
+            dummy_mask = torch.ones_like(dummy_ids)
+            dummy_labels = dummy_ids.clone()
+
+            # Forward + backward pass
+            outputs = model(input_ids=dummy_ids, attention_mask=dummy_mask, labels=dummy_labels)
+            outputs.loss.backward()
+            torch.cuda.synchronize()
+
+            # Clean up
+            del dummy_ids, dummy_mask, dummy_labels, outputs
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            # Leave 5% headroom
+            safe_batch = max(min_batch_size, int(batch_size * 0.95))
+            logger.info(f"✓ batch_size={batch_size} works, using {safe_batch} with headroom")
+            return safe_batch
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                new_batch = max(min_batch_size, int(batch_size * BATCH_PROBE_REDUCTION))
+                if new_batch == batch_size:
+                    new_batch = batch_size - 1
+                logger.warning(f"OOM at batch_size={batch_size}, trying {new_batch}")
+                batch_size = new_batch
+
+                gc.collect()
+                torch.cuda.empty_cache()
+            else:
+                raise
+
+    raise RuntimeError(f"Even batch_size={min_batch_size} causes OOM!")
+
+
+def upload_to_gcs(local_path: Path, model_name: str, checkpoint_name: str = "checkpoint-latest") -> bool:
+    """Upload checkpoint to GCS if bucket is configured.
+
+    Returns True if upload succeeded, False otherwise.
+    """
+    gcs_bucket = os.environ.get("GCS_BUCKET")
+    if not gcs_bucket:
+        return False
+
+    gcs_path = f"gs://{gcs_bucket}/dlm/{model_name}/{checkpoint_name}/"
+    logger.info(f"Uploading checkpoint to {gcs_path}")
+
+    try:
+        result = subprocess.run(
+            ["gsutil", "-m", "cp", "-r", f"{local_path}/*", gcs_path],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 min timeout
+        )
+        if result.returncode == 0:
+            logger.info(f"GCS upload complete: {gcs_path}")
+            return True
+        else:
+            logger.warning(f"gsutil failed: {result.stderr}")
+            # Try gcloud storage as fallback
+            result = subprocess.run(
+                ["gcloud", "storage", "cp", "-r", f"{local_path}/*", gcs_path],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode == 0:
+                logger.info(f"GCS upload complete (gcloud): {gcs_path}")
+                return True
+            logger.warning(f"gcloud storage also failed: {result.stderr}")
+            return False
+    except FileNotFoundError:
+        logger.warning("gsutil/gcloud not found, skipping GCS upload")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning("GCS upload timed out")
+        return False
+
+
+def cleanup_old_gcs_checkpoints(model_name: str, keep_n: int = 5) -> None:
+    """Delete old checkpoints from GCS, keeping only the N most recent.
+
+    Args:
+        model_name: Name of the model (used in GCS path)
+        keep_n: Number of recent checkpoints to keep (default: 5)
+    """
+    gcs_bucket = os.environ.get("GCS_BUCKET")
+    if not gcs_bucket:
+        return
+
+    gcs_prefix = f"gs://{gcs_bucket}/dlm/{model_name}/"
+    try:
+        # List all checkpoint-step-* directories
+        result = subprocess.run(
+            ["gsutil", "ls", "-d", f"{gcs_prefix}checkpoint-step-*"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            result = subprocess.run(
+                ["gcloud", "storage", "ls", f"{gcs_prefix}checkpoint-step-*"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        if result.returncode != 0 or not result.stdout:
+            return
+
+        checkpoints = result.stdout.strip().split("\n")
+        # Parse step numbers and sort
+        step_checkpoints = []
+        for cp in checkpoints:
+            cp = cp.rstrip("/")
+            if "checkpoint-step-" in cp:
+                try:
+                    step = int(cp.split("checkpoint-step-")[-1])
+                    step_checkpoints.append((step, cp))
+                except ValueError:
+                    continue
+
+        # Sort by step number (descending) and find ones to delete
+        step_checkpoints.sort(key=lambda x: x[0], reverse=True)
+        to_delete = step_checkpoints[keep_n:]
+
+        if not to_delete:
+            return
+
+        logger.info(f"Cleaning up {len(to_delete)} old GCS checkpoints (keeping {keep_n} most recent)")
+        for step, cp_path in to_delete:
+            try:
+                # Add trailing slash for directory deletion
+                delete_path = cp_path if cp_path.endswith("/") else cp_path + "/"
+                result = subprocess.run(
+                    ["gsutil", "-m", "rm", "-r", delete_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if result.returncode == 0:
+                    logger.info(f"Deleted old checkpoint: checkpoint-step-{step}")
+                else:
+                    # Try gcloud storage
+                    subprocess.run(
+                        ["gcloud", "storage", "rm", "-r", delete_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to delete checkpoint-step-{step}: {e}")
+    except Exception as e:
+        logger.warning(f"GCS cleanup failed: {e}")
+
+
+def find_latest_gcs_checkpoint(model_name: str) -> str | None:
+    """Find the latest checkpoint on GCS. Returns GCS URI or None."""
+    gcs_bucket = os.environ.get("GCS_BUCKET")
+    if not gcs_bucket:
+        return None
+
+    gcs_prefix = f"gs://{gcs_bucket}/dlm/{model_name}/"
+    try:
+        result = subprocess.run(
+            ["gsutil", "ls", "-d", f"{gcs_prefix}checkpoint-step-*"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            result = subprocess.run(
+                ["gcloud", "storage", "ls", f"{gcs_prefix}checkpoint-step-*"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        if result.returncode == 0 and result.stdout:
+            checkpoints = result.stdout.strip().split("\n")
+            steps = []
+            for cp in checkpoints:
+                try:
+                    step_str = cp.rstrip("/").split("-")[-1]
+                    steps.append((int(step_str), cp.rstrip("/")))
+                except ValueError:
+                    continue
+
+            if steps:
+                latest = sorted(steps, key=lambda x: x[0])[-1]
+                logger.info(f"Found GCS checkpoint at step {latest[0]}: {latest[1]}")
+                return latest[1]
+
+    except (subprocess.SubprocessError, ValueError) as e:
+        logger.warning(f"Failed to list GCS checkpoints: {e}")
+
+    return None
+
+
+def download_gcs_checkpoint(gcs_uri: str, local_dir: Path) -> bool:
+    """Download checkpoint from GCS to local directory."""
+    logger.info(f"Downloading checkpoint from {gcs_uri} to {local_dir}")
+    local_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        result = subprocess.run(
+            ["gsutil", "-m", "cp", "-r", f"{gcs_uri}/*", str(local_dir)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            result = subprocess.run(
+                ["gcloud", "storage", "cp", "-r", f"{gcs_uri}/*", str(local_dir)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+
+        if result.returncode == 0:
+            logger.info("Checkpoint download successful")
+            return True
+        else:
+            logger.error(f"Download failed: {result.stderr}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.error("Checkpoint download timed out")
+        return False
+
+
+class ConversationDataset(IterableDataset):
+    """SFT dataset with response-only loss for Fast-dLLM v2.
+
+    Only computes loss on assistant responses (prompts get labels=-100).
+    Response tokens are padded to block_size multiples with mask token.
+    Tracks raw_samples_seen for efficient resume via dataset.skip().
+    """
+
+    def __init__(self, hf_dataset, tokenizer, max_length, block_size, mask_id, pad_id):
+        self.dataset = hf_dataset
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.block_size = block_size
+        self.mask_id = mask_id
+        self.pad_id = pad_id
+        self.raw_samples_seen = 0
+
+    def __iter__(self):
+        for example in self.dataset:
+            self.raw_samples_seen += 1
+            # NVIDIA dataset format: input (messages), output (response), system_prompt
+            messages = example.get("input", [])
+            output = example.get("output", "")
+            system = example.get("system_prompt", "")
+
+            if not messages or not output:
+                continue
+
+            # Build full conversation
+            if system:
+                messages = [{"role": "system", "content": system}] + list(messages)
+            messages = list(messages) + [{"role": "assistant", "content": output}]
+
+            # Format in ChatML (without Qwen3's thinking tags)
+            # Full text ends with <|im_end|> (no trailing newline)
+            # Prompt ends with <|im_start|>assistant\n (with newline)
+            full_text = format_chatml(messages, add_generation_prompt=False)
+            prompt_messages = messages[:-1]
+            prompt_text = format_chatml(prompt_messages, add_generation_prompt=True)
+
+            # Tokenize both
+            full_ids = self.tokenizer(full_text, add_special_tokens=False)["input_ids"]
+            prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+
+            prompt_len = len(prompt_ids)
+            response_len = len(full_ids) - prompt_len
+
+            if response_len <= 0:
+                continue  # Skip invalid samples
+
+            # Truncate to max_length first, leaving room for block padding
+            max_content = self.max_length - self.block_size
+            if len(full_ids) > max_content:
+                full_ids = full_ids[:max_content]
+                # Update prompt_len if prompt was truncated too
+                prompt_len = min(prompt_len, len(full_ids))
+                response_len = len(full_ids) - prompt_len
+
+            # Skip if response was fully truncated
+            if response_len <= 0:
+                continue
+
+            # Pad response to block_size multiple with mask_id (Fast-dLLM v2 requirement)
+            pad_len = (self.block_size - response_len % self.block_size) % self.block_size
+            if pad_len > 0:
+                full_ids = full_ids + [self.mask_id] * pad_len
+
+            # Ensure we don't exceed max_length after padding
+            if len(full_ids) > self.max_length:
+                full_ids = full_ids[:self.max_length]
+
+            # Create labels: -100 for prompt, actual tokens for response
+            seq_len = len(full_ids)
+            labels = [-100] * prompt_len + full_ids[prompt_len:seq_len]
+
+            # Pad to max_length with pad token (no loss on these)
+            final_pad = self.max_length - seq_len
+            if final_pad > 0:
+                full_ids = full_ids + [self.pad_id] * final_pad
+                labels = labels + [-100] * final_pad
+
+            attention_mask = [1] * seq_len + [0] * final_pad
+
+            # Sanity check: all tensors must have max_length size
+            assert len(full_ids) == self.max_length, f"input_ids size {len(full_ids)} != {self.max_length}"
+            assert len(labels) == self.max_length, f"labels size {len(labels)} != {self.max_length}"
+            assert len(attention_mask) == self.max_length, f"attention_mask size {len(attention_mask)} != {self.max_length}"
+
+            yield {
+                "input_ids": torch.tensor(full_ids),
+                "attention_mask": torch.tensor(attention_mask),
+                "labels": torch.tensor(labels),
+            }
+
+
+class TextDataset(IterableDataset):
+    """Simple text dataset for pretraining-style loss (loss on all tokens).
+
+    Used for cleaner signal with datasets like FineWeb-Edu that don't have
+    conversation structure. Loss is computed on all tokens (no masking).
+    """
+
+    def __init__(self, hf_dataset, tokenizer, max_length, block_size, mask_id, pad_id):
+        self.dataset = hf_dataset
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.block_size = block_size
+        self.mask_id = mask_id
+        self.pad_id = pad_id
+        self.raw_samples_seen = 0
+
+    def __iter__(self):
+        for example in self.dataset:
+            self.raw_samples_seen += 1
+            # FineWeb-Edu format: just "text" field
+            text = example.get("text", "")
+            if not text or len(text) < 50:  # Skip very short texts
+                continue
+
+            # Tokenize
+            tokens = self.tokenizer(text, add_special_tokens=True, truncation=False)["input_ids"]
+
+            if len(tokens) < 10:
+                continue
+
+            # Truncate to max_length, leaving room for block padding
+            max_content = self.max_length - self.block_size
+            if len(tokens) > max_content:
+                tokens = tokens[:max_content]
+
+            # Pad to block_size multiple with mask_id (Fast-dLLM v2 requirement)
+            content_len = len(tokens)
+            pad_len = (self.block_size - content_len % self.block_size) % self.block_size
+            if pad_len > 0:
+                tokens = tokens + [self.mask_id] * pad_len
+
+            # Ensure we don't exceed max_length after padding
+            if len(tokens) > self.max_length:
+                tokens = tokens[:self.max_length]
+
+            seq_len = len(tokens)
+
+            # Labels: loss on all tokens (shifted by 1 in model forward)
+            labels = tokens.copy()
+
+            # Pad to max_length with pad token (no loss on padding)
+            final_pad = self.max_length - seq_len
+            if final_pad > 0:
+                tokens = tokens + [self.pad_id] * final_pad
+                labels = labels + [-100] * final_pad
+
+            attention_mask = [1] * seq_len + [0] * final_pad
+
+            assert len(tokens) == self.max_length
+            assert len(labels) == self.max_length
+            assert len(attention_mask) == self.max_length
+
+            yield {
+                "input_ids": torch.tensor(tokens),
+                "attention_mask": torch.tensor(attention_mask),
+                "labels": torch.tensor(labels),
+            }
+
+
+def collate_fn(batch):
+    return {
+        "input_ids": torch.stack([x["input_ids"] for x in batch]),
+        "attention_mask": torch.stack([x["attention_mask"] for x in batch]),
+        "labels": torch.stack([x["labels"] for x in batch]),
+    }
+
+
+def train(
+    model_path: str,
+    output_dir: str,
+    total_tokens: int = 1_000_000_000,  # Official: ~1B tokens
+    block_size: int = 32,
+    learning_rate: float = 1e-3,  # MuonClip default (50x higher than AdamW)
+    max_seq_length: int = DEFAULT_SEQ_LENGTH,  # Official: 512
+    batch_size: int = 8,
+    gradient_accumulation_steps: int = 16,  # Effective batch ~128
+    warmup_ratio: float = DEFAULT_WARMUP_RATIO,  # Official: 3%
+    scheduler_type: str = "constant",  # Official: constant_with_warmup
+    auto_batch_size: bool = True,  # Enable dynamic batch probing
+    resume: bool = True,  # Auto-resume from GCS checkpoint if available
+    seed: int = 42,
+    early_stopping_cfg: dict | None = None,  # Early stopping config from Hydra
+    quantization_warmup_steps: int = 0,  # Lambda warmup for BitNet (0 = disabled)
+    optimizer_cfg: dict | None = None,  # Optimizer config (type, momentum, etc.)
+    save_interval: int = 200,  # Save checkpoint every N steps
+):
+    """Run Fast-dLLM v2 SFT training."""
+    set_seed(seed)
+
+    model_name = model_path.split("/")[-1]
+    final_output = Path(output_dir)
+    final_output.mkdir(parents=True, exist_ok=True)
+
+    # === CHECK FOR RESUME CHECKPOINT ===
+    resume_checkpoint = None
+    resume_step = 0
+    resume_tokens = 0
+    resume_raw_samples = 0
+    resume_state = None
+
+    if resume:
+        # Check GCS for latest checkpoint
+        gcs_checkpoint = find_latest_gcs_checkpoint(model_name)
+        if gcs_checkpoint:
+            local_resume_dir = final_output / "checkpoint-resume"
+            if download_gcs_checkpoint(gcs_checkpoint, local_resume_dir):
+                resume_checkpoint = local_resume_dir
+                # Load trainer state if available
+                state_path = local_resume_dir / "trainer_state.pt"
+                if state_path.exists():
+                    resume_state = torch.load(state_path, weights_only=False)
+                    resume_step = resume_state.get("step", 0)
+                    resume_tokens = resume_state.get("tokens_seen", 0)
+                    resume_raw_samples = resume_state.get("raw_samples_seen", 0)
+                    logger.info(f"Will resume from step {resume_step}, tokens {resume_tokens:,}, raw samples {resume_raw_samples:,}")
+
+                    # Restore RNG state if available
+                    if "rng_state" in resume_state:
+                        rng = resume_state["rng_state"]
+                        random.setstate(rng["python"])
+                        np.random.set_state(rng["numpy"])
+                        torch.set_rng_state(rng["torch"])
+                        if torch.cuda.is_available() and rng.get("cuda") is not None:
+                            torch.cuda.set_rng_state_all(rng["cuda"])
+                        logger.info("Restored RNG state from checkpoint")
+                else:
+                    # Extract step from checkpoint name
+                    try:
+                        resume_step = int(gcs_checkpoint.rstrip("/").split("-")[-1])
+                        logger.info(f"Will resume from step {resume_step} (no trainer_state.pt)")
+                    except ValueError:
+                        pass
+
+    # Initialize wandb if API key is available
+    use_wandb = os.environ.get("WANDB_API_KEY") is not None
+    if use_wandb:
+        import wandb
+
+        run_name = f"dlm-v2-{model_name}-{total_tokens // 1_000_000_000}B"
+        if resume_step > 0:
+            run_name += f"-resume-{resume_step}"
+
+        wandb.init(
+            project=os.environ.get("WANDB_PROJECT", "wrinklefree-dlm"),
+            name=run_name,
+            config={
+                "model": model_path,
+                "total_tokens": total_tokens,
+                "block_size": block_size,
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "gradient_accumulation_steps": gradient_accumulation_steps,
+                "max_seq_length": max_seq_length,
+                "training_method": "fast-dllm-v2-sft",
+                "resume_step": resume_step,
+            },
+        )
+        logger.info(f"W&B run initialized: {wandb.run.url}")
+    else:
+        logger.info("W&B disabled (no WANDB_API_KEY)")
+
+    logger.info("=== Fast-dLLM v2 SFT Training ===")
+    logger.info(f"Model: {model_path}")
+    logger.info(f"Tokens: {total_tokens:,}")
+    logger.info(f"Block size (bd_size): {block_size}")
+    logger.info(f"Batch size: {batch_size}, Grad accum: {gradient_accumulation_steps}")
+    if resume_step > 0:
+        logger.info(f"Resuming from step {resume_step}")
+
+    # Load model and tokenizer (from checkpoint if resuming)
+    load_path = str(resume_checkpoint) if resume_checkpoint else model_path
+    print(f"[CHECKPOINT] Loading model from: {load_path}")
+    print(f"[CHECKPOINT] resume_checkpoint={resume_checkpoint}, model_path={model_path}")
+    logger.info(f"Loading checkpoint from {load_path}")
+    tokenizer = AutoTokenizer.from_pretrained(load_path)
+    model = AutoModelForCausalLM.from_pretrained(
+        load_path,
+        torch_dtype=torch.bfloat16,
+    ).cuda()
+
+    # === FAST-DLLM V2 SETUP ===
+
+    # 1. Add mask token to tokenizer (only if not already present)
+    mask_token_added = False
+    if MASK_TOKEN not in tokenizer.get_vocab():
+        tokenizer.add_special_tokens({"additional_special_tokens": [MASK_TOKEN]})
+        model.resize_token_embeddings(len(tokenizer))
+        mask_token_added = True
+        logger.info(f"Added mask token {MASK_TOKEN} to vocabulary")
+    mask_id = tokenizer.encode(MASK_TOKEN, add_special_tokens=False)[0]
+    logger.info(f"Mask token ID: {mask_id}")
+
+    # === SMART INITIALIZATION (Fix for BitNet Instability) ===
+    # Initialize mask token embedding to mean of existing vocabulary.
+    # Random initialization creates activation outliers that break BitNet's
+    # per-token quantization (scale = 127 / max(|x|)), causing loss spikes.
+    # IMPORTANT: Only do this when adding a NEW mask token, not when resuming
+    # from a checkpoint (where the mask token has already been trained).
+    if mask_token_added:
+        input_embeddings = model.get_input_embeddings()
+        if input_embeddings is not None and input_embeddings.weight.shape[0] > 1:
+            with torch.no_grad():
+                if mask_id < input_embeddings.weight.shape[0]:
+                    # Calculate mean of all tokens except the new one (if it's last)
+                    limit_idx = input_embeddings.weight.shape[0] - 1 if mask_id == input_embeddings.weight.shape[0] - 1 else None
+                    mean_embedding = input_embeddings.weight[:limit_idx].mean(dim=0)
+                    input_embeddings.weight[mask_id] = mean_embedding
+                    logger.info(f"Initialized {MASK_TOKEN} embedding to mean of vocab (norm={mean_embedding.norm().item():.2f})")
+                else:
+                    logger.warning(f"Mask token ID {mask_id} out of embedding range, skipping smart initialization")
+        else:
+            logger.warning("Could not access input embeddings for smart initialization")
+    else:
+        logger.info(f"Mask token already in vocab (resume from checkpoint), keeping trained embedding")
+
+    # 2. Set bd_size in model config
+    model.config.bd_size = block_size
+    logger.info(f"Set bd_size = {block_size} in model config")
+
+    # Ensure tokenizer has pad token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    pad_id = tokenizer.pad_token_id
+
+    # Enable gradient checkpointing
+    if hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
+        logger.info("Gradient checkpointing enabled")
+
+    # Auto-probe batch size to maximize GPU utilization
+    if auto_batch_size:
+        # Start with aggressive batch size based on VRAM
+        vram_gb = get_gpu_memory_gb()
+        # Heuristic: 1 batch element ~ 100MB for 2B model at seq_len=512
+        starting_batch = max(4, int(vram_gb * 0.6))  # Use 60% of VRAM heuristic
+        logger.info(f"Auto-probing batch size (VRAM={vram_gb:.1f}GB, starting={starting_batch})")
+
+        model.zero_grad()  # Clear any stale gradients
+        optimal_batch = probe_batch_size(model, tokenizer, starting_batch, max_seq_length)
+
+        if optimal_batch > batch_size:
+            # Scale up batch, reduce grad_accum to keep effective batch constant
+            effective_batch = batch_size * gradient_accumulation_steps
+            new_grad_accum = max(1, effective_batch // optimal_batch)
+            logger.info(f"Scaling up: batch_size {batch_size}->{optimal_batch}, grad_accum {gradient_accumulation_steps}->{new_grad_accum}")
+            batch_size = optimal_batch
+            gradient_accumulation_steps = new_grad_accum
+        else:
+            logger.info(f"Keeping original batch_size={batch_size} (optimal={optimal_batch})")
+
+    # Calculate training steps
+    tokens_per_step = batch_size * gradient_accumulation_steps * max_seq_length
+    total_steps = total_tokens // tokens_per_step
+
+    # Calculate warmup steps from ratio (Official: 3%)
+    # Skip warmup if resuming from checkpoint
+    if resume_step > 0:
+        actual_warmup_steps = 0  # No warmup when resuming
+        logger.info("Skipping warmup (resuming from checkpoint)")
+    else:
+        actual_warmup_steps = int(total_steps * warmup_ratio)
+
+    logger.info(f"Training for {total_steps} steps ({tokens_per_step:,} tokens/step)")
+    logger.info(f"Warmup steps: {actual_warmup_steps} ({warmup_ratio*100:.0f}% of total, scheduler: {scheduler_type})")
+
+    # Load training data - NVIDIA Llama-Nemotron (per Fast-dLLM v2 paper)
+    # Uses SFT with response-only loss, MASK padding only on response tokens
+    # CURRICULUM: First 25% chat-only, then mixed (all splits)
+    logger.info("Loading training data (Llama-Nemotron-Post-Training-Dataset)")
+
+    # Calculate curriculum switch point
+    curriculum_switch_step = int(total_steps * 0.25)
+    logger.info(f"Curriculum: chat-only for steps 0-{curriculum_switch_step}, mixed for {curriculum_switch_step}-{total_steps}")
+
+    # Phase 1: Chat-only dataset (first 25%)
+    chat_dataset = load_dataset("nvidia/Llama-Nemotron-Post-Training-Dataset", split="chat", streaming=True)
+    chat_dataset = chat_dataset.shuffle(seed=seed, buffer_size=10000)
+    chat_tokenized = ConversationDataset(chat_dataset, tokenizer, max_seq_length, block_size, mask_id, pad_id)
+
+    # Phase 2: Mixed dataset (all splits, remaining 75%)
+    all_splits = ["code", "math", "science", "chat", "safety"]
+    mixed_datasets = [
+        load_dataset("nvidia/Llama-Nemotron-Post-Training-Dataset", split=s, streaming=True)
+        for s in all_splits
+    ]
+    mixed_dataset = interleave_datasets(mixed_datasets, seed=seed)
+    mixed_dataset = mixed_dataset.shuffle(seed=seed, buffer_size=10000)
+    mixed_tokenized = ConversationDataset(mixed_dataset, tokenizer, max_seq_length, block_size, mask_id, pad_id)
+
+    # NOTE: We don't skip samples on resume because:
+    # 1. interleave_datasets + shuffle + skip has unreliable behavior
+    # 2. The shuffle buffer (10K) makes exact position restoration impossible
+    # 3. Training on some duplicate data is acceptable - model weights are restored
+    # The training loop will start from resume_step, so progress is maintained.
+    if resume_raw_samples > 0:
+        logger.info(f"Resuming from step {resume_step} (not skipping samples - shuffle buffer makes exact restore impossible)")
+
+    # Start with appropriate dataset based on resume step
+    if resume_step < curriculum_switch_step:
+        print(f"[CURRICULUM] Starting with chat-only dataset (phase 1), resume_step={resume_step} < switch={curriculum_switch_step}")
+        logger.info(f"Starting with chat-only dataset (phase 1)")
+        tokenized_dataset = chat_tokenized
+        current_phase = 1
+    else:
+        print(f"[CURRICULUM] Starting with mixed dataset (phase 2), resume_step={resume_step} >= switch={curriculum_switch_step}")
+        logger.info(f"Starting with mixed dataset (phase 2, resumed past switch point)")
+        tokenized_dataset = mixed_tokenized
+        current_phase = 2
+
+    # Track cumulative samples across runs (for checkpoint metadata)
+    tokenized_dataset.raw_samples_seen = resume_raw_samples
+
+    dataloader = DataLoader(
+        tokenized_dataset,
+        batch_size=batch_size,
+        collate_fn=collate_fn,
+        num_workers=0,
+    )
+    data_iter = iter(dataloader)
+
+    # Setup optimizer
+    opt_cfg = optimizer_cfg or {}
+    optimizer_type = opt_cfg.get("type", "muonclip")
+
+    # Build optimizer kwargs based on type
+    optimizer_kwargs = {
+        "learning_rate": learning_rate,
+        "weight_decay": opt_cfg.get("weight_decay", 0.01),
+        "betas": tuple(opt_cfg.get("betas", [0.9, 0.95])),
+    }
+
+    # Add type-specific kwargs
+    if optimizer_type in ("muon", "muonclip"):
+        optimizer_kwargs["momentum"] = opt_cfg.get("momentum", 0.95)
+    if optimizer_type == "muonclip":
+        optimizer_kwargs["enable_clipping"] = opt_cfg.get("enable_clipping", True)
+        optimizer_kwargs["clipping_threshold"] = opt_cfg.get("clipping_threshold", 50.0)
+        # Always use separate LRs: lr for Muon params, lr_adam for Adam params (embed/head/norm)
+        optimizer_kwargs["unified_lr"] = False
+        optimizer_kwargs["lr_adam"] = opt_cfg.get("lr_adam", 2e-5)  # Standard AdamW LR for embed/head/norm
+
+        # Ensure model config has head_dim for QK-clipping
+        if not hasattr(model.config, "head_dim"):
+            model.config.head_dim = model.config.hidden_size // model.config.num_attention_heads
+            logger.info(f"Added head_dim={model.config.head_dim} to model config for MuonClip")
+
+        optimizer_kwargs["model_config"] = model.config
+
+        # MuonClip needs a valid log_dir for TensorBoard writer
+        optimizer_log_dir = final_output / "optimizer_logs"
+        optimizer_log_dir.mkdir(parents=True, exist_ok=True)
+        optimizer_kwargs["log_dir"] = str(optimizer_log_dir)
+
+    optimizer = create_optimizer(model, optimizer_type=optimizer_type, **optimizer_kwargs)
+    if optimizer_type == "muonclip" and not opt_cfg.get("unified_lr", True):
+        logger.info(f"Using {optimizer_type} optimizer (lr_muon={learning_rate}, lr_adam={optimizer_kwargs['lr_adam']})")
+    else:
+        logger.info(f"Using {optimizer_type} optimizer (lr={learning_rate})")
+
+    # Create scheduler based on config
+    if scheduler_type == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer, num_warmup_steps=actual_warmup_steps, num_training_steps=total_steps
+        )
+    else:
+        scheduler = get_constant_schedule_with_warmup(optimizer, num_warmup_steps=actual_warmup_steps)
+
+    # === LOAD OPTIMIZER/SCHEDULER STATE IF RESUMING ===
+    if resume_state and "optimizer" in resume_state:
+        try:
+            # Capture target LRs from config-aware optimizer BEFORE loading checkpoint state
+            # This preserves per-group LRs (e.g., lr_muon=1e-3, lr_adam=2e-5)
+            target_lrs = [g["lr"] for g in optimizer.param_groups]
+            logger.info(f"Target LRs from config: {target_lrs}")
+
+            optimizer.load_state_dict(resume_state["optimizer"])
+            scheduler.load_state_dict(resume_state["scheduler"])
+
+            # Restore per-group LRs from config (checkpoint may have different values)
+            for group, target_lr in zip(optimizer.param_groups, target_lrs):
+                group["lr"] = target_lr
+                if "initial_lr" in group:
+                    group["initial_lr"] = target_lr
+
+            # Update scheduler's base_lrs to match per-group LRs
+            if hasattr(scheduler, "base_lrs"):
+                scheduler.base_lrs = list(target_lrs)
+
+            logger.info(f"Loaded optimizer/scheduler state, restored config LRs: {[g['lr'] for g in optimizer.param_groups]}")
+        except Exception as e:
+            logger.warning(f"Failed to load optimizer state: {e}")
+
+    # Early stopping setup
+    early_stop_cfg = early_stopping_cfg or {}
+    early_stopper = PlateauEarlyStopping(
+        patience=early_stop_cfg.get("patience", 5),
+        min_delta=early_stop_cfg.get("min_delta", 0.01),
+        mode="min",
+        min_evals=early_stop_cfg.get("min_evals", 10),
+        enabled=early_stop_cfg.get("enabled", False),
+        rank=0,
+    )
+    if early_stopper.enabled:
+        logger.info(
+            f"Early stopping enabled: patience={early_stopper.patience}, "
+            f"min_delta={early_stopper.min_delta}"
+        )
+
+    # === BITNET STABILITY SETUP ===
+    # Lambda warmup for gradual quantization
+    lambda_warmup_scheduler = None
+    if HAS_WRINKLEFREE and quantization_warmup_steps > 0:
+        logger.info(f"Initializing quantization warmup: {quantization_warmup_steps} steps")
+        lambda_warmup_scheduler = LambdaWarmup(
+            warmup_steps=quantization_warmup_steps,
+            min_lambda=0.0,
+            max_lambda=1.0,
+            schedule="linear",
+        )
+        set_global_lambda_warmup(lambda_warmup_scheduler)
+
+        # If resuming, fast-forward warmup to match step
+        if resume_step > 0:
+            for _ in range(min(resume_step, quantization_warmup_steps)):
+                lambda_warmup_scheduler.step()
+            logger.info(f"Fast-forwarded lambda warmup to step {resume_step} (lambda={lambda_warmup_scheduler.lambda_val:.3f})")
+    elif HAS_WRINKLEFREE:
+        # Ensure full quantization if no warmup requested
+        set_global_lambda_warmup(None)
+        logger.info("Quantization warmup disabled (lambda=1.0)")
+
+    # ZClip for adaptive gradient clipping
+    zclip = ZClip(z_threshold=3.0, ema_decay=0.99)
+    logger.info("ZClip adaptive gradient clipping enabled (z_threshold=3.0)")
+
+    # Training loop
+    model.train()
+    tokens_seen = resume_tokens
+    step = resume_step
+    running_loss = 0.0
+    best_loss = resume_state.get("best_loss", float("inf")) if resume_state else float("inf")
+
+    # Stability tracking
+    loss_ema = None
+    loss_ema_alpha = 0.99  # EMA decay factor
+    prev_loss = None
+    step_start_time = None
+
+    logger.info("Starting training loop")
+    pbar = tqdm(total=total_steps, initial=step, desc="Training (SFT)")
+
+    optimizer.zero_grad()
+    accum_count = 0
+
+    while step < total_steps:
+        if step_start_time is None:
+            step_start_time = time.time()
+
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            data_iter = iter(dataloader)
+            batch = next(data_iter)
+
+        input_ids = batch["input_ids"].cuda()
+        attention_mask = batch["attention_mask"].cuda()
+        labels = batch["labels"].cuda()
+
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+
+        loss = outputs.loss / gradient_accumulation_steps
+        loss.backward()
+
+        running_loss += loss.item()
+        tokens_seen += attention_mask.sum().item()
+        accum_count += 1
+
+        if accum_count >= gradient_accumulation_steps:
+            # Adaptive gradient clipping with ZClip (replaces fixed clip_grad_norm_)
+            zclip_stats = zclip.clip(model)
+            raw_grad_norm = zclip_stats.raw_norm
+            clipped_grad_norm = zclip_stats.clipped_norm
+            grad_norm = clipped_grad_norm  # For logging compatibility
+
+            optimizer.step()
+            scheduler.step()
+
+            # Step lambda warmup for gradual quantization
+            if lambda_warmup_scheduler is not None:
+                lambda_warmup_scheduler.step()
+
+            optimizer.zero_grad()
+
+            step += 1
+            accum_count = 0
+
+            # Curriculum switch: chat-only -> mixed at 25%
+            if current_phase == 1 and step >= curriculum_switch_step:
+                logger.info(f"Step {step}: Switching from chat-only to mixed dataset (phase 2)")
+                tokenized_dataset = mixed_tokenized
+                tokenized_dataset.raw_samples_seen = chat_tokenized.raw_samples_seen
+                dataloader = DataLoader(
+                    tokenized_dataset,
+                    batch_size=batch_size,
+                    collate_fn=collate_fn,
+                    num_workers=0,
+                )
+                data_iter = iter(dataloader)
+                current_phase = 2
+
+            avg_loss = running_loss
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+
+            # Calculate step time and throughput
+            step_time = time.time() - step_start_time
+            tokens_this_step = batch_size * gradient_accumulation_steps * max_seq_length
+            tokens_per_sec = tokens_this_step / step_time if step_time > 0 else 0
+            step_start_time = time.time()
+
+            # Update loss EMA for stability tracking
+            if loss_ema is None:
+                loss_ema = avg_loss
+            else:
+                loss_ema = loss_ema_alpha * loss_ema + (1 - loss_ema_alpha) * avg_loss
+
+            # Detect loss spikes (>2x previous loss)
+            loss_spike = 1 if (prev_loss is not None and avg_loss > 2.0 * prev_loss) else 0
+            prev_loss = avg_loss
+
+            pbar.update(1)
+            # Show both LRs if we have multiple param groups (MuonClip)
+            all_lrs = scheduler.get_last_lr()
+            if len(all_lrs) > 1:
+                pbar.set_postfix({
+                    "loss": f"{avg_loss:.4f}",
+                    "tokens": f"{tokens_seen:,}",
+                    "lr_muon": f"{all_lrs[1]:.2e}",
+                    "lr_adam": f"{all_lrs[0]:.2e}",
+                })
+            else:
+                pbar.set_postfix({
+                    "loss": f"{avg_loss:.4f}",
+                    "tokens": f"{tokens_seen:,}",
+                    "lr": f"{all_lrs[0]:.2e}",
+                })
+
+            if use_wandb:
+                # Get current lambda value for quantization tracking
+                current_lambda = lambda_warmup_scheduler.lambda_val if lambda_warmup_scheduler else 1.0
+
+                # Get LRs for all param groups
+                all_lrs = scheduler.get_last_lr()
+                lr_adam = all_lrs[0] if len(all_lrs) > 0 else 0
+                lr_muon = all_lrs[1] if len(all_lrs) > 1 else lr_adam
+
+                wandb.log({
+                    # Core metrics
+                    "train/loss": avg_loss,
+                    "train/tokens": tokens_seen,
+                    "train/lr": lr_adam,  # Primary LR (backward compat)
+                    "train/lr_adam": lr_adam,  # Adam LR for embed/head/norm
+                    "train/lr_muon": lr_muon,  # Muon LR for hidden weights
+                    "train/step": step,
+                    # Curriculum tracking (1=chat-only, 2=mixed)
+                    "train/curriculum_phase": current_phase,
+                    # Stability metrics (ZClip + quantization)
+                    "train/grad_norm_raw": raw_grad_norm,
+                    "train/grad_norm_clipped": clipped_grad_norm,
+                    "train/grad_norm": grad_norm,  # For backward compatibility
+                    "train/loss_ema": loss_ema,
+                    "train/loss_spike": loss_spike,
+                    "train/lambda": current_lambda,  # Quantization lambda
+                    # Throughput metrics
+                    "train/tokens_per_second": tokens_per_sec,
+                    "train/step_time": step_time,
+                    # System metrics
+                    "system/gpu_memory_allocated_gb": torch.cuda.memory_allocated() / 1e9,
+                    "system/gpu_memory_reserved_gb": torch.cuda.memory_reserved() / 1e9,
+                })
+
+            running_loss = 0.0
+
+            # Early stopping check (using smoothed loss)
+            if early_stopper.check(loss_ema, step):
+                logger.warning("Stopping training early due to loss plateau.")
+                early_stopper.save_json(final_output)
+                # Save final checkpoint before exiting
+                checkpoint_dir = final_output / "checkpoint-early-stop"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                model.save_pretrained(checkpoint_dir)
+                tokenizer.save_pretrained(checkpoint_dir)
+                break
+
+            # Save checkpoint at save_interval (also at step 10 as smoke test)
+            if step == 10 or (step > 0 and step % save_interval == 0):
+                logger.info(f"Step {step}: Saving checkpoint")
+                checkpoint_dir = final_output / "checkpoint-latest"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                model.save_pretrained(checkpoint_dir)
+                tokenizer.save_pretrained(checkpoint_dir)
+
+                # Save trainer state for resume (including RNG for reproducibility)
+                torch.save({
+                    "step": step,
+                    "tokens_seen": tokens_seen,
+                    "best_loss": best_loss,
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "raw_samples_seen": tokenized_dataset.raw_samples_seen,
+                    "rng_state": {
+                        "python": random.getstate(),
+                        "numpy": np.random.get_state(),
+                        "torch": torch.get_rng_state(),
+                        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                    },
+                }, checkpoint_dir / "trainer_state.pt")
+
+                # Upload to GCS periodically
+                upload_to_gcs(checkpoint_dir, model_name, f"checkpoint-step-{step}")
+                # Cleanup old checkpoints (keep only 5 most recent)
+                cleanup_old_gcs_checkpoints(model_name, keep_n=5)
+
+    pbar.close()
+
+    # Save final model
+    logger.info("Saving final model")
+    model.save_pretrained(final_output)
+    tokenizer.save_pretrained(final_output)
+
+    # Save DLM config
+    dlm_config = {
+        "bd_size": block_size,
+        "mask_token": MASK_TOKEN,
+        "mask_token_id": mask_id,
+        "num_diffusion_steps": 8,
+        "source_checkpoint": model_path,
+        "total_tokens_trained": tokens_seen,
+        "training_loss": best_loss,
+        "training_method": "fast-dllm-v2-sft",
+        "max_seq_length": max_seq_length,
+    }
+    with open(final_output / "dlm_config.json", "w") as f:
+        json.dump(dlm_config, f, indent=2)
+
+    logger.info(f"Model saved to {final_output}")
+    logger.info(f"Fast-dLLM v2 config: bd_size={block_size}, mask_id={mask_id}")
+
+    # Upload final model to GCS
+    upload_to_gcs(final_output, model_name, "final")
+
+    if use_wandb:
+        wandb.finish()
+
+    return {
+        "output_path": str(final_output),
+        "tokens_trained": tokens_seen,
+        "final_loss": best_loss,
+        "bd_size": block_size,
+        "mask_token_id": mask_id,
+    }
+
+
+@hydra.main(config_path="../configs", config_name="config", version_base=None)
+def main(cfg: DictConfig) -> None:
+    """Hydra entry point for Fast-dLLM v2 training."""
+    logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
+
+    # Resolve model path from config (fail loudly if missing)
+    model_path = cfg.model.get("bitnet_checkpoint") or cfg.source.get("path")
+    if not model_path:
+        raise ValueError(
+            "No model path! Set via CLI:\n"
+            "  uv run python scripts/train_dlm.py source.path=hf://org/model\n"
+            "  uv run python scripts/train_dlm.py model.bitnet_checkpoint=/path/to/ckpt"
+        )
+
+    # Resolve output directory
+    output_dir = Path(cfg.output_dir) / cfg.model.name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    result = train(
+        model_path=model_path,
+        output_dir=str(output_dir),
+        total_tokens=cfg.conversion.total_tokens,
+        block_size=cfg.model.block_size,
+        learning_rate=cfg.conversion.optimizer.lr,
+        max_seq_length=cfg.conversion.get("max_seq_length", DEFAULT_SEQ_LENGTH),
+        batch_size=cfg.conversion.batch_size,
+        gradient_accumulation_steps=cfg.conversion.gradient_accumulation_steps,
+        warmup_ratio=cfg.conversion.scheduler.get("warmup_ratio", DEFAULT_WARMUP_RATIO),
+        scheduler_type=cfg.conversion.scheduler.get("type", "constant"),
+        seed=cfg.get("seed", 42),
+        early_stopping_cfg=OmegaConf.to_container(cfg.conversion.get("early_stopping", {})),
+        quantization_warmup_steps=cfg.conversion.get("quantization_warmup_steps", 0),
+        optimizer_cfg=OmegaConf.to_container(cfg.conversion.optimizer),
+        save_interval=cfg.conversion.checkpoint.get("save_interval", 200),
+    )
+
+    logger.info(f"Training complete!")
+    logger.info(f"Output: {result['output_path']}")
+    logger.info(f"Tokens trained: {result['tokens_trained']:,}")
+    logger.info(f"Final loss: {result['final_loss']:.4f}")
+
+
+if __name__ == "__main__":
+    main()
