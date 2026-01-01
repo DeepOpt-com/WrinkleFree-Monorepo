@@ -588,13 +588,22 @@ class ContinuedPretrainingTrainer(Trainer):
         This is the unified approach that supports:
         - continue_pretrain: Cross-entropy LM loss
         - layerwise_distill: Hidden state alignment with teacher
-        - dlm: Diffusion language modeling (future)
+        - dlm: Diffusion language modeling
+        - logits_distill: KL divergence on logits (BitDistill)
+        - attention_distill: Attention relation distillation (BitDistill)
+        - tcs_distill: Target Concrete Score for DLM
+        - block_attention_distill: Block-wise attention for AR->DLM
+        - bitdistill: Combined BitDistill (logits + attention)
 
         The ObjectiveManager handles preprocessing, teacher forward (if needed),
         and combining multiple weighted objectives.
         """
         # 1. Preprocess batch (e.g., masking for DLM)
         batch = self.objective_manager.preprocess_batch(batch)
+
+        # Determine what outputs we need
+        need_hidden_states = self.objective_manager.requires_hidden_states
+        need_attentions = getattr(self.objective_manager, "requires_attentions", False)
 
         # 2. Teacher forward (only if any objective requires it)
         teacher_outputs = None
@@ -603,6 +612,7 @@ class ContinuedPretrainingTrainer(Trainer):
                 teacher_outputs = self.teacher(
                     input_ids=batch["input_ids"],
                     attention_mask=batch.get("attention_mask"),
+                    output_attentions=need_attentions,
                 )
 
         # 3. Student forward
@@ -610,8 +620,17 @@ class ContinuedPretrainingTrainer(Trainer):
             input_ids=batch["input_ids"],
             attention_mask=batch.get("attention_mask"),
             position_ids=batch.get("position_ids"),
-            output_hidden_states=self.objective_manager.requires_hidden_states,
+            output_hidden_states=need_hidden_states,
+            output_attentions=need_attentions,
         )
+
+        # Normalize student outputs to dict format
+        if hasattr(student_outputs, "logits"):
+            student_outputs = {
+                "logits": student_outputs.logits,
+                "hidden_states": getattr(student_outputs, "hidden_states", None),
+                "attentions": getattr(student_outputs, "attentions", None),
+            }
 
         # 4. Compute objectives via ObjectiveManager
         manager_output = self.objective_manager(
@@ -770,20 +789,37 @@ class ContinuedPretrainingTrainer(Trainer):
         return loss_dict
 
     def save_checkpoint(self, name: str) -> None:
-        """Save checkpoint with early stopper state."""
+        """Save checkpoint with early stopper state and DLM config."""
         # Call parent to save base checkpoint
         super().save_checkpoint(name)
 
-        # Add early stopper state to checkpoint (rank 0 only)
-        if self.rank == 0 and self.early_stopper.enabled:
+        # Rank 0 only: save additional state
+        if self.rank == 0:
             checkpoint_dir = self.output_dir / "checkpoints" / name
-            checkpoint_path = checkpoint_dir / "checkpoint.pt"
-            if checkpoint_path.exists():
-                import torch
-                checkpoint = torch.load(checkpoint_path, map_location="cpu")
-                checkpoint["early_stopper"] = self.early_stopper.state_dict()
-                checkpoint["loss_ema"] = self.loss_ema
-                torch.save(checkpoint, checkpoint_path)
+
+            # Add early stopper state to checkpoint
+            if self.early_stopper.enabled:
+                checkpoint_path = checkpoint_dir / "checkpoint.pt"
+                if checkpoint_path.exists():
+                    import torch
+                    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                    checkpoint["early_stopper"] = self.early_stopper.state_dict()
+                    checkpoint["loss_ema"] = self.loss_ema
+                    torch.save(checkpoint, checkpoint_path)
+
+            # Save dlm_config.json if DLM objective is enabled
+            if self.use_objective_manager and "dlm" in self.objective_manager.objectives:
+                dlm_obj = self.objective_manager.objectives["dlm"]
+                if dlm_obj is not None:
+                    import json
+                    dlm_config = {
+                        "mask_token_id": dlm_obj.mask_token_id,
+                        "mask_prob": dlm_obj.mask_prob,
+                        "ignore_index": dlm_obj.ignore_index,
+                        "training_method": "unified-dlm",
+                    }
+                    with open(checkpoint_dir / "dlm_config.json", "w") as f:
+                        json.dump(dlm_config, f, indent=2)
 
     def load_checkpoint(self, path: Path) -> None:
         """Load checkpoint with early stopper state."""

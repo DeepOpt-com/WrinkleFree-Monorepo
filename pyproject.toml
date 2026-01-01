@@ -10,6 +10,7 @@ dependencies = [
 
 [tool.uv.workspace]
 members = ["packages/*"]
+exclude = ["packages/_legacy"]
 
 [tool.uv.sources]
 muon-clip = { git = "https://github.com/GAD-cell/muon-clip.git", rev = "main" }

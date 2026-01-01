@@ -23,11 +23,12 @@ This package is part of the WrinkleFree monorepo and depends on:
 |---------|--------------|
 | `data_handler` | Data loading, influence optimization |
 | `architecture` | BitNet layers and model conversion |
-| `distillation` | Knowledge distillation (Stage 3+) |
 | `deployer` | Cloud deployment (launches training jobs) |
-| `converter` | Converts trained models to DLM format |
 | `inference` | Serves trained models |
 | `eval` | Evaluates trained models |
+
+**Note**: Knowledge distillation (BitDistill, TCS) is now integrated into the objectives system.
+The old `distillation` package has been moved to `_legacy/distillation/`.
 
 **Running from monorepo root**:
 ```bash
