@@ -2,6 +2,31 @@
 
 Extended documentation for AI assistants. See main `CLAUDE.md` for rules.
 
+## Quick Start (AI Agents)
+
+```bash
+# 1. Lightning training with auto batch size (RECOMMENDED)
+cd packages/training
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  training.auto_batch_size=true training.optimizer.type=adamw
+
+# 2. Cloud smoke test
+cd packages/deployer && source credentials/.env
+sky launch skypilot/smoke_test_lightning.yaml -y --cluster smoke --env OBJECTIVE_COMBO=dlm
+
+# 3. Monitor and teardown
+sky logs smoke
+sky down smoke -y
+```
+
+## Known Issues & Workarounds
+
+| Issue | Workaround |
+|-------|------------|
+| muon_fsdp2 single-GPU crash | Use `training.optimizer.type=adamw` |
+| Checkpoint resume fails | Clean `/tmp/checkpoints/` on remote first |
+| WandB run already exists | Use unique `experiment_name` or clean wandb dir |
+
 ## Training Pipeline Overview
 
 WrinkleFree implements **BitDistill** for training 1.58-bit (ternary) LLMs:

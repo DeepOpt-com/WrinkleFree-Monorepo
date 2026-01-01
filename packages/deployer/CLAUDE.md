@@ -2,7 +2,32 @@
 
 Training job launcher for 1.58-bit quantized LLMs. Uses SkyPilot for managed GPU jobs with spot recovery.
 
-**For detailed AI discovery docs, see `docs/AIDEV.md`.**
+## CRITICAL Rules
+
+1. **RUN FROM DEPLOYER DIR**: All `wf` and `sky` commands must run from `packages/deployer`
+2. **SOURCE CREDENTIALS FIRST**: Always `source credentials/.env` before any cloud command
+3. **NEVER CANCEL OTHERS' JOBS**: Only cancel SkyPilot jobs you started in this session
+4. **USE NEBIUS**: Prefer Nebius over RunPod/GCP (better availability, lower cost)
+5. **CLEAN BEFORE RETRY**: Run `sky exec <cluster> "rm -rf /tmp/checkpoints/*"` before retrying failed jobs
+
+## Quick Smoke Test (Lightning)
+
+```bash
+cd packages/deployer
+source credentials/.env
+
+# Launch Lightning smoke test with auto batch size
+sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke --env OBJECTIVE_COMBO=dlm
+
+# Monitor
+sky logs lightning-smoke
+
+# Re-run on existing cluster (faster)
+sky exec lightning-smoke skypilot/smoke_test_lightning.yaml --env OBJECTIVE_COMBO=dlm
+
+# Teardown
+sky down lightning-smoke -y
+```
 
 ## Monorepo Integration
 
@@ -69,7 +94,8 @@ uv run --package wrinklefree-deployer sky jobs queue
 | `src/wf_deployer/cli.py` | CLI commands |
 | `skypilot/train.yaml` | SkyPilot training job template |
 | `skypilot/service.yaml` | SkyServe inference template |
-| `skypilot/smoke_test_unified_1gpu.yaml` | Smoke test: 1x L40 unified training |
+| `skypilot/smoke_test_lightning.yaml` | **Smoke test: Lightning + auto batch (RECOMMENDED)** |
+| `skypilot/smoke_test_unified_1gpu.yaml` | Smoke test: 1x L40 unified training (legacy) |
 | `skypilot/smoke_test_unified_2gpu.yaml` | Smoke test: 2x L40 with FSDP |
 | `skypilot/smoke_test_bitdistill.yaml` | Smoke test: BitDistill distillation |
 | `skypilot/smoke_test_lrc.yaml` | Smoke test: LRC calibration (1x L40) |

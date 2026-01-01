@@ -2,6 +2,14 @@
 
 Research platform for 1.58-bit (ternary) quantized LLM training, serving, and evaluation.
 
+## Key Features
+
+- **PyTorch Lightning Training** with auto batch size scaling
+- **Multi-Objective System** (CE, DLM, LRC, distillation) via ObjectiveManager
+- **BitNet 1.58-bit Quantization** with Straight-Through Estimator (STE)
+- **Cloud Deployment** via SkyPilot (Nebius, RunPod)
+- **GGUF Export** for BitNet.cpp inference
+
 ## Quick Start
 
 ```bash

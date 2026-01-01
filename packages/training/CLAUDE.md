@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## CRITICAL Rules
+
+1. **USE LIGHTNING TRAINER**: Prefer `train_lightning.py` over legacy `train.py`
+2. **AUTO BATCH SIZE**: Always use `training.auto_batch_size=true` for new runs
+3. **SINGLE-GPU BUG**: Use `training.optimizer.type=adamw` on single GPU (muon_fsdp2 bug)
+4. **CLEAN CHECKPOINTS**: Before re-running failed jobs, clean `/tmp/checkpoints/` on remote
+
+## Known Bugs
+
+| Bug | Workaround | Status |
+|-----|------------|--------|
+| muon_fsdp2 single-GPU | Use `training.optimizer.type=adamw` | Open (upstream) |
+| BatchSizeFinder + WandB resume | Clean checkpoints before retry | Fixed in code |
+| PyTorch 2.6 weights_only | Added safe_globals for omegaconf types | Fixed |
+
 ## Project Overview
 
 WrinkleFree is a repository for training and serving 1.58-bit (ternary) LLM models using:
