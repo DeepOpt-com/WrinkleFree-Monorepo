@@ -114,12 +114,15 @@ run: |
 
   echo ""
   echo "[Training] Running Lightning training..."
+  # Note: Using AdamW instead of MuonClip due to muon_fsdp2 single-GPU bug
+  # (muon_update function not defined in single device mode)
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=unified \
     data=default \
     training.max_steps=${MAX_STEPS} \
     training.auto_batch_size=${AUTO_BATCH_SIZE} \
+    training.optimizer.type=adamw \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=lightning_${OBJECTIVE_COMBO}_smoke \
     training.checkpoint.save_interval=10 \
