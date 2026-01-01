@@ -145,6 +145,42 @@ schedule/dlm_weight               # Curriculum weight
 influence/weight_{dataset}        # Per-dataset mixture weight
 ```
 
+### LRC Calibration (Post-Quantization Recovery)
+
+Low-Rank Correction (LRC) adds trainable low-rank matrices (U, V) to correct quantization errors.
+Based on [Low-Rank Correction for Quantized LLMs](https://arxiv.org/abs/2412.07902).
+
+```bash
+# Train LRC adapters on calibration data
+uv run python scripts/train.py model=smollm2_135m training=lrc_calibration data=fineweb
+
+# Key features:
+# - Converts BitLinear -> BitLinearLRC (adds U, V matrices)
+# - Freezes ALL params except U, V (only LRC matrices trained)
+# - Uses hidden state matching loss (teacher = original fp16 model)
+# - Short calibration run (~50M tokens)
+```
+
+**How LRC Works**:
+- Forward: `output = W_quant @ Q_a(X) + U @ V^T @ X`
+  - `W_quant @ Q_a(X)`: frozen quantized path
+  - `U @ V^T @ X`: trainable correction on unquantized activations
+- Loss: `||h_teacher - h_student||²` per layer
+- Rank: 10% of min(in, out) → ~50% error reduction
+
+**Config** (`lrc_calibration.yaml`):
+```yaml
+lrc:
+  rank_percentage: 0.1  # 10% rank
+  init_method: zeros    # or "svd_residual"
+
+objectives:
+  lrc_reconstruction:
+    enabled: true
+    loss_type: mse
+    layer_weights: progressive
+```
+
 ### Legacy Stages (Still Supported)
 
 | Stage | Config | Purpose | Tokens |
@@ -152,7 +188,8 @@ influence/weight_{dataset}        # Per-dataset mixture weight
 | 1 | `stage1_subln` | Convert model: insert SubLN + BitLinear | N/A (conversion only) |
 | 1.9 | `stage1_9_layerwise` | Layer-wise distillation to align with teacher | ~100M |
 | 2 | `stage2_pretrain` | Continue pre-training with ternary weights | ~10B |
-| 3 | **Moved to `distillation` package** | Knowledge distillation fine-tuning | ~1B |
+| 3 | `bitdistill_full` | Knowledge distillation (BitDistill objectives) | ~1B |
+| LRC | `lrc_calibration` | Post-quantization low-rank correction | ~50M |
 
 ### Training Commands by Stage
 
@@ -177,10 +214,17 @@ uv run python scripts/train.py \
   data=fineweb \
   distributed=fsdp_multi
 
-# Stage 3: Distillation (use the separate distillation package)
-# See packages/distillation for the distillation package
-uv run --package wrinklefree-distillation python scripts/distill.py \
-  student.checkpoint_path=outputs/stage2/checkpoint.pt
+# Stage 3: BitDistill (knowledge distillation via objectives)
+uv run python scripts/train.py \
+  model=smollm2_135m \
+  training=bitdistill_full \
+  data=mixed_pretrain
+
+# LRC Calibration (post-quantization recovery)
+uv run python scripts/train.py \
+  model=smollm2_135m \
+  training=lrc_calibration \
+  data=fineweb
 ```
 
 ### Hydra Override Examples
@@ -407,6 +451,11 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 - `continue_pretrain.py` - ContinuePretrainObjective: next-token prediction
 - `dlm.py` - DLMObjective: diffusion language model masking
 - `layerwise_distill.py` - LayerwiseDistillationObjective: hidden state alignment
+- `logits_distill.py` - LogitsDistillationObjective: KL divergence on teacher logits
+- `attention_distill.py` - AttentionRelationDistillationObjective: attention pattern matching
+- `tcs_distill.py` - TCSDistillationObjective: Target Concrete Score for DLM students
+- `bitdistill.py` - BitDistillObjective: combined logits + attention distillation
+- `lrc_reconstruction.py` - LRCReconstructionObjective: low-rank correction training
 - `factory.py` - Creates ObjectiveManager from config
 - `curriculum.py` - CurriculumScheduler: phase-based weight transitions
 

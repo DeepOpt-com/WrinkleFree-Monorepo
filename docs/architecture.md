@@ -10,44 +10,33 @@
                     │  - Mixture opt   │
                     └────────┬────────┘
                              │
-              ┌──────────────┼──────────────┐
-              │              │              │
-              ▼              │              ▼
-    ┌─────────────────┐      │    ┌─────────────────┐
-    │    training     │      │    │  distillation   │
-    │  1.58-bit QAT   │      │    │  Teacher-student│
-    │  (BitDistill)   │      │    │  (Stage 3+)     │
-    └────────┬────────┘      │    └────────┬────────┘
-             │               │             │
-             │               │             │
-    ┌────────┴───────────────┘             │
-    │                                      │
-    ▼                                      │
-┌─────────────────┐                        │
-│  architecture   │  (Shared Library)      │
-│  - BitLinear    │                        │
-│  - SubLN        │                        │
-│  - Conversion   │                        │
-└─────────────────┘                        │
-                                           │
-             ┌─────────────────────────────┘
-             │ produces checkpoints
-             ▼
-    ┌─────────────────┐           ┌─────────────────┐
-    │   converter     │───────────│    inference    │
-    │  DLM format     │           │  sglang-bitnet  │
-    └─────────────────┘           └────────┬────────┘
-                                           │
-                                           ▼
-                                  ┌─────────────────┐
-                                  │      eval       │
-                                  │  GLUE/CNN eval  │
-                                  └─────────────────┘
+                             ▼
+                   ┌─────────────────┐
+                   │    training     │  (Application)
+                   │  1.58-bit QAT   │
+                   │  + Distillation │  ← BitDistill, TCS, LRC objectives
+                   │  (Stages 1-3)   │
+                   └────────┬────────┘
+                            │
+                            ▼
+                  ┌─────────────────┐
+                  │  architecture   │  (Shared Library)
+                  │  - BitLinear    │
+                  │  - BitLinearLRC │
+                  │  - SubLN        │
+                  └─────────────────┘
+                            │
+                            │ produces checkpoints
+                            ▼
+                  ┌─────────────────┐           ┌─────────────────┐
+                  │    inference    │───────────│      eval       │
+                  │  sglang-bitnet  │           │  GLUE/CNN eval  │
+                  └─────────────────┘           └─────────────────┘
 
-    ┌─────────────────┐
-    │    deployer     │  (Orchestrates cloud training/serving/distillation)
-    │  SkyPilot/Modal │
-    └─────────────────┘
+    ┌─────────────────┐          ┌─────────────────┐
+    │    deployer     │          │     mobile      │
+    │    SkyPilot     │          │ Android BitNet  │
+    └─────────────────┘          └─────────────────┘
 ```
 
 ## Package Types
@@ -55,13 +44,14 @@
 | Package | Type | Description |
 |---------|------|-------------|
 | `data_handler` | **Library** | Shared data loading, influence functions |
-| `architecture` | **Library** | BitNet layers (BitLinear, SubLN) & model conversion |
-| `training` | Application | 1.58-bit training pipeline (Stages 1, 1.9, 2) |
-| `distillation` | Application | Knowledge distillation (Stage 3+, BitDistill, TCS) |
+| `architecture` | **Library** | BitNet layers (BitLinear, BitLinearLRC, SubLN) & model conversion |
+| `training` | Application | 1.58-bit training pipeline (Stages 1-3) + distillation objectives |
 | `inference` | Application | Model serving application |
 | `eval` | Application | Evaluation scripts |
 | `deployer` | Application | CLI tool for cloud deployment |
-| `converter` | Application | Model format conversion |
+| `mobile` | Application | Android inference with BitNet.cpp |
+
+> **Note**: Legacy packages (`distillation`, `converter`, `cheapertraining`) are archived in `packages/_legacy/`.
 
 ## Data Flow
 
@@ -70,17 +60,19 @@
 1. **Stage 1**: SubLN insertion (training package)
 2. **Stage 1.9**: Layer-wise distillation (training package)
 3. **Stage 2**: Continue pre-training with QAT (training package)
-4. **Stage 3**: Knowledge distillation (**distillation package**)
-5. **Export**: Convert to GGUF/DLM (converter package)
-6. **Serve**: Deploy for inference (inference package)
-7. **Evaluate**: Run benchmarks (eval package)
+4. **Stage 3**: Knowledge distillation via objectives (training package)
+5. **LRC**: Post-quantization low-rank correction (training package)
+6. **Export**: Convert to GGUF (see root CLAUDE.md for workflow)
+7. **Serve**: Deploy for inference (inference package)
+8. **Evaluate**: Run benchmarks (eval package)
 
-### Distillation Options
+### Distillation Objectives (via Training Package)
 
-The distillation package supports multiple modes:
-- **BitDistill**: Logits + attention relation distillation
-- **TCS**: Target Concrete Score for DLM (diffusion) students
-- **Logits-only**: KL divergence without attention
+The training package supports multiple distillation modes via the objectives system:
+- **BitDistill** (`training=bitdistill_full`): Logits + attention relation distillation
+- **TCS** (`tcs_distill` objective): Target Concrete Score for DLM students
+- **LRC** (`training=lrc_calibration`): Low-Rank Correction for post-quantization recovery
+- **Logits-only** (`logits_distill` objective): KL divergence without attention
 
 ### Deployment Flow
 
@@ -89,12 +81,14 @@ Local Development
        │
        ▼
 ┌──────────────┐
-│   deployer   │ ── wf train ───────► Modal/SkyPilot
-│              │ ── wf distill ─────► Distillation jobs
-│              │ ── wf tcs-distill ─► TCS distillation
-│              │ ── wf serve ───────► Cloud GPU
-│              │ ── wf eval  ───────► Batch eval
+│   deployer   │ ── wf train ───────► SkyPilot cloud training
+│              │ ── wf serve ───────► Cloud GPU serving
+│              │ ── wf eval  ───────► Batch evaluation
 └──────────────┘
+
+Note: Distillation is now done via training objectives:
+  training=bitdistill_full  → BitDistill (logits + attention)
+  training=lrc_calibration  → LRC post-quant recovery
 ```
 
 ## External Dependencies
@@ -142,7 +136,6 @@ uv run pytest
 # Run package-specific tests
 uv run --package wrinklefree pytest packages/training/tests/
 uv run --package data-handler pytest packages/data_handler/tests/
-uv run --package wrinklefree-distillation pytest packages/distillation/tests/
 uv run --package bitnet-arch pytest packages/architecture/tests/
 
 # Type checking

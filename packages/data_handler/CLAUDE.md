@@ -11,17 +11,17 @@ data_handler is a shared library in the WrinkleFree monorepo providing:
 
 ## Monorepo Integration
 
-This is a **shared library** imported by other packages:
+This is a **shared library** imported by the training package:
 
 ```
 data_handler (this package)
     │
-    ├──► packages/training (wrinklefree)
-    │       Uses: data_handler.data, data_handler.influence
-    │
-    └──► packages/distillation
+    └──► packages/training (wrinklefree)
             Uses: data_handler.data, data_handler.influence
 ```
+
+> **Note**: The legacy `distillation` package (now in `_legacy/`) also used this library.
+> Distillation is now integrated into the training package via objectives.
 
 **Workspace dependency** (in consumer's pyproject.toml):
 ```toml

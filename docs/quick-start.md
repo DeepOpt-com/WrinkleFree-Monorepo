@@ -37,7 +37,6 @@ uv sync --package wrinklefree
 uv run --package wrinklefree python -c "import wrinklefree; print('training: ok')"
 uv run --package data-handler python -c "import data_handler; print('data_handler: ok')"
 uv run --package bitnet-arch python -c "import bitnet_arch; print('bitnet_arch: ok')"
-uv run --package wrinklefree-distillation python -c "import distillation; print('distillation: ok')"
 
 # Run tests
 uv run pytest packages/data_handler/tests/ -v --tb=short
@@ -63,21 +62,20 @@ uv run --package wrinklefree python packages/training/scripts/train.py \
 
 ### Running Distillation (Stage 3)
 
+Distillation is now integrated into the training package via the objectives system:
+
 ```bash
 # BitDistill distillation (logits + attention)
-uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
-  student.checkpoint_path=outputs/stage2/checkpoint.pt
+uv run --package wrinklefree python packages/training/scripts/train.py \
+  model=smollm2_135m \
+  training=bitdistill_full \
+  data=mixed_pretrain
 
-# Logits-only distillation (no attention)
-uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
-  student.checkpoint_path=outputs/stage2/checkpoint.pt \
-  distillation=logits_only
-
-# TCS distillation for DLM students
-uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
-  distillation=tcs \
-  student.checkpoint_path=outputs/dlm/checkpoint.pt \
-  student.type=dlm
+# LRC Calibration (post-quantization low-rank correction)
+uv run --package wrinklefree python packages/training/scripts/train.py \
+  model=smollm2_135m \
+  training=lrc_calibration \
+  data=fineweb
 ```
 
 ### Running Evaluation
@@ -100,13 +98,17 @@ wf train --model smollm2_135m --stage 2 --scale dev
 wf sky launch --config skypilot/train.yaml
 ```
 
-### Converting Models
+### Converting Models to GGUF
+
+See the root `CLAUDE.md` for the correct DLM GGUF conversion workflow. Key point: use TQ1_0 format, not TQ2_0.
 
 ```bash
-# Convert to DLM format
-uv run --package wf_dlm_converter python packages/converter/scripts/train_dlm.py \
-  model=smollm2_135m \
-  source.path=outputs/checkpoint
+# Convert using Microsoft BitNet's converter
+cd extern/reference/BitNet.cpp
+python utils/convert-hf-to-gguf-bitnet.py \
+    path/to/checkpoint \
+    --outtype tq1_0 \
+    --outfile output.gguf
 ```
 
 ## Package Commands

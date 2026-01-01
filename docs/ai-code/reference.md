@@ -16,29 +16,33 @@ Stage 1.9: Layer-wise Distillation (packages/training)
 Stage 2: Continue Pre-training (packages/training)
     │   QAT with gradual quantization warmup (~10B tokens)
     ▼
-Stage 3: Knowledge Distillation (packages/distillation)
-    │   BitDistill or TCS loss with teacher guidance
+Stage 3: Knowledge Distillation (packages/training - objectives)
+    │   BitDistill or TCS objectives with teacher guidance
     ▼
-Export: Convert to GGUF/DLM (packages/converter)
+LRC: Post-quantization Correction (packages/training)
+    │   Low-Rank Correction for error recovery (~50M tokens)
+    ▼
+Export: Convert to GGUF (see root CLAUDE.md for workflow)
     │
     ▼
 Serve: Inference with BitNet.cpp (packages/inference)
 ```
 
-**Key insight**: Stages 1-2 are in `training`, Stage 3+ is in `distillation`.
+**Key insight**: All training stages are in `packages/training`. Distillation uses the objectives system.
 
 ## Package Map (Full)
 
 | Package | Type | Purpose | Key Entry Point |
 |---------|------|---------|-----------------|
-| `packages/training` | App | 1.58-bit training (Stages 1, 1.9, 2) | `scripts/train.py` |
-| `packages/distillation` | App | Knowledge distillation (Stage 3+) | `scripts/distill.py` |
-| `packages/architecture` | Lib | BitNet layers & model conversion | Import as library |
+| `packages/training` | App | 1.58-bit training (all stages) + distillation + LRC | `scripts/train.py` |
+| `packages/architecture` | Lib | BitNet layers (BitLinear, BitLinearLRC, SubLN) & conversion | Import as library |
 | `packages/data_handler` | Lib | Data loading & influence functions | Import as library |
 | `packages/inference` | App | Model serving (sglang-bitnet) | `demo/serve_sglang.py` |
 | `packages/eval` | App | Model evaluation (lm-eval) | `scripts/evaluate.py` |
-| `packages/deployer` | App | Cloud deployment (SkyPilot/Modal) | `wf` CLI |
-| `packages/converter` | App | DLM format conversion | `scripts/train_dlm.py` |
+| `packages/deployer` | App | Cloud deployment (SkyPilot) | `wf` CLI |
+| `packages/mobile` | App | Android inference | Android app |
+
+> **Note**: Legacy packages (`distillation`, `converter`, `cheapertraining`) are archived in `packages/_legacy/`.
 
 ## Shared Dependencies
 
@@ -47,16 +51,13 @@ Serve: Inference with BitNet.cpp (packages/inference)
 ```
 data_handler (library)
     │
-    ├──► training (wrinklefree)
-    │       Uses: data_handler.data, data_handler.influence
-    │
-    └──► distillation (wrinklefree-distillation)
+    └──► training (wrinklefree)
             Uses: data_handler.data, data_handler.influence
 
 architecture (library)
     │
     └──► training (wrinklefree)
-            Uses: bitnet_arch.layers, bitnet_arch.conversion
+            Uses: bitnet_arch.layers (BitLinear, BitLinearLRC), bitnet_arch.conversion
 ```
 
 **Adding workspace dependencies**:
@@ -70,7 +71,7 @@ data-handler = { workspace = true }
 bitnet-arch = { workspace = true }
 ```
 
-**Important**: Changes to data_handler affect training and distillation - test both after modifications.
+**Important**: Changes to data_handler or architecture affect training - test both after modifications.
 
 ## GCP Configuration
 

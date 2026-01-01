@@ -11,11 +11,11 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 **Orchestrates**:
 | Command | Package | Description |
 |---------|---------|-------------|
-| `wf train` | `training` | 1.58-bit quantization training |
-| `wf distill` | `distillation` | Knowledge distillation (BitNet) |
-| `wf tcs-distill` | `distillation` | TCS distillation (DLM with block attention) |
+| `wf train` | `training` | 1.58-bit quantization training (all stages) |
 | `wf serve` | `inference` | Model serving |
 | `wf eval` | `eval` | Model evaluation |
+
+> **Note**: Distillation is now done via training objectives (`training=bitdistill_full` or `training=lrc_calibration`).
 
 **Running commands**:
 ```bash
@@ -41,10 +41,13 @@ uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --cloud nebius
 # With specific scale (4x H100)
 uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --scale large
 
-# TCS distillation for DLM models (block-wise attention enabled)
-uv run --package wrinklefree-deployer wf tcs-distill \
-  --checkpoint gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/ \
-  --cloud runpod
+# BitDistill distillation (via training objectives)
+uv run --package wrinklefree-deployer wf train -m qwen3_4b \
+  --training bitdistill_full --cloud nebius
+
+# LRC calibration (post-quantization recovery)
+uv run --package wrinklefree-deployer wf train -m qwen3_4b \
+  --training lrc_calibration --cloud nebius
 
 # Check logs
 uv run --package wrinklefree-deployer wf logs <run_id>
@@ -62,14 +65,14 @@ uv run --package wrinklefree-deployer sky jobs queue
 | File | Purpose |
 |------|---------|
 | `src/wf_deployer/constants.py` | All magic strings, defaults, scales, GAR config |
-| `src/wf_deployer/core.py` | Main API: train(), train_distill(), train_tcs_distill(), logs() |
+| `src/wf_deployer/core.py` | Main API: train(), logs() |
 | `src/wf_deployer/cli.py` | CLI commands |
 | `skypilot/train.yaml` | SkyPilot training job template |
-| `skypilot/distill_train.yaml` | SkyPilot distillation job template (BitNet) |
-| `skypilot/tcs_distill_train.yaml` | SkyPilot TCS distillation job template (DLM) |
 | `skypilot/service.yaml` | SkyServe inference template |
 | `skypilot/smoke_test_unified_1gpu.yaml` | Smoke test: 1x L40 unified training |
 | `skypilot/smoke_test_unified_2gpu.yaml` | Smoke test: 2x L40 with FSDP |
+| `skypilot/smoke_test_bitdistill.yaml` | Smoke test: BitDistill distillation |
+| `skypilot/smoke_test_lrc.yaml` | Smoke test: LRC calibration (1x L40) |
 | `credentials/.env` | Local credentials (gitignored) |
 | `credentials/gcp-service-account.json` | GCP service account for GCS + Docker auth |
 
@@ -86,12 +89,18 @@ sky launch skypilot/smoke_test_unified_1gpu.yaml -y --cluster unified-1gpu
 # 2x L40 smoke test (FSDP data parallelism)
 sky launch skypilot/smoke_test_unified_2gpu.yaml -y --cluster unified-2gpu
 
+# LRC calibration smoke test (Low-Rank Correction)
+source credentials/.env
+export SKYPILOT_DOCKER_PASSWORD=$(cat credentials/gcp-service-account.json)
+sky launch skypilot/smoke_test_lrc.yaml -y --secret WANDB_API_KEY --secret SKYPILOT_DOCKER_PASSWORD
+
 # Monitor
 sky logs unified-1gpu
 sky logs unified-2gpu
+sky logs wf-smoke-lrc
 
 # Teardown
-sky down unified-1gpu unified-2gpu -y
+sky down unified-1gpu unified-2gpu wf-smoke-lrc -y
 ```
 
 **Test Configuration**:

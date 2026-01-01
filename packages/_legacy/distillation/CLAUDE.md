@@ -1,4 +1,25 @@
-# CLAUDE.md
+# CLAUDE.md (DEPRECATED)
+
+> **WARNING: This package has been archived to `packages/_legacy/`.**
+>
+> Distillation functionality is now integrated into `packages/training/src/wrinklefree/objectives/`.
+>
+> **For distillation, use the training package:**
+> ```bash
+> # BitDistill (logits + attention distillation)
+> uv run python scripts/train.py training=bitdistill_full
+>
+> # LRC Calibration (post-quantization recovery)
+> uv run python scripts/train.py training=lrc_calibration
+> ```
+>
+> See `packages/training/CLAUDE.md` for current documentation.
+
+---
+
+*Original documentation preserved below for reference only*
+
+---
 
 This file provides guidance to Claude Code when working with this repository.
 

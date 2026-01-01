@@ -20,19 +20,23 @@
 | Sync to Desktop | `uv run gcd sync-ssh desktop --smart` |
 | Start watch mode | `uv run gcd sync-ssh desktop --watch` |
 | Run training | `uv run --package wrinklefree python scripts/train.py` |
-| Run distillation | `uv run --package wrinklefree-distillation python scripts/distill.py` |
+| Run BitDistill | `uv run --package wrinklefree python scripts/train.py training=bitdistill_full` |
+| Run LRC calibration | `uv run --package wrinklefree python scripts/train.py training=lrc_calibration` |
 | Deploy to cloud | `wf train -m smollm2_135m -s 2 --cloud nebius` |
 
 ## Package Navigation
 
 | Package | CLAUDE.md | Purpose |
 |---------|-----------|---------|
-| training | `packages/training/CLAUDE.md` | Stages 1, 1.9, 2 |
-| distillation | `packages/distillation/CLAUDE.md` | Stage 3+ |
-| architecture | `packages/architecture/CLAUDE.md` | BitLinear/SubLN |
+| training | `packages/training/CLAUDE.md` | Stages 1-3 + Distillation + LRC |
+| architecture | `packages/architecture/CLAUDE.md` | BitLinear/BitLinearLRC/SubLN |
 | data_handler | `packages/data_handler/CLAUDE.md` | Data loading |
 | inference | `packages/inference/CLAUDE.md` | Model serving |
 | deployer | `packages/deployer/CLAUDE.md` | Cloud deploy |
+| mobile | `packages/mobile/CLAUDE.md` | Android inference |
+| eval | `packages/eval/CLAUDE.md` | Model evaluation |
+
+> **Note**: Legacy packages (`distillation`, `converter`, `cheapertraining`) are archived in `packages/_legacy/`.
 
 ## DLM GGUF Conversion (CRITICAL)
 
