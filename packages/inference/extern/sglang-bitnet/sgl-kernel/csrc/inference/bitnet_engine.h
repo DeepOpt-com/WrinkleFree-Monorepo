@@ -147,6 +147,43 @@ int32_t bitnet_num_layers(BitNetEngine* engine);
  */
 int32_t bitnet_max_seq_len(BitNetEngine* engine);
 
+/**
+ * Get number of KV heads (for GQA).
+ */
+int bitnet_get_num_kv_heads(BitNetEngine* engine);
+
+/**
+ * Get head dimension.
+ */
+int32_t bitnet_head_dim(BitNetEngine* engine);
+
+// ============================================================================
+// Advanced Inference (for batch engine)
+// ============================================================================
+
+// Forward declaration for KVCache
+struct KVCache;
+
+/**
+ * Forward pass with external KV cache.
+ *
+ * This allows the batch engine to use per-sequence KV caches
+ * while sharing model weights.
+ *
+ * @param engine Engine handle (shared across sequences)
+ * @param kv_cache Per-sequence KV cache
+ * @param token_id Input token ID
+ * @param pos Position in sequence
+ * @param logits_out Output logits buffer [vocab_size]
+ */
+void forward_one_token_with_cache(
+    BitNetEngine* engine,
+    struct KVCache* kv_cache,
+    int32_t token_id,
+    int pos,
+    float* logits_out
+);
+
 // ============================================================================
 // Memory Management
 // ============================================================================

@@ -204,6 +204,44 @@ static void elementwise_mul(float* output, const float* a, const float* b, int n
     }
 }
 
+// ============================================================================
+// RoPE (Rotary Position Embeddings)
+// ============================================================================
+
+// Apply RoPE to a single head's Q or K vector
+// head_dim must be even; we process pairs (x0, x1) -> (x0*cos - x1*sin, x0*sin + x1*cos)
+static void apply_rope(float* vec, int head_dim, int position, float rope_theta = 500000.0f) {
+    const int half_dim = head_dim / 2;
+
+    for (int i = 0; i < half_dim; i++) {
+        // Compute frequency for this dimension pair
+        float freq = 1.0f / std::pow(rope_theta, static_cast<float>(2 * i) / head_dim);
+        float angle = position * freq;
+        float cos_val = std::cos(angle);
+        float sin_val = std::sin(angle);
+
+        // Rotate the pair (x0, x1)
+        float x0 = vec[i];
+        float x1 = vec[i + half_dim];
+        vec[i] = x0 * cos_val - x1 * sin_val;
+        vec[i + half_dim] = x0 * sin_val + x1 * cos_val;
+    }
+}
+
+// Apply RoPE to all heads in Q (shape: [num_heads * head_dim])
+static void apply_rope_q(float* q, int num_heads, int head_dim, int position, float rope_theta = 500000.0f) {
+    for (int h = 0; h < num_heads; h++) {
+        apply_rope(q + h * head_dim, head_dim, position, rope_theta);
+    }
+}
+
+// Apply RoPE to all KV heads (shape: [num_kv_heads * head_dim])
+static void apply_rope_kv(float* k, int num_kv_heads, int head_dim, int position, float rope_theta = 500000.0f) {
+    for (int h = 0; h < num_kv_heads; h++) {
+        apply_rope(k + h * head_dim, head_dim, position, rope_theta);
+    }
+}
+
 // Softmax
 static void softmax(float* x, int n) {
     float max_val = *std::max_element(x, x + n);
@@ -375,11 +413,19 @@ static void embed_lookup(float* output, const float* embed_table,
 }
 
 // ============================================================================
-// Attention Forward (with GQA and SubLN support)
+// Attention Forward (with GQA, RoPE, and SubLN support)
 // ============================================================================
 
-static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
-                              float* hidden, float* output) {
+// Internal attention forward with explicit KV cache pointer
+// This allows batch engine to use per-sequence KV caches
+static void attention_forward_impl(
+    BitNetEngine* engine,
+    KVCache* kv_cache,
+    int layer_idx,
+    int pos,
+    float* hidden,
+    float* output
+) {
     auto& cfg = engine->config;
     auto& layer = engine->layers[layer_idx];
 
@@ -400,13 +446,19 @@ static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
     bitnet_linear(k.data(), hidden, quant_buf, layer.k_proj, kv_dim, H, &quant_scale);
     bitnet_linear(v.data(), hidden, quant_buf, layer.v_proj, kv_dim, H, &quant_scale);
 
+    // Apply RoPE to Q and K (critical for positional information!)
+    // Note: Using rope_theta=500000.0 which is typical for Llama-3/Qwen models
+    apply_rope_q(q.data(), heads, head_dim, pos);
+    apply_rope_kv(k.data(), kv_heads, head_dim, pos);
+
     // Store K, V in cache (only kv_dim per position)
-    float* k_cache = kv_cache_get_key(engine->kv_cache.get(), layer_idx);
-    float* v_cache = kv_cache_get_value(engine->kv_cache.get(), layer_idx);
+    // Note: K is stored AFTER RoPE is applied so cached K already has positional encoding
+    float* k_cache_ptr = kv_cache_get_key(kv_cache, layer_idx);
+    float* v_cache_ptr = kv_cache_get_value(kv_cache, layer_idx);
 
     // Copy to position in cache (note: using kv_dim, not H)
-    std::memcpy(k_cache + pos * kv_dim, k.data(), kv_dim * sizeof(float));
-    std::memcpy(v_cache + pos * kv_dim, v.data(), kv_dim * sizeof(float));
+    std::memcpy(k_cache_ptr + pos * kv_dim, k.data(), kv_dim * sizeof(float));
+    std::memcpy(v_cache_ptr + pos * kv_dim, v.data(), kv_dim * sizeof(float));
 
     // Multi-head attention with GQA
     std::vector<float> attn_out(H, 0.0f);
@@ -419,7 +471,7 @@ static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
         // Compute attention scores for all positions up to pos
         std::vector<float> scores(pos + 1);
         for (int p = 0; p <= pos; p++) {
-            const float* k_p = k_cache + p * kv_dim + kv_h * head_dim;
+            const float* k_p = k_cache_ptr + p * kv_dim + kv_h * head_dim;
             float score = 0.0f;
             for (int d = 0; d < head_dim; d++) {
                 score += q_head[d] * k_p[d];
@@ -433,7 +485,7 @@ static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
         // Weighted sum of values
         float* out_head = attn_out.data() + h * head_dim;
         for (int p = 0; p <= pos; p++) {
-            const float* v_p = v_cache + p * kv_dim + kv_h * head_dim;
+            const float* v_p = v_cache_ptr + p * kv_dim + kv_h * head_dim;
             for (int d = 0; d < head_dim; d++) {
                 out_head[d] += scores[p] * v_p[d];
             }
@@ -448,6 +500,12 @@ static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
 
     // Output projection
     bitnet_linear(output, attn_out.data(), quant_buf, layer.o_proj, H, H, &quant_scale);
+}
+
+// Wrapper for backward compatibility - uses engine's default KV cache
+static void attention_forward(BitNetEngine* engine, int layer_idx, int pos,
+                              float* hidden, float* output) {
+    attention_forward_impl(engine, engine->kv_cache.get(), layer_idx, pos, hidden, output);
 }
 
 // ============================================================================
@@ -554,6 +612,87 @@ static void forward_one_token(BitNetEngine* engine, int32_t token_id, int pos,
 }
 
 // ============================================================================
+// Forward Pass with External KV Cache (for batch engine)
+// ============================================================================
+
+// Public function for batch engine to use per-sequence KV caches
+// This allows multiple sequences to share model weights but have separate KV caches
+extern "C" void forward_one_token_with_cache(
+    BitNetEngine* engine,
+    KVCache* kv_cache,
+    int32_t token_id,
+    int pos,
+    float* logits_out
+) {
+    if (!engine || !engine->is_loaded || !kv_cache) {
+        return;
+    }
+
+    auto& cfg = engine->config;
+    const int H = cfg.hidden_size;
+
+    // Get hidden state buffer (still use engine's scratch buffers)
+    float* hidden = engine->hidden_states.data();
+    float* residual = engine->residual.data();
+    float* attn_out = engine->attn_output.data();
+    float* mlp_out = engine->mlp_output.data();
+
+    // Embedding lookup
+    embed_lookup(hidden, engine->embed_tokens.fp32_data.data(),
+                 &token_id, 1, H);
+
+    // Process each layer with the provided KV cache
+    for (int l = 0; l < cfg.num_hidden_layers; l++) {
+        auto& layer = engine->layers[l];
+
+        // Save residual
+        std::memcpy(residual, hidden, H * sizeof(float));
+
+        // Pre-attention norm
+        rms_norm(hidden, hidden, layer.input_layernorm.fp32_data.data(),
+                 H, cfg.rms_norm_eps);
+
+        // Self-attention with external KV cache
+        attention_forward_impl(engine, kv_cache, l, pos, hidden, attn_out);
+
+        // Residual connection
+        for (int i = 0; i < H; i++) {
+            hidden[i] = residual[i] + attn_out[i];
+        }
+
+        // Save residual
+        std::memcpy(residual, hidden, H * sizeof(float));
+
+        // Post-attention norm
+        rms_norm(hidden, hidden, layer.post_attention_layernorm.fp32_data.data(),
+                 H, cfg.rms_norm_eps);
+
+        // MLP
+        mlp_forward(engine, l, hidden, mlp_out);
+
+        // Residual connection
+        for (int i = 0; i < H; i++) {
+            hidden[i] = residual[i] + mlp_out[i];
+        }
+    }
+
+    // Final norm
+    rms_norm(hidden, hidden, engine->final_norm.fp32_data.data(),
+             H, cfg.rms_norm_eps);
+
+    // LM head (output projection to vocabulary)
+    if (engine->lm_head.is_packed) {
+        int8_t* quant_buf = engine->quant_buffer.data();
+        float quant_scale;
+        bitnet_linear(logits_out, hidden, quant_buf, engine->lm_head,
+                      cfg.vocab_size, H, &quant_scale);
+    } else {
+        fp32_linear(logits_out, hidden, engine->lm_head.fp32_data.data(),
+                    cfg.vocab_size, H);
+    }
+}
+
+// ============================================================================
 // Model Loading - sgl-kernel binary format
 // ============================================================================
 
@@ -582,11 +721,63 @@ static bool load_weight_tensor(
         tensor.packed_data = std::move(data);
         tensor.shape.assign(info->shape.begin(), info->shape.end());
     } else {
-        // Convert to float32
-        size_t num_floats = data.size() / sizeof(float);
-        tensor.fp32_data.resize(num_floats);
-        std::memcpy(tensor.fp32_data.data(), data.data(), data.size());
+        // Convert to float32 based on source dtype
         tensor.shape.assign(info->shape.begin(), info->shape.end());
+
+        if (info->dtype == sgl_kernel::DType::FLOAT32) {
+            // Direct copy for fp32
+            size_t num_floats = data.size() / sizeof(float);
+            tensor.fp32_data.resize(num_floats);
+            std::memcpy(tensor.fp32_data.data(), data.data(), data.size());
+        } else if (info->dtype == sgl_kernel::DType::FLOAT16) {
+            // Convert fp16 to fp32
+            size_t num_floats = data.size() / sizeof(uint16_t);
+            tensor.fp32_data.resize(num_floats);
+            const uint16_t* fp16_data = reinterpret_cast<const uint16_t*>(data.data());
+            for (size_t i = 0; i < num_floats; i++) {
+                // IEEE 754 fp16 to fp32 conversion
+                uint16_t h = fp16_data[i];
+                uint32_t sign = (h >> 15) & 0x1;
+                uint32_t exp = (h >> 10) & 0x1F;
+                uint32_t mant = h & 0x3FF;
+
+                uint32_t f;
+                if (exp == 0) {
+                    // Subnormal or zero
+                    if (mant == 0) {
+                        f = sign << 31;  // Zero
+                    } else {
+                        // Subnormal: normalize
+                        exp = 1;
+                        while ((mant & 0x400) == 0) {
+                            mant <<= 1;
+                            exp--;
+                        }
+                        mant &= 0x3FF;
+                        f = (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13);
+                    }
+                } else if (exp == 31) {
+                    // Inf or NaN
+                    f = (sign << 31) | 0x7F800000 | (mant << 13);
+                } else {
+                    // Normal number
+                    f = (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13);
+                }
+                tensor.fp32_data[i] = *reinterpret_cast<float*>(&f);
+            }
+        } else if (info->dtype == sgl_kernel::DType::BFLOAT16) {
+            // Convert bf16 to fp32 (just shift left by 16 bits)
+            size_t num_floats = data.size() / sizeof(uint16_t);
+            tensor.fp32_data.resize(num_floats);
+            const uint16_t* bf16_data = reinterpret_cast<const uint16_t*>(data.data());
+            for (size_t i = 0; i < num_floats; i++) {
+                uint32_t f = static_cast<uint32_t>(bf16_data[i]) << 16;
+                tensor.fp32_data[i] = *reinterpret_cast<float*>(&f);
+            }
+        } else {
+            set_error("Unsupported dtype for tensor: " + name);
+            return false;
+        }
     }
 
     return true;
@@ -917,6 +1108,10 @@ int32_t bitnet_max_seq_len(BitNetEngine* engine) {
 
 int bitnet_get_num_kv_heads(BitNetEngine* engine) {
     return engine ? engine->config.num_key_value_heads : 0;
+}
+
+int32_t bitnet_head_dim(BitNetEngine* engine) {
+    return engine ? engine->config.head_dim : 0;
 }
 
 void bitnet_free_result(GenerationResult* result) {

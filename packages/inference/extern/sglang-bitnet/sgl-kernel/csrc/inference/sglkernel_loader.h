@@ -15,8 +15,8 @@
  *       [4 bytes]  Dtype (0=uint8, 1=float32, 2=float16, 3=bfloat16)
  *       [4 bytes]  Number of dimensions
  *       [dims x 4] Shape
- *       [4 bytes]  Scale present flag
- *       [4 bytes]  Scale value (float32, if present)
+ *       [4 bytes]  Scale present flag (1 if has scale, 0 otherwise)
+ *       [4 bytes]  Scale value (float32, always written)
  *       [8 bytes]  Data size in bytes
  *       [N bytes]  Raw tensor data
  */
@@ -133,14 +133,14 @@ public:
                 file.read(reinterpret_cast<char*>(&info.shape[d]), 4);
             }
 
-            // Scale
+            // Scale (always written as 4+4 bytes in Python converter)
             uint32_t has_scale;
             file.read(reinterpret_cast<char*>(&has_scale), 4);
             info.has_scale = (has_scale == 1);
-            if (info.has_scale) {
-                file.read(reinterpret_cast<char*>(&info.scale), 4);
-            } else {
-                info.scale = 1.0f;
+            // Always read the scale value (Python converter always writes it)
+            file.read(reinterpret_cast<char*>(&info.scale), 4);
+            if (!info.has_scale) {
+                info.scale = 1.0f;  // Override with default if not meaningful
             }
 
             // Data size and offset
