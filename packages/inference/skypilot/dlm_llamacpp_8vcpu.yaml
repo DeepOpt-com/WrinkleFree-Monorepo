@@ -24,8 +24,8 @@ resources:
     - 30000  # API server
     - 7860   # Streamlit UI
 
-# Use workdir to sync current directory
-workdir: .
+# Sync entire repo to get extern/BitNet with our patches
+workdir: ../../..
 
 # No additional file_mounts - BitNet cloned in setup
 
@@ -56,9 +56,12 @@ setup: |
     python3-pip python3-venv libomp-dev git curl \
     libcurl4-openssl-dev
 
-  # Clone BitNet with submodules for converter script
-  echo "--- Cloning BitNet ---"
-  git clone --recursive --depth 1 https://github.com/microsoft/BitNet.git ~/BitNet
+  # Use local patched BitNet (synced via workdir)
+  echo "--- Using local BitNet with DLM tensor mappings ---"
+  # The extern/BitNet directory is synced via workdir and has our patches for:
+  # - ffn_sub_norm tensor mapping
+  # - attn_sub_norm tensor mapping
+  # - HuggingFace tokenizer support
 
   # Create venv for conversion tools
   echo "--- Setting up Python environment ---"
@@ -98,26 +101,28 @@ setup: |
   gcloud storage cp "${GCS_CHECKPOINT}/*.safetensors" ~/models/dlm-bitnet-2b/
   gcloud storage cp "${GCS_CHECKPOINT}/*.jinja" ~/models/dlm-bitnet-2b/ 2>/dev/null || true
 
-  # Download tokenizer.model from GCS (same checkpoint location)
-  echo "--- Downloading tokenizer.model ---"
-  gcloud storage cp "${GCS_CHECKPOINT}/tokenizer.model" ~/models/dlm-bitnet-2b/
+  # Note: DLM uses HuggingFace tokenizer (tokenizer.json), not SentencePiece (tokenizer.model)
+  # Our patched converter handles this automatically
 
   # Fix architecture name (BitNetForCausalLM -> BitnetForCausalLM)
   echo "--- Fixing architecture name ---"
   sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' ~/models/dlm-bitnet-2b/config.json
   grep architectures ~/models/dlm-bitnet-2b/config.json
 
-  # Convert to GGUF with F16 (slower but works, optimized format can come later)
-  echo "--- Converting to GGUF (F16) ---"
-  cd ~/BitNet
+  # Convert to GGUF with TQ1_0 (recommended for bf16 DLM checkpoints)
+  echo "--- Converting to GGUF (TQ1_0) ---"
+  cd ~/sky_workdir/extern/BitNet
 
-  # Install BitNet's gguf and dependencies
+  # Install our patched gguf-py
   pip install -e 3rdparty/llama.cpp/gguf-py
 
-  # Use BitNet's converter with f16 (handles DLM-specific tensors like ffn_sub_norm)
+  # Use our patched BitNet converter with TQ1_0
+  # - Handles DLM-specific tensors (ffn_sub_norm, attn_sub_norm)
+  # - Uses HuggingFace tokenizer (tokenizer.json, not tokenizer.model)
+  # - TQ1_0 format preserves ternary structure (F16/TQ2_0 would destroy it)
   python utils/convert-hf-to-gguf-bitnet.py \
     ~/models/dlm-bitnet-2b \
-    --outtype f16 \
+    --outtype tq1_0 \
     --outfile ~/models/dlm-bitnet-2b.gguf
 
   ls -lh ~/models/dlm-bitnet-2b.gguf

@@ -1,0 +1,36 @@
+# Exclude large directories not needed for inference
+.venv/
+*.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+*.so
+*.o
+node_modules/
+*.gguf
+checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Exclude training data
+data/
+datasets/
+
+# Exclude package build artifacts
+packages/*/dist/
+packages/*/.venv/
+
+# Exclude extern build artifacts ONLY (keep source code)
+extern/BitNet/build/
+extern/BitNet/models/
+extern/sglang-bitnet/sgl-model-gateway/target/
+extern/sglang-bitnet/3rdparty/llama.cpp/build/
+extern/sglang-bitnet/3rdparty/llama.cpp/models/
+
+# Exclude models directory
+models/
+
+# Exclude runs directory
+runs/

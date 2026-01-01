@@ -1,0 +1,156 @@
+# ============================================================================
+# DLM BitNet 2B - Rust DLM Server with Fast-dLLM v2
+# ============================================================================
+#
+# Uses Rust dlm_server with Fast-dLLM v2 block diffusion for ~2.5x faster
+# inference via parallel block decoding. NO PYTHON in the inference path.
+#
+# USAGE:
+#   sky launch dlm_rust_server.yaml
+#
+# PERFORMANCE: Target ~60+ tok/s on 8 vCPUs with block diffusion
+# ============================================================================
+
+name: dlm-rust
+
+resources:
+  cloud: gcp
+  instance_type: c3d-standard-8
+  region: europe-west4
+  disk_size: 100
+  disk_tier: high
+  use_spot: false
+  ports:
+    - 30000
+
+# Sync InferenceClean worktree
+workdir: /home/lev/code/WrinkleFreeDevWrapper/InferenceClean
+
+envs:
+  GCS_CHECKPOINT: gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-3600
+  OMP_NUM_THREADS: "8"
+  OMP_PROC_BIND: "close"
+  OMP_PLACES: "cores"
+
+setup: |
+  set -ex
+  echo "============================================"
+  echo "DLM Rust Server - Fast-dLLM v2 Setup"
+  echo "============================================"
+
+  # CPU info
+  lscpu | grep -E "(Model name|CPU|Thread|Core)" | head -5
+  grep -m1 flags /proc/cpuinfo | tr ' ' '\n' | grep -E "^avx" | head -5 || true
+
+  # Install system deps
+  sudo apt-get update && sudo apt-get install -y \
+    build-essential cmake ninja-build clang \
+    python3-pip python3-venv git curl \
+    libomp-dev libcurl4-openssl-dev
+
+  # Install Rust
+  if ! command -v cargo &> /dev/null; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  fi
+  source ~/.cargo/env
+
+  # Setup Python venv for conversion
+  python3 -m venv ~/.venv
+  source ~/.venv/bin/activate
+  pip install --upgrade pip wheel setuptools
+  pip install torch --index-url https://download.pytorch.org/whl/cpu
+  pip install safetensors transformers numpy gguf sentencepiece
+
+  # Build llama.cpp with native SIMD
+  echo "--- Building llama.cpp ---"
+  cd ~/sky_workdir/packages/inference/extern/sglang-bitnet/3rdparty/llama.cpp
+  cmake -B build \
+    -DCMAKE_C_COMPILER=gcc \
+    -DCMAKE_CXX_COMPILER=g++ \
+    -DCMAKE_C_FLAGS="-march=znver3 -mtune=znver3 -O3" \
+    -DCMAKE_CXX_FLAGS="-march=znver3 -mtune=znver3 -O3" \
+    -DGGML_NATIVE=OFF \
+    -DBUILD_SHARED_LIBS=ON \
+    -G Ninja
+  ninja -C build -j8
+
+  # Verify llama.cpp build
+  ls -la build/src/*.so build/ggml/src/*.so 2>/dev/null || ls -la build/lib*.so 2>/dev/null || true
+
+  # Build Rust DLM server
+  echo "--- Building Rust DLM Server ---"
+  cd ~/sky_workdir/packages/inference/extern/sglang-bitnet/sgl-model-gateway
+
+  # Set library paths for Rust build
+  export LLAMA_CPP_LIB_PATH="$HOME/sky_workdir/packages/inference/extern/sglang-bitnet/3rdparty/llama.cpp/build"
+  export LD_LIBRARY_PATH="${LLAMA_CPP_LIB_PATH}/src:${LLAMA_CPP_LIB_PATH}/ggml/src:${LD_LIBRARY_PATH:-}"
+
+  RUSTFLAGS="-C target-cpu=znver3" cargo build --release --features native-inference --bin dlm_server
+
+  ls -la target/release/dlm_server
+
+  # Download checkpoint from GCS
+  echo "--- Downloading checkpoint ---"
+  mkdir -p ~/models/dlm-bitnet-2b
+  gcloud storage cp "${GCS_CHECKPOINT}/*.json" ~/models/dlm-bitnet-2b/
+  gcloud storage cp "${GCS_CHECKPOINT}/*.safetensors" ~/models/dlm-bitnet-2b/
+
+  # Fix architecture name
+  sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' ~/models/dlm-bitnet-2b/config.json
+
+  # Convert to GGUF using our patched converter
+  echo "--- Converting to GGUF (TQ1_0) ---"
+  cd ~/sky_workdir/extern/BitNet
+  pip install -e 3rdparty/llama.cpp/gguf-py
+  python utils/convert-hf-to-gguf-bitnet.py \
+    ~/models/dlm-bitnet-2b \
+    --outtype tq1_0 \
+    --outfile ~/models/dlm-bitnet-2b.gguf
+
+  ls -lh ~/models/dlm-bitnet-2b.gguf
+
+  echo "============================================"
+  echo "Setup Complete"
+  echo "============================================"
+
+run: |
+  set -ex
+  source ~/.cargo/env
+
+  # Set library paths
+  export LLAMA_CPP_LIB_PATH="$HOME/sky_workdir/packages/inference/extern/sglang-bitnet/3rdparty/llama.cpp/build"
+  export LD_LIBRARY_PATH="${LLAMA_CPP_LIB_PATH}/src:${LLAMA_CPP_LIB_PATH}/ggml/src:${LD_LIBRARY_PATH:-}"
+
+  export OMP_NUM_THREADS=8
+  export OMP_PROC_BIND=close
+  export OMP_PLACES=cores
+
+  echo "============================================"
+  echo "Starting DLM Server (Fast-dLLM v2)"
+  echo "Model: ~/models/dlm-bitnet-2b.gguf"
+  echo "Block size: 32, Threshold: 0.95"
+  echo "============================================"
+
+  # Start DLM server
+  ~/sky_workdir/packages/inference/extern/sglang-bitnet/sgl-model-gateway/target/release/dlm_server \
+    --model-path ~/models/dlm-bitnet-2b.gguf \
+    --host 0.0.0.0 \
+    --port 30000 \
+    --block-size 32 \
+    --threshold 0.95 &
+
+  sleep 15
+
+  # Health check
+  echo "--- Health Check ---"
+  curl -s http://localhost:30000/health || echo "Health check failed"
+
+  # Test inference
+  echo "--- Test Inference ---"
+  curl -s http://localhost:30000/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{"messages": [{"role": "user", "content": "What is 2+2?"}], "max_tokens": 50}'
+
+  echo ""
+  echo "Server running on port 30000"
+  wait
