@@ -196,12 +196,10 @@ class TokenCountCallback(Callback):
     ) -> None:
         """Update token count after each batch."""
         # Count tokens in batch
+        # Note: This is called per micro-batch, so we count all tokens.
+        # With gradient accumulation, this is called N times per optimizer step.
         batch_size = batch["input_ids"].shape[0]
         tokens_in_batch = batch_size * self.seq_length * trainer.world_size
-
-        # Account for gradient accumulation
-        if trainer.accumulate_grad_batches > 1:
-            tokens_in_batch = tokens_in_batch  # Already counted per micro-batch
 
         self.tokens_processed += tokens_in_batch
 

@@ -129,8 +129,8 @@ class AttentionRelationDistillationObjective(Objective):
             student_R = student_R.mean(dim=1, keepdim=True)
             teacher_R = teacher_R.mean(dim=1, keepdim=True)
 
-        # Numerical stability
-        eps = 1e-10
+        # Numerical stability (1e-8 is standard practice for log stability)
+        eps = 1e-8
         student_R = student_R.clamp(min=eps)
         teacher_R = teacher_R.clamp(min=eps)
 

@@ -351,6 +351,7 @@ class TestTokenCountCallback:
         mock_trainer.world_size = 1
         mock_trainer.accumulate_grad_batches = 1
         mock_trainer.global_step = 1
+        mock_trainer.should_stop = False  # Initialize to False
 
         mock_module = MagicMock()
         mock_batch = {"input_ids": torch.zeros(1, 2048)}
@@ -358,7 +359,7 @@ class TestTokenCountCallback:
         cb.on_train_batch_end(mock_trainer, mock_module, None, mock_batch, 0)
 
         # should_stop should not be set to True
-        assert mock_trainer.should_stop != True
+        assert mock_trainer.should_stop is False
 
     def test_on_save_checkpoint_saves_token_count(self):
         """Test that token count is saved to checkpoint."""

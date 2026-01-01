@@ -654,3 +654,59 @@ class TestDistillationObjectivesGradients:
 
         assert student_logits.grad is not None
         assert not torch.isnan(student_logits.grad).any()
+
+
+class TestDistillationEdgeCases:
+    """Test edge cases for distillation objectives."""
+
+    def test_logits_distillation_all_masked_labels(self):
+        """Test LogitsDistillationObjective with completely masked batch."""
+        obj = LogitsDistillationObjective()
+
+        model_outputs = {"logits": torch.randn(2, 10, 100)}
+        teacher_outputs = {"logits": torch.randn(2, 10, 100)}
+        batch = {"labels": torch.full((2, 10), -100)}  # All masked
+
+        result = obj.forward(model_outputs, batch, teacher_outputs)
+
+        # Should handle gracefully - loss should be 0 or very small
+        assert not torch.isnan(result.loss)
+        assert result.loss.item() >= 0
+
+    def test_tcs_distillation_all_masked_labels(self):
+        """Test TCSDistillationObjective with completely masked batch."""
+        obj = TCSDistillationObjective()
+
+        model_outputs = {"logits": torch.randn(2, 10, 100)}
+        teacher_outputs = {"logits": torch.randn(2, 10, 100)}
+        batch = {"labels": torch.full((2, 10), -100)}  # All masked
+
+        result = obj.forward(model_outputs, batch, teacher_outputs)
+
+        # Should handle gracefully
+        assert not torch.isnan(result.loss)
+        assert result.metrics["num_masked"].item() == 0
+
+    def test_attention_distillation_with_full_attention_mask(self):
+        """Test AttentionRelationDistillationObjective with attention mask."""
+        obj = AttentionRelationDistillationObjective()
+
+        batch_size, num_heads, seq_len = 2, 4, 10
+        student_attn = torch.randn(batch_size, num_heads, seq_len, seq_len).softmax(dim=-1)
+        teacher_attn = torch.randn(batch_size, num_heads, seq_len, seq_len).softmax(dim=-1)
+
+        model_outputs = {"attentions": [student_attn]}
+        teacher_outputs = {"attentions": [teacher_attn]}
+
+        # Create attention mask with half padding
+        attention_mask = torch.ones(batch_size, seq_len)
+        attention_mask[:, seq_len // 2:] = 0
+        batch = {
+            "labels": torch.randint(0, 100, (batch_size, seq_len)),
+            "attention_mask": attention_mask,
+        }
+
+        result = obj.forward(model_outputs, batch, teacher_outputs)
+
+        assert not torch.isnan(result.loss)
+        assert result.loss.item() >= 0

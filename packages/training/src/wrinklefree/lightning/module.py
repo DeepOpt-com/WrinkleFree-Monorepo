@@ -81,6 +81,29 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             "attentions": getattr(outputs, "attentions", None),
         }
 
+    def _get_teacher_outputs(self, batch: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """Get teacher model outputs if teacher is configured and needed.
+
+        Extracts logits, hidden_states, and attentions from teacher model.
+        Returns None if no teacher or objectives don't require it.
+        """
+        if self.teacher_model is None or not self.objective_manager.requires_teacher:
+            return None
+
+        with torch.no_grad():
+            teacher_out = self.teacher_model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch.get("attention_mask"),
+                output_hidden_states=self.objective_manager.requires_hidden_states,
+                output_attentions=self.objective_manager.requires_attentions,
+                return_dict=True,
+            )
+            return {
+                "logits": teacher_out.logits,
+                "hidden_states": getattr(teacher_out, "hidden_states", None),
+                "attentions": getattr(teacher_out, "attentions", None),
+            }
+
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Single training step.
 
@@ -93,21 +116,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         model_outputs = self.forward(**batch)
 
         # Forward pass through teacher if needed
-        teacher_outputs = None
-        if self.teacher_model is not None and self.objective_manager.requires_teacher:
-            with torch.no_grad():
-                teacher_out = self.teacher_model(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch.get("attention_mask"),
-                    output_hidden_states=self.objective_manager.requires_hidden_states,
-                    output_attentions=self.objective_manager.requires_attentions,
-                    return_dict=True,
-                )
-                teacher_outputs = {
-                    "logits": teacher_out.logits,
-                    "hidden_states": getattr(teacher_out, "hidden_states", None),
-                    "attentions": getattr(teacher_out, "attentions", None),
-                }
+        teacher_outputs = self._get_teacher_outputs(batch)
 
         # Compute combined loss via ObjectiveManager
         manager_output = self.objective_manager(model_outputs, batch, teacher_outputs)
@@ -136,19 +145,8 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         batch = self.objective_manager.preprocess_batch(batch)
         model_outputs = self.forward(**batch)
 
-        teacher_outputs = None
-        if self.teacher_model is not None and self.objective_manager.requires_teacher:
-            with torch.no_grad():
-                teacher_out = self.teacher_model(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch.get("attention_mask"),
-                    output_hidden_states=self.objective_manager.requires_hidden_states,
-                    return_dict=True,
-                )
-                teacher_outputs = {
-                    "logits": teacher_out.logits,
-                    "hidden_states": getattr(teacher_out, "hidden_states", None),
-                }
+        # Use same teacher extraction as training (includes attentions)
+        teacher_outputs = self._get_teacher_outputs(batch)
 
         manager_output = self.objective_manager(model_outputs, batch, teacher_outputs)
 
