@@ -234,7 +234,7 @@ def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
         callbacks=callbacks,
         logger=wandb_logger,
         log_every_n_steps=cfg.training.logging.get("log_interval", 10),
-        val_check_interval=cfg.training.get("eval_interval", 1000),
+        limit_val_batches=0,  # No validation during training (no val dataloader)
         gradient_clip_val=gradient_clip_val,
         enable_checkpointing=True,
         default_root_dir=cfg.output_dir,
