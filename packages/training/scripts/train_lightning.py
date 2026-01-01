@@ -127,14 +127,15 @@ def create_callbacks(cfg: DictConfig) -> list:
         )
         logger.info("Auto batch size scaling enabled (BatchSizeFinder)")
 
-    # Checkpointing
+    # Checkpointing - save_top_k=-1 for step-based saves (keeps all, cleanup via GCS callback)
     callbacks.append(
         ModelCheckpoint(
             dirpath=cfg.output_dir,
             filename="checkpoint-{step}",
-            save_top_k=cfg.training.checkpoint.get("save_top_k", 3),
+            save_top_k=-1,  # Keep all step-based checkpoints (no metric monitoring)
             every_n_train_steps=cfg.training.checkpoint.get("save_interval", 1000),
             save_last=True,
+            save_on_train_epoch_end=False,  # We use step-based checkpointing
         )
     )
 
