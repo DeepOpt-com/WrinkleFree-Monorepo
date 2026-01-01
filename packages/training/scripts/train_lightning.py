@@ -82,8 +82,14 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     )
 
     # Auto-convert to BitNet if needed
-    if cfg.training.get("auto_convert", True):
-        model = auto_convert_if_needed(model)
+    if cfg.training.get("auto_convert", {}).get("enabled", True):
+        exclude_layers = cfg.training.get("auto_convert", {}).get("exclude_layers", None)
+        model = auto_convert_if_needed(
+            model,
+            hidden_size=cfg.model.hidden_size,
+            intermediate_size=cfg.model.intermediate_size,
+            exclude_layers=exclude_layers,
+        )
         logger.info("Model converted to BitNet")
 
     return model, tokenizer
