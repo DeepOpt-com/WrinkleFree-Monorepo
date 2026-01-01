@@ -101,12 +101,16 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (StatusCode, String)> {
-    // Build prompt from messages using Llama 3 format
+    // Build prompt using Llama 3 chat format
+    // Note: Don't add BOS - tokenizer adds it automatically via add_bos=true
     let mut prompt = String::new();
     for msg in &req.messages {
-        prompt.push_str(&format!("{}: {}<|eot_id|>", msg.role.to_uppercase(), msg.content));
+        prompt.push_str(&format!(
+            "<|start_header_id|>{}<|end_header_id|>\n\n{}<|eot_id|>",
+            msg.role, msg.content
+        ));
     }
-    prompt.push_str("ASSISTANT:");
+    prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
 
     // Tokenize
     let input_ids = state

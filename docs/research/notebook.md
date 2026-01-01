@@ -1,5 +1,40 @@
 ## 01-01-2026 (Continued)
 
+### DLM Model Quality Investigation (VERIFIED)
+
+**Key Finding**: DLM TQ1_0 from GCS works correctly with llama-server!
+
+**Tested Configurations (GCP c3d-highcpu-16)**:
+
+| Model | Format | Quality | Speed | Notes |
+|-------|--------|---------|-------|-------|
+| `dlm-bitnet-2b-tq1-gcs.gguf` | TQ1_0 | **Coherent** | 21 tok/s | GCS version, correct |
+| `dlm-bitnet-2b-f16.gguf` | F16 | Garbage | ~8 tok/s | Corrupted conversion |
+| `dlm-bitnet-2b-i2s.gguf` | I2_S | "GGGG..." | 20 tok/s | Corrupted |
+| Microsoft BitNet | I2_S | **Coherent** | 31 tok/s | Reference model |
+
+**Correct GGUF Location**: `gs://wrinklefree-checkpoints/dlm/dlm-bitnet-2b-tq1.gguf`
+
+**Chat Template (Llama 3 format)**:
+```
+<|start_header_id|>user<|end_header_id|>
+
+{content}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+```
+Note: Don't add `<|begin_of_text|>` - tokenizer adds BOS automatically.
+
+**Test Results with TQ1_0**:
+- "The capital of France is" → "Paris, and it was founded in 52 B.C...."
+- "What is 2+2?" → "The answer to 2+2 is 4. In this case, we don't need..."
+
+**DLM Server Issue**: KV cache bug
+- Error: "Prefill failed for seq 0: KV cache is full"
+- Cause: DLM scheduler doesn't properly clear KV cache between requests
+- Workaround: Use llama-server for autoregressive inference
+
+---
+
 ### DLM Block Diffusion Performance (TESTED)
 
 **Key Finding**: DLM block diffusion achieves ~28 tok/s with TQ1_0 on GCP C3D.
@@ -20,14 +55,14 @@
 **DLM Block Diffusion Analysis**:
 - 128 tokens generated in ~4.5 seconds
 - Effective throughput: ~28 tok/s (comparable to llama.cpp autoregressive!)
-- Output quality with TQ1_0: Poor (repetitive, incoherent) - needs proper DLM checkpoint
+- DLM scheduler has KV cache bug preventing proper block diffusion
 
 **Why DLM is Promising**:
 1. Block-parallel decoding reduces latency-per-token
 2. Ternary weights (BitNet) reduce memory bandwidth
 3. Combined: potential for high throughput on CPU
 
-**Current Limitation**: TQ1_0 quantization destroys DLM model quality. Need:
+**Current Limitation**: DLM scheduler KV cache management bug. Need:
 - Native sgl-kernel support for DLM scheduler
 - Use packed 2-bit format instead of GGUF TQ1_0
 
