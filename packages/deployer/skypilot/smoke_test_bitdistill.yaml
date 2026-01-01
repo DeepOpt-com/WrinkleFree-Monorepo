@@ -21,7 +21,7 @@ resources:
   accelerators: L40S:1
   memory: 64+
   use_spot: false
-  cloud: nebius
+  cloud: runpod
 
 # Sync from Refact worktree
 workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact

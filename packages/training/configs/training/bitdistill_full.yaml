@@ -2,7 +2,7 @@
 # Combines CE + logits distillation + attention distillation
 # Based on arxiv.org/abs/2510.13998
 
-stage: bitdistill
+stage: unified  # Uses unified trainer with distillation objectives
 
 # Auto-convert: Converts model to BitNet on-the-fly if not already converted
 auto_convert:
