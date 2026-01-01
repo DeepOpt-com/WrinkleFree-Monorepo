@@ -65,7 +65,9 @@ class WrinkleFreeDataModule(pl.LightningDataModule):
         self.mixed_dataset = None
         self.probe_dataloaders = None
 
-        self.save_hyperparameters(ignore=["tokenizer"])
+        # Note: We skip save_hyperparameters() to avoid omegaconf types in
+        # checkpoints, which cause PyTorch 2.6+ weights_only=True loading issues.
+        # Config is already managed by Hydra.
 
     def setup(self, stage: Optional[str] = None):
         """Create dataloaders."""

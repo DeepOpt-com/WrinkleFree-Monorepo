@@ -58,8 +58,9 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         # Track tokens for logging
         self.tokens_processed = 0
 
-        # Save hyperparameters (excluding large objects)
-        self.save_hyperparameters(ignore=["model", "objective_manager", "teacher_model"])
+        # Note: We skip save_hyperparameters() to avoid omegaconf types in
+        # checkpoints, which cause PyTorch 2.6+ weights_only=True loading issues.
+        # Config is already managed by Hydra.
 
     def forward(self, **batch) -> dict[str, Any]:
         """Forward pass through model."""
