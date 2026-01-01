@@ -28,6 +28,7 @@ dependencies = [
     "data-handler",  # Data handling (streaming datasets, packing, influence mixing)
     "bitnet-arch",  # BitNet architecture package (workspace)
     "muon-fsdp2",  # FSDP-compatible Muon optimizer
+    "pytorch-lightning>=2.6.0",
 ]
 
 [project.optional-dependencies]
