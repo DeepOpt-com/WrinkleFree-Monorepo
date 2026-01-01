@@ -28,6 +28,7 @@ dependencies = [
     "data-handler",  # Data handling (streaming datasets, packing, influence mixing)
     "bitnet-arch",  # BitNet architecture package (workspace)
     "muon-fsdp2",  # FSDP-compatible Muon optimizer
+    "pytorch-lightning>=2.6.0",
 ]
 
 [project.optional-dependencies]
@@ -86,7 +87,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --cov=wrinklefree --cov-report=term-missing --cov-report=html"
 markers = [
     "smoke: Quick smoke tests",
     "integration: Integration tests requiring GPU or external services",

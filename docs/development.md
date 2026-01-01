@@ -125,7 +125,15 @@ git submodule status
 ### training (wrinklefree)
 
 ```bash
-# Run training smoke test
+# Run Lightning training (recommended)
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified training.max_steps=10
+
+# With auto batch size scaling
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified training.auto_batch_size=true
+
+# Legacy trainer (still supported)
 uv run --package wrinklefree python packages/training/scripts/train.py \
   model=smollm2_135m training=stage2_pretrain training.max_steps=10
 
@@ -143,15 +151,14 @@ uv run --package data-handler pytest packages/data_handler/tests/
 uv run --package data-handler python -c "from data_handler.data import create_dataloader; print('ok')"
 ```
 
-### distillation
+### architecture (bitnet-arch)
 
 ```bash
 # Run all tests
-uv run --package wrinklefree-distillation pytest packages/distillation/tests/
+uv run --package bitnet-arch pytest packages/architecture/tests/
 
-# Run distillation smoke test
-uv run --package wrinklefree-distillation python packages/distillation/scripts/distill.py \
-  student.checkpoint_path=outputs/stage2/checkpoint.pt training.max_steps=10
+# Test layer imports
+uv run --package bitnet-arch python -c "from bitnet_arch.layers import BitLinear, BitLinearLRC; print('ok')"
 ```
 
 ### deployer
@@ -197,8 +204,11 @@ Only test affected packages:
 # If only training changed
 uv run --package wrinklefree pytest packages/training/tests/
 
-# If data_handler changed (affects training and distillation)
-uv run pytest packages/data_handler/tests/ packages/training/tests/ packages/distillation/tests/
+# If data_handler changed (affects training)
+uv run pytest packages/data_handler/tests/ packages/training/tests/
+
+# If architecture changed (affects training)
+uv run pytest packages/architecture/tests/ packages/training/tests/
 ```
 
 ## Debugging Tips

@@ -15,6 +15,12 @@ from wrinklefree.objectives.base import Objective
 from wrinklefree.objectives.continue_pretrain import ContinuePretrainObjective
 from wrinklefree.objectives.dlm import DLMObjective
 from wrinklefree.objectives.layerwise import LayerwiseDistillationObjective, LayerwiseLossType
+from wrinklefree.objectives.logits_distill import LogitsDistillationObjective
+from wrinklefree.objectives.attention_distill import AttentionRelationDistillationObjective
+from wrinklefree.objectives.tcs_distill import TCSDistillationObjective
+from wrinklefree.objectives.block_attention_distill import BlockAttentionDistillationObjective
+from wrinklefree.objectives.bitdistill import BitDistillObjective
+from wrinklefree.objectives.lrc_reconstruction import LRCReconstructionObjective, LRCLossType
 from wrinklefree.objectives.manager import (
     CurriculumPhase,
     CurriculumScheduler,
@@ -51,6 +57,46 @@ def create_objective(name: str, config: dict[str, Any]) -> Objective:
             loss_type=LayerwiseLossType(loss_type) if isinstance(loss_type, str) else loss_type,
             layer_weights=config.get("layer_weights"),
             normalize=config.get("normalize", True),
+        )
+    elif name == "logits_distill":
+        return LogitsDistillationObjective(
+            temperature=config.get("temperature", 5.0),
+            ignore_index=config.get("ignore_index", -100),
+            shift_labels=config.get("shift_labels", True),
+        )
+    elif name == "attention_distill":
+        return AttentionRelationDistillationObjective(
+            distill_layer=config.get("distill_layer", -1),
+            temperature=config.get("temperature", 1.0),
+            ignore_index=config.get("ignore_index", -100),
+        )
+    elif name == "tcs_distill":
+        return TCSDistillationObjective(
+            temperature=config.get("temperature", 5.0),
+            top_k=config.get("top_k", 100),
+            ignore_index=config.get("ignore_index", -100),
+        )
+    elif name == "block_attention_distill":
+        return BlockAttentionDistillationObjective(
+            block_size=config.get("block_size", 32),
+            distill_layer=config.get("distill_layer", -1),
+            ignore_index=config.get("ignore_index", -100),
+        )
+    elif name == "bitdistill":
+        return BitDistillObjective(
+            lambda_logits=config.get("lambda_logits", 10.0),
+            gamma_attention=config.get("gamma_attention", 1e-5),
+            temperature=config.get("temperature", 5.0),
+            distill_layer=config.get("distill_layer", -1),
+            ignore_index=config.get("ignore_index", -100),
+        )
+    elif name == "lrc_reconstruction":
+        loss_type = config.get("loss_type", "mse")
+        return LRCReconstructionObjective(
+            loss_type=LRCLossType(loss_type) if isinstance(loss_type, str) else loss_type,
+            layer_weights=config.get("layer_weights"),
+            temperature=config.get("temperature", 1.0),
+            normalize=config.get("normalize", False),
         )
     else:
         raise ValueError(f"Unknown objective type: {name}")

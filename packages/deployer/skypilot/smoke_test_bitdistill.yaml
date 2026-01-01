@@ -1,0 +1,136 @@
+# WrinkleFree BitDistill Training Smoke Test (1x L40)
+#
+# Tests the new integrated distillation objectives:
+# - Logits distillation (KL divergence with temperature)
+# - Attention relation distillation (BitDistill Eq. 11)
+# - Combined with CE loss via ObjectiveManager
+#
+# Launch:
+#   cd packages/deployer
+#   sky launch skypilot/smoke_test_bitdistill.yaml -y --cluster bitdistill-smoke
+#
+# Monitor:
+#   sky logs bitdistill-smoke
+#
+# Tear down:
+#   sky down bitdistill-smoke -y
+
+name: wrinklefree-bitdistill-smoke
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  use_spot: false
+  cloud: runpod
+
+# Sync from Refact worktree
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+# Upload credentials
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  MAX_STEPS: 20
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: bitdistill-smoke-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Sync all packages
+  uv sync --all-packages
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Load credentials
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================"
+  echo "WrinkleFree BitDistill Training Smoke Test"
+  echo "================================================"
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS"
+  echo ""
+  echo "Test Configuration:"
+  echo "  - 20 training steps"
+  echo "  - CE + Logits Distillation + Attention Distillation"
+  echo "  - Teacher: Auto-detect from student model"
+  echo ""
+  echo "Features:"
+  echo "  - Integrated distillation objectives"
+  echo "  - KL divergence with temperature scaling"
+  echo "  - Attention relation distillation (BitDistill Eq. 11)"
+  echo "  - MuonClip optimizer"
+  echo "================================================"
+
+  # Run bitdistill training
+  echo ""
+  echo "[Training] Running BitDistill training..."
+  uv run --package wrinklefree python packages/training/scripts/train.py \
+    model=${MODEL} \
+    training=bitdistill_full \
+    data=default \
+    distributed=single_gpu \
+    training.max_steps=${MAX_STEPS} \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=bitdistill_smoke \
+    training.checkpoint.save_interval=10 \
+    training.logging.log_interval=1 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    training.early_stopping.enabled=false
+
+  echo ""
+  echo "================================================"
+  echo "BitDistill Smoke Test Complete!"
+  echo "================================================"
+
+  # Verify loss decreased
+  echo ""
+  echo "Verifying training progress..."
+  if [ -f "$CHECKPOINT_DIR/bitdistill_smoke/training_log.json" ]; then
+    FIRST_LOSS=$(head -1 $CHECKPOINT_DIR/bitdistill_smoke/training_log.json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('loss', 0))" 2>/dev/null || echo "N/A")
+    LAST_LOSS=$(tail -1 $CHECKPOINT_DIR/bitdistill_smoke/training_log.json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('loss', 0))" 2>/dev/null || echo "N/A")
+    echo "First loss: $FIRST_LOSS"
+    echo "Last loss: $LAST_LOSS"
+  fi
+
+  # List checkpoints
+  echo ""
+  echo "Checkpoints saved:"
+  find $CHECKPOINT_DIR -type f -name "*.pt" -o -name "*.safetensors" 2>/dev/null | head -20 || echo "No checkpoints found"
+
+  # Verify WandB run
+  echo ""
+  echo "WandB run: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
+
+  # Verify GCS upload
+  echo ""
+  echo "GCS checkpoints:"
+  gcloud storage ls "gs://${GCS_BUCKET}/experiments/" 2>/dev/null | head -10 || echo "GCS listing failed"

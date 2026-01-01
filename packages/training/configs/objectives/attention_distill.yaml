@@ -1,0 +1,13 @@
+# Attention Relation Distillation Objective (BitDistill Eq. 11)
+# Distills R = Softmax(A · A^T / sqrt(d_r)) at a single layer
+enabled: false  # Off by default
+weight: 1.0e-5
+
+# Layer for distillation (-1 = last layer, recommended by BitDistill)
+distill_layer: -1
+
+# Temperature for softmax in relation computation
+temperature: 1.0
+
+# Index to ignore in labels (padding)
+ignore_index: -100

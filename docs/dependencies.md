@@ -5,18 +5,14 @@
 ```
 data_handler (library)
     │
-    ├──► training (wrinklefree)
-    │       Dependencies: torch, transformers, hydra-core, datasets, wandb
-    │       Uses: data_handler.data, data_handler.influence
-    │
-    └──► distillation (wrinklefree-distillation)
-            Dependencies: torch, transformers, hydra-core, vllm (optional)
+    └──► training (wrinklefree)
+            Dependencies: torch, transformers, hydra-core, datasets, wandb
             Uses: data_handler.data, data_handler.influence
 
 architecture (library)
     │
     └──► training (wrinklefree)
-            Uses: bitnet_arch.layers, bitnet_arch.conversion
+            Uses: bitnet_arch.layers (BitLinear, BitLinearLRC), bitnet_arch.conversion
 
 inference
     │   Dependencies: sglang, torch, transformers
@@ -27,14 +23,14 @@ inference
             Uses: inference for model loading
 
 deployer
-    │   Dependencies: modal, skypilot, typer
-    │   Orchestrates: training, distillation, inference, eval
+    │   Dependencies: skypilot, typer
+    │   Orchestrates: training, inference, eval
     │
-    └──► References all other packages via cloud deployment
+    └──► References packages via cloud deployment
 
-converter
-        Dependencies: torch, transformers, safetensors
-        Uses: data_handler.data
+mobile
+        Dependencies: Android NDK, BitNet.cpp
+        Uses: GGUF model files from training
 ```
 
 ## Workspace Dependencies
@@ -55,17 +51,8 @@ data-handler = { workspace = true }
 bitnet-arch = { workspace = true }
 ```
 
-```toml
-# packages/distillation/pyproject.toml
-[project]
-dependencies = [
-    "data-handler",  # Shared data library
-    # ... other deps
-]
-
-[tool.uv.sources]
-data-handler = { workspace = true }
-```
+> **Note**: The legacy `distillation` package has been integrated into `training`.
+> Distillation objectives are now in `packages/training/src/wrinklefree/objectives/`.
 
 ## External Submodules
 
@@ -101,7 +88,7 @@ git commit -m "Update BitNet submodule"
 | wandb | >=0.16.0 | Experiment tracking |
 | bitsandbytes | >=0.42.0 | 8-bit optimizers |
 
-### Distillation Stack
+### Distillation Dependencies (in Training Package)
 
 | Package | Version | Purpose |
 |---------|---------|---------|

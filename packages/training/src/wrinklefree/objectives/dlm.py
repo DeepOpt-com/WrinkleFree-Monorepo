@@ -86,6 +86,7 @@ class DLMObjective(Objective):
         batch["input_ids"] = masked_input_ids
         batch["dlm_labels"] = dlm_labels
         batch["_original_input_ids"] = input_ids  # Keep original for debugging
+        batch["_original_labels"] = batch.get("labels", input_ids).clone()  # For multi-task
 
         return batch
 

@@ -102,46 +102,6 @@ def train(ctx, model: str, stage: float, scale: str, resume: str, cloud: str, de
         allow_extra_args=True,
     )
 )
-@click.option("--model", "-m", required=True, help="Model config (e.g., bitnet_2b, qwen3_4b)")
-@click.option("--source", "-s", default=None, help="Source checkpoint (hf://org/model, gs://, or local path)")
-@click.option("--scale", default=None,
-              type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
-              help="GPU scale profile")
-@click.option("--cloud", "-c", default="nebius", type=click.Choice(["nebius", "runpod", "gcp", "vast"]), help="Cloud provider")
-@click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
-@click.pass_context
-def dlm(ctx, model: str, source: str | None, scale: str, cloud: str, detach: bool):
-    """Launch DLM (Fast-dLLM v2) training for ~2.5x faster inference.
-
-    Converts a BitNet checkpoint to a Diffusion LLM using the
-    Fast-dLLM v2 SFT recipe. Auto-resumes from GCS checkpoint if available.
-
-    \b
-    Examples:
-        wf dlm -m bitnet_2b                     # Resume from checkpoint (Nebius)
-        wf dlm -m qwen3_4b -s hf://org/checkpoint
-        wf dlm -m qwen3_4b -s gs://bucket/checkpoint
-        wf dlm -m smollm2_135m --no-detach
-        wf dlm -m qwen3_4b conversion.total_tokens=500000000
-    """
-    overrides = ctx.args
-
-    core.train_dlm(
-        model=model,
-        source=source,
-        scale=scale,
-        overrides=overrides,
-        cloud=cloud,
-        detach=detach,
-    )
-
-
-@cli.command(
-    context_settings=dict(
-        ignore_unknown_options=True,
-        allow_extra_args=True,
-    )
-)
 @click.option("--model", "-m", required=True, help="Model config (e.g., smollm2_135m)")
 @click.option("--mode", default="w2", type=click.Choice(["w1", "w2"]),
               help="Quantization mode: w1 (1-bit) or w2 (2-bit)")

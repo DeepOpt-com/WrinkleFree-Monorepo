@@ -98,9 +98,9 @@ def run_stage1_9(
 
     # Merge pre_stage_2 config into training config
     if hasattr(training_config, "_content"):
-        # OmegaConf DictConfig
-        with OmegaConf.read_write(training_config):
-            training_config.pre_stage_2 = OmegaConf.create(pre_stage_2_dict)
+        # OmegaConf DictConfig - set struct flag to allow new keys
+        OmegaConf.set_struct(training_config, False)
+        training_config.pre_stage_2 = OmegaConf.create(pre_stage_2_dict)
     else:
         training_config.pre_stage_2 = pre_stage_2_dict
 

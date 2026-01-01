@@ -2,6 +2,14 @@
 
 Research platform for 1.58-bit (ternary) quantized LLM training, serving, and evaluation.
 
+## Key Features
+
+- **PyTorch Lightning Training** with auto batch size scaling
+- **Multi-Objective System** (CE, DLM, LRC, distillation) via ObjectiveManager
+- **BitNet 1.58-bit Quantization** with Straight-Through Estimator (STE)
+- **Cloud Deployment** via SkyPilot (Nebius, RunPod)
+- **GGUF Export** for BitNet.cpp inference
+
 ## Quick Start
 
 ```bash
@@ -15,8 +23,13 @@ uv sync --all-packages
 # Run tests
 uv run pytest
 
-# Run training (example)
-uv run --package wrinklefree python packages/training/scripts/train.py model=smollm2_135m training=stage2_pretrain
+# Run training with Lightning (recommended)
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified
+
+# With auto batch size scaling
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=unified training.auto_batch_size=true
 ```
 
 ## Structure
@@ -24,14 +37,17 @@ uv run --package wrinklefree python packages/training/scripts/train.py model=smo
 ```
 WrinkleFree-Monorepo/
 ├── packages/
-│   ├── training/          # 1.58-bit training (BitDistill) - App
-│   ├── architecture/      # BitNet layers & conversion - Library
+│   ├── training/          # 1.58-bit training + distillation objectives - App
+│   ├── architecture/      # BitNet layers (BitLinear, BitLinearLRC, SubLN) - Library
 │   ├── data_handler/      # Shared data layer & utilities - Library
-│   ├── distillation/      # Knowledge distillation - App
 │   ├── inference/         # Serving (sglang-bitnet) - App
 │   ├── eval/              # Model evaluation - App
-│   ├── deployer/          # Cloud deployment (Modal/SkyPilot) - App
-│   └── converter/         # DLM format conversion - App
+│   ├── deployer/          # Cloud deployment (SkyPilot) - App
+│   ├── mobile/            # Android inference - App
+│   └── _legacy/           # Archived packages (do not use)
+│       ├── distillation/      # (integrated into training)
+│       ├── converter/         # (functionality moved)
+│       └── cheapertraining/   # (renamed to data_handler)
 ├── extern/
 │   └── BitNet/            # Microsoft BitNet.cpp (submodule)
 ├── pyproject.toml         # Workspace root
@@ -42,14 +58,13 @@ WrinkleFree-Monorepo/
 
 | Package | Purpose | Key Entry |
 |---------|---------|-----------|
-| `training` | 1.58-bit quantization training pipeline (BitDistill) | `scripts/train.py` |
-| `architecture` | BitNet layers (BitLinear, SubLN) & model conversion | Imported as library |
+| `training` | 1.58-bit training pipeline + distillation objectives (BitDistill, LRC) | `scripts/train_lightning.py` |
+| `architecture` | BitNet layers (BitLinear, BitLinearLRC, SubLN) & model conversion | Imported as library |
 | `data_handler` | Data loading, influence functions, mixture optimization | Imported as library |
-| `distillation` | Knowledge distillation for quantized models | `scripts/distill.py` |
 | `inference` | Model serving with sglang-bitnet | `demo/serve_sglang.py` |
 | `eval` | GLUE, CNN/DailyMail benchmarks | `scripts/evaluate.py` |
-| `deployer` | SkyPilot/Modal cloud deployment | `wf` CLI |
-| `converter` | Convert models to Fast-dLLM format | `scripts/train_dlm.py` |
+| `deployer` | SkyPilot cloud deployment | `wf` CLI |
+| `mobile` | Android inference with BitNet.cpp | Android app |
 
 ## Common Commands
 
@@ -74,10 +89,9 @@ uv run --package wrinklefree pytest packages/training/tests/
 
 `data_handler` is a shared library imported by:
 - `training` - for data loading and influence-based optimization
-- `distillation` - for data loading utilities
 
 `architecture` provides BitNet components to:
-- `training` - BitLinear layers, SubLN, model conversion
+- `training` - BitLinear, BitLinearLRC layers, SubLN, model conversion
 
 Use workspace dependencies:
 ```toml

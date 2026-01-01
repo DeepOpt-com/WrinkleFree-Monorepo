@@ -200,6 +200,9 @@ class ObjectiveManager(nn.Module):
         self._requires_hidden_states = any(
             obj.requires_hidden_states for obj in objectives.values()
         )
+        self._requires_attentions = any(
+            getattr(obj, "requires_attentions", False) for obj in objectives.values()
+        )
         self._has_input_modifiers = any(obj.modifies_input for obj in objectives.values())
 
         logger.info(f"ObjectiveManager initialized with {len(objectives)} objectives:")
@@ -216,6 +219,11 @@ class ObjectiveManager(nn.Module):
     def requires_hidden_states(self) -> bool:
         """Whether any objective requires hidden states."""
         return self._requires_hidden_states
+
+    @property
+    def requires_attentions(self) -> bool:
+        """Whether any objective requires attention weights."""
+        return self._requires_attentions
 
     @property
     def any_modifies_input(self) -> bool:
@@ -344,18 +352,8 @@ class ObjectiveManager(nn.Module):
 
         return metrics
 
-    def state_dict(self) -> dict:
-        """Get state for checkpointing."""
-        state = {"objectives": {name: obj.state_dict() for name, obj in self.objectives.items()}}
-        if self.curriculum is not None:
-            state["curriculum"] = self.curriculum.state_dict()
-        return state
-
-    def load_state_dict(self, state_dict: dict) -> None:
-        """Load state from checkpoint."""
-        if "objectives" in state_dict:
-            for name, obj_state in state_dict["objectives"].items():
-                if name in self.objectives:
-                    self.objectives[name].load_state_dict(obj_state)
-        if "curriculum" in state_dict and self.curriculum is not None:
-            self.curriculum.load_state_dict(state_dict["curriculum"])
+    # Note: We don't override state_dict/load_state_dict because:
+    # 1. ObjectiveManager doesn't have trainable parameters
+    # 2. Custom keys (_objectives, _curriculum) cause Lightning checkpoint issues
+    # 3. Objectives and curriculum can be recreated from config
+    # 4. Curriculum step is synced via set_current_step() from Lightning's global_step

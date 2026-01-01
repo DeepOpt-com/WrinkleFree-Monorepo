@@ -10,9 +10,13 @@ This package provides the core building blocks for BitNet models:
 from bitnet_arch.layers import (
     BitLinear,
     BitLinearNoActivationQuant,
+    BitLinearLRC,
     SubLN,
     RMSNorm,
     convert_linear_to_bitlinear,
+    convert_bitlinear_to_lrc,
+    freeze_model_except_lrc,
+    get_lrc_stats,
 )
 from bitnet_arch.quantization import (
     LambdaWarmup,
@@ -33,9 +37,14 @@ __all__ = [
     # Layers
     "BitLinear",
     "BitLinearNoActivationQuant",
+    "BitLinearLRC",
     "SubLN",
     "RMSNorm",
     "convert_linear_to_bitlinear",
+    # LRC (Low-Rank Correction)
+    "convert_bitlinear_to_lrc",
+    "freeze_model_except_lrc",
+    "get_lrc_stats",
     # Quantization
     "LambdaWarmup",
     "get_global_lambda_warmup",

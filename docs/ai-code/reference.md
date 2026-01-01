@@ -2,9 +2,55 @@
 
 Extended documentation for AI assistants. See main `CLAUDE.md` for rules.
 
+## Quick Start (AI Agents)
+
+```bash
+# 1. Lightning training with auto batch size (RECOMMENDED)
+cd packages/training
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  training.auto_batch_size=true training.optimizer.type=adamw
+
+# 2. Cloud smoke test
+cd packages/deployer && source credentials/.env
+sky launch skypilot/smoke_test_lightning.yaml -y --cluster smoke --env OBJECTIVE_COMBO=dlm
+
+# 3. Monitor and teardown
+sky logs smoke
+sky down smoke -y
+```
+
+## Known Issues & Workarounds
+
+| Issue | Workaround |
+|-------|------------|
+| muon_fsdp2 single-GPU crash | Use `training.optimizer.type=adamw` |
+| Checkpoint resume fails | Clean `/tmp/checkpoints/` on remote first |
+| WandB run already exists | Use unique `experiment_name` or clean wandb dir |
+
 ## Training Pipeline Overview
 
 WrinkleFree implements **BitDistill** for training 1.58-bit (ternary) LLMs:
+
+### PyTorch Lightning (Recommended)
+
+The new Lightning-based trainer provides a cleaner, more maintainable training loop with auto batch size scaling:
+
+```bash
+# Basic Lightning training
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+
+# With auto batch size scaling (finds max batch that fits GPU)
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  training.auto_batch_size=true
+```
+
+**Key Features**:
+- `BatchSizeFinder` auto-probes GPU memory at startup
+- Built-in DDP/FSDP support
+- All objectives work unchanged (DLM, LRC, distillation)
+- Custom callbacks: GCS upload, ZClip, TokenCount, QKClip, LambdaWarmup
+
+### Legacy Stages (Still Supported)
 
 ```
 Stage 1: SubLN Insertion (packages/training)
@@ -16,29 +62,33 @@ Stage 1.9: Layer-wise Distillation (packages/training)
 Stage 2: Continue Pre-training (packages/training)
     │   QAT with gradual quantization warmup (~10B tokens)
     ▼
-Stage 3: Knowledge Distillation (packages/distillation)
-    │   BitDistill or TCS loss with teacher guidance
+Stage 3: Knowledge Distillation (packages/training - objectives)
+    │   BitDistill or TCS objectives with teacher guidance
     ▼
-Export: Convert to GGUF/DLM (packages/converter)
+LRC: Post-quantization Correction (packages/training)
+    │   Low-Rank Correction for error recovery (~50M tokens)
+    ▼
+Export: Convert to GGUF (see root CLAUDE.md for workflow)
     │
     ▼
 Serve: Inference with BitNet.cpp (packages/inference)
 ```
 
-**Key insight**: Stages 1-2 are in `training`, Stage 3+ is in `distillation`.
+**Key insight**: All training stages are in `packages/training`. Distillation uses the objectives system.
 
 ## Package Map (Full)
 
 | Package | Type | Purpose | Key Entry Point |
 |---------|------|---------|-----------------|
-| `packages/training` | App | 1.58-bit training (Stages 1, 1.9, 2) | `scripts/train.py` |
-| `packages/distillation` | App | Knowledge distillation (Stage 3+) | `scripts/distill.py` |
-| `packages/architecture` | Lib | BitNet layers & model conversion | Import as library |
+| `packages/training` | App | 1.58-bit training (all stages) + distillation + LRC | `scripts/train_lightning.py` |
+| `packages/architecture` | Lib | BitNet layers (BitLinear, BitLinearLRC, SubLN) & conversion | Import as library |
 | `packages/data_handler` | Lib | Data loading & influence functions | Import as library |
 | `packages/inference` | App | Model serving (sglang-bitnet) | `demo/serve_sglang.py` |
 | `packages/eval` | App | Model evaluation (lm-eval) | `scripts/evaluate.py` |
-| `packages/deployer` | App | Cloud deployment (SkyPilot/Modal) | `wf` CLI |
-| `packages/converter` | App | DLM format conversion | `scripts/train_dlm.py` |
+| `packages/deployer` | App | Cloud deployment (SkyPilot) | `wf` CLI |
+| `packages/mobile` | App | Android inference | Android app |
+
+> **Note**: Legacy packages (`distillation`, `converter`, `cheapertraining`) are archived in `packages/_legacy/`.
 
 ## Shared Dependencies
 
@@ -47,16 +97,13 @@ Serve: Inference with BitNet.cpp (packages/inference)
 ```
 data_handler (library)
     │
-    ├──► training (wrinklefree)
-    │       Uses: data_handler.data, data_handler.influence
-    │
-    └──► distillation (wrinklefree-distillation)
+    └──► training (wrinklefree)
             Uses: data_handler.data, data_handler.influence
 
 architecture (library)
     │
     └──► training (wrinklefree)
-            Uses: bitnet_arch.layers, bitnet_arch.conversion
+            Uses: bitnet_arch.layers (BitLinear, BitLinearLRC), bitnet_arch.conversion
 ```
 
 **Adding workspace dependencies**:
@@ -70,7 +117,7 @@ data-handler = { workspace = true }
 bitnet-arch = { workspace = true }
 ```
 
-**Important**: Changes to data_handler affect training and distillation - test both after modifications.
+**Important**: Changes to data_handler or architecture affect training - test both after modifications.
 
 ## GCP Configuration
 

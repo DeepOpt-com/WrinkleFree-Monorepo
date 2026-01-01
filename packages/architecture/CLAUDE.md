@@ -6,6 +6,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 BitNet Architecture (`bitnet-arch`) is a shared library providing 1.58-bit quantized components:
 - **BitLinear**: Ternary weight quantization (-1, 0, 1) with 8-bit activation quantization
+- **BitLinearLRC**: BitLinear with Low-Rank Correction for post-quantization recovery
 - **SubLN**: Sub-Layer Normalization for stable BitNet training
 - **LambdaWarmup**: Gradual quantization schedule manager
 - **Conversion**: Utilities to convert standard models to BitNet on-the-fly
@@ -58,9 +59,13 @@ from bitnet_arch import convert_model_to_bitnet, auto_convert_if_needed
 |-----------|---------|
 | `BitLinear` | Linear layer with ternary weights, 8-bit activation quant |
 | `BitLinearNoActivationQuant` | BitLinear without activation quantization |
+| `BitLinearLRC` | BitLinear with trainable low-rank correction (U, V matrices) |
 | `SubLN` | Sub-layer RMSNorm for training stability |
 | `RMSNorm` | Root Mean Square Layer Normalization |
 | `convert_linear_to_bitlinear` | Replace nn.Linear with BitLinear |
+| `convert_bitlinear_to_lrc` | Replace BitLinear with BitLinearLRC (adds U, V, freezes weights) |
+| `freeze_model_except_lrc` | Freeze all params except LRC matrices |
+| `get_lrc_stats` | Get statistics about LRC layers in a model |
 
 ### Quantization (`bitnet_arch.quantization`)
 
@@ -88,6 +93,7 @@ src/bitnet_arch/
 ├── layers/
 │   ├── __init__.py
 │   ├── bitlinear.py         # BitLinear implementation
+│   ├── bitlinear_lrc.py     # BitLinearLRC with low-rank correction
 │   └── subln.py             # SubLN/RMSNorm
 ├── quantization/
 │   ├── __init__.py
@@ -156,14 +162,41 @@ uv run --package bitnet-arch pytest packages/architecture/tests/test_bitlinear.p
 uv run --package bitnet-arch pytest packages/architecture/tests/ --cov=bitnet_arch
 ```
 
+### Low-Rank Correction (LRC)
+
+Based on [Low-Rank Correction for Quantized LLMs](https://arxiv.org/abs/2412.07902).
+
+```python
+from bitnet_arch import BitLinearLRC, convert_bitlinear_to_lrc, freeze_model_except_lrc
+
+# Convert existing BitNet model to LRC (freezes weights, adds U/V matrices)
+model = convert_bitlinear_to_lrc(
+    model,
+    rank_percentage=0.1,  # 10% of min(in, out) per layer
+    init_method="zeros",  # or "svd_residual" for better init
+)
+
+# Ensure only LRC params are trainable
+freeze_model_except_lrc(model)
+
+# Forward pass: output = W_quant @ Q_a(X) + U @ V^T @ X
+# - W_quant @ Q_a(X): frozen quantized path
+# - U @ V^T @ X: trainable low-rank correction on unquantized activations
+output = layer(x)
+```
+
+**Key principle**: Only `lrc_U` and `lrc_V` are trainable. All other params (quantized weights, bias, embeddings, norms) are **frozen**.
+
 ## Notes
 
 - This is a **pure library** - no CLI or scripts
 - Changes affect the training package - test both after modifications
 - BitLinear uses Straight-Through Estimator (STE) for gradients
 - SubLN is critical for training stability (prevents gradient explosion)
+- BitLinearLRC freezes quantized weights; only U, V matrices are trainable
 
 ## References
 
 - [BitDistill Paper](https://arxiv.org/abs/2510.13998) - 1.58-bit training approach
 - [BitNet Paper](https://arxiv.org/abs/2310.11453) - Ternary weight quantization
+- [LRC Paper](https://arxiv.org/abs/2412.07902) - Low-Rank Correction for quantized LLMs
