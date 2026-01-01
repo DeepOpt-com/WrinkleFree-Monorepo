@@ -176,8 +176,9 @@ impl DlmScheduler {
     ) -> (Self, DlmSchedulerHandle) {
         let (request_tx, request_rx) = mpsc::channel(1024);
 
-        // Create batch with enough capacity for a full block
-        let batch_size = (config.dlm.block_size * 2) as i32;
+        // Create batch with capacity for prefill + block decode
+        // Use the engine's max context per sequence to ensure we can prefill long prompts
+        let batch_size = 2048; // Matches BatchConfig::default().n_ctx
         let batch = Batch::new(batch_size, 1).expect("Failed to create batch");
 
         let eos_token_id = engine.eos_token_id();
@@ -297,6 +298,9 @@ impl DlmScheduler {
                 continue;
             }
 
+            // Clear any stale KV cache for this sequence before prefill
+            self.engine.kv_cache_seq_rm(seq_id, -1, -1);
+
             // Prefill all prompt tokens
             self.batch.clear();
             let prompt_len = state.base.prompt_tokens.len();
@@ -309,6 +313,8 @@ impl DlmScheduler {
 
             if let Err(e) = self.engine.decode(&self.batch) {
                 error!("Prefill failed for seq {}: {}", seq_id, e);
+                // Mark as failed so cleanup can handle it
+                state.base.phase = SequencePhase::Finished(FinishReason::Error);
                 continue;
             }
 
@@ -471,6 +477,9 @@ impl DlmScheduler {
                 // Forward pass
                 if let Err(e) = self.engine.decode(&self.batch) {
                     error!("Block decode failed for seq {}: {}", seq_id, e);
+                    // Mark as failed so cleanup can handle it
+                    let state = self.sequences.get_mut(&seq_id).unwrap();
+                    state.base.phase = SequencePhase::Finished(FinishReason::Error);
                     return;
                 }
 
