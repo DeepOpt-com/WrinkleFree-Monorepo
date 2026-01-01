@@ -215,6 +215,15 @@ def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
             save_dir=cfg.output_dir,
         )
 
+    # Handle gradient_clipping as either float or dict
+    grad_clip_cfg = cfg.training.get("gradient_clipping", 1.0)
+    if isinstance(grad_clip_cfg, (int, float)):
+        gradient_clip_val = float(grad_clip_cfg)
+    elif grad_clip_cfg.get("type", "fixed") == "fixed":
+        gradient_clip_val = grad_clip_cfg.get("max_norm", 1.0)
+    else:
+        gradient_clip_val = None  # ZClip callback handles it
+
     trainer = pl.Trainer(
         max_steps=cfg.training.max_steps,
         accumulate_grad_batches=cfg.training.gradient_accumulation_steps,
@@ -225,9 +234,7 @@ def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
         logger=wandb_logger,
         log_every_n_steps=cfg.training.logging.get("log_interval", 10),
         val_check_interval=cfg.training.get("eval_interval", 1000),
-        gradient_clip_val=cfg.training.get("gradient_clipping", {}).get("max_norm", 1.0)
-        if cfg.training.get("gradient_clipping", {}).get("type", "fixed") == "fixed"
-        else None,
+        gradient_clip_val=gradient_clip_val,
         enable_checkpointing=True,
         default_root_dir=cfg.output_dir,
     )
@@ -276,13 +283,20 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Create Lightning module
+    # Handle gradient_clipping as either float or dict with max_norm
+    grad_clip_cfg = cfg.training.get("gradient_clipping", 1.0)
+    if isinstance(grad_clip_cfg, (int, float)):
+        gradient_clipping = float(grad_clip_cfg)
+    else:
+        gradient_clipping = grad_clip_cfg.get("max_norm", 1.0)
+
     module = WrinkleFreeLightningModule(
         model=model,
         objective_manager=objective_manager,
         teacher_model=teacher.model if teacher else None,
         optimizer_cfg=cfg.training.get("optimizer", {}),
         scheduler_cfg=cfg.training.get("scheduler", {}),
-        gradient_clipping=cfg.training.get("gradient_clipping", {}).get("max_norm", 1.0),
+        gradient_clipping=gradient_clipping,
     )
 
     # Create callbacks
