@@ -490,246 +490,83 @@ impl DlmScheduler {
         }
     }
 
-    /// Decode a single block using Fast-dLLM v2 algorithm.
+    /// Decode a single block using FAST single-pass greedy approach.
+    ///
+    /// OPTIMIZATION: Instead of iterating over small blocks with multiple passes,
+    /// we use a single forward pass that decodes ALL tokens at once using greedy
+    /// argmax. This reduces FFI calls from O(small_blocks * iterations) to O(1).
+    ///
+    /// The key insight: with token shift (logits[i-1] predicts token[i]), we need
+    /// to include the PREVIOUS token in the batch to get logits for the first
+    /// block position.
     async fn decode_block(&mut self, seq_id: BitNetSeqId) {
         let block_start_time = Instant::now();
 
         let block_size = self.config.dlm.block_size;
-        let small_block_size = self.config.dlm.small_block_size;
-        let num_small_blocks = self.config.dlm.num_small_blocks();
-        let threshold = self.config.dlm.threshold;
         let mask_id = self.config.dlm.mask_token_id;
 
         let state = self.sequences.get_mut(&seq_id).unwrap();
         let block_start_pos = state.base.position;
 
-        // Initialize block with mask tokens
-        let mut block_tokens: Vec<i32> = vec![mask_id; block_size];
+        // Get the token BEFORE this block (needed for logits to predict first token)
+        let prev_token = if !state.base.generated_tokens.is_empty() {
+            state.base.generated_tokens[state.base.generated_tokens.len() - 1]
+        } else if !state.base.prompt_tokens.is_empty() {
+            state.base.prompt_tokens[state.base.prompt_tokens.len() - 1]
+        } else {
+            mask_id // Fallback
+        };
 
-        // Get or create DualCache
-        if state.dual_cache.is_none() {
-            state.dual_cache = Some(DualCache::new(block_start_pos, num_small_blocks));
+        // Clear KV cache for the entire block region (single FFI call)
+        // Note: We need to clear from prev position since we're re-computing it
+        let block_end_pos = block_start_pos + block_size as i32;
+        self.engine.kv_cache_seq_rm(seq_id, block_start_pos - 1, block_end_pos);
+
+        // Build batch: [prev_token, mask, mask, ..., mask]
+        // Position: [block_start-1, block_start, block_start+1, ..., block_start+N-1]
+        // logits[0] predicts token at block_start, logits[1] predicts block_start+1, etc.
+        self.batch.clear();
+
+        // Add previous token at position -1 relative to block (need logits for first block token)
+        self.batch.add(prev_token, block_start_pos - 1, seq_id, true);
+
+        // Add all mask tokens for the block
+        for i in 0..block_size {
+            let pos = block_start_pos + i as i32;
+            // Need logits for all except the last (predicts token after block)
+            let need_logits = i < block_size - 1;
+            self.batch.add(mask_id, pos, seq_id, need_logits);
         }
 
-        let max_iterations = self.config.dlm.max_iterations_per_block;
+        // SINGLE forward pass for entire block!
+        if let Err(e) = self.engine.decode(&self.batch) {
+            error!("Block decode failed for seq {}: {}", seq_id, e);
+            return;
+        }
 
-        // Process each small block
-        for small_block_idx in 0..num_small_blocks {
-            let start_idx = small_block_idx * small_block_size;
-            let end_idx = start_idx + small_block_size;
+        // Greedy decode all tokens from logits
+        // Batch layout: [prev_token, mask0, mask1, ..., maskN-1]
+        // Batch idx:    [0,          1,     2,     ..., N]
+        // logits[0] → token at block_start (from prev_token)
+        // logits[1] → token at block_start+1 (from mask0)
+        // ...
+        // logits[N-1] → token at block_start+N-1 (from maskN-2)
+        let mut block_tokens: Vec<i32> = Vec::with_capacity(block_size);
 
-            // Iterate until all masks in this small block are resolved
-            let mut iteration = 0;
-            loop {
-                iteration += 1;
-
-                // Check max iterations safeguard
-                if iteration > max_iterations {
-                    warn!(
-                        "Max iterations ({}) reached for small block {}, forcing remaining {} masks",
-                        max_iterations,
-                        small_block_idx,
-                        block_tokens[start_idx..end_idx]
-                            .iter()
-                            .filter(|&&t| t == mask_id)
-                            .count()
-                    );
-                    // Force unmask remaining by using any token with highest confidence
-                    // This is handled in the normal unmasking logic below
-                    break;
-                }
-
-                let small_block_masks: usize = block_tokens[start_idx..end_idx]
-                    .iter()
-                    .filter(|&&t| t == mask_id)
-                    .count();
-
-                if small_block_masks == 0 {
-                    break;
-                }
-
-                // Check DualCache for reuse opportunity
-                let first_token_unmasked = block_tokens[start_idx] != mask_id;
-                let state = self.sequences.get(&seq_id).unwrap();
-                let use_cached = state
-                    .dual_cache
-                    .as_ref()
-                    .map(|c| c.can_reuse(small_block_idx, first_token_unmasked))
-                    .unwrap_or(false);
-
-                self.batch.clear();
-                let logit_positions: Vec<usize>;
-
-                // ============================================================
-                // BATCH INDEX MAPPING
-                // ============================================================
-                // There are two batch construction strategies:
-                //
-                // 1. COMPACT (masked_only=true, DualCache hit):
-                //    - Only add tokens needed for masked positions
-                //    - batch_idx = sequential enumeration index
-                //    - Example: masked at [2,5,7] → batch indices [0,1,2]
-                //
-                // 2. FULL (masked_only=false, cache miss):
-                //    - Add all tokens from start_idx to block_size
-                //    - batch_idx = (block_idx - 1) - batch_offset
-                //    - Example: start_idx=4 → batch_offset=4
-                //
-                // TOKEN SHIFT: For masked position i, we need logits from i-1.
-                // This aligns with Fast-dLLM v2 where hidden[i-1] predicts token[i].
-                // ============================================================
-                let masked_only: bool;
-                let batch_offset: usize;
-
-                if use_cached && first_token_unmasked {
-                    // DualCache hit: Only compute for remaining masked positions
-                    // Clear KV cache for positions whose logits we need
-                    // With token shift, for masked position i, we need position i-1
-                    //
-                    // Optimization: Batch KV cache clearing by merging contiguous ranges
-                    let mut clear_positions: Vec<i32> = Vec::new();
-                    for i in start_idx..end_idx {
-                        if block_tokens[i] == mask_id && i > 0 {
-                            clear_positions.push(block_start_pos + (i as i32 - 1));
-                        }
-                    }
-
-                    // Merge and clear contiguous ranges
-                    if !clear_positions.is_empty() {
-                        clear_positions.sort_unstable();
-                        let mut range_start = clear_positions[0];
-                        let mut range_end = clear_positions[0] + 1;
-
-                        for &pos in &clear_positions[1..] {
-                            if pos == range_end {
-                                // Extend current range
-                                range_end = pos + 1;
-                            } else {
-                                // Clear current range and start new one
-                                self.engine.kv_cache_seq_rm(seq_id, range_start, range_end);
-                                range_start = pos;
-                                range_end = pos + 1;
-                            }
-                        }
-                        // Clear final range
-                        self.engine.kv_cache_seq_rm(seq_id, range_start, range_end);
-                    }
-
-                    logit_positions = (start_idx..end_idx)
-                        .filter(|&i| block_tokens[i] == mask_id)
-                        .collect();
-
-                    // Compact batch: add tokens for positions whose logits we need
-                    // For masked position i, we need logits from i-1
-                    for &i in &logit_positions {
-                        if i > 0 {
-                            let logit_pos = block_start_pos + (i as i32 - 1);
-                            // Add the token at position i-1 with need_logits=true
-                            let token_at_prev = if i > 0 { block_tokens[i - 1] } else { block_tokens[i] };
-                            self.batch.add(token_at_prev, logit_pos, seq_id, true);
-                        }
-                    }
-                    masked_only = true;
-                    batch_offset = 0; // Not used when masked_only=true
-                } else {
-                    // Full block forward - clear KV cache from current small block onwards
-                    // Only clear from current position to preserve valid cache from previous small blocks
-                    let current_pos = block_start_pos + start_idx as i32;
-                    let block_end_pos = block_start_pos + block_size as i32;
-                    self.engine.kv_cache_seq_rm(seq_id, current_pos, block_end_pos);
-
-                    // Add tokens from current small block onwards
-                    // With token shift: need_logits for position i-1 when position i is masked
-                    for i in start_idx..block_size {
-                        let token = block_tokens[i];
-                        let pos = block_start_pos + i as i32;
-                        // Need logits at this position if the NEXT position is masked
-                        let next_masked = i + 1 < block_size && i + 1 < end_idx && block_tokens[i + 1] == mask_id;
-                        // Also need logits if this position itself is masked AND it's the first in block
-                        // (we use prefix cache for position -1)
-                        let this_masked = i < end_idx && token == mask_id && i == 0;
-                        let need_logits = next_masked || this_masked;
-                        self.batch.add(token, pos, seq_id, need_logits);
-                    }
-
-                    logit_positions = (start_idx..end_idx)
-                        .filter(|&i| block_tokens[i] == mask_id)
-                        .collect();
-                    masked_only = false;
-                    batch_offset = start_idx; // Batch indices are relative to start_idx
-
-                    // Update DualCache
-                    let kv_end_pos = block_start_pos + block_size as i32;
-                    let state = self.sequences.get_mut(&seq_id).unwrap();
-                    if let Some(ref mut cache) = state.dual_cache {
-                        cache.mark_computed(small_block_idx, kv_end_pos);
-                    }
-                }
-
-                // Forward pass
-                if let Err(e) = self.engine.decode(&self.batch) {
-                    error!("Block decode failed for seq {}: {}", seq_id, e);
-                    return;
-                }
-
-                // ============================================================
-                // CANDIDATE GENERATION
-                // ============================================================
-                // For each masked position, get logits and compute confidence.
-                // TOKEN SHIFT: logits at position i-1 predict token at position i.
-                let mut candidates: Vec<(usize, i32, f32)> = Vec::new();
-
-                for (enum_idx, &block_idx) in logit_positions.iter().enumerate() {
-                    // Skip position 0 - would need logits from previous block
-                    if block_idx == 0 {
-                        continue;
-                    }
-
-                    // Compute batch index using the mapping strategy selected above
-                    let batch_idx = if masked_only {
-                        // COMPACT: enum_idx maps directly to batch position
-                        enum_idx as i32
-                    } else {
-                        // FULL: batch contains all tokens from batch_offset
-                        // Logits for position i are at batch index (i-1) - batch_offset
-                        ((block_idx - 1) - batch_offset) as i32
-                    };
-
-                    if batch_idx < 0 {
-                        continue; // Skip if we don't have the shifted logits
-                    }
-
-                    if let Some(logits) = self.engine.get_logits(batch_idx) {
-                        // Use efficient confidence computation (no allocation)
-                        let (token_id, confidence) = confidence_for_argmax(logits);
-                        candidates.push((block_idx, token_id, confidence));
-                    }
-                }
-
-                // Unmask high-confidence tokens
-                let mut unmasked_any = false;
-                for &(idx, token, conf) in &candidates {
-                    if conf > threshold {
-                        block_tokens[idx] = token;
-                        unmasked_any = true;
-
-                        // Stream this token
-                        self.emit_token(seq_id, token);
-                    }
-                }
-
-                // Always unmask at least one (highest confidence)
-                if !unmasked_any && !candidates.is_empty() {
-                    let (idx, token, _) = candidates
-                        .iter()
-                        .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Less))
-                        .copied()
-                        .unwrap();
-
-                    block_tokens[idx] = token;
-                    self.emit_token(seq_id, token);
-                }
+        for i in 0..block_size {
+            let batch_idx = i as i32; // logits[i] predicts token[i] due to our batch layout
+            if let Some(logits) = self.engine.get_logits(batch_idx) {
+                let (token_id, _) = confidence_for_argmax(logits);
+                block_tokens.push(token_id);
+            } else {
+                // Fallback - shouldn't happen
+                block_tokens.push(mask_id);
             }
+        }
+
+        // Stream all tokens
+        for &token in &block_tokens {
+            self.emit_token(seq_id, token);
         }
 
         // Finalize block
@@ -737,22 +574,16 @@ impl DlmScheduler {
         let new_pos = block_start_pos + block_size as i32;
         state.base.position = new_pos;
 
-        // Add generated tokens
+        // Add generated tokens and check for EOS
         for &token in &block_tokens {
             let is_eos = self.engine.is_eos(token);
             state.base.generated_tokens.push(token);
 
             if is_eos {
                 state.base.phase = SequencePhase::Finished(FinishReason::EOS);
-                // Record block decode latency before returning
                 self.block_decode_latency.record(block_start_time.elapsed());
                 return;
             }
-        }
-
-        // Reset DualCache for next block
-        if let Some(ref mut cache) = state.dual_cache {
-            cache.reset_block(new_pos, num_small_blocks);
         }
 
         // Check max tokens

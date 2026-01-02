@@ -31,7 +31,7 @@ impl Default for DlmConfig {
     fn default() -> Self {
         Self {
             mask_token_id: -1, // Must be set via detect() or explicitly
-            block_size: 32,
+            block_size: 64, // Larger blocks = fewer forward passes = higher throughput
             threshold: 0.95,
             small_block_size: 8,
             use_dual_cache: true,
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn test_dlm_config_defaults() {
         let config = DlmConfig::default();
-        assert_eq!(config.block_size, 32);
+        assert_eq!(config.block_size, 64);
         assert!((config.threshold - 0.95).abs() < 1e-6);
         assert_eq!(config.small_block_size, 8);
         assert!(config.use_dual_cache);
