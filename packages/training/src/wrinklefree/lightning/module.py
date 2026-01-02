@@ -203,6 +203,10 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         clipping_threshold = self.optimizer_cfg.get("clipping_threshold", 50.0)
         clipping_alpha = self.optimizer_cfg.get("clipping_alpha", 0.5)
         momentum = self.optimizer_cfg.get("momentum", 0.95)
+        # Layer name mapping for QK-clipping (configurable per model architecture)
+        clipping_layers_mapping = self.optimizer_cfg.get(
+            "clipping_layers_mapping", {"q_proj": "q_proj", "k_proj": "k_proj"}
+        )
 
         if world_size == 1:
             # Single GPU: use muon-clip with proper QK-clipping
@@ -213,6 +217,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
                 enable_clipping=enable_clipping,
                 clipping_threshold=clipping_threshold,
                 clipping_alpha=clipping_alpha,
+                clipping_layers_mapping=clipping_layers_mapping,
             )
         else:
             # Multi-GPU: use muon_fsdp2 for FSDP compatibility
@@ -226,11 +231,21 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         enable_clipping: bool = True,
         clipping_threshold: float = 50.0,
         clipping_alpha: float = 0.5,
+        clipping_layers_mapping: dict = None,
     ):
-        """Create MuonClip optimizer for single GPU with QK-clipping."""
+        """Create MuonClip optimizer for single GPU with QK-clipping.
+
+        Reference: https://github.com/GAD-cell/muon-clip
+        CRITICAL: model.train() must be called AFTER creating optimizer!
+        MuonClip.__init__() overrides model.train() to register hooks.
+        """
         from muon import MuonClip, MuonConfig
 
-        # Build MuonConfig
+        # Default to LLaMA-style naming if not specified
+        if clipping_layers_mapping is None:
+            clipping_layers_mapping = {"q_proj": "q_proj", "k_proj": "k_proj"}
+
+        # Build MuonConfig with configurable clipping_layers_mapping
         muon_config = MuonConfig(
             unified_lr=False,
             lr_muon=lr_muon,
@@ -242,16 +257,56 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             adam_eps=1e-8,
             ns_steps=5,  # Newton-Schulz iterations
             enable_clipping=enable_clipping,
+            clipping_layers_mapping=clipping_layers_mapping,
             clipping_threshold=clipping_threshold,
             clipping_alpha=clipping_alpha,
-            log_max_logits=True,
+            log_max_logits=False,  # Disabled: requires TensorBoard writer (we use WandB)
         )
 
-        # MuonClip needs model config for architecture info
-        # Extract from model if available
+        # MuonClip needs HuggingFace model config for architecture info
         model_config = getattr(self.model, "config", None)
+        if model_config is None:
+            raise ValueError("MuonClip requires model.config (HuggingFace config)")
 
+        # Create optimizer - this overrides model.train()/eval() via override_model()
         optimizer = MuonClip(self.model, model_config, muon_config)
+
+        # WORKAROUND for upstream bug in muon-clip's HookRecorder:
+        # The remove_hooks() method removes hook handles but doesn't reset is_registered=False.
+        # This causes hooks to never be re-registered after model.eval() → model.train() cycles
+        # (like those in Lightning's BatchSizeFinder), leading to KeyError in optimizer.step().
+        # We patch remove_hooks to reset the flag properly.
+        # Reference: https://github.com/GAD-cell/muon-clip
+        if hasattr(optimizer, "hook_recorder"):
+            original_remove = optimizer.hook_recorder.remove_hooks
+
+            def patched_remove_hooks():
+                original_remove()
+                # Reset flag so hooks can be re-registered on next model.train() call
+                optimizer.hook_recorder.is_registered = False
+
+            optimizer.hook_recorder.remove_hooks = patched_remove_hooks
+            logger.info("Patched MuonClip hook_recorder.remove_hooks to fix is_registered flag bug")
+
+        # WORKAROUND for upstream bug in muon-clip's flush_metrics():
+        # The flush_metrics() method unconditionally tries to use self.writer.add_scalar(),
+        # even when log_max_logits=False. The writer attribute is never initialized.
+        # We add a no-op writer to prevent AttributeError.
+        # Reference: https://github.com/GAD-cell/muon-clip
+        class _NoOpWriter:
+            """Dummy TensorBoard writer that ignores all calls."""
+
+            def add_scalar(self, *args, **kwargs):
+                pass
+
+        optimizer.writer = _NoOpWriter()
+        logger.info("Added no-op writer to MuonClip to fix missing writer bug")
+
+        # CRITICAL: Call model.train() AFTER creating optimizer to register hooks!
+        # MuonClip.__init__() overrides model.train() with hook registration logic.
+        # See: https://github.com/GAD-cell/muon-clip
+        self.model.train()
+        logger.info(f"MuonClip hooks registered: {len(optimizer.hook_recorder.handles)} hooks active")
 
         logger.info(
             f"Created MuonClip optimizer (single GPU): "

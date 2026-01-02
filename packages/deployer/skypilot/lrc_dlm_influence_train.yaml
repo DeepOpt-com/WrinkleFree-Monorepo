@@ -55,26 +55,42 @@ setup: |
   # Install uv if not present
   if ! command -v uv &> /dev/null; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
   fi
+  export PATH="$HOME/.cargo/bin:$PATH"
 
-  # Install gcloud CLI if not present
-  if ! command -v gcloud &> /dev/null; then
+  # Install gcloud CLI - handle existing broken installations
+  export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  if ! gcloud version &> /dev/null; then
     echo "Installing Google Cloud SDK..."
+    # Remove any broken existing installation
+    rm -rf $HOME/google-cloud-sdk
     curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
-    export PATH="$HOME/google-cloud-sdk/bin:$PATH"
   fi
+  echo "gcloud version: $(gcloud version 2>/dev/null | head -1)"
 
   # Install dependencies (including muon-clip for single GPU training)
   uv sync --all-packages
   # Install muon-clip from GitHub (required for MuonClip optimizer on single GPU)
   uv pip install git+https://github.com/GAD-cell/muon-clip.git
 
-  # Verify GCS access
-  echo "Verifying GCS access..."
-  export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  # Activate GCS credentials and verify access
+  echo "Activating GCS credentials..."
   gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
-  gsutil ls gs://${GCS_BUCKET}/ > /dev/null 2>&1 && echo "GCS access OK" || echo "WARNING: GCS access failed"
+  if gsutil ls gs://${GCS_BUCKET}/ > /dev/null 2>&1; then
+    echo "GCS access: OK"
+  else
+    echo "ERROR: GCS access failed!"
+    exit 1
+  fi
+
+  # Verify WANDB_API_KEY is available
+  source /tmp/credentials.env
+  source /tmp/global.env
+  if [ -z "$WANDB_API_KEY" ]; then
+    echo "ERROR: WANDB_API_KEY not set!"
+    exit 1
+  fi
+  echo "WANDB_API_KEY: configured (length=${#WANDB_API_KEY})"
 
   echo "Setup complete!"
 

@@ -6,17 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 1. **USE LIGHTNING TRAINER**: Use `train_lightning.py` (legacy `train.py` has been removed)
 2. **AUTO BATCH SIZE**: Always use `training.auto_batch_size=true` for new runs
-3. **SINGLE-GPU BUG**: Use `training.optimizer.type=adamw` on single GPU (muon_fsdp2 bug)
-4. **CLEAN CHECKPOINTS**: Before re-running failed jobs, clean `/tmp/checkpoints/` on remote
-5. **EXPERIMENTAL CODE**: MoE, TensorParallel, and FP8 are in `_experimental/` (not production-ready)
+3. **CLEAN CHECKPOINTS**: Before re-running failed jobs, clean `/tmp/checkpoints/` on remote
+4. **EXPERIMENTAL CODE**: MoE, TensorParallel, and FP8 are in `_experimental/` (not production-ready)
 
 ## Known Bugs
 
 | Bug | Workaround | Status |
 |-----|------------|--------|
-| muon_fsdp2 single-GPU | Use `training.optimizer.type=adamw` | Open (upstream) |
+| MuonClip + BatchSizeFinder | `MuonClipInitCallback` patches upstream bug | **Fixed** (2026-01-01) |
 | BatchSizeFinder + WandB resume | Clean checkpoints before retry | Fixed in code |
 | PyTorch 2.6 weights_only | Added safe_globals for omegaconf types | Fixed |
+
+**MuonClip Fix Details**: The upstream muon-clip package has a bug where `HookRecorder.remove_hooks()`
+doesn't reset `is_registered=False`. This causes hooks to never re-register after BatchSizeFinder's
+`eval/train` cycles. Fixed via `MuonClipInitCallback` + patched `remove_hooks()` in module.py.
 
 ## Project Overview
 

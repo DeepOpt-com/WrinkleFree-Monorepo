@@ -44,20 +44,28 @@ packing:
   enabled: true
 
 # === OPTIMIZER ===
-# NOTE: MuonClip has compatibility issues with SmolLM2's attention architecture
-# (hook_recorder.attn_inputs KeyError) - using AdamW as workaround.
-# TODO: Fix MuonClip integration for SmolLM2 (model.config needs proper layer names)
+# MuonClip + AdamW hybrid for faster convergence
+# Reference: https://github.com/GAD-cell/muon-clip
+# - MuonClip for hidden layer weights (faster convergence)
+# - AdamW for embeddings, norms, lm_head (stability)
+# NOTE: QK-clipping disabled due to bfloat16 dtype mismatch in upstream muon-clip
+# The clipping math uses float32 but AMP captures activations in bfloat16
 optimizer:
-  type: adamw
-  learning_rate: 5e-5
+  type: muonclip
+  lr_muon: 0.001     # MuonClip LR for hidden weights
+  lr_adam: 5e-5      # AdamW LR for embeddings, norms, lm_head
   weight_decay: 0.0
-  # MuonClip config (for when fixed):
-  # type: muonclip
-  # lr_muon: 0.001
-  # lr_adam: 5e-5
-  # enable_clipping: true
-  # clipping_threshold: 50.0
-  # clipping_alpha: 0.5
+  momentum: 0.95
+  enable_clipping: false  # Disabled: bfloat16 dtype mismatch with AMP
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
+  # Layer name mapping for QK-clipping (model-specific)
+  # LLaMA/SmolLM2: q_proj, k_proj
+  # GPT-2: c_attn (combined QKV)
+  # Qwen: q_proj, k_proj
+  clipping_layers_mapping:
+    q_proj: q_proj
+    k_proj: k_proj
 
 # Scheduler: WSD with short warmup
 scheduler:
@@ -72,10 +80,12 @@ total_tokens: 1_000_000_000  # 1B tokens for testing (scale up for prod)
 # max_steps computed: 1B tokens / (batch * accum * seq_len) = 1B / (16 * 4 * 512) = ~30,500 steps
 max_steps: 30500  # 1B tokens at batch=16, accum=4, seq=512
 max_seq_length: 512
-batch_size: 16
+batch_size: 16  # Starting batch size (BatchSizeFinder will scale up)
 gradient_accumulation_steps: 4  # Effective batch = 64
 gradient_clipping: 1.0
-auto_batch_size: true  # Let Lightning find optimal batch size
+# auto_batch_size works with MuonClip after fix for upstream hook bug
+# MuonClipInitCallback re-registers hooks after BatchSizeFinder completes
+auto_batch_size: true
 
 # Lambda warmup for gradual quantization
 lambda_warmup:

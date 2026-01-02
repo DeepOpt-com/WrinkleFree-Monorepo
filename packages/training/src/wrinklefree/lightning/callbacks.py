@@ -20,6 +20,58 @@ from pytorch_lightning.callbacks import Callback
 logger = logging.getLogger(__name__)
 
 
+class MuonClipInitCallback(Callback):
+    """Re-initialize MuonClip hooks after BatchSizeFinder completes.
+
+    PROBLEM: MuonClip registers forward hooks on q_proj layers to capture attention
+    inputs for QK-clipping. However, Lightning's BatchSizeFinder runs test training
+    steps during on_fit_start(), cycling through model.eval() and model.train() calls.
+
+    BUG IN MUON-CLIP (upstream): The HookRecorder.remove_hooks() method removes hook
+    handles but doesn't reset the is_registered flag to False. This causes:
+    1. model.eval() → remove_hooks() called → hooks removed, but is_registered=True
+    2. model.train() → register_input_hook() called → exits early due to is_registered=True
+    3. Result: hooks never re-registered, attn_inputs stays empty → KeyError in optimizer
+
+    SOLUTION: This callback runs at on_train_start (after BatchSizeFinder completes)
+    and forces hook re-registration by resetting is_registered=False first.
+
+    Reference: https://github.com/GAD-cell/muon-clip
+    """
+
+    def on_train_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Re-initialize MuonClip hooks after BatchSizeFinder completes."""
+        # Get the optimizer - may be wrapped by Lightning
+        optimizer = trainer.optimizers[0]
+        if hasattr(optimizer, "_optimizer"):
+            # Lightning wraps optimizers
+            optimizer = optimizer._optimizer
+
+        # Check if this is a MuonClip optimizer with hook_recorder
+        if not hasattr(optimizer, "hook_recorder"):
+            return
+
+        hook_recorder = optimizer.hook_recorder
+
+        # Force re-registration by resetting the flag
+        # This is needed because remove_hooks() doesn't reset is_registered (upstream bug)
+        hook_recorder.is_registered = False
+
+        # Re-register hooks on the model
+        hook_recorder.register_input_hook(pl_module.model)
+
+        # Log the fix
+        num_hooks = len(hook_recorder.handles) if hasattr(hook_recorder, "handles") else 0
+        logger.info(
+            f"MuonClipInitCallback: Re-registered {num_hooks} hooks after BatchSizeFinder "
+            f"(upstream bug workaround for is_registered flag)"
+        )
+
+
 class GCSCheckpointCallback(Callback):
     """Upload checkpoints to Google Cloud Storage.
 

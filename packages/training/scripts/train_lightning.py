@@ -48,6 +48,7 @@ from wrinklefree.lightning import (
     GCSCheckpointCallback,
     InfluenceTrackerCallback,
     LambdaWarmupCallback,
+    MuonClipInitCallback,
     QKClipCallback,
     RunManagerCallback,
     TokenCountCallback,
@@ -256,6 +257,15 @@ def create_callbacks(cfg: DictConfig) -> list:
             )
         )
         logger.info("Auto batch size scaling enabled (BatchSizeFinder)")
+
+        # MuonClipInitCallback: Required when using MuonClip with BatchSizeFinder
+        # BatchSizeFinder cycles model.eval()/train() which breaks MuonClip's hooks
+        # due to an upstream bug where is_registered flag isn't reset on remove_hooks()
+        # This callback re-registers hooks after BatchSizeFinder completes
+        optimizer_type = cfg.training.get("optimizer", {}).get("type", "adamw")
+        if optimizer_type.lower() == "muonclip":
+            callbacks.append(MuonClipInitCallback())
+            logger.info("MuonClipInitCallback added (required for BatchSizeFinder + MuonClip)")
 
     # Checkpointing - save_top_k=-1 for step-based saves (keeps all, cleanup via GCS callback)
     callbacks.append(
