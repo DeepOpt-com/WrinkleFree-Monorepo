@@ -114,9 +114,12 @@ class DLMObjective(Objective):
             if "labels" in batch:
                 batch["labels"] = torch.cat([batch["labels"], batch["labels"]], dim=0)
 
-            # Also double _original_labels for distillation objectives
+            # Also double _original_labels and _original_input_ids for distillation objectives
             batch["_original_labels"] = torch.cat(
                 [batch["_original_labels"], batch["_original_labels"]], dim=0
+            )
+            batch["_original_input_ids"] = torch.cat(
+                [batch["_original_input_ids"], batch["_original_input_ids"]], dim=0
             )
 
             # Apply masking

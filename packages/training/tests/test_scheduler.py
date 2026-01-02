@@ -2,7 +2,7 @@
 
 import pytest
 import torch
-from wrinklefree.training.trainer import create_scheduler
+from wrinklefree.training._legacy.trainer import create_scheduler
 
 
 class TestWSDScheduler:

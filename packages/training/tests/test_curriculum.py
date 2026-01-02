@@ -221,7 +221,7 @@ class TestCurriculumWithTrainer:
         """Verify Stage2Trainer accepts curriculum-related parameters."""
         # Import inside test to avoid module-level import issues
         try:
-            from wrinklefree.training.continued_pretraining import ContinuedPretrainingTrainer as Stage2Trainer
+            from wrinklefree.training._legacy.continued_pretraining import ContinuedPretrainingTrainer as Stage2Trainer
         except ImportError:
             pytest.skip("Stage2Trainer not available")
 

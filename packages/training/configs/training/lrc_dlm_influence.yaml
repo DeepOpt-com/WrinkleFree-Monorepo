@@ -47,28 +47,17 @@ packing:
   enabled: true
 
 # === OPTIMIZER ===
-# MuonClip + AdamW hybrid for faster convergence
-# Reference: https://github.com/GAD-cell/muon-clip
-# - MuonClip for hidden layer weights (faster convergence)
-# - AdamW for embeddings, norms, lm_head (stability)
-# NOTE: QK-clipping disabled due to bfloat16 dtype mismatch in upstream muon-clip
-# The clipping math uses float32 but AMP captures activations in bfloat16
+# AdamW - stable default for BitNet training
+# MuonClip disabled: lr_muon=0.01 causes divergence with BitNet (see GitHub issue)
 optimizer:
-  type: muonclip
-  lr_muon: 0.01      # MuonClip LR for hidden weights
-  lr_adam: 1e-4      # AdamW LR for embeddings, norms, lm_head
-  weight_decay: 0.01  # Regularization (applied to AdamW params)
-  momentum: 0.95
-  enable_clipping: false  # Disabled: bfloat16 dtype mismatch with AMP
-  clipping_threshold: 50.0
-  clipping_alpha: 0.5
-  # Layer name mapping for QK-clipping (model-specific)
-  # LLaMA/SmolLM2: q_proj, k_proj
-  # GPT-2: c_attn (combined QKV)
-  # Qwen: q_proj, k_proj
-  clipping_layers_mapping:
-    q_proj: q_proj
-    k_proj: k_proj
+  type: adamw
+  lr_adam: 1e-4      # Learning rate for all params
+  weight_decay: 0.01  # Regularization
+  # MuonClip settings (for future use once LR tuning is done)
+  # type: muonclip
+  # lr_muon: 0.001   # Needs tuning - 0.01 diverges with BitNet
+  # momentum: 0.95
+  # enable_clipping: false
 
 # Scheduler: WSD with short warmup
 scheduler:

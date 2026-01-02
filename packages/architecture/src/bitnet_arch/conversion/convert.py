@@ -44,6 +44,7 @@ def auto_convert_if_needed(
     hidden_size: int,
     intermediate_size: int,
     exclude_layers: Optional[list[str]] = None,
+    insert_subln: bool = False,
 ) -> nn.Module:
     """
     Convert model to BitNet on-the-fly if not already converted.
@@ -56,6 +57,9 @@ def auto_convert_if_needed(
         hidden_size: Model hidden dimension
         intermediate_size: FFN intermediate dimension
         exclude_layers: Layer names to exclude from conversion
+        insert_subln: Whether to insert SubLN before o_proj/down_proj.
+            Default False - SubLN disrupts pretrained weights and requires
+            Stage 1.9 layer-wise distillation to realign.
 
     Returns:
         The model (converted if needed, unchanged if already BitNet)
@@ -70,6 +74,7 @@ def auto_convert_if_needed(
         hidden_size=hidden_size,
         intermediate_size=intermediate_size,
         exclude_layers=exclude_layers,
+        insert_subln=insert_subln,
     )
 
 
@@ -123,16 +128,17 @@ def convert_attention_layer(
     attention_module: nn.Module,
     hidden_size: int,
     exclude_layers: list[str],
+    insert_subln: bool = True,
 ) -> None:
     """
-    Convert attention layer to BitNet with SubLN.
-
-    Inserts SubLN before o_proj (output projection).
+    Convert attention layer to BitNet, optionally with SubLN.
 
     Args:
         attention_module: The attention module to convert
         hidden_size: Model hidden size
         exclude_layers: Layer names to exclude from conversion
+        insert_subln: Whether to insert SubLN before o_proj. Default True for
+            BitDistill compatibility, but set False to preserve pretrained weights.
     """
     # Convert Q, K, V projections to BitLinear
     for proj_name in ["q_proj", "k_proj", "v_proj"]:
@@ -149,12 +155,9 @@ def convert_attention_layer(
                     new_proj.bias.data.copy_(proj.bias.data)
                 setattr(attention_module, proj_name, new_proj)
 
-    # Insert SubLN before o_proj
+    # Convert o_proj to BitLinear
     if hasattr(attention_module, "o_proj") and "o_proj" not in exclude_layers:
         o_proj = attention_module.o_proj
-        o_proj_in = o_proj.in_features if isinstance(o_proj, nn.Linear) else hidden_size
-
-        subln = SubLN(o_proj_in)
 
         if isinstance(o_proj, nn.Linear) and not isinstance(o_proj, BitLinear):
             new_o_proj = BitLinear(
@@ -168,24 +171,31 @@ def convert_attention_layer(
         else:
             new_o_proj = o_proj
 
-        # Wrap SubLN + projection in Sequential so SubLN is called in forward pass
-        attention_module.o_proj = nn.Sequential(subln, new_o_proj)
+        if insert_subln:
+            # Wrap SubLN + projection in Sequential (BitDistill-style)
+            o_proj_in = o_proj.in_features if isinstance(o_proj, nn.Linear) else hidden_size
+            subln = SubLN(o_proj_in)
+            attention_module.o_proj = nn.Sequential(subln, new_o_proj)
+        else:
+            # Direct BitLinear replacement (preserves pretrained weights)
+            attention_module.o_proj = new_o_proj
 
 
 def convert_mlp_layer(
     mlp_module: nn.Module,
     hidden_size: int,
     exclude_layers: list[str],
+    insert_subln: bool = True,
 ) -> None:
     """
-    Convert MLP/FFN layer to BitNet with SubLN.
-
-    Inserts SubLN before down_proj.
+    Convert MLP/FFN layer to BitNet, optionally with SubLN.
 
     Args:
         mlp_module: The MLP module to convert
         hidden_size: Model hidden size
         exclude_layers: Layer names to exclude from conversion
+        insert_subln: Whether to insert SubLN before down_proj. Default True for
+            BitDistill compatibility, but set False to preserve pretrained weights.
     """
     # Convert gate and up projections
     for proj_name in ["gate_proj", "up_proj"]:
@@ -202,12 +212,9 @@ def convert_mlp_layer(
                     new_proj.bias.data.copy_(proj.bias.data)
                 setattr(mlp_module, proj_name, new_proj)
 
-    # Insert SubLN before down_proj
+    # Convert down_proj to BitLinear
     if hasattr(mlp_module, "down_proj") and "down_proj" not in exclude_layers:
         down_proj = mlp_module.down_proj
-        down_proj_in = down_proj.in_features if isinstance(down_proj, nn.Linear) else hidden_size
-
-        subln = SubLN(down_proj_in)
 
         if isinstance(down_proj, nn.Linear) and not isinstance(down_proj, BitLinear):
             new_down_proj = BitLinear(
@@ -221,8 +228,14 @@ def convert_mlp_layer(
         else:
             new_down_proj = down_proj
 
-        # Wrap SubLN + projection in Sequential so SubLN is called in forward pass
-        mlp_module.down_proj = nn.Sequential(subln, new_down_proj)
+        if insert_subln:
+            # Wrap SubLN + projection in Sequential (BitDistill-style)
+            down_proj_in = down_proj.in_features if isinstance(down_proj, nn.Linear) else hidden_size
+            subln = SubLN(down_proj_in)
+            mlp_module.down_proj = nn.Sequential(subln, new_down_proj)
+        else:
+            # Direct BitLinear replacement (preserves pretrained weights)
+            mlp_module.down_proj = new_down_proj
 
 
 def convert_model_to_bitnet(
@@ -230,19 +243,19 @@ def convert_model_to_bitnet(
     hidden_size: int,
     intermediate_size: int,
     exclude_layers: Optional[list[str]] = None,
+    insert_subln: bool = True,
 ) -> nn.Module:
     """
-    Convert a HuggingFace model to BitNet architecture with SubLN.
-
-    This performs Stage 1 of BitDistill:
-    1. Replace nn.Linear with BitLinear (except embeddings/LM head)
-    2. Insert SubLN before output projections in attention and FFN
+    Convert a HuggingFace model to BitNet architecture.
 
     Args:
         model: Pre-trained HuggingFace model
         hidden_size: Model hidden dimension
         intermediate_size: FFN intermediate dimension
         exclude_layers: Layer names to exclude from conversion
+        insert_subln: Whether to insert SubLN before o_proj/down_proj.
+            True: Full BitDistill Stage 1 (requires Stage 1.9 to realign)
+            False: Direct BitLinear replacement (preserves pretrained weights)
 
     Returns:
         Converted model
@@ -259,16 +272,19 @@ def convert_model_to_bitnet(
         # Convert attention layers
         if "self_attn" in name or "attention" in name:
             if hasattr(module, "q_proj"):  # LLaMA-style attention
-                convert_attention_layer(module, hidden_size, exclude_layers)
+                convert_attention_layer(module, hidden_size, exclude_layers, insert_subln)
 
         # Convert MLP layers
         if "mlp" in name or "feed_forward" in name:
             if hasattr(module, "gate_proj"):  # LLaMA-style MLP
-                convert_mlp_layer(module, intermediate_size, exclude_layers)
+                convert_mlp_layer(module, intermediate_size, exclude_layers, insert_subln)
 
     logger.info("Converted model to BitNet architecture")
     logger.info("  - Replaced Linear -> BitLinear")
-    logger.info("  - Inserted SubLN before o_proj and down_proj")
+    if insert_subln:
+        logger.info("  - Inserted SubLN before o_proj and down_proj")
+    else:
+        logger.info("  - SubLN disabled (preserving pretrained weight compatibility)")
 
     return model
 

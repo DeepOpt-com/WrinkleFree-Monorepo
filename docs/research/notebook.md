@@ -1,3 +1,59 @@
+## 01-02-2026
+
+### Bug Fix: DLM Preprocessing Applied When Weight=0 (Catastrophic Loss Issue)
+
+**Problem**: BitNet training showed catastrophic loss (20-41 instead of expected 2-5) during warmup phase when DLM objective weight was 0.
+
+**Root Cause Analysis**:
+
+The `ObjectiveManager.preprocess_batch()` method was applying DLM preprocessing (50% token masking with complementary masks) **regardless of the objective's current weight**. During the warmup curriculum phase:
+- DLM weight = 0.0 (objective disabled)
+- But DLM's `preprocess_batch()` was still called
+- Input tokens were masked, batch size was doubled
+- `continue_pretrain` computed CE loss from masked input → artificially high loss
+
+**Investigation Path**:
+1. Initially suspected SubLN insertion breaking pretrained weights (fixed in v12)
+2. Local tests showed model conversion works correctly (loss=2.14)
+3. But training still showed loss=20+ even with SubLN disabled
+4. Created debug script that mimicked full training pipeline
+5. Discovered that at lambda=0 with DLM preprocessing: loss=9.73 (vs 2.24 without)
+6. Found that `preprocess_batch()` doesn't check objective weights
+
+**Fix**: Modified `ObjectiveManager.preprocess_batch()` to check if objective weight > 0 before applying preprocessing:
+
+```python
+# packages/training/src/wrinklefree/objectives/manager.py
+def preprocess_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
+    # Get current weights to check which objectives are active
+    weights = self.get_current_weights()
+
+    for name, obj in self.objectives.items():
+        if obj.modifies_input:
+            # Only apply preprocessing if objective weight > 0
+            obj_weight = weights.get(name, self.base_weights.get(name, 1.0))
+            if obj_weight > 0:
+                batch = obj.preprocess_batch(batch)
+    return batch
+```
+
+**Files Modified**:
+- `packages/training/src/wrinklefree/objectives/manager.py` - Skip preprocessing when weight=0
+- `packages/architecture/src/bitnet_arch/conversion/convert.py` - Added `insert_subln` flag (v12 fix)
+- `packages/training/configs/training/lrc_dlm_influence.yaml` - Set `insert_subln: false`
+
+**Verification**:
+- Debug script confirms: At step 0 with DLM weight=0, masked tokens=0, batch size=1
+- At step 50 with DLM weight=0.1875, masked tokens=12, batch size=2 (correctly doubled)
+
+**Training Runs**:
+- v12 (lrc_dlm_v12_no_subln): Still showed high loss due to DLM preprocessing bug
+- v13 (lrc_dlm_v13_dlm_preproc_fix): Pending - should show normal loss ~2-3 during warmup
+
+**Key Insight**: When using curriculum learning with phase-based objective weights, preprocessing must respect the current weights, not just whether the objective exists.
+
+---
+
 ## 12-31-2025
 
 ### TCS Distillation Hyperparameter Corrections (Job 19)

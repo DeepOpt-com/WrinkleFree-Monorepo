@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. **USE LIGHTNING TRAINER**: Use `train_lightning.py` (legacy `train.py` has been removed)
 2. **AUTO BATCH SIZE**: Always use `training.auto_batch_size=true` for new runs
 3. **CLEAN CHECKPOINTS**: Before re-running failed jobs, clean `/tmp/checkpoints/` on remote
-4. **EXPERIMENTAL CODE**: MoE, TensorParallel, and FP8 are in `_experimental/` (not production-ready)
+4. **EXPERIMENTAL CODE**: MoE and TensorParallel are in `_experimental/` (not production-ready)
+5. **LEGACY CODE**: Legacy trainers are in `training/_legacy/` (use Lightning instead)
 
 ## Known Bugs
 
@@ -552,16 +553,15 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 - `curriculum.py` - CurriculumScheduler: phase-based weight transitions
 
 **Training** (`src/wrinklefree/training/`):
-- `trainer.py` - Main Trainer with configurable resume
-- `auto_setup.py` - Auto-magic checkpoint resolution + BitNet conversion
-- `continued_pretraining.py` - ContinuedPretrainingTrainer with influence support
-- `fsdp_wrapper.py` - FSDP wrapping with activation checkpointing
-- `stage1.py` - Stage 1 SubLN insertion (legacy, prefer bitnet_arch.auto_convert_if_needed)
+- `fsdp_wrapper.py` - FSDP wrapping with activation checkpointing (ACTIVE)
+- `auto_setup.py` - Auto-magic checkpoint resolution + BitNet conversion (ACTIVE)
+- `_legacy/trainer.py` - Legacy base Trainer (DEPRECATED - use Lightning)
+- `_legacy/continued_pretraining.py` - Legacy ContinuedPretrainingTrainer (DEPRECATED)
+- `_legacy/stage1.py` - Stage 1 SubLN insertion (DEPRECATED - use bitnet_arch.auto_convert_if_needed)
 
 **Experimental** (`src/wrinklefree/_experimental/`):
 - `moe/` - Mixture of Experts (benchmark-only, not production-ready)
 - `tensor_parallel/` - Tensor parallelism utilities (experimental)
-- `fp8/` - FP8 BitLinear variant (experimental)
 
 **Models** (`src/wrinklefree/models/`):
 - `bitlinear.py` - BitLinear layer with STE quantization (ternary weights)

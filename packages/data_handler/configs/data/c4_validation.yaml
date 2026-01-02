@@ -7,11 +7,15 @@
 name: c4_validation
 
 # Single-source mode (no influence mixing needed for eval)
+# Using explicit data_files to fix HuggingFace streaming issues
+# Reference: https://github.com/huggingface/datasets/issues/5574
 dataset:
   path: allenai/c4
-  name: en
   split: validation
   streaming: true
+  # Explicit data_files fixes streaming FileNotFoundError
+  data_files:
+    validation: "en/c4-validation.*.json.gz"
 
 preprocessing:
   max_length: 2048

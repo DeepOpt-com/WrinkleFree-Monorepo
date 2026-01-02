@@ -210,6 +210,27 @@ class ObjectiveManager(nn.Module):
             weight = self.base_weights.get(name, 1.0)
             logger.info(f"  - {name}: weight={weight}, {obj.extra_repr()}")
 
+        # Validate objective compatibility
+        self._validate_objective_compatibility()
+
+    def _validate_objective_compatibility(self) -> None:
+        """Check for incompatible objective combinations and warn."""
+        # Check for DLM + logits_distill with shift_labels (incompatible)
+        has_dlm = "dlm" in self.objectives
+        has_logits_distill = "logits_distill" in self.objectives
+
+        if has_dlm and has_logits_distill:
+            logits_distill = self.objectives["logits_distill"]
+            # Check if shift_labels is True (default for AR-to-AR distillation)
+            shift_labels = getattr(logits_distill, "shift_labels", True)
+            if shift_labels:
+                logger.warning(
+                    "Incompatible objectives detected: 'dlm' + 'logits_distill' with shift_labels=True. "
+                    "AR-style logits distillation with token shifting is incompatible with DLM's "
+                    "masked prediction paradigm. Consider using 'tcs_distill' instead (no shifting), "
+                    "or disable one of the objectives."
+                )
+
     @property
     def requires_teacher(self) -> bool:
         """Whether any objective requires teacher outputs."""
@@ -239,8 +260,9 @@ class ObjectiveManager(nn.Module):
     def preprocess_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Apply all objective preprocessing to batch.
 
-        Objectives with modifies_input=True get to modify the batch.
-        If multiple objectives modify inputs, they are applied in order.
+        Objectives with modifies_input=True get to modify the batch,
+        but ONLY if their current weight is > 0. This prevents DLM from
+        masking inputs during warmup phases when DLM weight is 0.
 
         Args:
             batch: Input batch dictionary
@@ -251,9 +273,17 @@ class ObjectiveManager(nn.Module):
         if not self._has_input_modifiers:
             return batch
 
+        # Get current weights to check which objectives are active
+        weights = self.get_current_weights()
+
         for name, obj in self.objectives.items():
             if obj.modifies_input:
-                batch = obj.preprocess_batch(batch)
+                # Only apply preprocessing if objective weight > 0
+                obj_weight = weights.get(name, self.base_weights.get(name, 1.0))
+                if obj_weight > 0:
+                    batch = obj.preprocess_batch(batch)
+                else:
+                    logger.debug(f"Skipping {name} preprocessing (weight=0)")
 
         return batch
 
@@ -357,3 +387,4 @@ class ObjectiveManager(nn.Module):
     # 2. Custom keys (_objectives, _curriculum) cause Lightning checkpoint issues
     # 3. Objectives and curriculum can be recreated from config
     # 4. Curriculum step is synced via set_current_step() from Lightning's global_step
+

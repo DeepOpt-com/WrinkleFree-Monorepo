@@ -212,3 +212,4 @@ def create_objective_manager(
         weights=weights,
         curriculum=curriculum,
     )
+

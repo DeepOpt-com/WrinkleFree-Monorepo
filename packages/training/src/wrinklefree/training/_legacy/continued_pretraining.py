@@ -45,7 +45,7 @@ from wrinklefree.distillation import (
 # Teachers for distillation objectives
 from wrinklefree.teachers import HiddenStateTeacher
 from wrinklefree.training.fsdp_wrapper import setup_distributed, wrap_model_fsdp
-from wrinklefree.training.trainer import Trainer, create_optimizer, create_scheduler
+from wrinklefree.training._legacy.trainer import Trainer, create_optimizer, create_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -1002,36 +1002,6 @@ def run_stage2(
     # Move model to device with uniform dtype (required for FSDP)
     # FSDP requires all tensors to have the same dtype before wrapping
     model = model.to(device=device, dtype=torch.bfloat16)
-
-    # Apply FP8 GEMM acceleration if configured and supported (DeepSeek-V3 style)
-    # This must happen BEFORE FSDP wrapping
-    fp8_cfg = getattr(config, "fp8", None)
-    if fp8_cfg is not None and getattr(fp8_cfg, "enabled", False):
-        from wrinklefree._experimental.fp8 import convert_bitlinear_to_fp8
-        from wrinklefree.quantization.fp8_gemm import (
-            FP8Capability,
-            FP8Config,
-            detect_fp8_capability,
-            log_fp8_config,
-        )
-
-        fp8_config = FP8Config(
-            enabled=True,
-            recipe=getattr(fp8_cfg, "recipe", "rowwise"),
-            accumulator_dtype=getattr(fp8_cfg, "accumulator_dtype", "float32"),
-            min_gemm_size=getattr(fp8_cfg, "min_gemm_size", 512),
-            exclude_patterns=tuple(getattr(fp8_cfg, "exclude_patterns", [])),
-        )
-
-        # Log FP8 configuration
-        log_fp8_config(fp8_config)
-
-        capability = detect_fp8_capability()
-        if capability != FP8Capability.NONE:
-            logger.info("Applying FP8 GEMM acceleration to BitLinear layers")
-            model = convert_bitlinear_to_fp8(model, fp8_config)
-        else:
-            logger.warning("FP8 requested but hardware does not support it, using BF16")
 
     # Apply torch.compile for performance (30-50% speedup)
     # Only for single GPU - FSDP has its own compilation strategy

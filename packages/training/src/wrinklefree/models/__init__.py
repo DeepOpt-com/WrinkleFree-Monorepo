@@ -7,16 +7,6 @@ from wrinklefree.models.bitlinear import (
     convert_linear_to_bitlinear,
 )
 
-# FP8 is experimental - use optional import
-try:
-    from wrinklefree._experimental.fp8 import (
-        FP8BitLinear,
-        convert_bitlinear_to_fp8,
-    )
-except ImportError:
-    FP8BitLinear = None  # type: ignore
-    convert_bitlinear_to_fp8 = None  # type: ignore
-
 from wrinklefree.models.config import (
     BITNET_CONFIGS,
     BitNetConfig,
@@ -34,9 +24,6 @@ __all__ = [
     "BitLinear",
     "BitLinearNoActivationQuant",
     "convert_linear_to_bitlinear",
-    # FP8 acceleration (DeepSeek-V3 style)
-    "FP8BitLinear",
-    "convert_bitlinear_to_fp8",
     "SubLN",
     "RMSNorm",
     # Attention

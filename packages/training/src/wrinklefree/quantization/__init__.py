@@ -5,13 +5,6 @@ from wrinklefree.quantization.activation_quant import (
     activation_quantization_per_tensor,
     activation_quantization_per_token,
 )
-from wrinklefree.quantization.fp8_gemm import (
-    FP8Capability,
-    FP8Config,
-    detect_fp8_capability,
-    log_fp8_config,
-    should_use_fp8_for_layer,
-)
 from wrinklefree.quantization.lambda_warmup import (
     LambdaWarmup,
     get_current_lambda,
@@ -42,10 +35,4 @@ __all__ = [
     "get_current_lambda",
     "get_global_lambda_warmup",
     "set_global_lambda_warmup",
-    # FP8 GEMM (DeepSeek-V3 style)
-    "FP8Config",
-    "FP8Capability",
-    "detect_fp8_capability",
-    "should_use_fp8_for_layer",
-    "log_fp8_config",
 ]

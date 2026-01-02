@@ -58,7 +58,7 @@ pub use radix_cache::{RadixCache, RadixCacheConfig, EvictionPolicy, MatchResult,
 pub use radix_tree::{RadixTreeNode, TokenVec};
 
 // DLM (Diffusion LLM) API - Fast-dLLM v2 block diffusion inference
-pub use dlm_config::{DlmConfig, MaskTokenDetectionResult};
+pub use dlm_config::{DlmConfig, DlmDecodeMode, MaskTokenDetectionResult};
 pub use dlm_scheduler::{
     DlmScheduler, DlmSchedulerConfig, DlmSchedulerHandle, DlmSchedulerStats,
     LatencyStats, LatencyPercentiles, softmax, argmax, confidence_for_argmax,

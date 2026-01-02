@@ -382,9 +382,18 @@ class LambdaWarmupCallback(Callback):
         batch: dict[str, Any],
         batch_idx: int,
     ) -> None:
-        """Step lambda warmup after each batch."""
+        """Step lambda warmup only on optimizer steps (not every batch).
+
+        CRITICAL: With gradient accumulation, on_train_batch_end fires for
+        every micro-batch. We only want to step lambda on actual optimizer
+        steps to prevent warmup from completing 16x too fast.
+        """
         if self._lambda_warmup is not None:
-            self._lambda_warmup.step()
+            # Only step on optimizer steps (when gradient accumulation completes)
+            # batch_idx+1 because batch_idx is 0-indexed
+            accum_steps = trainer.accumulate_grad_batches
+            if (batch_idx + 1) % accum_steps == 0:
+                self._lambda_warmup.step()
 
             if trainer.is_global_zero:
                 pl_module.log(

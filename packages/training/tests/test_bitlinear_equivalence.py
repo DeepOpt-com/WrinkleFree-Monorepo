@@ -90,7 +90,7 @@ class TestStage1Conversion:
     def test_conversion_creates_sequential_wrappers(self):
         """Verify Stage 1 wraps o_proj and down_proj in Sequential(SubLN, BitLinear)."""
         from transformers import AutoModelForCausalLM
-        from wrinklefree.training.stage1 import convert_model_to_bitnet
+        from wrinklefree.training._legacy.stage1 import convert_model_to_bitnet
 
         # Load small model
         model = AutoModelForCausalLM.from_pretrained(

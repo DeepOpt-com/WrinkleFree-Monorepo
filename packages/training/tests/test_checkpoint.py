@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
 
-from wrinklefree.training.trainer import Trainer, create_optimizer, create_scheduler
+from wrinklefree.training._legacy.trainer import Trainer, create_optimizer, create_scheduler
 
 
 class SimpleModel(nn.Module):

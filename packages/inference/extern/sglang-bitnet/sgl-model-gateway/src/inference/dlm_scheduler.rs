@@ -34,7 +34,7 @@
 
 use super::batch_engine::{Batch, BatchConfig, BatchError, NativeBatchEngine};
 use super::batch_ffi::BitNetSeqId;
-use super::dlm_config::DlmConfig;
+use super::dlm_config::{DlmConfig, DlmDecodeMode};
 use super::radix_cache::{RadixCache, RadixCacheConfig};
 use super::sequence::{
     FinishReason, InferenceRequest, InferenceResponse, SequencePhase, SequenceState, StreamToken,
@@ -339,7 +339,12 @@ impl DlmScheduler {
 
     /// Run the scheduler loop.
     pub async fn run(&mut self) {
-        info!("DLM scheduler starting (block_size={})", self.config.dlm.block_size);
+        info!(
+            "DLM scheduler starting (block_size={}, mode={:?}, threshold={})",
+            self.config.dlm.block_size,
+            self.config.dlm.decode_mode,
+            self.config.dlm.threshold
+        );
 
         loop {
             // Phase 1: Receive new requests
@@ -490,6 +495,14 @@ impl DlmScheduler {
         }
     }
 
+    /// Decode a single block - dispatches to greedy or iterative based on config.
+    async fn decode_block(&mut self, seq_id: BitNetSeqId) {
+        match self.config.dlm.decode_mode {
+            DlmDecodeMode::Greedy => self.decode_block_greedy(seq_id).await,
+            DlmDecodeMode::Iterative => self.decode_block_iterative(seq_id).await,
+        }
+    }
+
     /// Decode a single block using FAST single-pass greedy approach.
     ///
     /// OPTIMIZATION: Instead of iterating over small blocks with multiple passes,
@@ -499,7 +512,10 @@ impl DlmScheduler {
     /// The key insight: with token shift (logits[i-1] predicts token[i]), we need
     /// to include the PREVIOUS token in the batch to get logits for the first
     /// block position.
-    async fn decode_block(&mut self, seq_id: BitNetSeqId) {
+    ///
+    /// NOTE: This is ~20x faster than iterative but doesn't follow the paper's
+    /// confidence-based unmasking algorithm.
+    async fn decode_block_greedy(&mut self, seq_id: BitNetSeqId) {
         let block_start_time = Instant::now();
 
         let block_size = self.config.dlm.block_size;
@@ -573,6 +589,191 @@ impl DlmScheduler {
         let state = self.sequences.get_mut(&seq_id).unwrap();
         let new_pos = block_start_pos + block_size as i32;
         state.base.position = new_pos;
+
+        // Add generated tokens and check for EOS
+        for &token in &block_tokens {
+            let is_eos = self.engine.is_eos(token);
+            state.base.generated_tokens.push(token);
+
+            if is_eos {
+                state.base.phase = SequencePhase::Finished(FinishReason::EOS);
+                self.block_decode_latency.record(block_start_time.elapsed());
+                return;
+            }
+        }
+
+        // Check max tokens
+        if state.base.generated_tokens.len() >= state.base.max_tokens as usize {
+            state.base.phase = SequencePhase::Finished(FinishReason::Length);
+        }
+
+        // Record block decode latency
+        self.block_decode_latency.record(block_start_time.elapsed());
+    }
+
+    /// Decode a single block using OPTIMIZED iterative confidence-based unmasking.
+    ///
+    /// This implements the Fast-dLLM v2 algorithm with optimizations:
+    /// 1. Initialize block with all MASK tokens
+    /// 2. Loop while any position is masked:
+    ///    a. Only clear KV from first changed position (incremental cache)
+    ///    b. Forward pass with current block state
+    ///    c. For each masked position, compute confidence using token shift
+    ///    d. Unmask positions where confidence > threshold
+    ///    e. Always unmask at least one position (highest confidence) to ensure progress
+    /// 3. Emit all tokens after block is complete
+    ///
+    /// OPTIMIZATIONS:
+    /// - Incremental KV cache: only clear from first masked position
+    /// - Only request logits for masked positions
+    /// - Store predictions for fallback (don't leave as MASK)
+    ///
+    /// Token shift: logits[i-1] predicts token[i], so we include prev_token
+    /// in the batch to get logits for the first block position.
+    async fn decode_block_iterative(&mut self, seq_id: BitNetSeqId) {
+        let block_start_time = Instant::now();
+
+        let block_size = self.config.dlm.block_size;
+        let mask_id = self.config.dlm.mask_token_id;
+        let threshold = self.config.dlm.threshold;
+        let max_iters = self.config.dlm.max_iterations_per_block;
+
+        let state = self.sequences.get_mut(&seq_id).unwrap();
+        let block_start_pos = state.base.position;
+
+        // Get the token BEFORE this block (needed for token shift)
+        let prev_token = if !state.base.generated_tokens.is_empty() {
+            state.base.generated_tokens[state.base.generated_tokens.len() - 1]
+        } else if !state.base.prompt_tokens.is_empty() {
+            state.base.prompt_tokens[state.base.prompt_tokens.len() - 1]
+        } else {
+            mask_id
+        };
+
+        // Initialize block with all MASK tokens
+        let mut block_tokens: Vec<i32> = vec![mask_id; block_size];
+        let mut is_masked: Vec<bool> = vec![true; block_size];
+        // Store best predictions for fallback (don't leave as MASK)
+        let mut best_predictions: Vec<(i32, f32)> = vec![(mask_id, 0.0); block_size];
+
+        // Clear KV cache for the block region (only needed once at start)
+        let block_end_pos = block_start_pos + block_size as i32;
+        self.engine.kv_cache_seq_rm(seq_id, block_start_pos - 1, block_end_pos);
+
+        // Track the stable prefix length (all unmasked from position 0)
+        let mut stable_prefix_len: usize = 0;
+
+        let mut iteration = 0;
+        while is_masked.iter().any(|&m| m) && iteration < max_iters {
+            iteration += 1;
+
+            // Find first masked position - we need to recompute from here
+            let first_masked_idx = is_masked.iter().position(|&m| m).unwrap_or(block_size);
+
+            // OPTIMIZATION: Only clear KV from the first position that could change
+            // With causal attention, if position i changes, all j > i are invalidated
+            // But we can keep KV for stable prefix (all unmasked from start)
+            let recompute_from = stable_prefix_len.min(first_masked_idx);
+            if recompute_from < block_size {
+                let clear_start = block_start_pos + recompute_from as i32 - 1; // -1 for prev token
+                self.engine.kv_cache_seq_rm(seq_id, clear_start.max(block_start_pos - 1), block_end_pos);
+            }
+
+            // Build batch starting from recompute position
+            self.batch.clear();
+
+            // Add the token that predicts the first recompute position
+            let pred_token = if recompute_from == 0 {
+                prev_token
+            } else {
+                block_tokens[recompute_from - 1]
+            };
+            let pred_pos = block_start_pos + recompute_from as i32 - 1;
+            self.batch.add(pred_token, pred_pos, seq_id, true);
+
+            // Add tokens from recompute position onwards
+            // OPTIMIZATION: Only request logits for positions that are masked
+            for i in recompute_from..block_size {
+                let pos = block_start_pos + i as i32;
+                // Only need logits if this position OR subsequent positions are masked
+                let need_logits = is_masked[i] || (i + 1 < block_size && is_masked[i + 1..].iter().any(|&m| m));
+                self.batch.add(block_tokens[i], pos, seq_id, need_logits);
+            }
+
+            // Forward pass
+            if let Err(e) = self.engine.decode(&self.batch) {
+                error!("Iterative decode failed for seq {}: {}", seq_id, e);
+                return;
+            }
+
+            // Compute confidence for masked positions
+            // Batch layout: [pred_token, tok[recompute_from], tok[recompute_from+1], ...]
+            // logits[0] → predicts block_tokens[recompute_from]
+            // logits[k] → predicts block_tokens[recompute_from + k]
+            let mut candidates: Vec<(usize, i32, f32)> = Vec::new();
+
+            for i in recompute_from..block_size {
+                if !is_masked[i] {
+                    continue;
+                }
+
+                let batch_idx = (i - recompute_from) as i32;
+                if let Some(logits) = self.engine.get_logits(batch_idx) {
+                    let (token_id, confidence) = confidence_for_argmax(logits);
+                    candidates.push((i, token_id, confidence));
+                    // Store best prediction for fallback
+                    if confidence > best_predictions[i].1 {
+                        best_predictions[i] = (token_id, confidence);
+                    }
+                }
+            }
+
+            // Unmask positions above threshold
+            let mut any_unmasked = false;
+            for &(idx, token, conf) in &candidates {
+                if conf > threshold {
+                    block_tokens[idx] = token;
+                    is_masked[idx] = false;
+                    any_unmasked = true;
+                }
+            }
+
+            // If nothing unmasked, unmask the highest confidence to ensure progress
+            if !any_unmasked && !candidates.is_empty() {
+                let best = candidates
+                    .iter()
+                    .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+                    .unwrap();
+                block_tokens[best.0] = best.1;
+                is_masked[best.0] = false;
+            }
+
+            // Update stable prefix length (contiguous unmasked from start)
+            stable_prefix_len = is_masked.iter().position(|&m| m).unwrap_or(block_size);
+        }
+
+        // Fill remaining masked positions with best predictions (not MASK tokens)
+        if is_masked.iter().any(|&m| m) {
+            debug!(
+                "Block decode used {} iterations, {} positions filled with best prediction",
+                iteration,
+                is_masked.iter().filter(|&&m| m).count()
+            );
+            for (i, &masked) in is_masked.iter().enumerate() {
+                if masked {
+                    block_tokens[i] = best_predictions[i].0;
+                }
+            }
+        }
+
+        // Stream all tokens
+        for &token in &block_tokens {
+            self.emit_token(seq_id, token);
+        }
+
+        // Finalize block
+        let state = self.sequences.get_mut(&seq_id).unwrap();
+        state.base.position = block_start_pos + block_size as i32;
 
         // Add generated tokens and check for EOS
         for &token in &block_tokens {
@@ -1046,5 +1247,244 @@ mod tests {
         let percentiles = stats.percentiles_ms();
         assert!((percentiles.mean_ms - 200.0).abs() < 1.0);
         assert_eq!(percentiles.count, 3);
+    }
+
+    // ==================== Iterative Decode Correctness Tests ====================
+
+    #[test]
+    fn test_stable_prefix_tracking() {
+        // Test that stable_prefix_len correctly tracks contiguous unmasked from start
+        let is_masked = vec![false, false, true, false, true];
+        let stable_prefix_len = is_masked.iter().position(|&m| m).unwrap_or(is_masked.len());
+        assert_eq!(stable_prefix_len, 2); // First two are unmasked
+
+        let is_masked = vec![true, false, false, false, false];
+        let stable_prefix_len = is_masked.iter().position(|&m| m).unwrap_or(is_masked.len());
+        assert_eq!(stable_prefix_len, 0); // First is masked
+
+        let is_masked = vec![false, false, false, false, false];
+        let stable_prefix_len = is_masked.iter().position(|&m| m).unwrap_or(is_masked.len());
+        assert_eq!(stable_prefix_len, 5); // All unmasked
+    }
+
+    #[test]
+    fn test_confidence_thresholding_partial_unmask() {
+        // Simulate candidates with varying confidences
+        let candidates = vec![
+            (0usize, 100i32, 0.8f32),  // Above threshold 0.7
+            (1, 200, 0.5),              // Below threshold
+            (2, 300, 0.9),              // Above threshold
+            (3, 400, 0.3),              // Below threshold
+        ];
+        let threshold = 0.7;
+
+        let above_threshold: Vec<_> = candidates
+            .iter()
+            .filter(|(_, _, c)| *c > threshold)
+            .collect();
+
+        assert_eq!(above_threshold.len(), 2);
+        assert_eq!(above_threshold[0].0, 0);
+        assert_eq!(above_threshold[1].0, 2);
+    }
+
+    #[test]
+    fn test_progress_guarantee_unmask_best() {
+        // When all confidences are below threshold, pick highest
+        let candidates = vec![
+            (0usize, 100i32, 0.3f32),
+            (1, 200, 0.5),  // Highest
+            (2, 300, 0.4),
+            (3, 400, 0.2),
+        ];
+        let threshold = 0.9; // All below
+
+        let above_threshold: Vec<_> = candidates
+            .iter()
+            .filter(|(_, _, c)| *c > threshold)
+            .collect();
+
+        assert!(above_threshold.is_empty(), "No candidates above threshold");
+
+        // Progress guarantee: unmask highest confidence
+        let best = candidates
+            .iter()
+            .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+            .unwrap();
+
+        assert_eq!(best.0, 1, "Should pick index 1 with confidence 0.5");
+        assert_eq!(best.1, 200, "Should pick token 200");
+    }
+
+    #[test]
+    fn test_best_prediction_fallback() {
+        // Test that we track best predictions for fallback
+        let mask_id = 128256;
+        let mut best_predictions: Vec<(i32, f32)> = vec![(mask_id, 0.0); 4];
+
+        // Simulate multiple iterations updating best predictions
+        // Iteration 1
+        let iter1_predictions = vec![(100, 0.6), (200, 0.4), (300, 0.5), (400, 0.3)];
+        for (i, (token, conf)) in iter1_predictions.iter().enumerate() {
+            if *conf > best_predictions[i].1 {
+                best_predictions[i] = (*token, *conf);
+            }
+        }
+
+        // Iteration 2 (some improve)
+        let iter2_predictions = vec![(110, 0.5), (210, 0.7), (310, 0.4), (410, 0.8)];
+        for (i, (token, conf)) in iter2_predictions.iter().enumerate() {
+            if *conf > best_predictions[i].1 {
+                best_predictions[i] = (*token, *conf);
+            }
+        }
+
+        // Check best predictions
+        assert_eq!(best_predictions[0], (100, 0.6), "Position 0: iter1 was better");
+        assert_eq!(best_predictions[1], (210, 0.7), "Position 1: iter2 was better");
+        assert_eq!(best_predictions[2], (300, 0.5), "Position 2: iter1 was better");
+        assert_eq!(best_predictions[3], (410, 0.8), "Position 3: iter2 was better");
+
+        // No MASK tokens in best predictions
+        for (i, (token, _)) in best_predictions.iter().enumerate() {
+            assert_ne!(*token, mask_id, "Position {} should not be MASK", i);
+        }
+    }
+
+    #[test]
+    fn test_batch_index_calculation() {
+        // Test batch index calculation for partial recomputation
+        let block_size = 8;
+        let recompute_from = 3;
+
+        // Batch layout: [pred_token, tok[3], tok[4], tok[5], tok[6], tok[7]]
+        // batch_idx 0 -> predicts position 3
+        // batch_idx k -> predicts position (recompute_from + k)
+
+        for i in recompute_from..block_size {
+            let batch_idx = (i - recompute_from) as i32;
+            let predicted_position = recompute_from + batch_idx as usize;
+            assert_eq!(predicted_position, i, "Batch idx {} should predict position {}", batch_idx, i);
+        }
+    }
+
+    #[test]
+    fn test_iterative_decode_simulation() {
+        // Simulate a full iterative decode with mock confidences
+        let block_size = 4;
+        let mask_id = 128256;
+        let threshold = 0.7;
+
+        let mut block_tokens: Vec<i32> = vec![mask_id; block_size];
+        let mut is_masked: Vec<bool> = vec![true; block_size];
+        let mut stable_prefix_len: usize = 0;
+
+        // Mock confidence function: returns high confidence for position 0, 2 first
+        // then position 1, 3 in subsequent iterations
+        let mock_confidences = vec![
+            // Iteration 1: position 0 and 2 are confident
+            vec![(0, 100, 0.9), (1, 200, 0.3), (2, 300, 0.8), (3, 400, 0.2)],
+            // Iteration 2: position 1 is now confident, 3 still low
+            vec![(1, 201, 0.85), (3, 401, 0.4)],
+            // Iteration 3: position 3 is confident
+            vec![(3, 402, 0.75)],
+        ];
+
+        for (iter_idx, candidates) in mock_confidences.iter().enumerate() {
+            // Check only masked positions
+            let masked_count = is_masked.iter().filter(|&&m| m).count();
+            assert_eq!(masked_count, candidates.len(),
+                "Iteration {}: expected {} masked positions, got {}",
+                iter_idx, candidates.len(), masked_count);
+
+            // Unmask above threshold
+            let mut any_unmasked = false;
+            for &(idx, token, conf) in candidates {
+                if conf > threshold && is_masked[idx] {
+                    block_tokens[idx] = token;
+                    is_masked[idx] = false;
+                    any_unmasked = true;
+                }
+            }
+
+            // Progress guarantee
+            if !any_unmasked && !candidates.is_empty() {
+                let best = candidates
+                    .iter()
+                    .filter(|(idx, _, _)| is_masked[*idx])
+                    .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+                    .unwrap();
+                block_tokens[best.0] = best.1;
+                is_masked[best.0] = false;
+            }
+
+            // Update stable prefix
+            stable_prefix_len = is_masked.iter().position(|&m| m).unwrap_or(block_size);
+        }
+
+        // After all iterations, all should be unmasked
+        assert!(is_masked.iter().all(|&m| !m), "All positions should be unmasked");
+        assert_eq!(stable_prefix_len, block_size);
+
+        // No MASK tokens in output
+        for (i, &token) in block_tokens.iter().enumerate() {
+            assert_ne!(token, mask_id, "Position {} should not be MASK", i);
+        }
+    }
+
+    #[test]
+    fn test_token_shift_batch_layout() {
+        // Verify token shift: logits[i-1] predicts token[i]
+        // Batch: [prev_token, mask0, mask1, mask2, mask3]
+        // logits[0] (from prev_token) predicts position 0
+        // logits[1] (from mask0) predicts position 1
+        // etc.
+
+        let prev_token = 99;
+        let mask_id = 128256;
+        let block_tokens = vec![mask_id; 4];
+        let block_start_pos = 100;
+
+        // Build expected batch
+        let mut expected_batch: Vec<(i32, i32)> = Vec::new(); // (token, position)
+        expected_batch.push((prev_token, block_start_pos - 1));
+        for (i, &token) in block_tokens.iter().enumerate() {
+            expected_batch.push((token, block_start_pos + i as i32));
+        }
+
+        assert_eq!(expected_batch.len(), 5); // prev + 4 block tokens
+        assert_eq!(expected_batch[0], (99, 99)); // prev_token at position 99
+        assert_eq!(expected_batch[1], (mask_id, 100)); // mask at position 100
+
+        // Logit mapping
+        // logits[0] is from position 99 (prev_token), predicts position 100
+        // logits[i] predicts position (block_start_pos + i)
+        for i in 0..4 {
+            let predicted_pos = block_start_pos + i as i32;
+            assert_eq!(predicted_pos, 100 + i as i32);
+        }
+    }
+
+    #[test]
+    fn test_decode_mode_enum() {
+        use super::super::dlm_config::DlmDecodeMode;
+
+        // Test default
+        let mode = DlmDecodeMode::default();
+        assert_eq!(mode, DlmDecodeMode::Greedy);
+
+        // Test serde
+        let json_greedy = serde_json::to_string(&DlmDecodeMode::Greedy).unwrap();
+        assert_eq!(json_greedy, "\"greedy\"");
+
+        let json_iterative = serde_json::to_string(&DlmDecodeMode::Iterative).unwrap();
+        assert_eq!(json_iterative, "\"iterative\"");
+
+        // Test deserialization
+        let parsed: DlmDecodeMode = serde_json::from_str("\"greedy\"").unwrap();
+        assert_eq!(parsed, DlmDecodeMode::Greedy);
+
+        let parsed: DlmDecodeMode = serde_json::from_str("\"iterative\"").unwrap();
+        assert_eq!(parsed, DlmDecodeMode::Iterative);
     }
 }

@@ -275,14 +275,25 @@ def _create_single_source_dataloader(
     path = dataset_config["path"]
     name = dataset_config.get("name")
     split = dataset_config.get("split", "train")
+    data_files = dataset_config.get("data_files")  # Optional: explicit file paths
+
     logger.info(f"Loading single-source dataset: {path} (subset={name}, split={split})")
     start = time.time()
-    ds = load_dataset(
-        path,
-        name=name,
-        split=split,
-        streaming=True,
-    )
+
+    # Use data_files if specified (fixes HuggingFace C4 streaming issues)
+    # Reference: https://github.com/huggingface/datasets/issues/5574
+    load_kwargs = {
+        "path": path,
+        "split": split,
+        "streaming": True,
+    }
+    if data_files:
+        load_kwargs["data_files"] = data_files
+        logger.info(f"Using explicit data_files: {data_files}")
+    elif name:
+        load_kwargs["name"] = name
+
+    ds = load_dataset(**load_kwargs)
     elapsed = time.time() - start
     logger.info(f"Dataset loaded in {elapsed:.1f}s")
 

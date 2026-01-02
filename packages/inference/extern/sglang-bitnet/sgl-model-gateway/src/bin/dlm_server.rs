@@ -32,7 +32,7 @@ use tracing::{error, info, warn};
 
 #[cfg(feature = "native-inference")]
 use sgl_model_gateway::inference::{
-    BatchConfig, BatchSamplingParams, DlmConfig, DlmScheduler, DlmSchedulerConfig,
+    BatchConfig, BatchSamplingParams, DlmConfig, DlmDecodeMode, DlmScheduler, DlmSchedulerConfig,
     DlmSchedulerHandle, InferenceRequest, NativeBatchEngine,
 };
 
@@ -91,6 +91,8 @@ pub struct DlmSettings {
     pub mask_token_id: Option<i32>,
     /// Maximum iterations per block (safety limit)
     pub max_iterations_per_block: usize,
+    /// Decode mode: "greedy" (fast, ~120 tok/s) or "iterative" (correct per paper)
+    pub decode_mode: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -134,10 +136,11 @@ impl Default for DlmSettings {
     fn default() -> Self {
         Self {
             block_size: 32, // Must match training (Fast-dLLM v2 default)
-            threshold: 0.95,
+            threshold: 0.7, // Good balance: 89% of greedy speed with iterative correctness
             small_block_size: 8,
             mask_token_id: None, // Auto-detect
             max_iterations_per_block: 10,
+            decode_mode: "greedy".to_string(), // Fast mode by default
         }
     }
 }
@@ -176,6 +179,17 @@ impl ServerConfig {
     pub fn example_yaml() -> String {
         let config = Self::default();
         serde_yaml::to_string(&config).unwrap_or_default()
+    }
+}
+
+#[cfg(feature = "native-inference")]
+impl DlmSettings {
+    /// Parse decode_mode string to DlmDecodeMode enum.
+    pub fn parse_decode_mode(&self) -> DlmDecodeMode {
+        match self.decode_mode.to_lowercase().as_str() {
+            "iterative" | "iter" => DlmDecodeMode::Iterative,
+            _ => DlmDecodeMode::Greedy, // Default to greedy for speed
+        }
     }
 }
 
@@ -524,6 +538,7 @@ async fn main() {
                 .with_threshold(config.dlm.threshold)
                 .with_small_block_size(config.dlm.small_block_size)
                 .with_max_iterations(config.dlm.max_iterations_per_block)
+                .with_decode_mode(config.dlm.parse_decode_mode())
         } else {
             // Auto-detect DLM model with diagnostics
             let detection = DlmConfig::detect_with_diagnostics(&engine);
@@ -541,6 +556,7 @@ async fn main() {
                         .with_threshold(config.dlm.threshold)
                         .with_small_block_size(config.dlm.small_block_size)
                         .with_max_iterations(config.dlm.max_iterations_per_block)
+                        .with_decode_mode(config.dlm.parse_decode_mode())
                 }
                 None => {
                     // Print detailed diagnostic error
