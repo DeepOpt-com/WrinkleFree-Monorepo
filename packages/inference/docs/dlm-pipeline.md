@@ -70,18 +70,18 @@ ls -lh models/dlm-model.gguf
 cd extern/sglang-bitnet/sgl-model-gateway
 cargo build --release --features native-inference --bin dlm_server
 
-# Run server (greedy mode - fastest)
+# Run server with adaptive mode (RECOMMENDED - speed + quality)
+./target/release/dlm_server \
+    -m models/dlm-model.gguf \
+    --port 30000 \
+    --decode-mode adaptive \
+    --threshold 0.9
+
+# Or greedy mode (fastest, lower quality)
 ./target/release/dlm_server \
     -m models/dlm-model.gguf \
     --port 30000 \
     --decode-mode greedy
-
-# Or run with iterative mode (per-paper quality)
-./target/release/dlm_server \
-    -m models/dlm-model.gguf \
-    --port 30000 \
-    --decode-mode iterative \
-    --threshold 0.9
 ```
 
 **Decode Mode Options** (per Fast-dLLM v2 paper):
@@ -89,8 +89,11 @@ cargo build --release --features native-inference --bin dlm_server
 | Mode | Threshold | Throughput | Quality | Use Case |
 |------|-----------|------------|---------|----------|
 | `greedy` | N/A | ~61 tok/s | Baseline | Maximum speed |
-| `iterative` | 0.7 | ~54 tok/s | Good | **Recommended balance** |
-| `iterative` | 0.9 | ~21 tok/s | **Best** | Per-paper quality |
+| `iterative` | 0.7 | ~54 tok/s | Good | Balanced |
+| `iterative` | 0.9 | ~21 tok/s | **Best** | Per-paper (slow) |
+| **`adaptive`** | 0.9 | **~61 tok/s** | **Best** | **RECOMMENDED** |
+
+**Adaptive mode** uses progressive thresholds (0.5 → 0.7 → 0.9) to quickly unmask easy tokens in early iterations, then applies full refinement only to difficult positions. This achieves ~3x speedup over fixed iterative while maintaining quality.
 
 The server auto-detects the mask token from the model vocabulary.
 

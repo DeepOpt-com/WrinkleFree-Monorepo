@@ -103,7 +103,7 @@ run: |
     training.max_steps=${MAX_STEPS} \
     training.checkpoint.save_interval=${SAVE_INTERVAL} \
     training.auto_batch_size=false \
-    training.objectives.dlm.enabled=false \
+    training.objectives.dlm.enabled=true \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
     training.logging.wandb.enabled=true \
@@ -144,6 +144,29 @@ run: |
     echo "✓ GCS UPLOADS: PASSED"
   else
     echo "✗ GCS UPLOADS: FAILED - No checkpoints in GCS!"
+    exit 1
+  fi
+
+  # Check dlm_config.json
+  echo ""
+  echo "[DLM CONFIG] Checking dlm_config.json..."
+  if [ -f "$CHECKPOINT_DIR/checkpoints/dlm_config.json" ]; then
+    echo "✓ DLM CONFIG: PASSED"
+    cat "$CHECKPOINT_DIR/checkpoints/dlm_config.json"
+  else
+    echo "✗ DLM CONFIG: FAILED - dlm_config.json not found!"
+    find $CHECKPOINT_DIR -name "dlm_config.json" -type f || echo "No dlm_config.json anywhere"
+    exit 1
+  fi
+
+  # Check GCS dlm_config.json
+  echo ""
+  echo "[GCS DLM CONFIG] Checking GCS dlm_config.json upload..."
+  DLM_GCS_COUNT=$(gsutil ls -r "gs://${GCS_BUCKET}/checkpoints/${EXPERIMENT_NAME}/" 2>/dev/null | grep -c "dlm_config.json" || echo "0")
+  if [ "$DLM_GCS_COUNT" -gt 0 ]; then
+    echo "✓ GCS DLM CONFIG: PASSED"
+  else
+    echo "✗ GCS DLM CONFIG: FAILED - dlm_config.json not in GCS!"
     exit 1
   fi
 

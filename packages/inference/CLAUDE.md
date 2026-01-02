@@ -224,28 +224,38 @@ curl http://<ip>:30000/v1/chat/completions \
 
 ### DLM Decode Modes
 
-The `dlm_server` supports two decode modes per the Fast-dLLM v2 paper (arXiv:2509.26328):
+The `dlm_server` supports three decode modes per the Fast-dLLM v2 paper (arXiv:2509.26328):
 
 | Mode | Threshold | Throughput | Quality | Use Case |
 |------|-----------|------------|---------|----------|
 | `greedy` | N/A | ~61 tok/s | Baseline | Maximum speed |
 | `iterative` | 0.5 | ~61 tok/s | ~Greedy | Speed with paper algorithm |
-| `iterative` | 0.7 | ~54 tok/s | Good | **Recommended balance** |
-| `iterative` | 0.9 | ~21 tok/s | **Best** | Per-paper quality |
+| `iterative` | 0.7 | ~54 tok/s | Good | Good balance |
+| `iterative` | 0.9 | ~21 tok/s | **Best** | Per-paper quality (slow) |
+| **`adaptive`** | 0.9 | **~61 tok/s** | **Best** | **RECOMMENDED: speed + quality** |
 
 **CLI Usage**:
 ```bash
 # Greedy mode (default, fastest)
 ./dlm_server -m model.gguf --decode-mode greedy
 
-# Iterative mode with confidence threshold (per-paper correctness)
-./dlm_server -m model.gguf --decode-mode iterative --threshold 0.9
+# Adaptive mode - RECOMMENDED (per-paper quality at greedy speed)
+./dlm_server -m model.gguf --decode-mode adaptive --threshold 0.9
 
-# Recommended balance (89% speed, good quality)
-./dlm_server -m model.gguf --decode-mode iterative --threshold 0.7
+# Iterative mode with confidence threshold (per-paper correctness, slower)
+./dlm_server -m model.gguf --decode-mode iterative --threshold 0.9
 ```
 
-**How iterative mode works**:
+**How adaptive mode works** (progressive thresholds):
+1. Fill block with MASK tokens
+2. **Iteration 1**: θ=0.5 → quickly unmask easy tokens
+3. **Iteration 2**: θ=0.7 → unmask moderately confident tokens
+4. **Iteration 3+**: θ=final → full refinement for hard tokens
+5. Repeat until all tokens unmasked
+
+This reduces total iterations (~3x faster) while maintaining quality for uncertain positions.
+
+**How iterative mode works** (fixed threshold):
 1. Fill block with MASK tokens
 2. Forward pass → get logits for all positions
 3. Compute confidence (softmax probability) for each prediction

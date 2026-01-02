@@ -43,7 +43,7 @@ envs:
   MODEL: smollm2_135m
   TRAINING_CONFIG: lrc_dlm_influence
   TOTAL_TOKENS: 1000000000  # 1B tokens
-  EXPERIMENT_NAME: lrc_dlm_v13_dlm_preproc_fix
+  EXPERIMENT_NAME: bitnet_adamw_ckpt_fix
   WANDB_PROJECT: wrinklefree
   WANDB_RUN_ID: lrc-dlm-${SKYPILOT_TASK_ID}
   HF_HUB_ENABLE_HF_TRANSFER: "1"

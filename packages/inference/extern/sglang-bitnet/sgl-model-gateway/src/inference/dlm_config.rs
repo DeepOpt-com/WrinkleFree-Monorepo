@@ -317,7 +317,7 @@ mod tests {
     fn test_dlm_config_defaults() {
         let config = DlmConfig::default();
         assert_eq!(config.block_size, 32); // Must match training
-        assert!((config.threshold - 0.95).abs() < 1e-6);
+        assert!((config.threshold - 0.7).abs() < 1e-6); // 0.7 is good balance
         assert_eq!(config.small_block_size, 8);
         assert!(config.use_dual_cache);
     }

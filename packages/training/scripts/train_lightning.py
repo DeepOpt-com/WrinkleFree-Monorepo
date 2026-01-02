@@ -288,13 +288,26 @@ def create_callbacks(cfg: DictConfig) -> list:
         )
     )
 
-    # GCS upload
+    # GCS upload with DLM config
     if cfg.get("gcs", {}).get("enabled", False):
+        # Build DLM config for inference compatibility
+        dlm_cfg = cfg.training.get("objectives", {}).get("dlm", {})
+        dlm_config = None
+        if dlm_cfg.get("enabled", False):
+            dlm_config = {
+                "mask_token_id": dlm_cfg.get("mask_token_id", 0),
+                "mask_prob": dlm_cfg.get("mask_prob", 0.15),
+                "ignore_index": dlm_cfg.get("ignore_index", -100),
+                "training_method": cfg.training.get("stage", "unified-dlm"),
+            }
+            logger.info(f"DLM config for inference: {dlm_config}")
+
         callbacks.append(
             GCSCheckpointCallback(
                 bucket=cfg.gcs.bucket,
                 experiment_name=cfg.get("experiment_name", "default"),
                 stage="lightning",
+                dlm_config=dlm_config,
             )
         )
 
