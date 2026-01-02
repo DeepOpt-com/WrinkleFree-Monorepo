@@ -1,26 +1,26 @@
-# LRC + DLM + CE Training with Influence-Based Data Remixing
+# BitNet + DLM + CE Training with Influence-Based Data Remixing
 #
 # Combines:
-# - Low-Rank Correction (LRC) for post-quantization recovery
+# - BitNet 1.58-bit quantization (ternary weights {-1, 0, 1})
 # - Diffusion Language Model (DLM) masking objective
 # - Standard cross-entropy loss (continue_pretrain)
 # - Influence-based dataset weight optimization
 #
 # Curriculum:
-# - First 20%: warmup on fineweb-edu (CE + LRC, no DLM)
-# - Remaining 80%: mixed_pretrain with influence remixing (CE + DLM + LRC)
+# - First 20%: warmup on fineweb-edu (CE only, no DLM)
+# - Remaining 80%: mixed_pretrain with influence remixing (CE + DLM)
 #
 # Usage:
 #   uv run python scripts/train_lightning.py \
 #     model=smollm2_135m training=lrc_dlm_influence
 #
-stage: lrc_dlm_influence
+stage: bitnet_dlm_influence
 
-# LRC configuration - enable low-rank correction matrices
+# LRC configuration - DISABLED (using pure BitNet)
 lrc:
-  enabled: true
-  rank_percentage: 0.1  # 10% rank for ~20% additional params
-  init_method: zeros    # or "svd_residual" for better init
+  enabled: false
+  rank_percentage: 0.1
+  init_method: zeros
 
 # Auto-convert to BitNet if not already converted
 auto_convert:
@@ -127,8 +127,8 @@ teacher:
   use_flash_attention: false
 
 # === CURRICULUM ===
-# First 20%: warmup on fineweb-edu (CE + LRC, no DLM)
-# Remaining 80%: mixed_pretrain with influence (CE + DLM + LRC)
+# First 20%: warmup on fineweb-edu (CE only, no DLM)
+# Remaining 80%: mixed_pretrain with influence (CE + DLM)
 curriculum:
   enabled: true
   interpolation: linear
@@ -181,7 +181,7 @@ logging:
     project: wrinklefree
     entity: null
     name: null
-    tags: [lrc, dlm, influence, smollm2]
+    tags: [bitnet, dlm, influence, smollm2]
 
 # Early stopping disabled for exploration
 early_stopping:

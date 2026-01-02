@@ -1,14 +1,14 @@
-# LRC + DLM + CE Training with Influence-Based Remixing (1x L40)
+# BitNet + DLM + CE Training with Influence-Based Remixing (1x L40)
 #
 # SmolLM2-135M training run with:
-# - Low-Rank Correction (LRC) for quantization recovery
+# - BitNet 1.58-bit quantization (ternary weights {-1, 0, 1})
 # - Diffusion Language Model (DLM) objective
 # - Standard cross-entropy loss
 # - Influence-based dataset weight optimization
 #
 # Curriculum:
-# - First 20%: fineweb-edu warmup (CE + LRC)
-# - Remaining 80%: mixed_pretrain with influence (CE + DLM + LRC)
+# - First 20%: fineweb-edu warmup (CE only)
+# - Remaining 80%: mixed_pretrain with influence (CE + DLM)
 #
 # Usage:
 #   cd packages/deployer
