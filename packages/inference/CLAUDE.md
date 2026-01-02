@@ -222,6 +222,38 @@ curl http://<ip>:30000/v1/chat/completions \
 
 **For DLM checkpoints, always use `dlm_server`** - it implements the block diffusion algorithm that makes DLM fast.
 
+### DLM Decode Modes
+
+The `dlm_server` supports two decode modes per the Fast-dLLM v2 paper (arXiv:2509.26328):
+
+| Mode | Threshold | Throughput | Quality | Use Case |
+|------|-----------|------------|---------|----------|
+| `greedy` | N/A | ~61 tok/s | Baseline | Maximum speed |
+| `iterative` | 0.5 | ~61 tok/s | ~Greedy | Speed with paper algorithm |
+| `iterative` | 0.7 | ~54 tok/s | Good | **Recommended balance** |
+| `iterative` | 0.9 | ~21 tok/s | **Best** | Per-paper quality |
+
+**CLI Usage**:
+```bash
+# Greedy mode (default, fastest)
+./dlm_server -m model.gguf --decode-mode greedy
+
+# Iterative mode with confidence threshold (per-paper correctness)
+./dlm_server -m model.gguf --decode-mode iterative --threshold 0.9
+
+# Recommended balance (89% speed, good quality)
+./dlm_server -m model.gguf --decode-mode iterative --threshold 0.7
+```
+
+**How iterative mode works**:
+1. Fill block with MASK tokens
+2. Forward pass → get logits for all positions
+3. Compute confidence (softmax probability) for each prediction
+4. Unmask tokens above threshold (or at least one for progress)
+5. Repeat until all tokens unmasked
+
+Higher threshold = more iterations = more refinement = better quality.
+
 ### Convert DLM Checkpoint to GGUF (CRITICAL)
 
 **WARNING: DLM checkpoints have PACKED 2-bit weights that require special handling!**

@@ -47,14 +47,23 @@ Iterative mode: O(iterations) forward passes per block (until all unmasked)
   - Uses confidence thresholding to progressively unmask tokens
   - Always unmasks at least one token per iteration to ensure progress
 
-### Benchmark Results (GCP c3d-standard-32, 20 iterations, 64 max tokens)
+### Benchmark Results (GCP c3d-standard-32, 30 iterations, 64 max tokens)
 
 | Mode | Threshold | Throughput | % of Greedy | Notes |
 |------|-----------|------------|-------------|-------|
-| **Greedy** | N/A | 60.81 tok/s | 100% | Single-pass argmax |
-| **Iterative** | 0.5 | 60.58 tok/s | 99.6% | Nearly all tokens unmask in 1 pass |
-| **Iterative** | 0.7 | 54.12 tok/s | 89.0% | **Recommended balance** |
-| **Iterative** | 0.9 | 20.37 tok/s | 33.5% | Per-paper quality |
+| **Greedy** | N/A | 60.75 tok/s | 100% | Single-pass argmax |
+| **Iterative** | 0.5 | 60.81 tok/s | 100% | Nearly all tokens unmask in 1 pass |
+| **Iterative** | 0.7 | 54.35 tok/s | 89.5% | **Recommended balance** |
+| **Iterative** | 0.9 | 20.51 tok/s | 33.8% | Per-paper quality |
+
+**CLI Usage**:
+```bash
+# Greedy mode (default, fastest)
+./dlm_server -m model.gguf --decode-mode greedy
+
+# Iterative mode with confidence threshold
+./dlm_server -m model.gguf --decode-mode iterative --threshold 0.7
+```
 
 **Key optimizations for iterative mode:**
 - Incremental KV cache: only clear from first masked position

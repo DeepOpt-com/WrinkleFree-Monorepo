@@ -14,13 +14,19 @@ use super::batch_engine::NativeBatchEngine;
 pub enum DlmDecodeMode {
     /// Single-pass greedy decode (FAST but doesn't follow paper).
     /// Uses one forward pass per block with argmax for all positions.
-    /// ~120 tok/s on c3d-standard-32, but may produce lower quality output.
+    /// ~60 tok/s on c3d-standard-32, but may produce lower quality output.
     #[default]
     Greedy,
     /// Iterative refinement with confidence thresholding (CORRECT per paper).
     /// Multiple forward passes per block, unmasking tokens above threshold.
     /// Slower but follows the Fast-dLLM v2 algorithm correctly.
     Iterative,
+    /// Adaptive threshold that increases with iterations (FAST + QUALITY).
+    /// - Iteration 1: θ=0.5 (unmask easy tokens quickly)
+    /// - Iteration 2: θ=0.7 (unmask moderately confident)
+    /// - Iteration 3+: θ=final_threshold (full refinement for hard tokens)
+    /// This reduces total iterations while maintaining quality for uncertain positions.
+    Adaptive,
 }
 
 /// Configuration for Diffusion LLM inference.

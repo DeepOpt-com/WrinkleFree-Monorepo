@@ -34,16 +34,12 @@ fp8:
 packing:
   enabled: true
 
-# Optimization (MuonClip for BitNet stability)
+# Optimization (8-bit AdamW for memory efficiency)
 optimizer:
-  type: muonclip
-  lr_muon: 0.005  # Muon LR for hidden weights
-  lr_adam: 5e-5   # AdamW LR for embeddings, norms, lm_head
+  type: adamw
+  learning_rate: 5e-5
   weight_decay: 0.0
-  momentum: 0.95
-  enable_clipping: true
-  clipping_threshold: 50.0
-  clipping_alpha: 0.5
+  use_8bit: true  # Uses bitsandbytes AdamW8bit (set false for standard AdamW)
 
 scheduler:
   type: wsd  # Warmup-Stable-Decay

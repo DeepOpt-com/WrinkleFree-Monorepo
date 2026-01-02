@@ -188,6 +188,7 @@ impl DlmSettings {
     pub fn parse_decode_mode(&self) -> DlmDecodeMode {
         match self.decode_mode.to_lowercase().as_str() {
             "iterative" | "iter" => DlmDecodeMode::Iterative,
+            "adaptive" | "adapt" => DlmDecodeMode::Adaptive,
             _ => DlmDecodeMode::Greedy, // Default to greedy for speed
         }
     }
@@ -419,6 +420,12 @@ fn parse_config() -> ServerConfig {
                 config.dlm.mask_token_id = args.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
             }
+            "--decode-mode" => {
+                if let Some(v) = args.get(i + 1) {
+                    config.dlm.decode_mode = v.clone();
+                }
+                i += 2;
+            }
             "--benchmark" => {
                 config.benchmark.enabled = true;
                 i += 1;
@@ -464,9 +471,10 @@ fn parse_config() -> ServerConfig {
                 println!();
                 println!("DLM Options:");
                 println!("  --block-size N           Block size for parallel decode (default: 32)");
-                println!("  --threshold F            Confidence threshold 0-1 (default: 0.95)");
+                println!("  --threshold F            Confidence threshold 0-1 (default: 0.7)");
                 println!("  --small-block-size N     Sub-block size (default: 8)");
                 println!("  --mask-token-id ID       Override mask token ID");
+                println!("  --decode-mode MODE       greedy | iterative | adaptive");
                 println!();
                 println!("Scheduler Options:");
                 println!("  --max-sequences N        Max concurrent sequences (default: 16)");
@@ -499,6 +507,7 @@ async fn main() {
     info!("Max sequences: {}", config.scheduler.max_sequences);
     info!("Block size: {} (small: {})", config.dlm.block_size, config.dlm.small_block_size);
     info!("Threshold: {}", config.dlm.threshold);
+    info!("Decode mode: {}", config.dlm.decode_mode);
 
     #[cfg(feature = "native-inference")]
     {

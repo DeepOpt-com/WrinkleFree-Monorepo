@@ -271,15 +271,20 @@ def create_callbacks(cfg: DictConfig) -> list:
             callbacks.append(MuonClipInitCallback())
             logger.info("MuonClipInitCallback added (required for BatchSizeFinder + MuonClip)")
 
-    # Checkpointing - save_top_k=-1 for step-based saves (keeps all, cleanup via GCS callback)
+    # Checkpointing - save every N steps
+    save_interval = cfg.training.checkpoint.get("save_interval", 500)
+    checkpoint_dir = Path(cfg.output_dir) / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Checkpoint dir: {checkpoint_dir}, save_interval: {save_interval}")
+
     callbacks.append(
         ModelCheckpoint(
-            dirpath=cfg.output_dir,
-            filename="checkpoint-{step}",
-            save_top_k=-1,  # Keep all step-based checkpoints (no metric monitoring)
-            every_n_train_steps=cfg.training.checkpoint.get("save_interval", 1000),
+            dirpath=str(checkpoint_dir),
+            filename="step_{step:06d}",
+            save_top_k=-1,  # Keep all checkpoints
+            every_n_train_steps=save_interval,
             save_last=True,
-            save_on_train_epoch_end=False,  # We use step-based checkpointing
+            verbose=True,  # Log when saving
         )
     )
 

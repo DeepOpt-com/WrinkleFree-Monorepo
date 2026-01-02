@@ -75,15 +75,14 @@ class MuonClipInitCallback(Callback):
 class GCSCheckpointCallback(Callback):
     """Upload checkpoints to Google Cloud Storage.
 
-    Uploads checkpoints to GCS after each save, using the same path structure
-    as the existing training pipeline.
+    Uploads checkpoints to GCS after each save for fault tolerance.
+    Long training runs MUST upload checkpoints - losing hours of GPU
+    time to a crash is unacceptable.
 
     Args:
         bucket: GCS bucket name (e.g., "wrinklefree-checkpoints")
         experiment_name: Experiment name for path organization
         stage: Training stage name (e.g., "lightning", "stage2")
-        upload_final: Whether to upload final checkpoint
-        upload_interval: Upload every N checkpoints (0 = only final)
     """
 
     def __init__(
@@ -91,39 +90,52 @@ class GCSCheckpointCallback(Callback):
         bucket: str,
         experiment_name: str = "default",
         stage: str = "lightning",
-        upload_final: bool = True,
-        upload_interval: int = 0,
     ):
         super().__init__()
         self.bucket = bucket
         self.experiment_name = experiment_name
         self.stage = stage
-        self.upload_final = upload_final
-        self.upload_interval = upload_interval
-        self._checkpoint_count = 0
+        self._last_uploaded_path: Optional[str] = None
 
-    def on_save_checkpoint(
+    def on_train_batch_end(
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
-        checkpoint: dict[str, Any],
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
     ) -> None:
-        """Called when checkpoint is being saved."""
-        self._checkpoint_count += 1
+        """Check for new checkpoints after each batch and upload."""
+        if not trainer.is_global_zero:
+            return
+
+        # Get latest checkpoint path
+        ckpt_callback = trainer.checkpoint_callback
+        if ckpt_callback is None:
+            return
+
+        ckpt_path = ckpt_callback.last_model_path
+        if not ckpt_path or ckpt_path == self._last_uploaded_path:
+            return
+
+        # New checkpoint saved - upload it
+        if Path(ckpt_path).exists():
+            step = trainer.global_step
+            self._upload_to_gcs(Path(ckpt_path), f"step_{step:06d}")
+            self._last_uploaded_path = ckpt_path
 
     def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Upload final checkpoint to GCS."""
-        if not self.upload_final:
+        if not trainer.is_global_zero:
             return
 
-        if trainer.is_global_zero:
-            # Get the last checkpoint path from trainer
-            ckpt_path = trainer.checkpoint_callback.best_model_path
-            if not ckpt_path:
-                ckpt_path = trainer.checkpoint_callback.last_model_path
+        ckpt_callback = trainer.checkpoint_callback
+        if ckpt_callback is None:
+            return
 
-            if ckpt_path and Path(ckpt_path).exists():
-                self._upload_to_gcs(Path(ckpt_path), "final")
+        ckpt_path = ckpt_callback.last_model_path
+        if ckpt_path and Path(ckpt_path).exists():
+            self._upload_to_gcs(Path(ckpt_path), "final")
 
     def _upload_to_gcs(self, local_path: Path, checkpoint_type: str) -> bool:
         """Upload checkpoint to GCS using gsutil."""

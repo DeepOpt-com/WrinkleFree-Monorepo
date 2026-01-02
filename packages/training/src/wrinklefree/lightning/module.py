@@ -187,17 +187,31 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         """Configure optimizer and scheduler.
 
         Supports Muon (default) and AdamW optimizers.
+        AdamW uses 8-bit (bitsandbytes) by default for memory efficiency.
+        Set optimizer.use_8bit=false to use standard AdamW.
         """
         optimizer_type = self.optimizer_cfg.get("type", "muonclip")
         learning_rate = self.optimizer_cfg.get("learning_rate", 1e-4)
         weight_decay = self.optimizer_cfg.get("weight_decay", 0.1)
+        use_8bit = self.optimizer_cfg.get("use_8bit", True)
 
         if optimizer_type.lower() == "muonclip":
             optimizer = self._create_muon_optimizer(learning_rate, weight_decay)
         elif optimizer_type.lower() == "adamw_8bit":
+            # Explicit 8-bit request (backwards compat)
             optimizer = self._create_adamw_8bit_optimizer(learning_rate, weight_decay)
+        elif optimizer_type.lower() in ("adamw", "adam"):
+            # AdamW: use 8-bit by default, configurable via use_8bit
+            if use_8bit:
+                optimizer = self._create_adamw_8bit_optimizer(learning_rate, weight_decay)
+            else:
+                optimizer = self._create_adamw_optimizer(learning_rate, weight_decay)
         else:
-            optimizer = self._create_adamw_optimizer(learning_rate, weight_decay)
+            # Fallback for unknown types
+            if use_8bit:
+                optimizer = self._create_adamw_8bit_optimizer(learning_rate, weight_decay)
+            else:
+                optimizer = self._create_adamw_optimizer(learning_rate, weight_decay)
 
         # Create scheduler if configured
         scheduler_config = None
@@ -369,17 +383,24 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         return optimizer
 
     def _create_adamw_8bit_optimizer(self, learning_rate: float, weight_decay: float):
-        """Create 8-bit AdamW optimizer via bitsandbytes."""
-        import bitsandbytes as bnb
+        """Create 8-bit AdamW optimizer via bitsandbytes.
 
-        optimizer = bnb.optim.AdamW8bit(
-            self.model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            betas=(0.9, 0.95),
-        )
-        logger.info(f"Created AdamW 8-bit optimizer: lr={learning_rate:.2e}")
-        return optimizer
+        Falls back to standard AdamW if bitsandbytes is not available.
+        """
+        try:
+            import bitsandbytes as bnb
+
+            optimizer = bnb.optim.AdamW8bit(
+                self.model.parameters(),
+                lr=learning_rate,
+                weight_decay=weight_decay,
+                betas=(0.9, 0.95),
+            )
+            logger.info(f"Created AdamW 8-bit optimizer: lr={learning_rate:.2e}")
+            return optimizer
+        except ImportError:
+            logger.warning("bitsandbytes not available, falling back to standard AdamW")
+            return self._create_adamw_optimizer(learning_rate, weight_decay)
 
     def _create_adamw_optimizer(self, learning_rate: float, weight_decay: float):
         """Create standard AdamW optimizer."""

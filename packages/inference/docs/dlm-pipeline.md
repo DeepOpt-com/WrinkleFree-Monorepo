@@ -68,15 +68,29 @@ ls -lh models/dlm-model.gguf
 ```bash
 # Build if needed (see CLAUDE.md for full build instructions)
 cd extern/sglang-bitnet/sgl-model-gateway
-cargo build --release
+cargo build --release --features native-inference --bin dlm_server
 
-# Run server
+# Run server (greedy mode - fastest)
 ./target/release/dlm_server \
-    --model models/dlm-model.gguf \
+    -m models/dlm-model.gguf \
     --port 30000 \
-    --block-size 32 \
-    --threshold 0.95
+    --decode-mode greedy
+
+# Or run with iterative mode (per-paper quality)
+./target/release/dlm_server \
+    -m models/dlm-model.gguf \
+    --port 30000 \
+    --decode-mode iterative \
+    --threshold 0.9
 ```
+
+**Decode Mode Options** (per Fast-dLLM v2 paper):
+
+| Mode | Threshold | Throughput | Quality | Use Case |
+|------|-----------|------------|---------|----------|
+| `greedy` | N/A | ~61 tok/s | Baseline | Maximum speed |
+| `iterative` | 0.7 | ~54 tok/s | Good | **Recommended balance** |
+| `iterative` | 0.9 | ~21 tok/s | **Best** | Per-paper quality |
 
 The server auto-detects the mask token from the model vocabulary.
 
@@ -107,8 +121,10 @@ Parameters that can differ:
 |----------|-----------|-------|
 | `mask_prob=0.15` | N/A | Only affects training |
 | `use_complementary_masks=true` | N/A | Only affects training |
-| N/A | `block_size=32` | Tune for speed/quality |
-| N/A | `threshold=0.95` | Lower = faster, less quality |
+| N/A | `block_size=32` | Must match training block size |
+| N/A | `--decode-mode greedy` | Fast single-pass (~61 tok/s) |
+| N/A | `--decode-mode iterative` | Per-paper correctness |
+| N/A | `--threshold 0.9` | Higher = better quality, slower |
 
 ## Using the Python Client
 

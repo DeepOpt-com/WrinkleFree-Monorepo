@@ -1,0 +1,153 @@
+# Checkpoint Saving Smoke Test
+#
+# Quick test to verify:
+# 1. ModelCheckpoint saves .ckpt files locally
+# 2. GCS upload works after each checkpoint
+#
+# Usage:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/smoke_test_checkpoint.yaml -y --cluster ckpt-smoke
+
+name: wrinklefree-checkpoint-smoke
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  disk_size: 100
+  use_spot: false
+  cloud: nebius
+
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  MAX_STEPS: 25
+  SAVE_INTERVAL: 10  # Save every 10 steps
+  EXPERIMENT_NAME: checkpoint_smoke_test
+  WANDB_PROJECT: wrinklefree
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+  fi
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Install gcloud CLI
+  export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  if ! gcloud version &> /dev/null; then
+    echo "Installing Google Cloud SDK..."
+    rm -rf $HOME/google-cloud-sdk
+    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
+  fi
+
+  uv sync --all-packages
+
+  # Activate GCS credentials
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  gsutil ls gs://${GCS_BUCKET}/ > /dev/null 2>&1 || (echo "GCS access failed!" && exit 1)
+
+  # Verify WANDB_API_KEY
+  source /tmp/credentials.env
+  source /tmp/global.env
+  if [ -z "$WANDB_API_KEY" ]; then
+    echo "ERROR: WANDB_API_KEY not set!"
+    exit 1
+  fi
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$HOME/google-cloud-sdk/bin:$PATH"
+
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+  export WANDB_API_KEY="${WANDB_API_KEY}"
+
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  rm -rf $CHECKPOINT_DIR
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================"
+  echo "Checkpoint Saving Smoke Test"
+  echo "================================================"
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS"
+  echo "Save Interval: $SAVE_INTERVAL (expect checkpoint at step 10, 20)"
+  echo "Checkpoint Dir: $CHECKPOINT_DIR"
+  echo "================================================"
+
+  export DATA_NUM_WORKERS=2
+
+  echo "[Training] Starting Lightning training..."
+  PYTHONUNBUFFERED=1 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=lrc_dlm_influence \
+    training.max_steps=${MAX_STEPS} \
+    training.checkpoint.save_interval=${SAVE_INTERVAL} \
+    training.auto_batch_size=false \
+    training.objectives.dlm.enabled=false \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=${EXPERIMENT_NAME} \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.log_interval=5 \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    2>&1 | tee training.log
+
+  echo ""
+  echo "================================================"
+  echo "Checkpoint Verification"
+  echo "================================================"
+
+  # Check local checkpoints
+  echo ""
+  echo "[LOCAL] Checking local checkpoint directory..."
+  find $CHECKPOINT_DIR -name "*.ckpt" -type f 2>/dev/null
+  CKPT_COUNT=$(find $CHECKPOINT_DIR -name "*.ckpt" -type f 2>/dev/null | wc -l)
+  echo "Local checkpoint count: $CKPT_COUNT"
+
+  if [ "$CKPT_COUNT" -gt 0 ]; then
+    echo "✓ LOCAL CHECKPOINTS: PASSED"
+  else
+    echo "✗ LOCAL CHECKPOINTS: FAILED - No .ckpt files found!"
+    find $CHECKPOINT_DIR -type f | head -20
+    exit 1
+  fi
+
+  # Check GCS checkpoints
+  echo ""
+  echo "[GCS] Checking GCS checkpoint uploads..."
+  gsutil ls -r "gs://${GCS_BUCKET}/checkpoints/${EXPERIMENT_NAME}/" 2>&1 | head -20
+  GCS_COUNT=$(gsutil ls -r "gs://${GCS_BUCKET}/checkpoints/${EXPERIMENT_NAME}/" 2>/dev/null | grep -c ".ckpt" || echo "0")
+  echo "GCS checkpoint count: $GCS_COUNT"
+
+  if [ "$GCS_COUNT" -gt 0 ]; then
+    echo "✓ GCS UPLOADS: PASSED"
+  else
+    echo "✗ GCS UPLOADS: FAILED - No checkpoints in GCS!"
+    exit 1
+  fi
+
+  echo ""
+  echo "================================================"
+  echo "ALL CHECKPOINT TESTS PASSED!"
+  echo "================================================"
