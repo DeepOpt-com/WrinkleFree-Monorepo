@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 
-from wrinklefree.moe.router import MoERouter, TopKRouter, IdentityRouter
+from wrinklefree._experimental.moe.router import MoERouter, TopKRouter, IdentityRouter
 
 
 class BitLinear(nn.Linear):

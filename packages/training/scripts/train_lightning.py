@@ -49,6 +49,7 @@ from wrinklefree.lightning import (
     InfluenceTrackerCallback,
     LambdaWarmupCallback,
     QKClipCallback,
+    RunManagerCallback,
     TokenCountCallback,
     WrinkleFreeDataModule,
     WrinkleFreeLightningModule,
@@ -58,6 +59,75 @@ from wrinklefree.objectives import create_objective_manager
 from wrinklefree.teachers import HiddenStateTeacher
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_checkpoint_path(
+    cfg: DictConfig,
+    stage: str = "stage2",
+) -> Path | str | None:
+    """Resolve checkpoint path from local, GCS, or HuggingFace.
+
+    Priority:
+    1. Explicit checkpoint path in config (training.checkpoint.path or model.path)
+    2. Local checkpoint directory
+    3. GCS bucket download
+    4. HuggingFace Hub (model.pretrained_name or model.name)
+
+    Args:
+        cfg: Hydra config
+        stage: Training stage for GCS lookup (e.g., "stage1_9", "stage2")
+
+    Returns:
+        Path to checkpoint, HF model name, or None if not found
+    """
+    # Check for explicit checkpoint path
+    ckpt_path = cfg.training.get("checkpoint", {}).get("path")
+    if ckpt_path:
+        ckpt_path = Path(ckpt_path)
+        if ckpt_path.exists():
+            logger.info(f"Using explicit checkpoint: {ckpt_path}")
+            return ckpt_path
+
+    # Check for model.path (local safetensors)
+    model_path = cfg.model.get("path")
+    if model_path:
+        model_path = Path(model_path)
+        if model_path.exists():
+            logger.info(f"Using local model path: {model_path}")
+            return model_path
+
+    # Try GCS bucket
+    gcs_config = cfg.get("gcs", {})
+    if gcs_config.get("enabled", False):
+        bucket = gcs_config.get("bucket", "wrinklefree-checkpoints")
+        experiment_name = cfg.get("experiment_name", "default")
+        gcs_prefix = f"checkpoints/{experiment_name}"
+
+        try:
+            from wrinklefree.training import download_checkpoint_from_gcs
+
+            cache_dir = Path(cfg.output_dir) / ".checkpoint_cache"
+            gcs_path = download_checkpoint_from_gcs(
+                bucket_name=bucket,
+                stage=f"{stage}_checkpoint",
+                local_dir=cache_dir / stage,
+                prefix=gcs_prefix,
+            )
+            if gcs_path:
+                logger.info(f"Downloaded checkpoint from GCS: {gcs_path}")
+                return gcs_path
+        except ImportError:
+            logger.debug("GCS download not available (google-cloud-storage not installed)")
+        except Exception as e:
+            logger.warning(f"GCS checkpoint download failed: {e}")
+
+    # Fall back to HuggingFace Hub
+    hf_name = cfg.model.get("pretrained_name") or cfg.model.get("name")
+    if hf_name:
+        logger.info(f"Using HuggingFace model: {hf_name}")
+        return hf_name
+
+    return None
 
 
 def setup_logging(rank: int) -> None:
@@ -70,19 +140,33 @@ def setup_logging(rank: int) -> None:
 
 
 def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
-    """Load model and tokenizer from config."""
-    model_name = cfg.model.name
-    # Try 'path' first, then 'pretrained_name', fallback to name
-    model_path = cfg.model.get("path", cfg.model.get("pretrained_name", model_name))
+    """Load model and tokenizer from config.
+
+    Uses resolve_checkpoint_path for intelligent checkpoint resolution:
+    - Local path → GCS → HuggingFace Hub
+
+    Handles special stages:
+    - lrc_calibration: Converts BitLinear → BitLinearLRC and freezes non-LRC params
+    """
+    # Resolve checkpoint path (local > GCS > HuggingFace)
+    stage = cfg.training.get("stage", "stage2")
+    model_path = resolve_checkpoint_path(cfg, stage=stage)
+
+    # Fallback to model.name if nothing found
+    if model_path is None:
+        model_path = cfg.model.name
 
     logger.info(f"Loading model: {model_path}")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    # Convert Path to string for transformers compatibility
+    model_path_str = str(model_path) if isinstance(model_path, Path) else model_path
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path_str)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        model_path,
+        model_path_str,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
@@ -97,6 +181,37 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             exclude_layers=exclude_layers,
         )
         logger.info("Model converted to BitNet")
+
+    # Handle LRC calibration stage
+    if stage == "lrc_calibration":
+        try:
+            from bitnet_arch import convert_bitlinear_to_lrc, freeze_model_except_lrc
+
+            lrc_cfg = cfg.training.get("lrc", {})
+            rank_percentage = lrc_cfg.get("rank_percentage", 0.1)
+            init_method = lrc_cfg.get("init_method", "zeros")
+
+            logger.info(
+                f"LRC Calibration: Converting BitLinear → BitLinearLRC "
+                f"(rank={rank_percentage*100:.0f}%, init={init_method})"
+            )
+
+            model = convert_bitlinear_to_lrc(
+                model,
+                rank_percentage=rank_percentage,
+                init_method=init_method,
+            )
+
+            # Freeze all parameters except LRC matrices (U, V)
+            freeze_stats = freeze_model_except_lrc(model)
+            logger.info(
+                f"LRC: Trainable={freeze_stats['trainable']:,}, "
+                f"Frozen={freeze_stats['frozen']:,}"
+            )
+
+        except ImportError as e:
+            logger.error(f"LRC calibration requires bitnet_arch package: {e}")
+            raise
 
     return model, tokenizer
 
@@ -121,6 +236,15 @@ def load_teacher_model(cfg: DictConfig) -> HiddenStateTeacher | None:
 def create_callbacks(cfg: DictConfig) -> list:
     """Create Lightning callbacks from config."""
     callbacks = []
+
+    # Run manager for GCS auto-resume with fingerprinting
+    skip_recovery = cfg.get("skip_recovery", False)
+    run_manager_cb = RunManagerCallback(
+        config=cfg,
+        skip_recovery=skip_recovery,
+        skip_completed=cfg.get("resume", {}).get("skip_completed", True),
+    )
+    callbacks.append(run_manager_cb)
 
     # Auto batch size finder
     if cfg.training.get("auto_batch_size", False):

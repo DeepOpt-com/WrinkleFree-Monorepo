@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## CRITICAL Rules
 
-1. **USE LIGHTNING TRAINER**: Prefer `train_lightning.py` over legacy `train.py`
+1. **USE LIGHTNING TRAINER**: Use `train_lightning.py` (legacy `train.py` has been removed)
 2. **AUTO BATCH SIZE**: Always use `training.auto_batch_size=true` for new runs
 3. **SINGLE-GPU BUG**: Use `training.optimizer.type=adamw` on single GPU (muon_fsdp2 bug)
 4. **CLEAN CHECKPOINTS**: Before re-running failed jobs, clean `/tmp/checkpoints/` on remote
+5. **EXPERIMENTAL CODE**: MoE, TensorParallel, and FP8 are in `_experimental/` (not production-ready)
 
 ## Known Bugs
 
@@ -47,7 +48,7 @@ The old `distillation` package has been moved to `_legacy/distillation/`.
 
 **Running from monorepo root**:
 ```bash
-uv run --package wrinklefree python packages/training/scripts/train.py model=smollm2_135m training=stage2_pretrain
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py model=smollm2_135m training=unified
 ```
 
 ## Quick Start
@@ -57,12 +58,14 @@ uv run --package wrinklefree python packages/training/scripts/train.py model=smo
 uv sync
 
 # Run SmolLM2-135M training (smallest model, good for testing)
-uv run python scripts/train.py model=smollm2_135m training=stage1_subln
-uv run python scripts/train.py model=smollm2_135m training=stage1_9_layerwise data=fineweb
-uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain data=fineweb
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+
+# With auto batch size scaling
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+    training.auto_batch_size=true
 
 # Run larger models
-uv run python scripts/train.py model=qwen3_4b training=stage2_pretrain data=fineweb
+uv run python scripts/train_lightning.py model=qwen3_4b training=unified
 ```
 
 ## Training Pipeline
@@ -73,7 +76,7 @@ The `unified` config combines STE quantization training with DLM (Diffusion Lang
 
 ```bash
 # Combined STE + DLM training (GitHub Issue #2)
-uv run python scripts/train.py model=smollm2_135m training=unified data=mixed_pretrain
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified
 
 # Key features:
 # - Auto-converts model to BitNet if needed
@@ -111,7 +114,7 @@ curriculum:
 **Configurable Resume**:
 ```bash
 # Resume with fresh optimizer (new LR schedule)
-uv run python scripts/train.py training=unified \
+uv run python scripts/train_lightning.py training=unified \
   training.resume.checkpoint_path=gs://bucket/checkpoint.pt \
   training.resume.load_optimizer_state=false \
   training.resume.load_scheduler_state=false
@@ -238,7 +241,7 @@ Based on [Low-Rank Correction for Quantized LLMs](https://arxiv.org/abs/2412.079
 
 ```bash
 # Train LRC adapters on calibration data
-uv run python scripts/train.py model=smollm2_135m training=lrc_calibration data=fineweb
+uv run python scripts/train_lightning.py model=smollm2_135m training=lrc_calibration data=fineweb
 
 # Key features:
 # - Converts BitLinear -> BitLinearLRC (adds U, V matrices)
@@ -281,33 +284,33 @@ objectives:
 
 ```bash
 # Stage 1: SubLN Insertion (no actual training, just conversion)
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
   model=smollm2_135m \
   training=stage1_subln \
   distributed=single_gpu
 
 # Stage 1.9: Layer-wise Distillation (quick alignment, ~100M tokens)
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
   model=smollm2_135m \
   training=stage1_9_layerwise \
   data=fineweb \
   distributed=single_gpu
 
 # Stage 2: Continue Pre-training (~10B tokens)
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
   model=smollm2_135m \
   training=stage2_pretrain \
   data=fineweb \
   distributed=fsdp_multi
 
 # Stage 3: BitDistill (knowledge distillation via objectives)
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
   model=smollm2_135m \
   training=bitdistill_full \
   data=mixed_pretrain
 
 # LRC Calibration (post-quantization recovery)
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
   model=smollm2_135m \
   training=lrc_calibration \
   data=fineweb
@@ -317,19 +320,19 @@ uv run python scripts/train.py \
 
 ```bash
 # Limit training steps (for smoke tests)
-uv run python scripts/train.py model=smollm2_135m training=stage1_9_layerwise \
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage1_9_layerwise \
   training.max_steps=100
 
 # Change output directory
-uv run python scripts/train.py model=smollm2_135m training=stage1_9_layerwise \
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage1_9_layerwise \
   training.output_dir=/tmp/checkpoints
 
 # Disable wandb logging
-uv run python scripts/train.py model=smollm2_135m training=stage1_9_layerwise \
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage1_9_layerwise \
   training.logging.wandb.enabled=false
 
 # Multi-GPU with FSDP
-uv run python scripts/train.py model=qwen3_4b training=stage2_pretrain \
+uv run python scripts/train_lightning.py model=qwen3_4b training=stage2_pretrain \
   distributed=fsdp_multi
 ```
 
@@ -356,7 +359,7 @@ gs://{bucket}/checkpoints/{experiment_name}/{stage}_checkpoint/checkpoints/final
 
 **Enable GCS checkpointing**:
 ```bash
-uv run python scripts/train.py ... gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
+uv run python scripts/train_lightning.py ... gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
 ```
 
 ## Resume from Checkpoint
@@ -550,8 +553,12 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 - `auto_setup.py` - Auto-magic checkpoint resolution + BitNet conversion
 - `continued_pretraining.py` - ContinuedPretrainingTrainer with influence support
 - `fsdp_wrapper.py` - FSDP wrapping with activation checkpointing
-- `stage1.py` - Stage 1 SubLN insertion
-- `stage1_9.py` - Stage 1.9 layer-wise distillation
+- `stage1.py` - Stage 1 SubLN insertion (legacy, prefer bitnet_arch.auto_convert_if_needed)
+
+**Experimental** (`src/wrinklefree/_experimental/`):
+- `moe/` - Mixture of Experts (benchmark-only, not production-ready)
+- `tensor_parallel/` - Tensor parallelism utilities (experimental)
+- `fp8/` - FP8 BitLinear variant (experimental)
 
 **Models** (`src/wrinklefree/models/`):
 - `bitlinear.py` - BitLinear layer with STE quantization (ternary weights)
@@ -630,7 +637,7 @@ The repo includes MoE infrastructure for testing and training MoE variants of Bi
 
 ### Fake MoE Testing
 ```python
-from wrinklefree.moe import create_fake_moe_from_dense, verify_moe_matches_dense
+from wrinklefree._experimental.moe import create_fake_moe_from_dense, verify_moe_matches_dense
 
 # Convert dense model to MoE (all experts share weights, IdentityRouter)
 moe_model = create_fake_moe_from_dense(model, num_experts=8, top_k=2)
@@ -713,7 +720,7 @@ Q-Sparse adds activation sparsity for inference efficiency. Based on [arxiv:2407
 
 ```bash
 # Enable Q-Sparse (61% activation sparsity)
-uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain \
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage2_pretrain \
   training.activation_sparsity.enabled=true
 
 # Or via Modal
@@ -796,7 +803,7 @@ The `mixed_pretrain` config includes:
 
 **To use a different data config**, override `data.config_name`:
 ```bash
-uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain \
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage2_pretrain \
   data.config_name=fineweb  # Use data_handler's fineweb.yaml
 ```
 

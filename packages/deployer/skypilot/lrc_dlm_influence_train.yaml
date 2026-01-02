@@ -58,11 +58,21 @@ setup: |
     export PATH="$HOME/.cargo/bin:$PATH"
   fi
 
-  # Install dependencies
+  # Install gcloud CLI if not present
+  if ! command -v gcloud &> /dev/null; then
+    echo "Installing Google Cloud SDK..."
+    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
+    export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  fi
+
+  # Install dependencies (including muon-clip for single GPU training)
   uv sync --all-packages
+  # Install muon-clip from GitHub (required for MuonClip optimizer on single GPU)
+  uv pip install git+https://github.com/GAD-cell/muon-clip.git
 
   # Verify GCS access
   echo "Verifying GCS access..."
+  export PATH="$HOME/google-cloud-sdk/bin:$PATH"
   gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
   gsutil ls gs://${GCS_BUCKET}/ > /dev/null 2>&1 && echo "GCS access OK" || echo "WARNING: GCS access failed"
 
@@ -71,12 +81,14 @@ setup: |
 run: |
   set -e
   cd ~/sky_workdir
-  export PATH="$HOME/.cargo/bin:$PATH"
+  export PATH="$HOME/.cargo/bin:$HOME/google-cloud-sdk/bin:$PATH"
 
   # Load credentials
   source /tmp/credentials.env
   source /tmp/global.env
   export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+  # Explicitly export WANDB_API_KEY for subprocesses
+  export WANDB_API_KEY="${WANDB_API_KEY}"
 
   # Activate GCS credentials
   gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
@@ -86,6 +98,9 @@ run: |
   CHECKPOINT_DIR="/tmp/checkpoints"
   rm -rf $CHECKPOINT_DIR  # Clean previous runs
   mkdir -p $CHECKPOINT_DIR
+
+  # Debug: verify credentials
+  echo "WANDB_API_KEY length: ${#WANDB_API_KEY}"
 
   echo "================================================"
   echo "WrinkleFree LRC + DLM + Influence Training"

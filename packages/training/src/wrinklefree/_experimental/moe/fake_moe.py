@@ -19,7 +19,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from wrinklefree.moe.expert import BitNetExpertFFN, BitNetMoEFFN
+from wrinklefree._experimental.moe.expert import BitNetExpertFFN, BitNetMoEFFN
 
 
 @dataclass

@@ -1,4 +1,7 @@
-"""MoE (Mixture of Experts) module for WrinkleFree BitNet training.
+"""EXPERIMENTAL: MoE (Mixture of Experts) module for WrinkleFree BitNet training.
+
+WARNING: This module is experimental and not production-ready.
+APIs may change without notice.
 
 This module provides MoE components for training and converting MoE models to GGUF:
 - Routers: TopKRouter, IdentityRouter
@@ -6,19 +9,19 @@ This module provides MoE components for training and converting MoE models to GG
 - Conversion: FakeMoEConverter for testing
 """
 
-from wrinklefree.moe.router import (
+from wrinklefree._experimental.moe.router import (
     MoERouter,
     TopKRouter,
     IdentityRouter,
     compute_load_balancing_loss,
 )
-from wrinklefree.moe.expert import (
+from wrinklefree._experimental.moe.expert import (
     BitLinear,
     BitNetExpertFFN,
     BitNetMoEFFN,
     BitNetMoELayer,
 )
-from wrinklefree.moe.fake_moe import (
+from wrinklefree._experimental.moe.fake_moe import (
     FakeMoEConfig,
     FakeMoEConverter,
     create_fake_moe_from_dense,

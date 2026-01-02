@@ -12,6 +12,7 @@ from wrinklefree.lightning.callbacks import (
     InfluenceTrackerCallback,
     LambdaWarmupCallback,
     QKClipCallback,
+    RunManagerCallback,
     TokenCountCallback,
     ZClipCallback,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "InfluenceTrackerCallback",
     "LambdaWarmupCallback",
     "QKClipCallback",
+    "RunManagerCallback",
     "TokenCountCallback",
     "ZClipCallback",
 ]

@@ -452,7 +452,7 @@ def convert_dense_to_fake_moe_gguf(
     Returns:
         Path to converted file
     """
-    from wrinklefree.moe import create_fake_moe_from_dense
+    from wrinklefree._experimental.moe import create_fake_moe_from_dense
 
     # Convert to Fake MoE
     logger.info(f"Converting dense model to Fake MoE ({num_experts} experts, top-{top_k})")

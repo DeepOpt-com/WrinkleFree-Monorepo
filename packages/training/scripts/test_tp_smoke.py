@@ -180,7 +180,7 @@ def run_smoke_test(args):
     if rank == 0:
         logger.info("Applying 2D parallelism (TP + FSDP2)...")
 
-    from wrinklefree.training.tensor_parallel import setup_2d_parallel
+    from wrinklefree._experimental.tensor_parallel.tensor_parallel import setup_2d_parallel
 
     tp_size = args.tp_size if args.tp_size > 0 else world_size
     model, device_mesh = setup_2d_parallel(

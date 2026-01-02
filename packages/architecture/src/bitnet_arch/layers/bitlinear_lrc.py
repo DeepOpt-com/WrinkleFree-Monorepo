@@ -38,7 +38,8 @@ class BitLinearLRC(BitLinear):
     Extends BitLinear with trainable low-rank matrices U, V that correct
     quantization errors using unquantized activations.
 
-    CRITICAL: Only U and V are trainable. All other parameters are FROZEN.
+    By default, only U and V are trainable (weights frozen). Set trainable_weight=True
+    to enable gradient flow through quantized weights via STE for joint training.
 
     Args:
         in_features: Input dimension
@@ -48,6 +49,10 @@ class BitLinearLRC(BitLinear):
             Only used if rank is None. Default: 0.1 (10%)
         bias: Whether to use bias (typically False for BitNet)
         eps: Small constant for numerical stability
+        keep_original_weight: If False, delete original weight after quantization
+            to save memory. Default True for backward compatibility.
+        trainable_weight: If True, enable gradient flow through quantized weights
+            via STE for joint training. Uses more memory. Default False.
     """
 
     def __init__(
@@ -59,6 +64,7 @@ class BitLinearLRC(BitLinear):
         bias: bool = False,
         eps: float = 1e-5,
         keep_original_weight: bool = True,
+        trainable_weight: bool = False,
     ):
         super().__init__(in_features, out_features, bias=bias, eps=eps)
 
@@ -69,9 +75,10 @@ class BitLinearLRC(BitLinear):
         self.rank = rank
         self.rank_percentage = rank_percentage
         self.keep_original_weight = keep_original_weight
+        self.trainable_weight = trainable_weight
 
-        # CRITICAL: Freeze quantized weights - only LRC matrices should train
-        self.weight.requires_grad = False
+        # Freeze weights unless trainable_weight is True (for STE gradient flow)
+        self.weight.requires_grad = trainable_weight
         if self.bias is not None:
             self.bias.requires_grad = False
 
@@ -113,8 +120,11 @@ class BitLinearLRC(BitLinear):
 
         output = W_quant @ Q_a(X) + U @ V^T @ X
 
-        The quantized path uses frozen, pre-computed ternary weights.
-        The LRC path uses trainable full-precision matrices on unquantized activations.
+        When trainable_weight=False (default):
+            Uses pre-computed quantized weights (memory efficient, no weight gradients)
+
+        When trainable_weight=True:
+            Computes quantization on-the-fly with STE for gradient flow to weights
 
         Args:
             x: Input tensor of shape (..., in_features)
@@ -122,11 +132,16 @@ class BitLinearLRC(BitLinear):
         Returns:
             Output tensor of shape (..., out_features)
         """
-        # Use pre-computed quantized weights (cast to input dtype for mixed precision)
-        w_quant = self.weight_quantized.to(x.dtype)
+        if self.trainable_weight:
+            # Compute quantization on-the-fly with STE for gradient flow
+            w = self.weight.to(x.dtype)
+            w_quant = w + (self.weight_quant(w) - w).detach()  # STE
+            x_quant = x + (self.activation_quant(x) - x).detach()  # STE
+        else:
+            # Use pre-computed quantized weights (memory efficient)
+            w_quant = self.weight_quantized.to(x.dtype)
+            x_quant = self.activation_quant(x)
 
-        # Quantized path (frozen weights)
-        x_quant = self.activation_quant(x)
         quant_output = F.linear(x_quant, w_quant, self.bias)
 
         # Low-rank correction on UNQUANTIZED activations
@@ -182,12 +197,14 @@ def convert_bitlinear_to_lrc(
     init_method: str = "zeros",
     exclude_names: Optional[list[str]] = None,
     keep_original_weight: bool = True,
+    trainable_weight: bool = False,
 ) -> nn.Module:
     """
     Convert all BitLinear layers in a module to BitLinearLRC.
 
     This recursively replaces BitLinear layers with BitLinearLRC, preserving
-    weights and freezing them. Only the new LRC matrices (U, V) are trainable.
+    weights and freezing them. Only the new LRC matrices (U, V) are trainable
+    by default.
 
     Args:
         module: Module containing BitLinear layers
@@ -197,6 +214,8 @@ def convert_bitlinear_to_lrc(
         exclude_names: Layer names to exclude from conversion
         keep_original_weight: If False, delete original weights after
             quantization to save memory. Default True for compatibility.
+        trainable_weight: If True, enable gradient flow through quantized
+            weights via STE for joint training. Default False.
 
     Returns:
         Module with BitLinear layers replaced by BitLinearLRC
@@ -220,6 +239,7 @@ def convert_bitlinear_to_lrc(
                 bias=child.bias is not None,
                 eps=child.eps,
                 keep_original_weight=True,  # Temporary, may change below
+                trainable_weight=trainable_weight,
             )
 
             # Copy original weights (they will be frozen)
@@ -246,6 +266,7 @@ def convert_bitlinear_to_lrc(
                 init_method=init_method,
                 exclude_names=exclude_names,
                 keep_original_weight=keep_original_weight,
+                trainable_weight=trainable_weight,
             )
 
     return module

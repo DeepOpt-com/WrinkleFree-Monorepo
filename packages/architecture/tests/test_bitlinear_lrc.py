@@ -455,3 +455,112 @@ class TestPrecomputedQuantizedWeights:
 
         # Should count weight_quantized (128*64), not the empty weight
         assert stats["total_frozen_params"] == 128 * 64
+
+
+class TestTrainableWeight:
+    """Test trainable_weight option for STE gradient flow."""
+
+    def test_trainable_weight_false_by_default(self):
+        """Test that trainable_weight defaults to False."""
+        layer = BitLinearLRC(64, 32, rank=8)
+        assert layer.trainable_weight is False
+        assert not layer.weight.requires_grad
+
+    def test_trainable_weight_true_enables_grad(self):
+        """Test that trainable_weight=True enables weight gradients."""
+        layer = BitLinearLRC(64, 32, rank=8, trainable_weight=True)
+        assert layer.trainable_weight is True
+        assert layer.weight.requires_grad
+
+    def test_trainable_weight_gradient_flow(self):
+        """Test gradients flow to weights when trainable_weight=True."""
+        layer = BitLinearLRC(64, 32, rank=8, trainable_weight=True)
+        x = torch.randn(2, 8, 64, requires_grad=True)
+
+        output = layer(x)
+        loss = output.sum()
+        loss.backward()
+
+        # Gradients should flow to weight
+        assert layer.weight.grad is not None
+        # And still to LRC params
+        assert layer.lrc_U.grad is not None
+        assert layer.lrc_V.grad is not None
+
+    def test_trainable_weight_false_no_weight_grad(self):
+        """Test no gradients flow to weights when trainable_weight=False."""
+        layer = BitLinearLRC(64, 32, rank=8, trainable_weight=False)
+        x = torch.randn(2, 8, 64, requires_grad=True)
+
+        output = layer(x)
+        loss = output.sum()
+        loss.backward()
+
+        # No gradients to weight (frozen)
+        assert layer.weight.grad is None
+        # But LRC params still get gradients
+        assert layer.lrc_U.grad is not None
+        assert layer.lrc_V.grad is not None
+
+    def test_trainable_weight_uses_ste(self):
+        """Test that trainable_weight=True uses STE (on-the-fly quantization)."""
+        layer = BitLinearLRC(64, 32, rank=8, trainable_weight=True)
+        x = torch.randn(2, 8, 64)
+
+        # Modify weight - should affect output (STE uses weight, not cached)
+        output1 = layer(x).clone()
+
+        with torch.no_grad():
+            layer.weight.add_(0.1)
+
+        output2 = layer(x)
+
+        # Outputs should differ because STE uses weight directly
+        assert not torch.allclose(output1, output2)
+
+    def test_trainable_weight_false_uses_cached(self):
+        """Test that trainable_weight=False uses cached weight_quantized."""
+        layer = BitLinearLRC(64, 32, rank=8, trainable_weight=False)
+        x = torch.randn(2, 8, 64)
+
+        output1 = layer(x).clone()
+
+        # Modify weight (but NOT weight_quantized)
+        with torch.no_grad():
+            layer.weight.add_(0.1)
+
+        output2 = layer(x)
+
+        # Outputs should be identical (uses cached weight_quantized)
+        assert torch.allclose(output1, output2)
+
+    def test_convert_with_trainable_weight(self):
+        """Test conversion with trainable_weight=True."""
+        linear = BitLinear(128, 64)
+        model = nn.Sequential(linear)
+
+        model = convert_bitlinear_to_lrc(model, trainable_weight=True)
+
+        lrc_layer = model[0]
+        assert isinstance(lrc_layer, BitLinearLRC)
+        assert lrc_layer.trainable_weight is True
+        assert lrc_layer.weight.requires_grad
+
+    def test_trainable_weight_with_lrc_both_paths_work(self):
+        """Test that both quantized path and LRC path contribute when trainable."""
+        layer = BitLinearLRC(64, 32, rank=8, trainable_weight=True)
+        x = torch.randn(2, 8, 64)
+
+        # Set non-zero LRC
+        with torch.no_grad():
+            layer.lrc_U.normal_(std=0.1)
+            layer.lrc_V.normal_(std=0.1)
+
+        output = layer(x)
+        loss = output.sum()
+        loss.backward()
+
+        # All trainable params should have gradients
+        assert layer.weight.grad is not None
+        assert layer.lrc_U.grad is not None
+        assert layer.lrc_V.grad is not None

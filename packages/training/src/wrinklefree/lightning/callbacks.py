@@ -511,3 +511,221 @@ class InfluenceTrackerCallback(Callback):
         if self._tracker:
             return self._tracker.get_weight_history()
         return []
+
+
+class RunManagerCallback(Callback):
+    """GCS auto-resume with fingerprinting.
+
+    Manages the lifecycle of training runs including:
+    - Generating a fingerprint from config for run identification
+    - Checking for existing completed runs (skip if already done)
+    - Resuming from GCS checkpoint if available
+    - Updating run status (RUNNING → COMPLETED/FAILED)
+
+    This replaces the manual fingerprinting logic from the legacy train.py.
+
+    Args:
+        config: Full Hydra config (DictConfig or dict)
+        skip_recovery: If True, skip GCS auto-resume check
+        skip_completed: If True, exit early if run already completed
+
+    Example:
+        callbacks.append(RunManagerCallback(config=cfg))
+    """
+
+    def __init__(
+        self,
+        config,
+        skip_recovery: bool = False,
+        skip_completed: bool = True,
+    ):
+        super().__init__()
+        self.config = config
+        self.skip_recovery = skip_recovery
+        self.skip_completed = skip_completed
+        self._run_manager = None
+        self._fingerprint = None
+        self._should_skip = False
+        self._resume_checkpoint_path = None
+        self._resume_wandb_id = None
+
+    def setup(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        stage: str,
+    ) -> None:
+        """Initialize fingerprinting and check for existing runs."""
+        if stage != "fit":
+            return
+
+        rank = trainer.global_rank
+
+        # Only rank 0 handles GCS operations
+        if rank != 0:
+            return
+
+        try:
+            from wrinklefree.utils import (
+                AuditLogger,
+                RunManager,
+                RunStatus,
+                generate_fingerprint,
+            )
+            from omegaconf import OmegaConf
+        except ImportError:
+            logger.warning(
+                "RunManagerCallback: Required utilities not available, "
+                "auto-resume disabled"
+            )
+            return
+
+        # Generate fingerprint from config
+        self._fingerprint, fp_metadata = generate_fingerprint(self.config)
+        logger.info(f"Run fingerprint: {self._fingerprint[:16]}...")
+
+        # Warn if git is dirty
+        if fp_metadata.get("git_dirty", False):
+            logger.warning(
+                "Training with uncommitted git changes - results may not be reproducible"
+            )
+
+        # Get GCS config
+        if isinstance(self.config, dict):
+            gcs_config = self.config.get("gcs", {})
+        else:
+            gcs_config = OmegaConf.to_container(
+                self.config.get("gcs", {}), resolve=True
+            )
+
+        # Skip if GCS not enabled or recovery disabled
+        if not gcs_config.get("enabled", False) or self.skip_recovery:
+            if self.skip_recovery:
+                logger.info("Skip recovery mode: GCS auto-resume disabled")
+            return
+
+        # Initialize audit logger
+        audit_logger = AuditLogger(enabled=True)
+
+        try:
+            # Create run manager
+            output_dir = Path(self.config.get("output_dir", "/tmp/checkpoints"))
+            self._run_manager = RunManager(
+                fingerprint=self._fingerprint,
+                gcs_bucket=gcs_config.get("bucket", "wrinklefree-checkpoints"),
+                audit_logger=audit_logger,
+                fingerprint_metadata=fp_metadata,
+                gcs_prefix=gcs_config.get("experiment_prefix", "experiments"),
+                local_cache_dir=output_dir / ".fingerprint_cache",
+                rank=rank,
+            )
+
+            # Check for existing run
+            should_resume, ckpt_path, wandb_id = self._run_manager.check_and_resume()
+
+            # Handle already-completed runs
+            if self._run_manager.is_completed():
+                if self.skip_completed:
+                    logger.info(
+                        f"Run {self._fingerprint[:8]} already COMPLETED. "
+                        "Set skip_completed=False to re-run."
+                    )
+                    self._should_skip = True
+                    trainer.should_stop = True
+                    return
+
+            # Store resume info
+            if should_resume and ckpt_path:
+                self._resume_checkpoint_path = ckpt_path
+                self._resume_wandb_id = wandb_id
+                logger.info(f"Resuming from checkpoint: {ckpt_path}")
+                if wandb_id:
+                    logger.info(f"WandB run ID: {wandb_id}")
+
+        except Exception as e:
+            logger.error(f"RunManager initialization failed: {e}")
+            # Don't fail training - just disable auto-resume
+            self._run_manager = None
+
+    def on_train_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Update run status to RUNNING."""
+        if self._should_skip:
+            return
+
+        if self._run_manager and trainer.is_global_zero:
+            from wrinklefree.utils import RunStatus
+
+            self._run_manager.update_status(RunStatus.RUNNING)
+
+            # Update with WandB info if available
+            try:
+                import wandb
+
+                if wandb.run and wandb.run.url:
+                    self._run_manager.update_status(
+                        RunStatus.RUNNING,
+                        wandb_run_id=wandb.run.id,
+                        wandb_url=wandb.run.url,
+                    )
+                    logger.info(f"Updated metadata with W&B URL: {wandb.run.url}")
+            except Exception:
+                pass
+
+    def on_train_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Update run status to COMPLETED."""
+        if self._should_skip:
+            return
+
+        if self._run_manager and trainer.is_global_zero:
+            from wrinklefree.utils import RunStatus
+
+            self._run_manager.update_status(
+                RunStatus.COMPLETED,
+                global_step=trainer.global_step,
+            )
+            logger.info(f"Run {self._fingerprint[:8]} marked as COMPLETED")
+
+    def on_exception(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        exception: BaseException,
+    ) -> None:
+        """Update run status to FAILED on exception."""
+        if self._run_manager and trainer.is_global_zero:
+            from wrinklefree.utils import RunStatus
+
+            self._run_manager.update_status(
+                RunStatus.FAILED,
+                global_step=trainer.global_step,
+                error_message=str(exception),
+            )
+            logger.info(f"Run {self._fingerprint[:8]} marked as FAILED")
+
+    @property
+    def fingerprint(self) -> str | None:
+        """Get the run fingerprint."""
+        return self._fingerprint
+
+    @property
+    def resume_checkpoint_path(self) -> Path | None:
+        """Get the path to resume checkpoint if available."""
+        return self._resume_checkpoint_path
+
+    @property
+    def resume_wandb_id(self) -> str | None:
+        """Get the WandB run ID for resuming."""
+        return self._resume_wandb_id
+
+    @property
+    def should_skip(self) -> bool:
+        """Check if training should be skipped (already completed)."""
+        return self._should_skip

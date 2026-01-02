@@ -9,7 +9,8 @@
 #   2. Convert BitLinear -> BitLinearLRC (freezes weights, adds U/V)
 #   3. Train only U/V matrices on calibration data
 #
-# CRITICAL: Only LRC matrices (U, V) are trainable. All other params frozen.
+# By default only LRC matrices (U, V) are trainable.
+# Set lrc.trainable_weight=true to also train quantized weights via STE.
 stage: lrc_calibration
 
 # LRC-specific configuration
@@ -21,6 +22,10 @@ lrc:
   rank_percentage: 0.1
   # Initialization: "zeros" (default) or "svd_residual" (better starting point)
   init_method: zeros
+  # Enable STE gradient flow through quantized weights for joint training
+  # False (default): Only U, V trainable (memory efficient)
+  # True: Weights + U, V trainable via STE (higher memory, better results)
+  trainable_weight: false
 
 # Teacher model (original fp16 model for reconstruction targets)
 teacher:

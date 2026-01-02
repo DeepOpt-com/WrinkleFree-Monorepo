@@ -1007,7 +1007,7 @@ def run_stage2(
     # This must happen BEFORE FSDP wrapping
     fp8_cfg = getattr(config, "fp8", None)
     if fp8_cfg is not None and getattr(fp8_cfg, "enabled", False):
-        from wrinklefree.models.fp8_bitlinear import convert_bitlinear_to_fp8
+        from wrinklefree._experimental.fp8 import convert_bitlinear_to_fp8
         from wrinklefree.quantization.fp8_gemm import (
             FP8Capability,
             FP8Config,

@@ -6,10 +6,17 @@ from wrinklefree.models.bitlinear import (
     BitLinearNoActivationQuant,
     convert_linear_to_bitlinear,
 )
-from wrinklefree.models.fp8_bitlinear import (
-    FP8BitLinear,
-    convert_bitlinear_to_fp8,
-)
+
+# FP8 is experimental - use optional import
+try:
+    from wrinklefree._experimental.fp8 import (
+        FP8BitLinear,
+        convert_bitlinear_to_fp8,
+    )
+except ImportError:
+    FP8BitLinear = None  # type: ignore
+    convert_bitlinear_to_fp8 = None  # type: ignore
+
 from wrinklefree.models.config import (
     BITNET_CONFIGS,
     BitNetConfig,

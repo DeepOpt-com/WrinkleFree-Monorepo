@@ -189,7 +189,79 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         return optimizer
 
     def _create_muon_optimizer(self, learning_rate: float, weight_decay: float):
-        """Create Muon optimizer (FSDP-compatible via muon_fsdp2)."""
+        """Create Muon optimizer with QK-clipping.
+
+        Uses muon-clip for single GPU (proper QK-clipping support).
+        Falls back to muon_fsdp2 for multi-GPU FSDP training.
+        """
+        import os
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+        lr_muon = self.optimizer_cfg.get("lr_muon", learning_rate)
+        lr_adam = self.optimizer_cfg.get("lr_adam", learning_rate)
+        enable_clipping = self.optimizer_cfg.get("enable_clipping", True)
+        clipping_threshold = self.optimizer_cfg.get("clipping_threshold", 50.0)
+        clipping_alpha = self.optimizer_cfg.get("clipping_alpha", 0.5)
+        momentum = self.optimizer_cfg.get("momentum", 0.95)
+
+        if world_size == 1:
+            # Single GPU: use muon-clip with proper QK-clipping
+            return self._create_muonclip_optimizer(
+                lr_muon=lr_muon,
+                lr_adam=lr_adam,
+                momentum=momentum,
+                enable_clipping=enable_clipping,
+                clipping_threshold=clipping_threshold,
+                clipping_alpha=clipping_alpha,
+            )
+        else:
+            # Multi-GPU: use muon_fsdp2 for FSDP compatibility
+            return self._create_muon_fsdp_optimizer(lr_muon, lr_adam)
+
+    def _create_muonclip_optimizer(
+        self,
+        lr_muon: float,
+        lr_adam: float,
+        momentum: float = 0.95,
+        enable_clipping: bool = True,
+        clipping_threshold: float = 50.0,
+        clipping_alpha: float = 0.5,
+    ):
+        """Create MuonClip optimizer for single GPU with QK-clipping."""
+        from muon import MuonClip, MuonConfig
+
+        # Build MuonConfig
+        muon_config = MuonConfig(
+            unified_lr=False,
+            lr_muon=lr_muon,
+            lr_adam=lr_adam,
+            muon_beta=momentum,
+            muon_decay=0.0,
+            adam_betas=(0.9, 0.999),
+            adam_decay=0.0,
+            adam_eps=1e-8,
+            ns_steps=5,  # Newton-Schulz iterations
+            enable_clipping=enable_clipping,
+            clipping_threshold=clipping_threshold,
+            clipping_alpha=clipping_alpha,
+            log_max_logits=True,
+        )
+
+        # MuonClip needs model config for architecture info
+        # Extract from model if available
+        model_config = getattr(self.model, "config", None)
+
+        optimizer = MuonClip(self.model, model_config, muon_config)
+
+        logger.info(
+            f"Created MuonClip optimizer (single GPU): "
+            f"lr_muon={lr_muon:.2e}, lr_adam={lr_adam:.2e}, "
+            f"clipping={enable_clipping} (threshold={clipping_threshold}, alpha={clipping_alpha})"
+        )
+        return optimizer
+
+    def _create_muon_fsdp_optimizer(self, lr_muon: float, lr_adam: float):
+        """Create Muon optimizer for multi-GPU FSDP via muon_fsdp2."""
         from muon_fsdp2 import Muon
 
         # Separate parameters: Muon for 2D weights, Adam for 1D (bias, norm, embeddings)
@@ -204,16 +276,13 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             else:
                 adam_params.append(param)
 
-        lr_muon = self.optimizer_cfg.get("lr_muon", learning_rate)
-        lr_adam = self.optimizer_cfg.get("lr_adam", learning_rate)
-
         optimizer = Muon([
             {"params": muon_params, "lr": lr_muon, "use_muon": True},
             {"params": adam_params, "lr": lr_adam, "use_muon": False},
         ])
 
         logger.info(
-            f"Created Muon optimizer: {len(muon_params)} Muon params, "
+            f"Created Muon FSDP optimizer: {len(muon_params)} Muon params, "
             f"{len(adam_params)} Adam params, lr_muon={lr_muon:.2e}, lr_adam={lr_adam:.2e}"
         )
         return optimizer

@@ -1,6 +1,8 @@
 """Utility functions for WrinkleFree."""
 
 from wrinklefree.utils.audit_logger import AuditLogger
+from wrinklefree.utils.logging_setup import setup_logging
+from wrinklefree.utils.reproducibility import set_seed
 from wrinklefree.utils.run_fingerprint import (
     IGNORE_KEYS,
     clean_config_for_hashing,
@@ -16,6 +18,10 @@ from wrinklefree.utils.run_manager import (
 )
 
 __all__ = [
+    # Reproducibility
+    "set_seed",
+    # Logging
+    "setup_logging",
     # Run fingerprinting
     "generate_fingerprint",
     "fingerprint_matches",

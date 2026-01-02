@@ -44,12 +44,20 @@ packing:
   enabled: true
 
 # === OPTIMIZER ===
-# Use AdamW for single-GPU (muon_fsdp2 has single-GPU bug)
+# NOTE: MuonClip has compatibility issues with SmolLM2's attention architecture
+# (hook_recorder.attn_inputs KeyError) - using AdamW as workaround.
+# TODO: Fix MuonClip integration for SmolLM2 (model.config needs proper layer names)
 optimizer:
   type: adamw
-  lr: 1e-4
-  weight_decay: 0.01
-  betas: [0.9, 0.999]
+  learning_rate: 5e-5
+  weight_decay: 0.0
+  # MuonClip config (for when fixed):
+  # type: muonclip
+  # lr_muon: 0.001
+  # lr_adam: 5e-5
+  # enable_clipping: true
+  # clipping_threshold: 50.0
+  # clipping_alpha: 0.5
 
 # Scheduler: WSD with short warmup
 scheduler:
@@ -61,7 +69,8 @@ scheduler:
 
 # === TRAINING PARAMETERS ===
 total_tokens: 1_000_000_000  # 1B tokens for testing (scale up for prod)
-max_steps: null              # Use total_tokens instead
+# max_steps computed: 1B tokens / (batch * accum * seq_len) = 1B / (16 * 4 * 512) = ~30,500 steps
+max_steps: 30500  # 1B tokens at batch=16, accum=4, seq=512
 max_seq_length: 512
 batch_size: 16
 gradient_accumulation_steps: 4  # Effective batch = 64
@@ -98,11 +107,12 @@ objectives:
     weight: 0.5  # Will be curriculum-controlled
     mask_prob: 0.15
     mask_token_id: 0
-    use_complementary_masks: true
+    use_complementary_masks: false  # Disabled to avoid batch size mismatch
 
-  # LRC reconstruction (hidden state matching with teacher)
+  # LRC reconstruction (disabled - requires teacher model setup)
+  # Enable later with teacher model for post-quantization recovery
   lrc_reconstruction:
-    enabled: true
+    enabled: false
     weight: 0.3
     loss_type: mse
     layer_weights: progressive
@@ -123,23 +133,21 @@ curriculum:
   enabled: true
   interpolation: linear
   phases:
-    # Phase 1: Warmup - CE + LRC only, fineweb-edu data
+    # Phase 1: Warmup - CE only, fineweb-edu data
     - name: warmup
       end_ratio: 0.2
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
         dlm: 0.0
-        lrc_reconstruction: 0.3
 
-    # Phase 2: Main training - CE + DLM + LRC with influence remixing
+    # Phase 2: Main training - CE + DLM with influence remixing
     - name: main
       end_ratio: 1.0
       data_config: mixed_pretrain
       objectives:
         continue_pretrain: 1.0
         dlm: 0.5
-        lrc_reconstruction: 0.3
 
 # === INFLUENCE-BASED DATA REMIXING ===
 # Enabled during Phase 2 (after 20% warmup)

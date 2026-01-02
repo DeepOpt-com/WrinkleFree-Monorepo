@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from wrinklefree.models.subln import SubLN
 from wrinklefree.models.transformer import BitNetDecoderLayer
-from wrinklefree.training.tensor_parallel import (
+from wrinklefree._experimental.tensor_parallel.tensor_parallel import (
     DistributedSubLN,
     get_bitnet_tp_plan,
 )
@@ -260,7 +260,7 @@ class TestDistributedIntegration:
 
     def test_device_mesh_creation_requires_init(self):
         """Test that create_device_mesh requires distributed init."""
-        from wrinklefree.training.tensor_parallel import create_device_mesh
+        from wrinklefree._experimental.tensor_parallel.tensor_parallel import create_device_mesh
 
         with pytest.raises(RuntimeError, match="Distributed must be initialized"):
             create_device_mesh(tp_size=2)
