@@ -1,169 +1,205 @@
 # Configuration Guide
 
-This guide helps you navigate the configuration system and choose the right settings for your training needs. WrinkleFree uses [Hydra](https://hydra.cc/) for configuration management, allowing you to compose configurations from modular YAML files.
+This guide helps you navigate the configuration system. WrinkleFree uses [Hydra](https://hydra.cc/) for configuration management.
 
 ## Directory Structure
 
 Configurations are located in `configs/`:
 
-- **`model/`**: Defines model architectures (e.g., `smollm2_135m`, `qwen3_4b`).
-- **`training/`**: Defines the training stage (e.g., `stage1_subln`, `stage3_distill`).
-- **`distributed/`**: Hardware and distribution strategies (e.g., `single_gpu`, `fsdp_multi`).
-- **`data/`**: Dataset definitions (e.g., `fineweb`, `downstream`).
-- **`distillation/`**: Loss coefficients for Stage 3 (e.g., `classification`).
+- **`model/`**: Model architectures (e.g., `smollm2_135m`, `qwen3_4b`)
+- **`training/`**: Training configs (e.g., `unified`, `bitdistill_full`, `lrc_calibration`)
+- **`distributed/`**: Hardware strategies (e.g., `single_gpu`, `fsdp_multi`)
+- **`data/`**: Dataset configs (points to data_handler package)
 
 ## Step 1: Choose Your Model (`model=...`)
 
-Select a model based on your available hardware and goals.
+| Model | Config | Params | VRAM | Use Case |
+|-------|--------|--------|------|----------|
+| **SmolLM2-135M** | `smollm2_135m` | 135M | ~4GB | **Start Here**. Testing, debugging |
+| **Qwen2-0.5B** | `qwen2_0.5b` | 0.5B | ~8GB | Development |
+| **Qwen3-4B** | `qwen3_4b` | 4B | ~24GB | **Recommended**. Production training |
 
-| Model | Config Name | Params | VRAM (Training) | Use Case |
-|-------|-------------|--------|-----------------|----------|
-| **SmolLM2-135M** | `smollm2_135m` | 135M | < 12GB (Single GPU) | **Start Here**. Testing, debugging, learning the codebase. |
-| **Qwen3-4B** | `qwen3_4b` | 4B | ~24GB (Stage 3) | **Recommended**. Good balance of performance and efficiency. |
-| **LLaMA-3B** | `llama_3b` | 3B | ~20GB | Development alternative to Qwen. |
-| **LLaMA-7B** | `llama_7b` | 7B | > 40GB (Multi-GPU) | Production-grade training. Requires FSDP. |
+## Step 2: Choose Training Config (`training=...`)
 
-**Default**: `llama_7b` (in `config.yaml`), but **we recommend overriding to `smollm2_135m` for your first run**.
+| Config | Purpose | When to Use |
+|--------|---------|-------------|
+| **`unified`** | Combined STE + DLM training | **Recommended** - production training |
+| `bitdistill_full` | Knowledge distillation | Teacher-student distillation |
+| `lrc_calibration` | Low-rank correction | Post-quantization recovery |
+| `stage2_pretrain` | Continue pretraining | Legacy stage-based training |
+| `stage1_subln` | SubLN insertion | Model conversion only |
+| `stage1_9_layerwise` | Layer-wise distillation | Hidden state alignment |
 
-## Step 2: Choose Your Training Stage (`training=...`)
+### Unified Training (Recommended)
 
-The training process is sequential. You must complete earlier stages to generate checkpoints for later ones.
+Combines STE quantization with DLM objectives in a single pass:
 
-1.  **Stage 1: SubLN Insertion** (`stage1_subln`)
-    *   **What it does**: Modifies a pretrained model to insert SubLN layers and replace Linear layers with BitLinear.
-    *   **Input**: HuggingFace pretrained model name.
-    *   **Output**: An initialized (untrained) BitNet model.
-    *   **Time**: Seconds/Minutes.
+```bash
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+```
 
-2.  **Stage 1.9: Layer-wise Distillation** (`stage1_9_layerwise`)
-    *   **What it does**: Aligns hidden states of the BitNet model with the original float model.
-    *   **Input**: Stage 1 checkpoint.
-    *   **Time**: ~1-2 hours.
+**Features**:
+- Auto-converts model to BitNet if needed
+- Multi-task: LM loss + DLM masking loss
+- Curriculum phases ramp up DLM weight
+- MuonClip optimizer with QK clipping
+- Influence-based data remixing (optional)
 
-3.  **Stage 2: Continue Pretraining** (`stage2_pretrain`)
-    *   **What it does**: Trains the model on a large corpus with quantization warmup.
-    *   **Input**: Stage 1 or 1.9 checkpoint.
-    *   **Time**: Hours/Days.
+### LRC Calibration
 
-4.  **Stage 3: Distillation** (`stage3_distill` / `stage3_distill_smollm2`)
-    *   **What it does**: Fine-tunes the model using knowledge distillation from a teacher.
-    *   **Input**: Stage 2 checkpoint.
-    *   **Time**: Hours.
+Post-training recovery using Low-Rank Correction:
 
-5.  **LRC Calibration** (`lrc_calibration`)
-    *   **What it does**: Post-training recovery using Low-Rank Correction matrices.
-    *   **Input**: Any BitNet model (Stage 1.9, 2, or 3 checkpoint).
-    *   **Trainable params**: Only U, V matrices (~10% of min(in, out) per layer).
-    *   **Frozen params**: ALL other parameters (quantized weights, embeddings, norms).
-    *   **Time**: ~1-2 hours (short calibration run, ~50M tokens).
-    *   **Use case**: Quick recovery of quantization errors without full retraining.
+```bash
+uv run python scripts/train_lightning.py model=smollm2_135m training=lrc_calibration
+```
+
+**Features**:
+- Only U, V matrices train (~10% of hidden dim)
+- All other params frozen
+- Short calibration run (~50M tokens)
 
 ## Step 3: Choose Hardware Strategy (`distributed=...`)
 
-| Config Name | Description |
-|-------------|-------------|
-| `single_gpu` | Standard PyTorch DDP (or no DDP if 1 device). Use for SmolLM2 or debugging. |
-| `fsdp_multi` | Fully Sharded Data Parallel for multi-GPU setups. Required for 3B/4B/7B models. |
-| `fsdp_large` | FSDP optimized for large scale (8+ GPUs, cross-node). |
-
-## Step 4: Choose Data (`data=...`)
-
-| Config Name | Description |
-|-------------|-------------|
-| `fineweb` | Large-scale pretraining dataset (HuggingFaceFW/fineweb). Used in Stage 1.9 and Stage 2. |
-| `downstream` | Task-specific datasets (e.g., Glue, SuperGlue) for Stage 3 distillation. |
+| Config | Description |
+|--------|-------------|
+| `single_gpu` | Standard training. Use for SmolLM2 or debugging |
+| `fsdp_multi` | Fully Sharded Data Parallel. Required for 4B+ models |
 
 ## Common Recipes
 
-### 1. The "Hello World" (Run this first)
-Verify everything works with a tiny model on a single GPU.
+### Quick Test (Single GPU)
 
 ```bash
-# Insert SubLN
-uv run python scripts/train.py model=smollm2_135m training=stage1_subln distributed=single_gpu
-
-# Run a few steps of Stage 2 training
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=stage2_pretrain \
-    distributed=single_gpu \
-    training.max_steps=10
+    training=unified \
+    training.max_steps=100
 ```
 
-### 2. The "Efficient Standard" (Qwen3-4B)
-Train a capable model using FSDP.
+### Production Training (Multi-GPU)
 
 ```bash
-# Stage 1
-uv run python scripts/train.py model=qwen3_4b training=stage1_subln distributed=single_gpu
-
-# Stage 2 (Multi-GPU)
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
     model=qwen3_4b \
-    training=stage2_pretrain \
-    distributed=fsdp_multi
+    training=unified \
+    distributed=fsdp_multi \
+    training.auto_batch_size=true
 ```
 
-### 3. LRC Calibration (Quick Post-Training Recovery)
-Recover quantization errors without full retraining.
+### With Influence-Based Data Remixing
 
 ```bash
-# After Stage 1.9 or Stage 2, run LRC calibration
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=lrc_calibration \
-    data=fineweb \
-    training.max_steps=5000
-
-# Key points:
-# - Only U, V matrices train (~10% of hidden dim each)
-# - All other params frozen (quantized weights, embeddings, norms)
-# - Uses hidden state matching loss vs. fp16 teacher
-# - Short calibration run (~50M tokens)
+    training=unified \
+    data.config_name=mixed_pretrain \
+    training.influence.enabled=true \
+    training.influence.warmup_steps=1000
 ```
 
-**LRC Configuration Options**:
+### Resume from Checkpoint
+
 ```bash
-# Change rank percentage (default 10%)
-lrc.rank_percentage=0.2
-
-# Use SVD initialization (better starting point)
-lrc.init_method=svd_residual
-
-# Adjust layer weighting
-objectives.lrc_reconstruction.layer_weights=uniform  # or "progressive"
+uv run python scripts/train_lightning.py \
+    training=unified \
+    training.resume.checkpoint_path=gs://bucket/checkpoint.pt \
+    training.resume.load_optimizer_state=false
 ```
 
 ## How to Override Defaults
 
-You can override any parameter from the command line using dot notation.
+Override any parameter via command line:
 
-**Example**: Change batch size and learning rate:
 ```bash
-uv run python scripts/train.py \
+# Change learning rate and batch size
+uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training.batch_size=32 \
-    training.lr=1e-4
+    training.lr=5e-5 \
+    training.batch_size=16
+
+# Enable GCS checkpointing
+uv run python scripts/train_lightning.py \
+    model=smollm2_135m \
+    training=unified \
+    gcs.enabled=true \
+    gcs.bucket=wrinklefree-checkpoints
+
+# Disable WandB logging
+uv run python scripts/train_lightning.py \
+    model=smollm2_135m \
+    training.logging.wandb.enabled=false
 ```
 
-**Example**: Change specific model parameters:
-```bash
-uv run python scripts/train.py \
-    model=smollm2_135m \
-    model.quantization.weight_bits=1.58
+## Key Config Options
+
+### Training
+
+```yaml
+training:
+  max_steps: 100000           # Total training steps
+  batch_size: 32              # Per-GPU batch size
+  auto_batch_size: true       # Auto-find max batch size
+  gradient_accumulation_steps: 4
+  lr: 2.4e-3                  # Learning rate
+
+  optimizer:
+    type: muonclip            # muonclip, adamw
+
+  influence:
+    enabled: true             # Enable data remixing
+    warmup_steps: 1000
+    update_interval: 5000
+```
+
+### Objectives (in unified.yaml)
+
+```yaml
+objectives:
+  continue_pretrain:
+    enabled: true
+    weight: 1.0
+  dlm:
+    enabled: true
+    weight: 0.5
+    mask_ratio: 0.15
+```
+
+### Curriculum Phases
+
+```yaml
+curriculum:
+  phases:
+    - name: warmup
+      end_step_fraction: 0.1
+      objectives: {continue_pretrain: 1.0, dlm: 0.0}
+    - name: main
+      end_step_fraction: 0.8
+      objectives: {continue_pretrain: 1.0, dlm: 0.5}
 ```
 
 ## FAQ
 
 **Q: I'm getting Out of Memory (OOM) errors.**
-A:
-1.  Switch to a smaller model (`model=smollm2_135m`).
-2.  Reduce batch size (`training.batch_size=1` or `2`).
-3.  Enable gradient accumulation (`training.gradient_accumulation_steps=16`).
-4.  Ensure `distributed=fsdp_multi` is used for larger models.
+
+1. Enable auto batch size: `training.auto_batch_size=true`
+2. Switch to smaller model: `model=smollm2_135m`
+3. Reduce batch size: `training.batch_size=1`
+4. Use FSDP: `distributed=fsdp_multi`
 
 **Q: Where are my checkpoints?**
-A: Check `outputs/bitdistill_<model>_<stage>/`.
 
-**Q: Which default should I change in `config.yaml`?**
-A: Avoid changing `configs/config.yaml` directly if possible. Instead, create a `local.yaml` or just use command line overrides to keep your git status clean.
+Check `outputs/` or the GCS bucket if `gcs.enabled=true`.
+
+**Q: How do I use a different dataset?**
+
+Override `data.config_name` to use a different config from data_handler:
+
+```bash
+data.config_name=fineweb  # Use data_handler's fineweb.yaml
+```
+
+**Q: How do I disable DLM and just do CE training?**
+
+```bash
+training.objectives.dlm.enabled=false
+```
