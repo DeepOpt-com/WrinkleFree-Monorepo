@@ -67,3 +67,53 @@ Throughput:
 ### Files Changed
 - `packages/inference/extern/sglang-bitnet/sgl-model-gateway/src/inference/dlm_scheduler.rs`
 - `packages/inference/extern/sglang-bitnet/sgl-model-gateway/src/inference/dlm_config.rs`
+
+---
+
+## 2026-01-02: YAML Config Support for DLM Server
+
+Added YAML configuration file support for the DLM server.
+
+### Usage
+```bash
+# Generate example config
+./dlm_server --generate-config > my_config.yaml
+
+# Run with config file
+./dlm_server --config my_config.yaml
+
+# CLI args override YAML (useful for testing)
+./dlm_server --config my_config.yaml --block-size 64 --benchmark
+```
+
+### Example Config (`configs/dlm_server.yaml`)
+```yaml
+model_path: /path/to/dlm-model.gguf
+host: 0.0.0.0
+port: 30000
+
+dlm:
+  block_size: 32        # MUST match training
+  threshold: 0.95
+  small_block_size: 8
+  mask_token_id: null   # Auto-detect
+
+scheduler:
+  max_sequences: 16
+  enable_radix_cache: true
+
+benchmark:
+  enabled: false
+  iterations: 50
+  max_tokens: 64
+```
+
+### Priority Order
+1. CLI arguments (highest)
+2. YAML config file
+3. Environment variables (`MODEL_PATH`)
+4. Defaults (lowest)
+
+### Files Changed
+- `packages/inference/extern/sglang-bitnet/sgl-model-gateway/src/bin/dlm_server.rs`
+- `packages/inference/configs/dlm_server.yaml` (new)

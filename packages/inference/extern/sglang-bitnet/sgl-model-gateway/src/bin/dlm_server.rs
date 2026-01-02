@@ -6,12 +6,17 @@
 //! Usage:
 //!   cargo run --release --features native-inference --bin dlm_server -- \
 //!     --model-path /path/to/dlm-model.gguf --port 30000
+//!
+//! Or with YAML config:
+//!   cargo run --release --features native-inference --bin dlm_server -- \
+//!     --config /path/to/dlm_config.yaml
 
 // Use mimalloc as the global allocator for better performance
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -23,13 +28,156 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[cfg(feature = "native-inference")]
 use sgl_model_gateway::inference::{
     BatchConfig, BatchSamplingParams, DlmConfig, DlmScheduler, DlmSchedulerConfig,
     DlmSchedulerHandle, InferenceRequest, NativeBatchEngine,
 };
+
+/// Server configuration loaded from YAML or CLI args.
+///
+/// Example YAML config (dlm_config.yaml):
+/// ```yaml
+/// model_path: /path/to/model.gguf
+/// host: 0.0.0.0
+/// port: 30000
+///
+/// dlm:
+///   block_size: 32        # Must match training
+///   threshold: 0.95
+///   small_block_size: 8
+///   mask_token_id: null   # Auto-detect if null
+///
+/// scheduler:
+///   max_sequences: 16
+///   enable_radix_cache: true
+///   radix_cache_max_tokens: 100000
+///
+/// benchmark:
+///   enabled: false
+///   iterations: 50
+///   max_tokens: 64
+///   prompt: "What is the meaning of life?"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    /// Path to GGUF model file
+    pub model_path: String,
+    /// Server host
+    pub host: String,
+    /// Server port
+    pub port: u16,
+    /// DLM-specific settings
+    pub dlm: DlmSettings,
+    /// Scheduler settings
+    pub scheduler: SchedulerSettings,
+    /// Benchmark settings
+    pub benchmark: BenchmarkSettings,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DlmSettings {
+    /// Block size for parallel decoding (must match training)
+    pub block_size: usize,
+    /// Confidence threshold for unmasking (0.0-1.0)
+    pub threshold: f32,
+    /// Small block size for sub-block iteration
+    pub small_block_size: usize,
+    /// Mask token ID (null = auto-detect)
+    pub mask_token_id: Option<i32>,
+    /// Maximum iterations per block (safety limit)
+    pub max_iterations_per_block: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SchedulerSettings {
+    /// Maximum concurrent sequences
+    pub max_sequences: usize,
+    /// Enable RadixCache for prefix caching
+    pub enable_radix_cache: bool,
+    /// Maximum tokens in RadixCache
+    pub radix_cache_max_tokens: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct BenchmarkSettings {
+    /// Run in benchmark mode (no server)
+    pub enabled: bool,
+    /// Number of benchmark iterations
+    pub iterations: usize,
+    /// Max tokens per iteration
+    pub max_tokens: i32,
+    /// Prompt for benchmarking
+    pub prompt: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            model_path: "dlm-bitnet.gguf".to_string(),
+            host: "0.0.0.0".to_string(),
+            port: 30000,
+            dlm: DlmSettings::default(),
+            scheduler: SchedulerSettings::default(),
+            benchmark: BenchmarkSettings::default(),
+        }
+    }
+}
+
+impl Default for DlmSettings {
+    fn default() -> Self {
+        Self {
+            block_size: 32, // Must match training (Fast-dLLM v2 default)
+            threshold: 0.95,
+            small_block_size: 8,
+            mask_token_id: None, // Auto-detect
+            max_iterations_per_block: 10,
+        }
+    }
+}
+
+impl Default for SchedulerSettings {
+    fn default() -> Self {
+        Self {
+            max_sequences: 16,
+            enable_radix_cache: true,
+            radix_cache_max_tokens: 100_000,
+        }
+    }
+}
+
+impl Default for BenchmarkSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            iterations: 50,
+            max_tokens: 64,
+            prompt: "What is the meaning of life?".to_string(),
+        }
+    }
+}
+
+impl ServerConfig {
+    /// Load config from YAML file.
+    pub fn from_yaml(path: &Path) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        serde_yaml::from_str(&content)
+            .map_err(|e| format!("Failed to parse YAML config: {}", e))
+    }
+
+    /// Generate example YAML config.
+    pub fn example_yaml() -> String {
+        let config = Self::default();
+        serde_yaml::to_string(&config).unwrap_or_default()
+    }
+}
 
 async fn health() -> &'static str {
     "ok"
@@ -172,131 +320,171 @@ async fn chat_completions(
     }))
 }
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt::init();
-
+/// Parse CLI args and merge with YAML config.
+/// Priority: CLI args > YAML config > defaults
+fn parse_config() -> ServerConfig {
     let args: Vec<String> = std::env::args().collect();
 
-    // Parse args
-    let mut model_path = std::env::var("MODEL_PATH")
-        .unwrap_or_else(|_| "dlm-bitnet.gguf".to_string());
-    let mut port: u16 = 30000;
-    let mut host = String::from("0.0.0.0");
-    let mut max_sequences: usize = 16;
-    let mut block_size: usize = 32;
-    let mut threshold: f32 = 0.95;
-    let mut small_block_size: usize = 8;
-    let mut mask_token_id: Option<i32> = None;
-    let mut force_unmask: bool = false;
-    let mut benchmark_mode: bool = false;
-    let mut benchmark_iterations: usize = 50;
-    let mut benchmark_prompt: String = "What is the meaning of life?".to_string();
-    let mut benchmark_max_tokens: i32 = 64;
-
+    // First pass: look for --config to load base config
+    let mut config = ServerConfig::default();
     let mut i = 1;
     while i < args.len() {
+        if args[i] == "--config" || args[i] == "-c" {
+            if let Some(path) = args.get(i + 1) {
+                match ServerConfig::from_yaml(Path::new(path)) {
+                    Ok(yaml_config) => {
+                        info!("Loaded config from: {}", path);
+                        config = yaml_config;
+                    }
+                    Err(e) => {
+                        eprintln!("Error loading config: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            break;
+        }
+        i += 1;
+    }
+
+    // Override with environment variable
+    if let Ok(model_path) = std::env::var("MODEL_PATH") {
+        config.model_path = model_path;
+    }
+
+    // Second pass: override with CLI args
+    i = 1;
+    while i < args.len() {
         match args[i].as_str() {
+            "--config" | "-c" => {
+                i += 2; // Already handled
+            }
             "--model-path" | "-m" => {
-                model_path = args.get(i + 1).cloned().unwrap_or(model_path);
+                if let Some(v) = args.get(i + 1) {
+                    config.model_path = v.clone();
+                }
                 i += 2;
             }
             "--port" | "-p" => {
-                port = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(port);
+                if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
+                    config.port = v;
+                }
                 i += 2;
             }
-            "--host" | "-h" => {
-                host = args.get(i + 1).cloned().unwrap_or(host);
+            "--host" => {
+                if let Some(v) = args.get(i + 1) {
+                    config.host = v.clone();
+                }
                 i += 2;
             }
             "--max-sequences" => {
-                max_sequences = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(max_sequences);
+                if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
+                    config.scheduler.max_sequences = v;
+                }
                 i += 2;
             }
             "--block-size" => {
-                block_size = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(block_size);
+                if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
+                    config.dlm.block_size = v;
+                }
                 i += 2;
             }
             "--threshold" => {
-                threshold = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(threshold);
+                if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
+                    config.dlm.threshold = v;
+                }
                 i += 2;
             }
             "--small-block-size" => {
-                small_block_size = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(small_block_size);
+                if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
+                    config.dlm.small_block_size = v;
+                }
                 i += 2;
             }
             "--mask-token-id" => {
-                mask_token_id = args.get(i + 1).and_then(|s| s.parse().ok());
+                config.dlm.mask_token_id = args.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
             }
             "--benchmark" => {
-                benchmark_mode = true;
+                config.benchmark.enabled = true;
                 i += 1;
             }
             "--benchmark-iterations" => {
-                benchmark_iterations = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(benchmark_iterations);
+                if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
+                    config.benchmark.iterations = v;
+                }
                 i += 2;
             }
             "--benchmark-prompt" => {
-                benchmark_prompt = args.get(i + 1).cloned().unwrap_or(benchmark_prompt);
+                if let Some(v) = args.get(i + 1) {
+                    config.benchmark.prompt = v.clone();
+                }
                 i += 2;
             }
             "--benchmark-max-tokens" => {
-                benchmark_max_tokens = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(benchmark_max_tokens);
+                if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
+                    config.benchmark.max_tokens = v;
+                }
                 i += 2;
             }
-            "--help" => {
+            "--generate-config" => {
+                // Print example YAML config and exit
+                println!("# DLM Server Configuration");
+                println!("# Save this to a file and use with --config");
+                println!("{}", ServerConfig::example_yaml());
+                std::process::exit(0);
+            }
+            "--help" | "-h" => {
                 println!("DLM Server - Fast-dLLM v2 Block Diffusion Inference");
                 println!();
                 println!("Usage: dlm_server [OPTIONS]");
                 println!();
-                println!("Options:");
+                println!("Config:");
+                println!("  -c, --config PATH        Load config from YAML file");
+                println!("  --generate-config        Print example YAML config and exit");
+                println!();
+                println!("Server Options (override config):");
                 println!("  -m, --model-path PATH    Path to DLM model (GGUF format)");
                 println!("  -p, --port PORT          Server port (default: 30000)");
-                println!("  -h, --host HOST          Server host (default: 0.0.0.0)");
-                println!("  --max-sequences N        Max concurrent sequences (default: 16)");
+                println!("  --host HOST              Server host (default: 0.0.0.0)");
+                println!();
+                println!("DLM Options:");
                 println!("  --block-size N           Block size for parallel decode (default: 32)");
                 println!("  --threshold F            Confidence threshold 0-1 (default: 0.95)");
                 println!("  --small-block-size N     Sub-block size (default: 8)");
-                println!("  --mask-token-id ID       Override mask token ID (for benchmarking non-DLM models)");
+                println!("  --mask-token-id ID       Override mask token ID");
+                println!();
+                println!("Scheduler Options:");
+                println!("  --max-sequences N        Max concurrent sequences (default: 16)");
                 println!();
                 println!("Benchmark Options:");
                 println!("  --benchmark              Run benchmark mode (no server)");
-                println!("  --benchmark-iterations N Number of benchmark iterations (default: 50)");
-                println!("  --benchmark-prompt TEXT  Prompt to use for benchmarking");
-                println!("  --benchmark-max-tokens N Max tokens per iteration (default: 64)");
+                println!("  --benchmark-iterations N Iterations (default: 50)");
+                println!("  --benchmark-prompt TEXT  Prompt for benchmarking");
+                println!("  --benchmark-max-tokens N Max tokens (default: 64)");
                 println!();
-                println!("  --help                   Show this help");
-                return;
+                println!("  -h, --help               Show this help");
+                std::process::exit(0);
             }
             _ => i += 1,
         }
     }
 
+    config
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+
+    let config = parse_config();
+
     info!("=== DLM Server (Fast-dLLM v2) ===");
-    info!("Model: {}", model_path);
-    info!("Host:  {}:{}", host, port);
-    info!("Max sequences: {}", max_sequences);
-    info!("Block size: {} (small: {})", block_size, small_block_size);
-    info!("Threshold: {}", threshold);
+    info!("Model: {}", config.model_path);
+    info!("Host:  {}:{}", config.host, config.port);
+    info!("Max sequences: {}", config.scheduler.max_sequences);
+    info!("Block size: {} (small: {})", config.dlm.block_size, config.dlm.small_block_size);
+    info!("Threshold: {}", config.dlm.threshold);
 
     #[cfg(feature = "native-inference")]
     {
@@ -304,11 +492,11 @@ async fn main() {
 
         // Load engine
         let batch_config = BatchConfig {
-            max_sequences: max_sequences as i32,
+            max_sequences: config.scheduler.max_sequences as i32,
             ..Default::default()
         };
 
-        let engine = match NativeBatchEngine::new(&model_path, Some(batch_config)) {
+        let engine = match NativeBatchEngine::new(&config.model_path, Some(batch_config)) {
             Ok(e) => Arc::new(e),
             Err(e) => {
                 error!("Failed to load model: {}", e);
@@ -319,7 +507,7 @@ async fn main() {
         info!("Model loaded: vocab_size={}", engine.vocab_size());
 
         // Detect or configure DLM
-        let dlm_config = if let Some(manual_mask_id) = mask_token_id {
+        let dlm_config = if let Some(manual_mask_id) = config.dlm.mask_token_id {
             // Manual mask token ID provided - use it directly
             info!(
                 "Using manual mask_token_id={} (benchmark mode)",
@@ -332,9 +520,10 @@ async fn main() {
                 std::process::exit(1);
             }
             DlmConfig::new(manual_mask_id)
-                .with_block_size(block_size)
-                .with_threshold(threshold)
-                .with_small_block_size(small_block_size)
+                .with_block_size(config.dlm.block_size)
+                .with_threshold(config.dlm.threshold)
+                .with_small_block_size(config.dlm.small_block_size)
+                .with_max_iterations(config.dlm.max_iterations_per_block)
         } else {
             // Auto-detect DLM model with diagnostics
             let detection = DlmConfig::detect_with_diagnostics(&engine);
@@ -348,9 +537,10 @@ async fn main() {
                     info!("  Vocab size: {}", detection.vocab_size);
                     info!("============================================================");
                     DlmConfig::new(mask_id)
-                        .with_block_size(block_size)
-                        .with_threshold(threshold)
-                        .with_small_block_size(small_block_size)
+                        .with_block_size(config.dlm.block_size)
+                        .with_threshold(config.dlm.threshold)
+                        .with_small_block_size(config.dlm.small_block_size)
+                        .with_max_iterations(config.dlm.max_iterations_per_block)
                 }
                 None => {
                     // Print detailed diagnostic error
@@ -366,10 +556,10 @@ async fn main() {
         }
 
         let scheduler_config = DlmSchedulerConfig {
-            max_sequences,
+            max_sequences: config.scheduler.max_sequences,
             dlm: dlm_config,
-            enable_radix_cache: true,
-            radix_cache_max_tokens: 100_000,
+            enable_radix_cache: config.scheduler.enable_radix_cache,
+            radix_cache_max_tokens: config.scheduler.radix_cache_max_tokens,
         };
 
         let (mut scheduler, handle) = DlmScheduler::new(scheduler_config, engine.clone());
@@ -377,11 +567,11 @@ async fn main() {
         info!("DLM scheduler initialized");
 
         // Benchmark mode: run benchmark and exit
-        if benchmark_mode {
+        if config.benchmark.enabled {
             info!("=== Benchmark Mode ===");
-            info!("Iterations: {}", benchmark_iterations);
-            info!("Max tokens per iteration: {}", benchmark_max_tokens);
-            info!("Prompt: {}", benchmark_prompt);
+            info!("Iterations: {}", config.benchmark.iterations);
+            info!("Max tokens per iteration: {}", config.benchmark.max_tokens);
+            info!("Prompt: {}", config.benchmark.prompt);
 
             // Run scheduler in background
             let scheduler_handle_bg = tokio::spawn(async move {
@@ -392,9 +582,9 @@ async fn main() {
             run_benchmark(
                 handle,
                 engine,
-                &benchmark_prompt,
-                benchmark_iterations,
-                benchmark_max_tokens,
+                &config.benchmark.prompt,
+                config.benchmark.iterations,
+                config.benchmark.max_tokens,
             )
             .await;
 
@@ -416,7 +606,7 @@ async fn main() {
             .route("/v1/chat/completions", post(chat_completions))
             .with_state(app_state);
 
-        let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
+        let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse().unwrap();
         info!("Server listening on http://{}", addr);
 
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
