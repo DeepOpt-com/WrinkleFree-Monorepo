@@ -95,6 +95,7 @@ uv run --package wrinklefree-deployer sky jobs queue
 | `skypilot/train.yaml` | SkyPilot training job template |
 | `skypilot/service.yaml` | SkyServe inference template |
 | `skypilot/smoke_test_lightning.yaml` | **Smoke test: Lightning + auto batch (RECOMMENDED)** |
+| `skypilot/smoke_test_influence.yaml` | Smoke test: Influence-based data remixing |
 | `skypilot/smoke_test_unified_1gpu.yaml` | Smoke test: 1x L40 unified training (legacy) |
 | `skypilot/smoke_test_unified_2gpu.yaml` | Smoke test: 2x L40 with FSDP |
 | `skypilot/smoke_test_bitdistill.yaml` | Smoke test: BitDistill distillation |
@@ -108,25 +109,32 @@ Quick validation of the training pipeline (~5 minutes):
 
 ```bash
 cd packages/deployer
+source credentials/.env
 
-# 1x L40 smoke test (20 steps with influence remixing)
+# Lightning + auto batch (RECOMMENDED)
+sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
+  --env OBJECTIVE_COMBO=dlm
+
+# Influence-based data remixing (tests InfluenceTrackerCallback)
+sky launch skypilot/smoke_test_influence.yaml -y --cluster influence-smoke
+
+# 1x L40 unified training (legacy)
 sky launch skypilot/smoke_test_unified_1gpu.yaml -y --cluster unified-1gpu
 
 # 2x L40 smoke test (FSDP data parallelism)
 sky launch skypilot/smoke_test_unified_2gpu.yaml -y --cluster unified-2gpu
 
 # LRC calibration smoke test (Low-Rank Correction)
-source credentials/.env
 export SKYPILOT_DOCKER_PASSWORD=$(cat credentials/gcp-service-account.json)
 sky launch skypilot/smoke_test_lrc.yaml -y --secret WANDB_API_KEY --secret SKYPILOT_DOCKER_PASSWORD
 
 # Monitor
+sky logs lightning-smoke
+sky logs influence-smoke
 sky logs unified-1gpu
-sky logs unified-2gpu
-sky logs wf-smoke-lrc
 
 # Teardown
-sky down unified-1gpu unified-2gpu wf-smoke-lrc -y
+sky down lightning-smoke influence-smoke unified-1gpu unified-2gpu wf-smoke-lrc -y
 ```
 
 **Test Configuration**:

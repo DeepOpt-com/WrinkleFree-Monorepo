@@ -1,0 +1,148 @@
+# WrinkleFree Influence Tracking E2E Test (1x L40)
+#
+# Tests the influence-based dataset remixing integration:
+# - InfluenceTrackerCallback initialization
+# - Probe gradient caching at train start
+# - Multi-source data loading (mixed_pretrain config)
+# - Weight update logging to WandB
+#
+# Usage:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/smoke_test_influence.yaml -y --cluster influence-smoke
+#
+# Monitor:
+#   sky logs influence-smoke
+#
+# Teardown:
+#   sky down influence-smoke -y
+
+name: wrinklefree-influence-smoke
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  use_spot: false
+  cloud: nebius
+
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  MAX_STEPS: 50
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: influence-smoke-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  uv sync --all-packages
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================"
+  echo "WrinkleFree Influence Tracking E2E Test"
+  echo "================================================"
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS"
+  echo "Data Config: mixed_pretrain (multi-source with probes)"
+  echo "Influence: enabled"
+  echo "================================================"
+  echo ""
+  echo "Expected behavior:"
+  echo "1. InfluenceTrackerCallback initializes"
+  echo "2. Probe gradients cached at train start"
+  echo "3. Weight updates triggered every 20 steps"
+  echo "4. Weights logged to WandB (influence/weight_*)"
+  echo "================================================"
+  echo ""
+
+  echo "[Training] Running Lightning training with influence..."
+  # Note: Using AdamW instead of MuonClip due to muon_fsdp2 single-GPU bug
+  # Using mixed_pretrain data config for multi-source with probes
+  # Disabled auto_batch_size to avoid repeated dataloader iteration (OOM on 64GB)
+  # Set DATA_NUM_WORKERS=1 to reduce memory pressure (each worker loads all 6 datasets)
+  export DATA_NUM_WORKERS=1
+  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=unified \
+    data.config_name=mixed_pretrain \
+    training.max_steps=${MAX_STEPS} \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=4 \
+    training.optimizer.type=adamw \
+    training.influence.enabled=true \
+    training.influence.update_interval=20 \
+    training.influence.learning_rate=0.1 \
+    +training.influence.samples_per_dataset=8 \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=influence_smoke \
+    training.checkpoint.save_interval=25 \
+    training.logging.log_interval=1 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    2>&1 | tee training.log
+
+  echo ""
+  echo "================================================"
+  echo "Influence Smoke Test Complete!"
+  echo "================================================"
+
+  # Verify influence logs appeared
+  echo ""
+  echo "[Verify] Checking for influence-related log messages:"
+  if grep -q "InfluenceTrackerCallback" training.log; then
+    echo "✓ InfluenceTrackerCallback found in logs"
+  else
+    echo "✗ WARNING: InfluenceTrackerCallback not found in logs"
+  fi
+
+  if grep -q "probe gradients" training.log || grep -q "Probe gradients" training.log; then
+    echo "✓ Probe gradient caching message found"
+  else
+    echo "✗ WARNING: Probe gradient caching message not found"
+  fi
+
+  if grep -q "influence" training.log; then
+    echo "✓ Influence-related messages found"
+  else
+    echo "✗ WARNING: No influence messages in logs"
+  fi
+
+  # Verify checkpoints
+  echo ""
+  echo "[Verify] Checkpoints:"
+  find $CHECKPOINT_DIR -type f -name "*.ckpt" | head -10
+
+  # WandB link
+  echo ""
+  echo "WandB: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
+  echo ""
+  echo "Check WandB for influence/weight_* metrics!"

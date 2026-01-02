@@ -9,6 +9,7 @@ Provides a clean, maintainable training loop with:
 
 from wrinklefree.lightning.callbacks import (
     GCSCheckpointCallback,
+    InfluenceTrackerCallback,
     LambdaWarmupCallback,
     QKClipCallback,
     TokenCountCallback,
@@ -21,6 +22,7 @@ __all__ = [
     "WrinkleFreeLightningModule",
     "WrinkleFreeDataModule",
     "GCSCheckpointCallback",
+    "InfluenceTrackerCallback",
     "LambdaWarmupCallback",
     "QKClipCallback",
     "TokenCountCallback",

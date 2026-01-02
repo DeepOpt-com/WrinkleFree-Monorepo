@@ -1,0 +1,176 @@
+# LRC + DLM + CE Training with Influence-Based Remixing (1x L40)
+#
+# SmolLM2-135M training run with:
+# - Low-Rank Correction (LRC) for quantization recovery
+# - Diffusion Language Model (DLM) objective
+# - Standard cross-entropy loss
+# - Influence-based dataset weight optimization
+#
+# Curriculum:
+# - First 20%: fineweb-edu warmup (CE + LRC)
+# - Remaining 80%: mixed_pretrain with influence (CE + DLM + LRC)
+#
+# Usage:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/lrc_dlm_influence_train.yaml -y --cluster lrc-dlm-train
+#
+# Monitor:
+#   sky logs lrc-dlm-train
+#
+# Teardown:
+#   sky down lrc-dlm-train -y
+
+name: wrinklefree-lrc-dlm-influence
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  disk_size: 100
+  use_spot: false
+  cloud: nebius
+
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  TRAINING_CONFIG: lrc_dlm_influence
+  TOTAL_TOKENS: 1000000000  # 1B tokens
+  EXPERIMENT_NAME: lrc_dlm_smollm2_135m
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: lrc-dlm-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Install dependencies
+  uv sync --all-packages
+
+  # Verify GCS access
+  echo "Verifying GCS access..."
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  gsutil ls gs://${GCS_BUCKET}/ > /dev/null 2>&1 && echo "GCS access OK" || echo "WARNING: GCS access failed"
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Load credentials
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  # Activate GCS credentials
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json
+
+  # Create checkpoint directory
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  rm -rf $CHECKPOINT_DIR  # Clean previous runs
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================"
+  echo "WrinkleFree LRC + DLM + Influence Training"
+  echo "================================================"
+  echo "Model: $MODEL"
+  echo "Training Config: $TRAINING_CONFIG"
+  echo "Total Tokens: $TOTAL_TOKENS"
+  echo "Experiment: $EXPERIMENT_NAME"
+  echo "WandB Project: $WANDB_PROJECT"
+  echo "GCS Bucket: $GCS_BUCKET"
+  echo "================================================"
+  echo ""
+  echo "Training Schedule:"
+  echo "- First 20%: fineweb-edu warmup (CE + LRC)"
+  echo "- Remaining 80%: mixed_pretrain with influence (CE + DLM + LRC)"
+  echo ""
+  echo "Objectives:"
+  echo "- continue_pretrain (CE): weight=1.0"
+  echo "- dlm: weight=0.5 (after warmup)"
+  echo "- lrc_reconstruction: weight=0.3"
+  echo ""
+  echo "Influence Settings:"
+  echo "- warmup_steps: 2000"
+  echo "- update_interval: 500"
+  echo "- learning_rate: 0.15"
+  echo "================================================"
+  echo ""
+
+  # Set num workers low to avoid memory issues
+  export DATA_NUM_WORKERS=2
+
+  echo "[Training] Starting Lightning training..."
+  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=${TRAINING_CONFIG} \
+    training.total_tokens=${TOTAL_TOKENS} \
+    training.auto_batch_size=true \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=${EXPERIMENT_NAME} \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.log_interval=10 \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    2>&1 | tee training.log
+
+  echo ""
+  echo "================================================"
+  echo "Training Complete!"
+  echo "================================================"
+
+  # Verify training completed successfully
+  echo ""
+  echo "[Verify] Training summary:"
+
+  # Check for key metrics in logs
+  if grep -q "loss" training.log; then
+    echo "Loss metrics found in logs"
+    grep -E "train/loss|train/continue_pretrain|train/dlm|train/lrc" training.log | tail -20
+  fi
+
+  # Check influence weight updates
+  echo ""
+  echo "[Verify] Influence weight updates:"
+  if grep -q "influence" training.log; then
+    echo "Influence logging found"
+    grep -E "influence|weight_update" training.log | tail -10
+  else
+    echo "WARNING: No influence messages found"
+  fi
+
+  # List checkpoints
+  echo ""
+  echo "[Verify] Checkpoints:"
+  find $CHECKPOINT_DIR -type f \( -name "*.ckpt" -o -name "*.pt" \) | head -10
+
+  # Final summary
+  echo ""
+  echo "================================================"
+  echo "WandB: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
+  echo "GCS: gs://${GCS_BUCKET}/checkpoints/${EXPERIMENT_NAME}/"
+  echo "================================================"
+  echo ""
+  echo "Check WandB for:"
+  echo "- train/loss, train/continue_pretrain_loss, train/dlm_loss"
+  echo "- influence/weight_* (dataset mixture weights)"
+  echo "- schedule/* (curriculum phase weights)"
+  echo "================================================"

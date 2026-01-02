@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from bitnet_arch.conversion import auto_convert_if_needed
 from wrinklefree.lightning import (
     GCSCheckpointCallback,
+    InfluenceTrackerCallback,
     LambdaWarmupCallback,
     QKClipCallback,
     TokenCountCallback,
@@ -192,6 +193,15 @@ def create_callbacks(cfg: DictConfig) -> list:
                 max_tokens=cfg.training.total_tokens,
                 seq_length=cfg.training.max_seq_length,
             )
+        )
+
+    # Influence-based data remixing
+    influence_cfg = cfg.training.get("influence", {})
+    if influence_cfg.get("enabled", False):
+        callbacks.append(InfluenceTrackerCallback(config=cfg))
+        logger.info(
+            f"Influence tracking enabled: update_interval={influence_cfg.get('update_interval', 1000)}, "
+            f"warmup={influence_cfg.get('warmup_steps', 500)}"
         )
 
     # LR monitor

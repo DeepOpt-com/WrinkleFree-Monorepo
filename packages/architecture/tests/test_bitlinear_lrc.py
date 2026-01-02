@@ -290,7 +290,7 @@ class TestFreezeModelExceptLRC:
         stats = freeze_model_except_lrc(model)
 
         expected_lrc_params = 128 * 16 + 64 * 16  # V + U
-        expected_frozen = 128 * 64  # weight
+        expected_frozen = 128 * 64 * 2  # weight + weight_quantized
 
         assert stats["trainable"] == expected_lrc_params
         assert stats["frozen"] == expected_frozen
@@ -326,3 +326,132 @@ class TestGetLRCStats:
         assert stats["num_lrc_layers"] == 2
         assert stats["average_rank"] == 12  # (16 + 8) / 2
         assert set(stats["ranks"]) == {16, 8}
+
+
+class TestPrecomputedQuantizedWeights:
+    """Test pre-computed quantized weights functionality."""
+
+    def test_weight_quantized_exists(self):
+        """Test that weight_quantized is created and is a parameter."""
+        layer = BitLinearLRC(128, 64, rank=16)
+        assert hasattr(layer, "weight_quantized")
+        assert isinstance(layer.weight_quantized, nn.Parameter)
+        assert not layer.weight_quantized.requires_grad
+
+    def test_weight_quantized_matches_weight_quant(self):
+        """Test that weight_quantized equals weight_quant(weight)."""
+        layer = BitLinearLRC(128, 64, rank=16)
+        expected = layer.weight_quant(layer.weight)
+        assert torch.allclose(layer.weight_quantized, expected)
+
+    def test_weight_quantized_shape(self):
+        """Test weight_quantized has same shape as weight."""
+        layer = BitLinearLRC(128, 64, rank=16)
+        assert layer.weight_quantized.shape == layer.weight.shape
+
+    def test_checkpoint_save_load_preserves_weight_quantized(self):
+        """Test that weight_quantized persists through save/load."""
+        import tempfile
+
+        layer = BitLinearLRC(64, 32, rank=8)
+        original_wq = layer.weight_quantized.clone()
+
+        # Save state dict
+        with tempfile.NamedTemporaryFile(suffix=".pt") as f:
+            torch.save(layer.state_dict(), f.name)
+
+            # Create new layer and load
+            layer2 = BitLinearLRC(64, 32, rank=8)
+            layer2.load_state_dict(torch.load(f.name, weights_only=True))
+
+        assert torch.allclose(layer2.weight_quantized, original_wq)
+
+    def test_forward_uses_cached_weights(self):
+        """Test that forward uses weight_quantized, not recomputed."""
+        layer = BitLinearLRC(64, 32, rank=8)
+        x = torch.randn(2, 8, 64)
+
+        # Get normal output
+        output1 = layer(x).clone()
+
+        # Modify weight_quantized directly (should affect output)
+        with torch.no_grad():
+            layer.weight_quantized.add_(0.1)
+
+        output2 = layer(x)
+
+        # Outputs should differ because we changed weight_quantized
+        assert not torch.allclose(output1, output2)
+
+    def test_keep_original_weight_true_by_default(self):
+        """Test that original weight is kept by default."""
+        layer = BitLinearLRC(64, 32, rank=8)
+        assert layer.keep_original_weight is True
+        assert layer.weight.numel() > 0
+
+    def test_keep_original_weight_false_deletes_weight(self):
+        """Test that weight is deleted when keep_original_weight=False."""
+        layer = BitLinearLRC(64, 32, rank=8, keep_original_weight=False)
+        assert layer.weight.numel() == 0  # Weight should be empty tensor
+        # But weight_quantized should still exist
+        assert layer.weight_quantized.numel() == 64 * 32
+
+    def test_forward_works_without_original_weight(self):
+        """Test forward pass works when original weight is deleted."""
+        layer = BitLinearLRC(64, 32, rank=8, keep_original_weight=False)
+        x = torch.randn(2, 8, 64)
+
+        # Should not raise
+        output = layer(x)
+        assert output.shape == (2, 8, 32)
+
+    def test_convert_with_keep_original_weight_false(self):
+        """Test conversion with keep_original_weight=False."""
+        linear = BitLinear(128, 64)
+        original_weight = linear.weight.data.clone()
+        model = nn.Sequential(linear)
+
+        model = convert_bitlinear_to_lrc(model, keep_original_weight=False)
+
+        lrc_layer = model[0]
+        assert isinstance(lrc_layer, BitLinearLRC)
+        # Original weight should be deleted
+        assert lrc_layer.weight.numel() == 0
+        # But quantized weights should match what we'd expect
+        expected_wq = lrc_layer.weight_quant(original_weight)
+        assert torch.allclose(lrc_layer.weight_quantized, expected_wq)
+
+    def test_compute_quantized_weights_updates_cache(self):
+        """Test that compute_quantized_weights updates the cache."""
+        layer = BitLinearLRC(64, 32, rank=8)
+
+        # Modify the weight
+        with torch.no_grad():
+            layer.weight.data.fill_(1.0)
+
+        # Cache should be stale now
+        old_wq = layer.weight_quantized.clone()
+
+        # Recompute
+        layer.compute_quantized_weights()
+
+        # Cache should be updated
+        expected = layer.weight_quant(layer.weight)
+        assert torch.allclose(layer.weight_quantized, expected)
+        assert not torch.allclose(layer.weight_quantized, old_wq)
+
+    def test_weight_quantized_in_state_dict(self):
+        """Test that weight_quantized is included in state_dict."""
+        layer = BitLinearLRC(64, 32, rank=8)
+        state_dict = layer.state_dict()
+        assert "weight_quantized" in state_dict
+
+    def test_stats_uses_weight_quantized_for_frozen_count(self):
+        """Test get_lrc_stats uses weight_quantized for frozen param count."""
+        layer = BitLinearLRC(128, 64, rank=16, keep_original_weight=False)
+        model = nn.Sequential(layer)
+
+        stats = get_lrc_stats(model)
+
+        # Should count weight_quantized (128*64), not the empty weight
+        assert stats["total_frozen_params"] == 128 * 64

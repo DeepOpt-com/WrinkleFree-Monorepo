@@ -152,7 +152,7 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
 |------|---------|
 | `module.py` | `WrinkleFreeLightningModule` - wraps model + ObjectiveManager |
 | `datamodule.py` | `WrinkleFreeDataModule` - wraps existing dataloaders |
-| `callbacks.py` | Custom callbacks (GCS, ZClip, TokenCount, etc.) |
+| `callbacks.py` | Custom callbacks (GCS, ZClip, TokenCount, InfluenceTracker, etc.) |
 
 **Smoke Tests** (L40 GPU):
 ```bash
@@ -168,22 +168,32 @@ sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
 
 ### Influence-Based Data Remixing
 
-Dynamic dataset weight optimization during training (MobileLLM-R1 methodology):
+Dynamic dataset weight optimization during training (MobileLLM-R1 methodology).
+
+**Lightning Integration**: Uses `InfluenceTrackerCallback` which wraps `data_handler.influence.InfluenceTracker`.
 
 ```bash
-# Enable influence remixing with mixed_pretrain data
-uv run python scripts/train.py model=smollm2_135m training=unified \
-  data=mixed_pretrain \
-  influence.enabled=true \
-  influence.warmup_steps=1000 \
-  influence.update_interval=5000 \
-  influence.learning_rate=0.1
+# Enable influence remixing with mixed_pretrain data (Lightning trainer)
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  data.config_name=mixed_pretrain \
+  training.influence.enabled=true \
+  training.influence.warmup_steps=1000 \
+  training.influence.update_interval=5000 \
+  training.influence.learning_rate=0.1
 
 # What happens:
-# 1. Warmup (first 1000 steps): Use initial dataset weights
-# 2. After warmup: Every 5000 steps, compute influence scores
-# 3. Adjust dataset weights to maximize influence on probe domains
-# 4. Log weights to WandB: influence/weight_{dataset_name}
+# 1. InfluenceTrackerCallback caches probe gradients at train start
+# 2. Warmup (first 1000 steps): Use initial dataset weights
+# 3. After warmup: Every 5000 steps, compute influence scores
+# 4. Adjust dataset weights to maximize influence on probe domains
+# 5. Log weights to WandB: influence/weight_{dataset_name}
+```
+
+**Smoke Test for Influence**:
+```bash
+cd packages/deployer
+source credentials/.env
+sky launch skypilot/smoke_test_influence.yaml -y --cluster influence-smoke
 ```
 
 **How Influence Works**:

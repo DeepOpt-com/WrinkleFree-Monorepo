@@ -1,0 +1,188 @@
+# LRC + DLM + CE Training with Influence-Based Data Remixing
+#
+# Combines:
+# - Low-Rank Correction (LRC) for post-quantization recovery
+# - Diffusion Language Model (DLM) masking objective
+# - Standard cross-entropy loss (continue_pretrain)
+# - Influence-based dataset weight optimization
+#
+# Curriculum:
+# - First 20%: warmup on fineweb-edu (CE + LRC, no DLM)
+# - Remaining 80%: mixed_pretrain with influence remixing (CE + DLM + LRC)
+#
+# Usage:
+#   uv run python scripts/train_lightning.py \
+#     model=smollm2_135m training=lrc_dlm_influence
+#
+stage: lrc_dlm_influence
+
+# LRC configuration - enable low-rank correction matrices
+lrc:
+  enabled: true
+  rank_percentage: 0.1  # 10% rank for ~20% additional params
+  init_method: zeros    # or "svd_residual" for better init
+
+# Auto-convert to BitNet if not already converted
+auto_convert:
+  enabled: true
+  exclude_layers:
+    - embed_tokens
+    - lm_head
+    - embed_positions
+
+# torch.compile for training speedup
+torch_compile:
+  enabled: true
+  mode: default
+
+# FP8 disabled for L40 (only H100/H200 support FP8)
+fp8:
+  enabled: false
+
+# Sequence packing
+packing:
+  enabled: true
+
+# === OPTIMIZER ===
+# Use AdamW for single-GPU (muon_fsdp2 has single-GPU bug)
+optimizer:
+  type: adamw
+  lr: 1e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+# Scheduler: WSD with short warmup
+scheduler:
+  type: wsd
+  warmup_steps: 200
+  decay_ratio: 0.2
+  decay_type: linear
+  min_lr_ratio: 0.0
+
+# === TRAINING PARAMETERS ===
+total_tokens: 1_000_000_000  # 1B tokens for testing (scale up for prod)
+max_steps: null              # Use total_tokens instead
+max_seq_length: 512
+batch_size: 16
+gradient_accumulation_steps: 4  # Effective batch = 64
+gradient_clipping: 1.0
+auto_batch_size: true  # Let Lightning find optimal batch size
+
+# Lambda warmup for gradual quantization
+lambda_warmup:
+  enabled: true
+  warmup_steps: 200
+  schedule: linear
+
+# === RESUME CONFIGURATION ===
+resume:
+  checkpoint_path: null
+  load_optimizer_state: true
+  load_scheduler_state: true
+  load_training_state: true
+  strict_model_load: true
+
+# === OBJECTIVES ===
+# Multi-task: CE + DLM + LRC reconstruction
+objectives:
+  # Standard next-token prediction (CE loss)
+  continue_pretrain:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+  # Diffusion Language Model masking
+  dlm:
+    enabled: true
+    weight: 0.5  # Will be curriculum-controlled
+    mask_prob: 0.15
+    mask_token_id: 0
+    use_complementary_masks: true
+
+  # LRC reconstruction (hidden state matching with teacher)
+  lrc_reconstruction:
+    enabled: true
+    weight: 0.3
+    loss_type: mse
+    layer_weights: progressive
+    temperature: 1.0
+    normalize: false
+
+# Teacher model for LRC reconstruction targets
+teacher:
+  fp16: true
+  offload_to_cpu: false
+  load_in_4bit: false
+  use_flash_attention: false
+
+# === CURRICULUM ===
+# First 20%: warmup on fineweb-edu (CE + LRC, no DLM)
+# Remaining 80%: mixed_pretrain with influence (CE + DLM + LRC)
+curriculum:
+  enabled: true
+  interpolation: linear
+  phases:
+    # Phase 1: Warmup - CE + LRC only, fineweb-edu data
+    - name: warmup
+      end_ratio: 0.2
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0
+        dlm: 0.0
+        lrc_reconstruction: 0.3
+
+    # Phase 2: Main training - CE + DLM + LRC with influence remixing
+    - name: main
+      end_ratio: 1.0
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 1.0
+        dlm: 0.5
+        lrc_reconstruction: 0.3
+
+# === INFLUENCE-BASED DATA REMIXING ===
+# Enabled during Phase 2 (after 20% warmup)
+influence:
+  enabled: true
+  method: datainf
+  # Warmup matches curriculum phase 1 (20% of training)
+  # For 1B tokens at ~16k tokens/step, 20% = ~12500 steps
+  warmup_steps: 2000  # Start after 20% warmup
+  update_interval: 500  # Update weights every 500 steps
+  learning_rate: 0.15
+  samples_per_dataset: 32
+  lambda_reg: 1e-4
+  smoothing: 0.1
+  # Constraints to prevent any domain from dominating
+  min_weight: 0.05
+  max_weight: 0.60
+
+# === CHECKPOINTING ===
+checkpoint:
+  save_interval: 500
+  keep_last_n: 5
+  save_optimizer: true
+
+# === LOGGING ===
+# WandB with influence weight tracking
+logging:
+  log_interval: 10
+  wandb:
+    enabled: true
+    project: wrinklefree
+    entity: null
+    name: null
+    tags: [lrc, dlm, influence, smollm2]
+
+# Early stopping disabled for exploration
+early_stopping:
+  enabled: false
+
+# Memory optimization
+memory:
+  gradient_checkpointing: true
+  clear_cache_interval: 100
+
+# Output directory
+output_dir: outputs/lrc_dlm_influence

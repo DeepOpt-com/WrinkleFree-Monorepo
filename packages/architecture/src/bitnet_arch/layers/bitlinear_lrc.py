@@ -58,6 +58,7 @@ class BitLinearLRC(BitLinear):
         rank_percentage: float = 0.1,
         bias: bool = False,
         eps: float = 1e-5,
+        keep_original_weight: bool = True,
     ):
         super().__init__(in_features, out_features, bias=bias, eps=eps)
 
@@ -67,6 +68,7 @@ class BitLinearLRC(BitLinear):
 
         self.rank = rank
         self.rank_percentage = rank_percentage
+        self.keep_original_weight = keep_original_weight
 
         # CRITICAL: Freeze quantized weights - only LRC matrices should train
         self.weight.requires_grad = False
@@ -79,13 +81,39 @@ class BitLinearLRC(BitLinear):
         self.lrc_U = nn.Parameter(torch.zeros(out_features, rank))
         self.lrc_V = nn.Parameter(torch.zeros(in_features, rank))
 
+        # Pre-computed quantized weights (frozen, saves recomputation each forward)
+        self.weight_quantized = nn.Parameter(
+            torch.empty_like(self.weight), requires_grad=False
+        )
+        self.compute_quantized_weights()
+
+    def compute_quantized_weights(self) -> None:
+        """Pre-compute and cache the quantized weights.
+
+        Call this after modifying self.weight. If keep_original_weight=False,
+        this will also delete the original weight to save memory.
+
+        Note: init_lrc_from_svd() requires the original weight, so call that
+        before setting keep_original_weight=False.
+        """
+        with torch.no_grad():
+            self.weight_quantized.data.copy_(self.weight_quant(self.weight))
+
+        if not self.keep_original_weight:
+            # Replace weight with empty tensor to save memory
+            # Keep as parameter so state_dict structure is unchanged
+            self.weight = nn.Parameter(
+                torch.empty(0, device=self.weight.device, dtype=self.weight.dtype),
+                requires_grad=False,
+            )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass with low-rank correction.
 
         output = W_quant @ Q_a(X) + U @ V^T @ X
 
-        The quantized path uses frozen ternary weights.
+        The quantized path uses frozen, pre-computed ternary weights.
         The LRC path uses trainable full-precision matrices on unquantized activations.
 
         Args:
@@ -94,11 +122,10 @@ class BitLinearLRC(BitLinear):
         Returns:
             Output tensor of shape (..., out_features)
         """
-        # Cast weight to input dtype for mixed precision compatibility
-        w = self.weight.to(x.dtype)
+        # Use pre-computed quantized weights (cast to input dtype for mixed precision)
+        w_quant = self.weight_quantized.to(x.dtype)
 
-        # Quantized path (frozen weights, no STE needed since frozen)
-        w_quant = self.weight_quant(w)
+        # Quantized path (frozen weights)
         x_quant = self.activation_quant(x)
         quant_output = F.linear(x_quant, w_quant, self.bias)
 
@@ -154,6 +181,7 @@ def convert_bitlinear_to_lrc(
     rank_percentage: float = 0.1,
     init_method: str = "zeros",
     exclude_names: Optional[list[str]] = None,
+    keep_original_weight: bool = True,
 ) -> nn.Module:
     """
     Convert all BitLinear layers in a module to BitLinearLRC.
@@ -167,6 +195,8 @@ def convert_bitlinear_to_lrc(
         rank_percentage: Rank as fraction of min(in, out) per layer
         init_method: "zeros" (default) or "svd_residual"
         exclude_names: Layer names to exclude from conversion
+        keep_original_weight: If False, delete original weights after
+            quantization to save memory. Default True for compatibility.
 
     Returns:
         Module with BitLinear layers replaced by BitLinearLRC
@@ -180,6 +210,8 @@ def convert_bitlinear_to_lrc(
         if isinstance(child, BitLinear) and not isinstance(child, BitLinearLRC):
             original_weight = child.weight.data.clone()
 
+            # Always create with keep_original_weight=True initially so we can
+            # copy weights. We'll update and recompute after.
             lrc_layer = BitLinearLRC(
                 in_features=child.in_features,
                 out_features=child.out_features,
@@ -187,6 +219,7 @@ def convert_bitlinear_to_lrc(
                 rank_percentage=rank_percentage,
                 bias=child.bias is not None,
                 eps=child.eps,
+                keep_original_weight=True,  # Temporary, may change below
             )
 
             # Copy original weights (they will be frozen)
@@ -194,10 +227,15 @@ def convert_bitlinear_to_lrc(
             if child.bias is not None:
                 lrc_layer.bias.data.copy_(child.bias.data)
 
-            # Initialize LRC matrices
+            # Initialize LRC matrices (must be before compute_quantized_weights
+            # if keep_original_weight=False, since SVD needs original weight)
             if init_method == "svd_residual":
                 lrc_layer.init_lrc_from_svd(original_weight)
             # else: zeros (already initialized in __init__)
+
+            # Now set the actual keep_original_weight and recompute
+            lrc_layer.keep_original_weight = keep_original_weight
+            lrc_layer.compute_quantized_weights()
 
             setattr(module, name, lrc_layer)
         else:
@@ -207,6 +245,7 @@ def convert_bitlinear_to_lrc(
                 rank_percentage=rank_percentage,
                 init_method=init_method,
                 exclude_names=exclude_names,
+                keep_original_weight=keep_original_weight,
             )
 
     return module
@@ -266,7 +305,8 @@ def get_lrc_stats(model: nn.Module) -> dict[str, int]:
         if isinstance(module, BitLinearLRC):
             stats["num_lrc_layers"] += 1
             stats["total_lrc_params"] += module.lrc_U.numel() + module.lrc_V.numel()
-            stats["total_frozen_params"] += module.weight.numel()
+            # Use weight_quantized for frozen param count (weight may be empty)
+            stats["total_frozen_params"] += module.weight_quantized.numel()
             if module.bias is not None:
                 stats["total_frozen_params"] += module.bias.numel()
             stats["ranks"].append(module.rank)

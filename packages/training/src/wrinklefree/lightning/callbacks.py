@@ -4,6 +4,7 @@ Provides:
 - GCSCheckpointCallback: Upload checkpoints to GCS
 - ZClipCallback: Adaptive gradient clipping
 - TokenCountCallback: Track tokens and stop at target
+- InfluenceTrackerCallback: Influence-based dataset remixing
 """
 
 import logging
@@ -339,3 +340,174 @@ class LambdaWarmupCallback(Callback):
                     self._lambda_warmup.lambda_val,
                     prog_bar=False,
                 )
+
+
+class InfluenceTrackerCallback(Callback):
+    """Lightning callback for influence-based dataset remixing.
+
+    Wraps data_handler.influence.InfluenceTracker to integrate with Lightning.
+    Dynamically adjusts dataset mixture weights during training based on
+    influence scores computed via DataInf or InfluenceDistillation.
+
+    Self-disables if:
+    - influence.enabled=false in config
+    - No mixed_dataset available (single-source data)
+    - No probe_dataloaders available
+
+    Args:
+        config: Full training configuration (DictConfig or dict).
+            Must contain 'influence' section with:
+            - enabled: bool - Master switch
+            - update_interval: int - Steps between weight updates
+            - learning_rate: float - Weight update learning rate
+            - warmup_steps: int - Steps before first update
+            - method: str - "datainf" or "distillation"
+
+    Example config:
+        ```yaml
+        influence:
+          enabled: true
+          update_interval: 1000
+          learning_rate: 0.2
+          warmup_steps: 500
+          method: datainf
+        ```
+
+    Usage:
+        callbacks.append(InfluenceTrackerCallback(config=cfg))
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self._tracker = None
+        self._enabled = False
+
+    def setup(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        stage: str,
+    ) -> None:
+        """Create InfluenceTracker once we have access to model and datamodule."""
+        if stage != "fit":
+            return
+
+        # Only import when needed (data_handler may not be installed)
+        try:
+            from data_handler.influence import InfluenceTracker
+        except ImportError:
+            logger.warning(
+                "InfluenceTrackerCallback: data_handler.influence not available, "
+                "influence tracking disabled"
+            )
+            return
+
+        # Get datamodule from trainer
+        datamodule = trainer.datamodule
+        if datamodule is None:
+            logger.warning(
+                "InfluenceTrackerCallback: no datamodule available, "
+                "influence tracking disabled"
+            )
+            return
+
+        mixed_dataset = datamodule.get_mixed_dataset()
+        probe_dataloaders = datamodule.get_probe_dataloaders()
+
+        # Debug logging
+        logger.info(f"InfluenceTrackerCallback: mixed_dataset={mixed_dataset is not None}")
+        logger.info(f"InfluenceTrackerCallback: probe_dataloaders={probe_dataloaders is not None}")
+
+        # InfluenceTracker expects config with 'influence' at root level,
+        # but Hydra config has it under 'training.influence'.
+        # Restructure config to match expected format.
+        from omegaconf import OmegaConf
+
+        if hasattr(self.config, "training"):
+            # Full Hydra config - extract training section and move influence to root
+            tracker_config = OmegaConf.to_container(self.config.training, resolve=True)
+            # Move influence config to root level where InfluenceTracker expects it
+            if "influence" in tracker_config:
+                tracker_config = {"influence": tracker_config["influence"]}
+            else:
+                tracker_config = {"influence": {"enabled": False}}
+        else:
+            # Already a dict or simple config
+            tracker_config = self.config
+
+        logger.info(f"InfluenceTrackerCallback: tracker_config influence section={tracker_config.get('influence', {})}")
+
+        # Create the tracker (it will self-disable if not configured)
+        self._tracker = InfluenceTracker(
+            config=tracker_config,
+            model=pl_module.model,
+            mixed_dataset=mixed_dataset,
+            probe_dataloaders=probe_dataloaders,
+        )
+
+        self._enabled = self._tracker.is_enabled
+        if self._enabled:
+            logger.info("InfluenceTrackerCallback: initialized and enabled")
+        else:
+            logger.info(
+                f"InfluenceTrackerCallback: disabled "
+                f"(mixed_dataset={mixed_dataset is not None}, "
+                f"influence.enabled={tracker_config.get('influence', {}).get('enabled', False)})"
+            )
+
+    def on_train_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Cache probe gradients at training start."""
+        if self._tracker and self._enabled:
+            self._tracker.on_train_begin()
+
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: Any,
+        batch: dict[str, Any],
+        batch_idx: int,
+    ) -> None:
+        """Check for weight update after each batch."""
+        if self._tracker and self._enabled:
+            self._tracker.on_step_end(trainer.global_step)
+
+    def on_train_epoch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Optional probe cache refresh at epoch end."""
+        if self._tracker and self._enabled:
+            self._tracker.on_epoch_end(trainer.current_epoch)
+
+    def on_train_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Log final weight history."""
+        if self._tracker and self._enabled:
+            self._tracker.on_train_end()
+
+    @property
+    def is_enabled(self) -> bool:
+        """Check if influence tracking is active."""
+        return self._enabled
+
+    def get_current_weights(self) -> dict[str, float]:
+        """Get current dataset mixture weights."""
+        if self._tracker:
+            return self._tracker.get_current_weights()
+        return {}
+
+    def get_weight_history(self) -> list[dict]:
+        """Get history of weight updates."""
+        if self._tracker:
+            return self._tracker.get_weight_history()
+        return []

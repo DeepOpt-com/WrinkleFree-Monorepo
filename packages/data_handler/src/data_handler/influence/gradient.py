@@ -155,26 +155,32 @@ class DiscriminativeGradientExtractor:
             param.requires_grad_(True)
 
         try:
-            # Forward pass
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                return_dict=True,
-            )
-            logits = outputs["logits"]
+            # Determine dtype from model parameters for autocast
+            model_dtype = next(self.model.parameters()).dtype
+            device = next(self.model.parameters()).device
 
-            # Compute loss (same as PretrainStage)
-            # Shift logits and labels for next-token prediction
-            shift_logits = logits[:, :-1, :].contiguous()
-            shift_labels = labels[:, 1:].contiguous()
+            # Use autocast for consistent dtype handling (bfloat16 models)
+            with torch.amp.autocast(device_type=device.type, dtype=model_dtype, enabled=model_dtype != torch.float32):
+                # Forward pass
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    return_dict=True,
+                )
+                logits = outputs["logits"]
 
-            loss = nn.functional.cross_entropy(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-                ignore_index=-100,
-            )
+                # Compute loss (same as PretrainStage)
+                # Shift logits and labels for next-token prediction
+                shift_logits = logits[:, :-1, :].contiguous()
+                shift_labels = labels[:, 1:].contiguous()
 
-            # Backward to compute gradients
+                loss = nn.functional.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                    ignore_index=-100,
+                )
+
+            # Backward to compute gradients (outside autocast for full precision)
             loss.backward()
 
             # Extract target gradients
