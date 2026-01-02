@@ -41,8 +41,107 @@ use super::sequence::{
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+/// Latency statistics with percentile computation.
+///
+/// Uses reservoir sampling to maintain a fixed-size sample of latencies
+/// for efficient percentile computation.
+#[derive(Debug, Clone)]
+pub struct LatencyStats {
+    /// Collected latency samples (in microseconds)
+    samples: Vec<u64>,
+    /// Total number of observations
+    count: u64,
+    /// Sum of all latencies for mean calculation (in microseconds)
+    total_us: u64,
+    /// Maximum reservoir size
+    max_samples: usize,
+}
+
+impl Default for LatencyStats {
+    fn default() -> Self {
+        Self::new(1000)
+    }
+}
+
+impl LatencyStats {
+    /// Create a new latency tracker with specified reservoir size.
+    pub fn new(max_samples: usize) -> Self {
+        Self {
+            samples: Vec::with_capacity(max_samples),
+            count: 0,
+            total_us: 0,
+            max_samples,
+        }
+    }
+
+    /// Record a latency observation.
+    pub fn record(&mut self, duration: Duration) {
+        let us = duration.as_micros() as u64;
+        self.count += 1;
+        self.total_us += us;
+
+        // Reservoir sampling: randomly replace if at capacity
+        if self.samples.len() < self.max_samples {
+            self.samples.push(us);
+        } else {
+            // Use simple modulo for pseudo-random replacement
+            let idx = (self.count as usize) % self.max_samples;
+            self.samples[idx] = us;
+        }
+    }
+
+    /// Get percentile value (0-100). Returns microseconds.
+    pub fn percentile(&self, p: f64) -> u64 {
+        if self.samples.is_empty() {
+            return 0;
+        }
+
+        let mut sorted = self.samples.clone();
+        sorted.sort_unstable();
+
+        let idx = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    }
+
+    /// Get mean latency in microseconds.
+    pub fn mean(&self) -> u64 {
+        if self.count == 0 {
+            0
+        } else {
+            self.total_us / self.count
+        }
+    }
+
+    /// Get observation count.
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Get p50/p95/p99 percentiles in milliseconds.
+    pub fn percentiles_ms(&self) -> LatencyPercentiles {
+        LatencyPercentiles {
+            p50_ms: self.percentile(50.0) as f64 / 1000.0,
+            p95_ms: self.percentile(95.0) as f64 / 1000.0,
+            p99_ms: self.percentile(99.0) as f64 / 1000.0,
+            mean_ms: self.mean() as f64 / 1000.0,
+            count: self.count,
+        }
+    }
+}
+
+/// Latency percentiles for reporting.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct LatencyPercentiles {
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub mean_ms: f64,
+    pub count: u64,
+}
 
 /// DualCache for Fast-dLLM v2 sub-block KV reuse.
 ///
@@ -155,6 +254,8 @@ struct DlmSequenceState {
     current_block: Option<DlmBlockState>,
     /// DualCache for sub-block reuse
     dual_cache: Option<DualCache>,
+    /// Request start time for latency tracking
+    start_time: Instant,
 }
 
 impl DlmSequenceState {
@@ -163,6 +264,7 @@ impl DlmSequenceState {
             base: SequenceState::new(seq_id, request),
             current_block: None,
             dual_cache: None,
+            start_time: Instant::now(),
         }
     }
 }
@@ -179,6 +281,12 @@ pub struct DlmScheduler {
 
     batch: Batch,
     eos_token_id: i32,
+
+    // Latency tracking
+    request_latency: LatencyStats,
+    block_decode_latency: LatencyStats,
+    total_tokens_generated: u64,
+    total_requests_completed: u64,
 }
 
 impl DlmScheduler {
@@ -218,6 +326,10 @@ impl DlmScheduler {
             pending_queue: VecDeque::new(),
             batch,
             eos_token_id,
+            request_latency: LatencyStats::default(),
+            block_decode_latency: LatencyStats::default(),
+            total_tokens_generated: 0,
+            total_requests_completed: 0,
         };
 
         let handle = DlmSchedulerHandle { request_tx };
@@ -380,6 +492,8 @@ impl DlmScheduler {
 
     /// Decode a single block using Fast-dLLM v2 algorithm.
     async fn decode_block(&mut self, seq_id: BitNetSeqId) {
+        let block_start_time = Instant::now();
+
         let block_size = self.config.dlm.block_size;
         let small_block_size = self.config.dlm.small_block_size;
         let num_small_blocks = self.config.dlm.num_small_blocks();
@@ -397,13 +511,34 @@ impl DlmScheduler {
             state.dual_cache = Some(DualCache::new(block_start_pos, num_small_blocks));
         }
 
+        let max_iterations = self.config.dlm.max_iterations_per_block;
+
         // Process each small block
         for small_block_idx in 0..num_small_blocks {
             let start_idx = small_block_idx * small_block_size;
             let end_idx = start_idx + small_block_size;
 
             // Iterate until all masks in this small block are resolved
+            let mut iteration = 0;
             loop {
+                iteration += 1;
+
+                // Check max iterations safeguard
+                if iteration > max_iterations {
+                    warn!(
+                        "Max iterations ({}) reached for small block {}, forcing remaining {} masks",
+                        max_iterations,
+                        small_block_idx,
+                        block_tokens[start_idx..end_idx]
+                            .iter()
+                            .filter(|&&t| t == mask_id)
+                            .count()
+                    );
+                    // Force unmask remaining by using any token with highest confidence
+                    // This is handled in the normal unmasking logic below
+                    break;
+                }
+
                 let small_block_masks: usize = block_tokens[start_idx..end_idx]
                     .iter()
                     .filter(|&&t| t == mask_id)
@@ -424,28 +559,60 @@ impl DlmScheduler {
 
                 self.batch.clear();
                 let logit_positions: Vec<usize>;
-                // Track batch index mapping:
-                // - masked_only=true: batch_idx = enumerate index
-                // - masked_only=false: batch_idx = block_idx - batch_offset
+
+                // ============================================================
+                // BATCH INDEX MAPPING
+                // ============================================================
+                // There are two batch construction strategies:
+                //
+                // 1. COMPACT (masked_only=true, DualCache hit):
+                //    - Only add tokens needed for masked positions
+                //    - batch_idx = sequential enumeration index
+                //    - Example: masked at [2,5,7] → batch indices [0,1,2]
+                //
+                // 2. FULL (masked_only=false, cache miss):
+                //    - Add all tokens from start_idx to block_size
+                //    - batch_idx = (block_idx - 1) - batch_offset
+                //    - Example: start_idx=4 → batch_offset=4
+                //
+                // TOKEN SHIFT: For masked position i, we need logits from i-1.
+                // This aligns with Fast-dLLM v2 where hidden[i-1] predicts token[i].
+                // ============================================================
                 let masked_only: bool;
                 let batch_offset: usize;
-
-                // TOKEN SHIFT: For masked position i, we need logits from position i-1.
-                // This aligns with Fast-dLLM v2 training where hidden[i-1] predicts token[i].
-                //
-                // We track which block positions are masked (logit_positions),
-                // then request logits for position i-1 for each masked position i.
 
                 if use_cached && first_token_unmasked {
                     // DualCache hit: Only compute for remaining masked positions
                     // Clear KV cache for positions whose logits we need
                     // With token shift, for masked position i, we need position i-1
+                    //
+                    // Optimization: Batch KV cache clearing by merging contiguous ranges
+                    let mut clear_positions: Vec<i32> = Vec::new();
                     for i in start_idx..end_idx {
                         if block_tokens[i] == mask_id && i > 0 {
-                            // Need logits from i-1, so clear that position
-                            let pos = block_start_pos + (i as i32 - 1);
-                            self.engine.kv_cache_seq_rm(seq_id, pos, pos + 1);
+                            clear_positions.push(block_start_pos + (i as i32 - 1));
                         }
+                    }
+
+                    // Merge and clear contiguous ranges
+                    if !clear_positions.is_empty() {
+                        clear_positions.sort_unstable();
+                        let mut range_start = clear_positions[0];
+                        let mut range_end = clear_positions[0] + 1;
+
+                        for &pos in &clear_positions[1..] {
+                            if pos == range_end {
+                                // Extend current range
+                                range_end = pos + 1;
+                            } else {
+                                // Clear current range and start new one
+                                self.engine.kv_cache_seq_rm(seq_id, range_start, range_end);
+                                range_start = pos;
+                                range_end = pos + 1;
+                            }
+                        }
+                        // Clear final range
+                        self.engine.kv_cache_seq_rm(seq_id, range_start, range_end);
                     }
 
                     logit_positions = (start_idx..end_idx)
@@ -505,27 +672,26 @@ impl DlmScheduler {
                     return;
                 }
 
-                // Process masked positions with confidence thresholding
-                // TOKEN SHIFT: For masked position i, logits are at position i-1 in the batch
+                // ============================================================
+                // CANDIDATE GENERATION
+                // ============================================================
+                // For each masked position, get logits and compute confidence.
+                // TOKEN SHIFT: logits at position i-1 predict token at position i.
                 let mut candidates: Vec<(usize, i32, f32)> = Vec::new();
 
                 for (enum_idx, &block_idx) in logit_positions.iter().enumerate() {
-                    // Skip position 0 in block - would need logits from previous block
-                    // which is handled by the prefix cache during prefill
+                    // Skip position 0 - would need logits from previous block
                     if block_idx == 0 {
-                        // For first position in block, use prefix cache logits
-                        // This case should be rare as position 0 is typically not masked
                         continue;
                     }
 
-                    // Determine batch index based on batch type:
-                    // - masked_only: sequential indices for positions with logits
-                    // - full block: logits are at position (block_idx - 1) - batch_offset
-                    //   because we need logits from i-1 to predict token at i
+                    // Compute batch index using the mapping strategy selected above
                     let batch_idx = if masked_only {
+                        // COMPACT: enum_idx maps directly to batch position
                         enum_idx as i32
                     } else {
-                        // With token shift: logits for masked position i are at batch index (i-1) - batch_offset
+                        // FULL: batch contains all tokens from batch_offset
+                        // Logits for position i are at batch index (i-1) - batch_offset
                         ((block_idx - 1) - batch_offset) as i32
                     };
 
@@ -534,9 +700,8 @@ impl DlmScheduler {
                     }
 
                     if let Some(logits) = self.engine.get_logits(batch_idx) {
-                        let probs = softmax(logits);
-                        let token_id = argmax(logits);
-                        let confidence = probs[token_id as usize];
+                        // Use efficient confidence computation (no allocation)
+                        let (token_id, confidence) = confidence_for_argmax(logits);
                         candidates.push((block_idx, token_id, confidence));
                     }
                 }
@@ -579,6 +744,8 @@ impl DlmScheduler {
 
             if is_eos {
                 state.base.phase = SequencePhase::Finished(FinishReason::EOS);
+                // Record block decode latency before returning
+                self.block_decode_latency.record(block_start_time.elapsed());
                 return;
             }
         }
@@ -592,6 +759,9 @@ impl DlmScheduler {
         if state.base.generated_tokens.len() >= state.base.max_tokens as usize {
             state.base.phase = SequencePhase::Finished(FinishReason::Length);
         }
+
+        // Record block decode latency
+        self.block_decode_latency.record(block_start_time.elapsed());
     }
 
     /// Emit a token to the response stream.
@@ -613,10 +783,19 @@ impl DlmScheduler {
 
         for seq_id in finished_ids {
             if let Some(mut state) = self.sequences.remove(&seq_id) {
+                let tokens_generated = state.base.generated_tokens.len();
+
+                // Record request latency
+                let request_duration = state.start_time.elapsed();
+                self.request_latency.record(request_duration);
+                self.total_tokens_generated += tokens_generated as u64;
+                self.total_requests_completed += 1;
+
                 debug!(
-                    "DLM sequence {} finished, generated {} tokens",
+                    "DLM sequence {} finished, generated {} tokens in {:.2}ms",
                     seq_id,
-                    state.base.generated_tokens.len()
+                    tokens_generated,
+                    request_duration.as_secs_f64() * 1000.0
                 );
 
                 // Insert into RadixCache for future reuse
@@ -657,22 +836,45 @@ impl DlmScheduler {
             pending_requests: self.pending_queue.len(),
             radix_cache_tokens: self.radix_cache.cached_tokens(),
             block_size: self.config.dlm.block_size,
+            request_latency: self.request_latency.percentiles_ms(),
+            block_decode_latency: self.block_decode_latency.percentiles_ms(),
+            total_tokens_generated: self.total_tokens_generated,
+            total_requests_completed: self.total_requests_completed,
         }
+    }
+
+    /// Get throughput in tokens per second (based on completed requests).
+    pub fn throughput(&self) -> f64 {
+        if self.total_requests_completed == 0 {
+            return 0.0;
+        }
+        let mean_latency_s = self.request_latency.mean() as f64 / 1_000_000.0;
+        if mean_latency_s <= 0.0 {
+            return 0.0;
+        }
+        let avg_tokens = self.total_tokens_generated as f64 / self.total_requests_completed as f64;
+        avg_tokens / mean_latency_s
     }
 }
 
 /// DLM scheduler statistics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DlmSchedulerStats {
     pub active_sequences: usize,
     pub pending_requests: usize,
     pub radix_cache_tokens: usize,
     pub block_size: usize,
+    pub request_latency: LatencyPercentiles,
+    pub block_decode_latency: LatencyPercentiles,
+    pub total_tokens_generated: u64,
+    pub total_requests_completed: u64,
 }
 
 /// Compute softmax of logits.
 ///
 /// Uses numerically stable implementation with max subtraction.
+/// Note: For single-token confidence, use `confidence_for_argmax` instead
+/// to avoid allocating a full probability vector.
 pub fn softmax(logits: &[f32]) -> Vec<f32> {
     let max_val = logits
         .iter()
@@ -694,6 +896,38 @@ pub fn argmax(logits: &[f32]) -> i32 {
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less))
         .map(|(i, _)| i as i32)
         .unwrap_or(0)
+}
+
+/// Compute confidence for the argmax token without allocating a probability vector.
+///
+/// This is more efficient than calling `softmax()` followed by indexing when you
+/// only need the probability of a single token. It computes:
+///   exp(logits[token_id] - max) / sum(exp(logits[i] - max))
+///
+/// Returns (argmax_token_id, confidence).
+pub fn confidence_for_argmax(logits: &[f32]) -> (i32, f32) {
+    if logits.is_empty() {
+        return (0, 0.0);
+    }
+
+    // Find max and argmax in a single pass
+    let mut max_val = f32::NEG_INFINITY;
+    let mut max_idx: usize = 0;
+    for (i, &val) in logits.iter().enumerate() {
+        if val > max_val {
+            max_val = val;
+            max_idx = i;
+        }
+    }
+
+    // Compute sum of exp(logits - max) in a single pass
+    // The exp at max_idx will be 1.0 (since logits[max_idx] - max_val = 0)
+    let sum_exp: f32 = logits.iter().map(|&x| (x - max_val).exp()).sum();
+
+    // Confidence = exp(0) / sum = 1.0 / sum
+    let confidence = 1.0 / sum_exp;
+
+    (max_idx as i32, confidence)
 }
 
 #[cfg(test)]
@@ -767,6 +1001,59 @@ mod tests {
         let logits = vec![10.0, 5.0, 1.0];
         let idx = argmax(&logits);
         assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn test_confidence_for_argmax_correctness() {
+        let logits = vec![1.0, 2.0, 3.0, 4.0];
+        let (token_id, confidence) = confidence_for_argmax(&logits);
+
+        // Should match softmax + argmax result
+        let probs = softmax(&logits);
+        let expected_token = argmax(&logits);
+        let expected_confidence = probs[expected_token as usize];
+
+        assert_eq!(token_id, expected_token);
+        assert!(
+            (confidence - expected_confidence).abs() < 1e-6,
+            "confidence {} != expected {}",
+            confidence,
+            expected_confidence
+        );
+    }
+
+    #[test]
+    fn test_confidence_for_argmax_high_confidence() {
+        // When one logit dominates, confidence should be high
+        let logits = vec![0.0, 0.0, 10.0, 0.0];
+        let (token_id, confidence) = confidence_for_argmax(&logits);
+
+        assert_eq!(token_id, 2);
+        assert!(confidence > 0.99, "confidence {} should be > 0.99", confidence);
+    }
+
+    #[test]
+    fn test_confidence_for_argmax_uniform() {
+        // When all logits are equal, confidence should be 1/N
+        let logits = vec![0.0; 10];
+        let (_, confidence) = confidence_for_argmax(&logits);
+
+        let expected = 1.0 / 10.0;
+        assert!(
+            (confidence - expected).abs() < 1e-6,
+            "confidence {} != expected {}",
+            confidence,
+            expected
+        );
+    }
+
+    #[test]
+    fn test_confidence_for_argmax_empty() {
+        let logits: Vec<f32> = vec![];
+        let (token_id, confidence) = confidence_for_argmax(&logits);
+
+        assert_eq!(token_id, 0);
+        assert_eq!(confidence, 0.0);
     }
 
     #[test]
@@ -854,5 +1141,79 @@ mod tests {
         let config = DlmSchedulerConfig::default();
         assert_eq!(config.max_sequences, 16);
         assert!(config.enable_radix_cache);
+    }
+
+    #[test]
+    fn test_latency_stats_basic() {
+        let mut stats = LatencyStats::new(100);
+
+        // Record some latencies
+        stats.record(Duration::from_millis(10));
+        stats.record(Duration::from_millis(20));
+        stats.record(Duration::from_millis(30));
+
+        assert_eq!(stats.count(), 3);
+        assert_eq!(stats.mean(), 20_000); // 20ms in microseconds
+    }
+
+    #[test]
+    fn test_latency_stats_percentiles() {
+        let mut stats = LatencyStats::new(100);
+
+        // Record 100 latencies from 1ms to 100ms
+        for i in 1..=100 {
+            stats.record(Duration::from_millis(i));
+        }
+
+        assert_eq!(stats.count(), 100);
+
+        // p50 should be around 50ms (50_000 us)
+        let p50 = stats.percentile(50.0);
+        assert!(p50 >= 49_000 && p50 <= 51_000, "p50 was {}", p50);
+
+        // p95 should be around 95ms
+        let p95 = stats.percentile(95.0);
+        assert!(p95 >= 94_000 && p95 <= 96_000, "p95 was {}", p95);
+
+        // p99 should be around 99ms
+        let p99 = stats.percentile(99.0);
+        assert!(p99 >= 98_000 && p99 <= 100_000, "p99 was {}", p99);
+    }
+
+    #[test]
+    fn test_latency_stats_empty() {
+        let stats = LatencyStats::new(100);
+        assert_eq!(stats.count(), 0);
+        assert_eq!(stats.mean(), 0);
+        assert_eq!(stats.percentile(50.0), 0);
+    }
+
+    #[test]
+    fn test_latency_stats_reservoir_sampling() {
+        let mut stats = LatencyStats::new(10);
+
+        // Record more samples than reservoir size
+        for i in 1..=100 {
+            stats.record(Duration::from_millis(i));
+        }
+
+        assert_eq!(stats.count(), 100);
+        // Mean should still be accurate
+        assert_eq!(stats.mean(), 50_500); // (1+100)/2 * 1000 us
+        // Samples should be at capacity
+        assert_eq!(stats.samples.len(), 10);
+    }
+
+    #[test]
+    fn test_latency_percentiles_ms() {
+        let mut stats = LatencyStats::new(100);
+
+        stats.record(Duration::from_millis(100));
+        stats.record(Duration::from_millis(200));
+        stats.record(Duration::from_millis(300));
+
+        let percentiles = stats.percentiles_ms();
+        assert!((percentiles.mean_ms - 200.0).abs() < 1.0);
+        assert_eq!(percentiles.count, 3);
     }
 }

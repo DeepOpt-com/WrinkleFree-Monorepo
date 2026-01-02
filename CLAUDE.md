@@ -13,7 +13,7 @@
 
 4. **READ PACKAGE CLAUDE.md FIRST:** Before modifying any package, read its `packages/<pkg>/CLAUDE.md`
 
-5. **USE TQ1_0 FOR GGUF:** NEVER use TQ2_0 for bf16 DLM checkpoints - produces garbage
+5. **USE I2_S FOR GGUF:** NEVER use TQ2_0 for bf16 DLM checkpoints - produces garbage
 
 ## Quick Commands
 
@@ -40,7 +40,6 @@
 - Clean `/tmp/checkpoints/` on remote before re-running smoke tests
 
 ### DON'T
-- Don't use MuonClip on single-GPU (bug in muon_fsdp2) - use AdamW instead
 - Don't use TQ2_0 for bf16 checkpoints (destroys ternary weight distribution)
 - Don't push to main without PR review
 - Don't run `sky down` on clusters you didn't create
@@ -92,26 +91,24 @@ training=lrc_calibration    # Low-rank correction
 # Common overrides
 training.max_steps=100      # Limit steps for testing
 training.auto_batch_size=true  # Auto-find max batch size
-training.optimizer.type=adamw  # Use AdamW (MuonClip has single-GPU bug)
 output_dir=/tmp/checkpoints
 gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
 ```
 
 ## GGUF Conversion (IMPORTANT)
 
-**NEVER use TQ2_0 for bf16 DLM checkpoints - use TQ1_0!**
+**NEVER use TQ2_0 for bf16 DLM checkpoints - it produces garbage output!**
 
 | Format | Size | Speed | Quality | Notes |
 |--------|------|-------|---------|-------|
-| **TQ1_0** | 678MB | 63 tok/s | Good | **RECOMMENDED** |
+| **I2_S** | 1.1GB | 55 tok/s | Good | **RECOMMENDED** - best compatibility |
+| TQ1_0 | 678MB | 63 tok/s | Good | Smaller, may conflict with some llama.cpp builds |
 | TQ2_0 | 779MB | 76 tok/s | GARBAGE | Do NOT use for bf16! |
-| I2_S | 1.1GB | 55 tok/s | Good | Larger but works |
 
 ```bash
-# Correct conversion workflow
-cd extern/reference/BitNet.cpp
-python utils/convert-hf-to-gguf-bitnet.py \
-    path/to/checkpoint --outtype tq1_0 --outfile model.gguf
+# Correct conversion workflow (I2_S recommended)
+python packages/inference/scripts/convert_checkpoint_to_gguf.py \
+    path/to/checkpoint --outfile model.gguf --outtype i2_s
 ```
 
 ## Reference

@@ -87,13 +87,22 @@ def download_from_gcs(gcs_path: str, local_dir: Path) -> Path:
 
 
 def fix_architecture_name(checkpoint_path: Path) -> bool:
-    """Fix BitNetForCausalLM -> BitnetForCausalLM if needed."""
+    """Fix BitNetForCausalLM -> BitnetForCausalLM if needed.
+
+    WrinkleFree training uses BitNetForCausalLM (capital N), but llama.cpp
+    expects BitnetForCausalLM (lowercase n). This is a common source of
+    conversion failures.
+    """
     config_file = checkpoint_path / "config.json"
     with open(config_file) as f:
         content = f.read()
 
     if "BitNetForCausalLM" in content:
-        logger.info("Fixing architecture name: BitNetForCausalLM -> BitnetForCausalLM")
+        logger.warning("=" * 60)
+        logger.warning("AUTO-FIX: Architecture name correction applied!")
+        logger.warning("  Before: BitNetForCausalLM (WrinkleFree training format)")
+        logger.warning("  After:  BitnetForCausalLM (llama.cpp expected format)")
+        logger.warning("=" * 60)
         content = content.replace("BitNetForCausalLM", "BitnetForCausalLM")
         with open(config_file, "w") as f:
             f.write(content)
@@ -358,8 +367,28 @@ Examples:
         action="store_true",
         help="Verbose output",
     )
+    parser.add_argument(
+        "--force-tq2",
+        action="store_true",
+        help="Force TQ2_0 output even for bf16 checkpoints (NOT RECOMMENDED)",
+    )
 
     args = parser.parse_args()
+
+    # TQ2_0 warning for bf16 DLM checkpoints
+    if args.outtype == "tq2_0" and not args.force_tq2:
+        logger.error("=" * 70)
+        logger.error("ERROR: TQ2_0 produces GARBAGE output for bf16 DLM checkpoints!")
+        logger.error("")
+        logger.error("TQ2_0 applies ternary quantization which corrupts already-ternary")
+        logger.error("weights stored in bf16 format. The resulting model will output")
+        logger.error("nonsense (e.g., 'GGGGGG...' or random tokens).")
+        logger.error("")
+        logger.error("RECOMMENDED: Use --outtype i2_s instead (default)")
+        logger.error("")
+        logger.error("If you REALLY want TQ2_0 (not bf16 checkpoint), use --force-tq2")
+        logger.error("=" * 70)
+        sys.exit(1)
 
     # Check converter exists
     if not CONVERTER_SCRIPT.exists():

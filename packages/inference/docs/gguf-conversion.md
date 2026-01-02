@@ -26,19 +26,21 @@ llama-server -m models/dlm-2b.gguf --port 30000
 
 | Format | Size (2B) | Speed (tok/s) | Output Quality | Vanilla llama.cpp |
 |--------|-----------|---------------|----------------|-------------------|
-| **tq1_0** | ~678MB | 63.0 | ✅ Coherent | **Yes** |
+| **i2_s** | ~1.1GB | ~55 | ✅ Coherent | **Yes (RECOMMENDED)** |
+| tq1_0 | ~678MB | 63.0 | ✅ Coherent | Yes* |
 | tq2_0 | ~779MB | 76.3 | ❌ GARBAGE | Yes |
-| i2_s | ~1.1GB | ~55 | ✅ Coherent | Yes |
 | q2_k | ~992MB | 54.2 | Untested | Yes |
-| tl1/tl2 | ~1.1GB | ~80 | ✅ Coherent | No* |
+| tl1/tl2 | ~1.1GB | ~80 | ✅ Coherent | No** |
 | f16 | ~4.5GB | ~30 | ✅ Coherent | Yes |
 
-**CRITICAL FINDING (Dec 2025 benchmarks on GCP C3D-32):**
-- **TQ1_0 is the recommended format** for DLM bf16 "online-quant" checkpoints
+**RECOMMENDATIONS:**
+- **I2_S is the recommended format** - best compatibility with vanilla llama.cpp
+- TQ1_0 is smaller but may conflict with IQ4_NL_4_4 (type 36) in some llama.cpp builds
 - **TQ2_0 produces garbage output** despite being faster! Do NOT use for bf16 checkpoints.
 - TQ2_0 failure mode: Converts F16 → TQ2_0, but the intermediate F16 step breaks ternary weights
 
-*TL1/TL2 require pre-generated kernel config files matching your model dimensions.
+*TQ1_0 may have type conflicts in some llama.cpp versions.
+**TL1/TL2 require pre-generated kernel config files matching your model dimensions.
 
 ## Why TQ2_0 Fails (Technical Details)
 
@@ -53,9 +55,12 @@ When llama-quantize re-quantizes these already-ternary-intended weights:
 - The distribution is destroyed
 - Output becomes nonsense (e.g., "50, but that's only for the capital...")
 
-**Solution**: Use TQ1_0 which correctly preserves the ternary structure:
+**Solution**: Use I2_S (recommended) or TQ1_0 which correctly preserve the ternary structure:
 ```bash
-# CORRECT: Direct TQ1_0 conversion
+# CORRECT: Direct I2_S conversion (recommended)
+python convert_checkpoint_to_gguf.py checkpoint --outtype i2_s --outfile model.gguf
+
+# ALSO CORRECT: Direct TQ1_0 conversion
 python convert-hf-to-gguf-bitnet.py checkpoint --outtype tq1_0 --outfile model.gguf
 
 # WRONG: F16 intermediate step

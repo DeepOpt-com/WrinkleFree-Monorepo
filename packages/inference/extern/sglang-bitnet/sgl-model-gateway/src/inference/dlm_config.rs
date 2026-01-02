@@ -22,6 +22,9 @@ pub struct DlmConfig {
     pub small_block_size: usize,
     /// Enable DualCache for sub-block KV reuse
     pub use_dual_cache: bool,
+    /// Maximum iterations per small block (default: 10)
+    /// Prevents runaway loops when confidence is uniformly low.
+    pub max_iterations_per_block: usize,
 }
 
 impl Default for DlmConfig {
@@ -32,6 +35,7 @@ impl Default for DlmConfig {
             threshold: 0.95,
             small_block_size: 8,
             use_dual_cache: true,
+            max_iterations_per_block: 10,
         }
     }
 }
@@ -110,6 +114,12 @@ impl DlmConfig {
         self
     }
 
+    /// Set maximum iterations per small block.
+    pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations_per_block = max_iterations;
+        self
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> Result<(), String> {
         if self.mask_token_id < 0 {
@@ -130,12 +140,139 @@ impl DlmConfig {
         if self.threshold <= 0.0 || self.threshold >= 1.0 {
             return Err("threshold must be between 0 and 1 (exclusive)".to_string());
         }
+        if self.max_iterations_per_block == 0 {
+            return Err("max_iterations_per_block must be positive".to_string());
+        }
         Ok(())
     }
 
     /// Get the number of small blocks per block.
     pub fn num_small_blocks(&self) -> usize {
         self.block_size / self.small_block_size
+    }
+}
+
+/// Result of mask token detection with diagnostic information.
+#[derive(Debug, Clone)]
+pub struct MaskTokenDetectionResult {
+    /// Detected mask token ID, if found
+    pub mask_token_id: Option<i32>,
+    /// How the mask token was detected
+    pub detection_method: String,
+    /// Candidates checked during detection (token_id, token_piece)
+    pub candidates_checked: Vec<(i32, String)>,
+    /// Vocab size of the model
+    pub vocab_size: i32,
+}
+
+impl MaskTokenDetectionResult {
+    /// Format a detailed error message for display.
+    pub fn format_error(&self) -> String {
+        let sep = "======================================================================";
+        let mut msg = String::new();
+        msg.push_str(sep);
+        msg.push_str("\nMASK TOKEN DETECTION FAILED\n");
+        msg.push_str(sep);
+        msg.push_str("\n\nThis model does not appear to be a DLM (Diffusion LLM) model.\n");
+        msg.push_str("DLM models require a special |<MASK>| token for block diffusion.\n\n");
+
+        msg.push_str("Detection attempts:\n");
+        msg.push_str(&format!("  1. Tokenized '|<MASK>|': {}\n", self.detection_method));
+
+        if !self.candidates_checked.is_empty() {
+            msg.push_str("  2. Checked vocab candidates:\n");
+            for (id, piece) in &self.candidates_checked {
+                msg.push_str(&format!("     - Token {}: '{}'\n", id, piece));
+            }
+        }
+
+        msg.push_str(&format!("\nModel vocab size: {}\n\n", self.vocab_size));
+
+        msg.push_str("SOLUTIONS:\n");
+        msg.push_str("  1. Use a DLM-trained checkpoint (from WrinkleFree training)\n");
+        msg.push_str("  2. Manually specify mask token: --mask-token-id <ID>\n");
+        msg.push_str("  3. For regular BitNet (non-DLM), use native_server instead\n\n");
+
+        msg.push_str("Expected mask token names: |<MASK>|, <mask>, [MASK]\n");
+        msg.push_str(sep);
+        msg.push('\n');
+        msg
+    }
+}
+
+impl DlmConfig {
+    /// Auto-detect DLM config with detailed diagnostics.
+    ///
+    /// Unlike `detect()`, this always returns a result with diagnostic info,
+    /// which is useful for generating helpful error messages.
+    pub fn detect_with_diagnostics(engine: &NativeBatchEngine) -> MaskTokenDetectionResult {
+        let vocab_size = engine.vocab_size();
+        let mut candidates_checked = Vec::new();
+        let mut detection_method = String::new();
+
+        // Try to tokenize the mask token
+        let mask_token = "|<MASK>|";
+        match engine.tokenize(mask_token, false) {
+            Ok(tokens) if tokens.len() == 1 => {
+                detection_method = format!("Found as single token {}", tokens[0]);
+                return MaskTokenDetectionResult {
+                    mask_token_id: Some(tokens[0]),
+                    detection_method,
+                    candidates_checked,
+                    vocab_size,
+                };
+            }
+            Ok(tokens) => {
+                detection_method = format!("Tokenized to {} tokens (expected 1)", tokens.len());
+            }
+            Err(e) => {
+                detection_method = format!("Tokenization failed: {}", e);
+            }
+        }
+
+        // Check vocab_size - 1 (common DLM pattern)
+        let candidate_id = vocab_size - 1;
+        if let Ok(piece) = engine.token_to_piece(candidate_id) {
+            candidates_checked.push((candidate_id, piece.clone()));
+            if piece.contains("MASK") || piece.contains("mask") {
+                return MaskTokenDetectionResult {
+                    mask_token_id: Some(candidate_id),
+                    detection_method: format!("Found at vocab_size-1 ({})", candidate_id),
+                    candidates_checked,
+                    vocab_size,
+                };
+            }
+        }
+
+        // Check a few more special token positions
+        for offset in [0, 1, 2, 3] {
+            let candidate_id = vocab_size - 1 - offset;
+            if candidate_id < 0 {
+                continue;
+            }
+            if candidates_checked.iter().any(|(id, _)| *id == candidate_id) {
+                continue;
+            }
+            if let Ok(piece) = engine.token_to_piece(candidate_id) {
+                candidates_checked.push((candidate_id, piece.clone()));
+                if piece.contains("MASK") || piece.contains("mask") {
+                    return MaskTokenDetectionResult {
+                        mask_token_id: Some(candidate_id),
+                        detection_method: format!("Found at vocab_size-{} ({})", offset + 1, candidate_id),
+                        candidates_checked,
+                        vocab_size,
+                    };
+                }
+            }
+        }
+
+        // Not found
+        MaskTokenDetectionResult {
+            mask_token_id: None,
+            detection_method,
+            candidates_checked,
+            vocab_size,
+        }
     }
 }
 

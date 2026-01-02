@@ -189,6 +189,10 @@ async fn main() {
     let mut small_block_size: usize = 8;
     let mut mask_token_id: Option<i32> = None;
     let mut force_unmask: bool = false;
+    let mut benchmark_mode: bool = false;
+    let mut benchmark_iterations: usize = 50;
+    let mut benchmark_prompt: String = "What is the meaning of life?".to_string();
+    let mut benchmark_max_tokens: i32 = 64;
 
     let mut i = 1;
     while i < args.len() {
@@ -237,6 +241,28 @@ async fn main() {
                 mask_token_id = args.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
             }
+            "--benchmark" => {
+                benchmark_mode = true;
+                i += 1;
+            }
+            "--benchmark-iterations" => {
+                benchmark_iterations = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(benchmark_iterations);
+                i += 2;
+            }
+            "--benchmark-prompt" => {
+                benchmark_prompt = args.get(i + 1).cloned().unwrap_or(benchmark_prompt);
+                i += 2;
+            }
+            "--benchmark-max-tokens" => {
+                benchmark_max_tokens = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(benchmark_max_tokens);
+                i += 2;
+            }
             "--help" => {
                 println!("DLM Server - Fast-dLLM v2 Block Diffusion Inference");
                 println!();
@@ -251,6 +277,13 @@ async fn main() {
                 println!("  --threshold F            Confidence threshold 0-1 (default: 0.95)");
                 println!("  --small-block-size N     Sub-block size (default: 8)");
                 println!("  --mask-token-id ID       Override mask token ID (for benchmarking non-DLM models)");
+                println!();
+                println!("Benchmark Options:");
+                println!("  --benchmark              Run benchmark mode (no server)");
+                println!("  --benchmark-iterations N Number of benchmark iterations (default: 50)");
+                println!("  --benchmark-prompt TEXT  Prompt to use for benchmarking");
+                println!("  --benchmark-max-tokens N Max tokens per iteration (default: 64)");
+                println!();
                 println!("  --help                   Show this help");
                 return;
             }
@@ -292,26 +325,36 @@ async fn main() {
                 "Using manual mask_token_id={} (benchmark mode)",
                 manual_mask_id
             );
+            // Validate mask token is within vocab range
+            let vocab_size = engine.vocab_size();
+            if manual_mask_id < 0 || manual_mask_id >= vocab_size {
+                error!("mask_token_id {} is out of vocab range [0, {})", manual_mask_id, vocab_size);
+                std::process::exit(1);
+            }
             DlmConfig::new(manual_mask_id)
                 .with_block_size(block_size)
                 .with_threshold(threshold)
                 .with_small_block_size(small_block_size)
         } else {
-            // Auto-detect DLM model
-            match DlmConfig::detect(&engine) {
-                Some(mut config) => {
-                    info!(
-                        "Detected DLM model: mask_token_id={}",
-                        config.mask_token_id
-                    );
-                    config.block_size = block_size;
-                    config.threshold = threshold;
-                    config.small_block_size = small_block_size;
-                    config
+            // Auto-detect DLM model with diagnostics
+            let detection = DlmConfig::detect_with_diagnostics(&engine);
+
+            match detection.mask_token_id {
+                Some(mask_id) => {
+                    info!("============================================================");
+                    info!("DLM MODEL DETECTED");
+                    info!("  Mask token ID: {}", mask_id);
+                    info!("  Detection method: {}", detection.detection_method);
+                    info!("  Vocab size: {}", detection.vocab_size);
+                    info!("============================================================");
+                    DlmConfig::new(mask_id)
+                        .with_block_size(block_size)
+                        .with_threshold(threshold)
+                        .with_small_block_size(small_block_size)
                 }
                 None => {
-                    error!("Model does not appear to be DLM-trained (no mask token found)");
-                    error!("Use --mask-token-id to manually specify a mask token for benchmarking");
+                    // Print detailed diagnostic error
+                    eprintln!("{}", detection.format_error());
                     std::process::exit(1);
                 }
             }
@@ -332,6 +375,33 @@ async fn main() {
         let (mut scheduler, handle) = DlmScheduler::new(scheduler_config, engine.clone());
 
         info!("DLM scheduler initialized");
+
+        // Benchmark mode: run benchmark and exit
+        if benchmark_mode {
+            info!("=== Benchmark Mode ===");
+            info!("Iterations: {}", benchmark_iterations);
+            info!("Max tokens per iteration: {}", benchmark_max_tokens);
+            info!("Prompt: {}", benchmark_prompt);
+
+            // Run scheduler in background
+            let scheduler_handle_bg = tokio::spawn(async move {
+                scheduler.run().await;
+            });
+
+            // Run benchmark
+            run_benchmark(
+                handle,
+                engine,
+                &benchmark_prompt,
+                benchmark_iterations,
+                benchmark_max_tokens,
+            )
+            .await;
+
+            // Clean shutdown
+            drop(scheduler_handle_bg);
+            return;
+        }
 
         // Create app state
         let app_state = Arc::new(AppState {
@@ -371,4 +441,133 @@ async fn main() {
         error!("Native inference not enabled. Build with --features native-inference");
         std::process::exit(1);
     }
+}
+
+/// Run benchmark with the given parameters.
+#[cfg(feature = "native-inference")]
+async fn run_benchmark(
+    handle: DlmSchedulerHandle,
+    engine: Arc<NativeBatchEngine>,
+    prompt: &str,
+    iterations: usize,
+    max_tokens: i32,
+) {
+    use std::time::Instant;
+    use sgl_model_gateway::inference::LatencyStats;
+
+    info!("Starting benchmark warmup...");
+
+    // Format prompt as chat
+    let formatted_prompt = format!("USER: {}<|eot_id|>ASSISTANT:", prompt);
+
+    // Tokenize once
+    let input_ids = match engine.tokenize(&formatted_prompt, true) {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("Failed to tokenize prompt: {}", e);
+            return;
+        }
+    };
+    let prompt_tokens = input_ids.len();
+
+    info!("Prompt tokens: {}", prompt_tokens);
+
+    // Warmup (3 iterations)
+    for _ in 0..3 {
+        let (tx, rx) = oneshot::channel();
+        let req = InferenceRequest {
+            request_id: 0,
+            input_ids: input_ids.clone(),
+            params: BatchSamplingParams::default(),
+            max_tokens,
+            stream: false,
+            response_tx: Some(tx),
+            token_tx: None,
+        };
+        if handle.submit(req).await.is_ok() {
+            let _ = rx.await;
+        }
+    }
+
+    info!("Warmup complete. Running {} iterations...", iterations);
+
+    let mut latency_stats = LatencyStats::new(iterations);
+    let mut total_tokens = 0u64;
+    let overall_start = Instant::now();
+
+    for i in 0..iterations {
+        let (tx, rx) = oneshot::channel();
+        let req = InferenceRequest {
+            request_id: i as u64,
+            input_ids: input_ids.clone(),
+            params: BatchSamplingParams::default(),
+            max_tokens,
+            stream: false,
+            response_tx: Some(tx),
+            token_tx: None,
+        };
+
+        let iter_start = Instant::now();
+
+        if let Err(e) = handle.submit(req).await {
+            error!("Failed to submit request {}: {}", i, e);
+            continue;
+        }
+
+        match rx.await {
+            Ok(response) => {
+                let duration = iter_start.elapsed();
+                latency_stats.record(duration);
+                total_tokens += response.completion_tokens as u64;
+
+                if (i + 1) % 10 == 0 {
+                    info!(
+                        "Progress: {}/{} iterations, {} tokens, {:.2}ms avg latency",
+                        i + 1,
+                        iterations,
+                        total_tokens,
+                        latency_stats.mean() as f64 / 1000.0
+                    );
+                }
+            }
+            Err(_) => {
+                error!("Request {} cancelled", i);
+            }
+        }
+    }
+
+    let overall_duration = overall_start.elapsed();
+    let percentiles = latency_stats.percentiles_ms();
+
+    println!();
+    println!("=== Benchmark Results ===");
+    println!("Iterations:        {}", iterations);
+    println!("Prompt tokens:     {}", prompt_tokens);
+    println!("Max tokens:        {}", max_tokens);
+    println!("Total tokens:      {}", total_tokens);
+    println!();
+    println!("Latency (ms):");
+    println!("  Mean:            {:.2}", percentiles.mean_ms);
+    println!("  p50:             {:.2}", percentiles.p50_ms);
+    println!("  p95:             {:.2}", percentiles.p95_ms);
+    println!("  p99:             {:.2}", percentiles.p99_ms);
+    println!();
+    let throughput = if overall_duration.as_secs_f64() > 0.0 {
+        total_tokens as f64 / overall_duration.as_secs_f64()
+    } else {
+        0.0
+    };
+    let avg_tokens_per_request = if iterations > 0 {
+        total_tokens as f64 / iterations as f64
+    } else {
+        0.0
+    };
+    println!("Throughput:");
+    println!("  Tokens/sec:      {:.2}", throughput);
+    println!("  Avg tokens/req:  {:.2}", avg_tokens_per_request);
+    println!(
+        "  Total time:      {:.2}s",
+        overall_duration.as_secs_f64()
+    );
+    println!("=========================");
 }
