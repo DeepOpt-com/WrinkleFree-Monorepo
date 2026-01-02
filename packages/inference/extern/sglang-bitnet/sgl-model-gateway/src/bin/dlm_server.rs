@@ -101,6 +101,8 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (StatusCode, String)> {
+    info!("Received chat request: {:?}", req.messages.len());
+
     // Build prompt using Llama 3 chat format
     // Note: Don't add BOS - tokenizer adds it automatically via add_bos=true
     let mut prompt = String::new();
@@ -112,6 +114,8 @@ async fn chat_completions(
     }
     prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
 
+    info!("Tokenizing prompt...");
+
     // Tokenize
     let input_ids = state
         .engine
@@ -119,6 +123,7 @@ async fn chat_completions(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let prompt_tokens = input_ids.len() as i32;
+    info!("Tokenized: {} tokens", prompt_tokens);
 
     // Create request
     let request_id = state.request_counter.fetch_add(1, Ordering::Relaxed);
@@ -138,6 +143,8 @@ async fn chat_completions(
         token_tx: None,
     };
 
+    info!("Submitting request {} to scheduler...", request_id);
+
     // Submit to scheduler
     state
         .handle
@@ -145,10 +152,14 @@ async fn chat_completions(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    info!("Request {} submitted, waiting for response...", request_id);
+
     // Wait for response
     let response = rx
         .await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Request cancelled".to_string()))?;
+
+    info!("Request {} completed: {} tokens", request_id, response.completion_tokens);
 
     let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

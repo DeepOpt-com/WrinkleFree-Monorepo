@@ -221,6 +221,12 @@ impl DlmScheduler {
             // Phase 1: Receive new requests
             self.receive_requests().await;
 
+            let pending = self.pending_queue.len();
+            let active = self.sequences.len();
+            if pending > 0 || active > 0 {
+                debug!("Loop: pending={}, active={}", pending, active);
+            }
+
             // Phase 2: Assign slots to pending requests
             self.assign_slots();
 
@@ -271,7 +277,10 @@ impl DlmScheduler {
         while !self.pending_queue.is_empty() {
             let seq_id = match self.engine.alloc_sequence() {
                 Ok(id) => id,
-                Err(BatchError::NoAvailableSlots) => break,
+                Err(BatchError::NoAvailableSlots) => {
+                    warn!("No available slots for pending requests");
+                    break;
+                }
                 Err(e) => {
                     error!("Failed to allocate slot: {}", e);
                     break;
@@ -281,7 +290,7 @@ impl DlmScheduler {
             let request = self.pending_queue.pop_front().unwrap();
             let request_id = request.request_id.clone();
 
-            debug!("Assigned slot {} to request {}", seq_id, request_id);
+            info!("Assigned slot {} to request {}", seq_id, request_id);
 
             let state = DlmSequenceState::new(seq_id, request);
             self.sequences.insert(seq_id, state);
@@ -297,6 +306,8 @@ impl DlmScheduler {
             if !state.base.is_prefilling() {
                 continue;
             }
+
+            info!("Prefilling seq {} with {} prompt tokens", seq_id, state.base.prompt_tokens.len());
 
             // Clear any stale KV cache for this sequence before prefill
             self.engine.kv_cache_seq_rm(seq_id, -1, -1);
@@ -318,28 +329,41 @@ impl DlmScheduler {
                 continue;
             }
 
+            info!("Prefill decode completed for seq {}", seq_id);
+
             // Sample first token
             let batch_idx = (prompt_len - 1) as i32;
-            if let Ok(first_token) = self.engine.sample(batch_idx, &state.base.params) {
-                let is_eos = self.engine.is_eos(first_token);
-                state.base.add_generated_token(first_token, is_eos);
-                state.base.position = prompt_len as i32;
+            info!("Sampling first token for seq {} at batch_idx {}", seq_id, batch_idx);
+            match self.engine.sample(batch_idx, &state.base.params) {
+                Ok(first_token) => {
+                    info!("Sampled first token {} for seq {}", first_token, seq_id);
+                    let is_eos = self.engine.is_eos(first_token);
+                    state.base.add_generated_token(first_token, is_eos);
+                    state.base.position = prompt_len as i32;
 
-                // Transition to decoding
-                if !is_eos {
-                    state.base.phase = SequencePhase::Decoding;
+                    // Transition to decoding
+                    if !is_eos {
+                        state.base.phase = SequencePhase::Decoding;
+                        info!("Seq {} transitioned to Decoding phase", seq_id);
 
-                    // Initialize DualCache for block decoding
-                    let num_small_blocks = self.config.dlm.num_small_blocks();
-                    state.dual_cache = Some(DualCache::new(
-                        state.base.position,
-                        num_small_blocks,
-                    ));
+                        // Initialize DualCache for block decoding
+                        let num_small_blocks = self.config.dlm.num_small_blocks();
+                        state.dual_cache = Some(DualCache::new(
+                            state.base.position,
+                            num_small_blocks,
+                        ));
+                    } else {
+                        info!("First token is EOS for seq {}", seq_id);
+                    }
+
+                    // Stream the first token
+                    let text = self.engine.token_to_piece(first_token).unwrap_or_default();
+                    state.base.send_token(first_token, text, is_eos);
                 }
-
-                // Stream the first token
-                let text = self.engine.token_to_piece(first_token).unwrap_or_default();
-                state.base.send_token(first_token, text, is_eos);
+                Err(e) => {
+                    error!("Failed to sample first token for seq {}: {}", seq_id, e);
+                    state.base.phase = SequencePhase::Finished(FinishReason::Error);
+                }
             }
         }
     }
@@ -360,13 +384,18 @@ impl DlmScheduler {
 
             // Check if we should generate more
             let max_tokens = state.base.max_tokens as usize;
-            if state.base.generated_tokens.len() >= max_tokens {
+            let generated = state.base.generated_tokens.len();
+            debug!("Block decode for seq {}: {}/{} tokens", seq_id, generated, max_tokens);
+
+            if generated >= max_tokens {
+                info!("Seq {} reached max_tokens, finishing", seq_id);
                 let state = self.sequences.get_mut(&seq_id).unwrap();
                 state.base.phase = SequencePhase::Finished(FinishReason::Length);
                 continue;
             }
 
             // Decode one block
+            info!("Starting block decode for seq {}", seq_id);
             self.decode_block(seq_id).await;
         }
     }
@@ -378,6 +407,9 @@ impl DlmScheduler {
         let num_small_blocks = self.config.dlm.num_small_blocks();
         let threshold = self.config.dlm.threshold;
         let mask_id = self.config.dlm.mask_token_id;
+
+        debug!("decode_block: seq={}, block_size={}, small_block_size={}, num_small_blocks={}",
+               seq_id, block_size, small_block_size, num_small_blocks);
 
         let state = self.sequences.get_mut(&seq_id).unwrap();
         let block_start_pos = state.base.position;
@@ -394,13 +426,18 @@ impl DlmScheduler {
         for small_block_idx in 0..num_small_blocks {
             let start_idx = small_block_idx * small_block_size;
             let end_idx = start_idx + small_block_size;
+            debug!("Processing small block {} (indices {}..{})", small_block_idx, start_idx, end_idx);
 
             // Iterate until all masks in this small block are resolved
+            let mut iteration = 0;
             loop {
+                iteration += 1;
                 let small_block_masks: usize = block_tokens[start_idx..end_idx]
                     .iter()
                     .filter(|&&t| t == mask_id)
                     .count();
+
+                debug!("  Iteration {}: {} masks remaining", iteration, small_block_masks);
 
                 if small_block_masks == 0 {
                     break;
@@ -475,6 +512,7 @@ impl DlmScheduler {
                 }
 
                 // Forward pass
+                debug!("Running forward pass");
                 if let Err(e) = self.engine.decode(&self.batch) {
                     error!("Block decode failed for seq {}: {}", seq_id, e);
                     // Mark as failed so cleanup can handle it
@@ -482,6 +520,7 @@ impl DlmScheduler {
                     state.base.phase = SequencePhase::Finished(FinishReason::Error);
                     return;
                 }
+                debug!("Forward pass completed");
 
                 // Process masked positions with confidence thresholding
                 let mut candidates: Vec<(usize, i32, f32)> = Vec::new();
@@ -505,9 +544,16 @@ impl DlmScheduler {
                 }
 
                 // Unmask high-confidence tokens
+                debug!("Candidates: {} (threshold={})", candidates.len(), threshold);
+                if !candidates.is_empty() {
+                    let max_conf = candidates.iter().map(|c| c.2).fold(0.0f32, f32::max);
+                    debug!("  Max confidence: {}", max_conf);
+                }
+
                 let mut unmasked_any = false;
                 for &(idx, token, conf) in &candidates {
                     if conf > threshold {
+                        debug!("  Unmasking idx {} with token {} (conf={})", idx, token, conf);
                         block_tokens[idx] = token;
                         unmasked_any = true;
 
@@ -518,12 +564,13 @@ impl DlmScheduler {
 
                 // Always unmask at least one (highest confidence)
                 if !unmasked_any && !candidates.is_empty() {
-                    let (idx, token, _) = candidates
+                    let (idx, token, conf) = candidates
                         .iter()
                         .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Less))
                         .copied()
                         .unwrap();
 
+                    debug!("  Force unmasking idx {} with token {} (conf={})", idx, token, conf);
                     block_tokens[idx] = token;
                     self.emit_token(seq_id, token);
                 }

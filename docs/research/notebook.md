@@ -1,3 +1,73 @@
+## 01-02-2026
+
+### DLM Scheduler KV Cache Bug (FIXED)
+
+**Problem**: DLM server requests would hang indefinitely with "KV cache is full" errors.
+
+**Root Cause**: The DLM scheduler wasn't clearing KV cache before prefill, causing stale cache data.
+
+**Fix** (dlm_scheduler.rs):
+```rust
+// Before prefill, clear any stale KV cache for this sequence
+self.engine.kv_cache_seq_rm(seq_id, -1, -1);
+```
+
+Also increased batch_size from `block_size * 2` to `2048` to match n_ctx.
+
+**Commit**: `fix(inference): Fix DLM scheduler KV cache bug`
+
+---
+
+### DLM Block Diffusion Requires DLM-Trained Model (CRITICAL)
+
+**Problem**: DLM block diffusion produces garbage - model outputs MASK tokens instead of real tokens.
+
+**Debug Output**:
+```
+Unmasking idx 2 with token 128256 (conf=0.98646563)  <- MASK token!
+Unmasking idx 3 with token 128256 (conf=0.9988624)   <- MASK token!
+```
+
+**Root Cause**: The TQ1_0 model wasn't trained with DLM objectives. It works with autoregressive decoding (llama-server) but NOT with block diffusion.
+
+**Why DLM Training Matters**:
+- Regular autoregressive training: Model learns P(token | previous_tokens)
+- DLM training: Model learns P(token | context + MASK positions)
+- Without DLM training, model sees MASK and predicts... MASK
+
+**Solution**: Use a model trained with DLM objectives from `training=unified` or `training=dlm_pretraining`:
+```bash
+# DLM-trained checkpoint (from training pipeline)
+gsutil cp gs://wrinklefree-checkpoints/dlm/dlm-trained-checkpoint/*.safetensors models/dlm-model/
+
+# Convert to GGUF with TQ1_0
+python extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py \
+    models/dlm-model --outtype tq1_0 --outfile models/dlm-model.gguf
+```
+
+**How to Start DLM Server on GCP**:
+```bash
+# 1. SSH to cluster
+ssh dlm-rust
+
+# 2. Set environment
+export LD_LIBRARY_PATH=/home/gcpuser/sky_workdir/packages/inference/extern/sglang-bitnet/3rdparty/llama.cpp/build/src:/home/gcpuser/sky_workdir/packages/inference/extern/sglang-bitnet/3rdparty/llama.cpp/build/ggml/src
+export RUST_LOG=info
+
+# 3. Start server
+~/sky_workdir/packages/inference/extern/sglang-bitnet/sgl-model-gateway/target/release/dlm_server \
+    --model-path ~/models/dlm-trained-model.gguf \
+    --mask-token-id 128256 \
+    --port 30000
+
+# 4. Test
+curl http://localhost:30000/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 64}'
+```
+
+---
+
 ## 01-01-2026 (Continued)
 
 ### DLM Model Quality Investigation (VERIFIED)
