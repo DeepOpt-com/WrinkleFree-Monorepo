@@ -25,6 +25,9 @@ lrc:
 # Auto-convert to BitNet if not already converted
 auto_convert:
   enabled: true
+  # insert_subln=False: Direct BitLinear replacement preserves pretrained weights
+  # insert_subln=True: Full BitDistill Stage 1 (requires Stage 1.9 to realign)
+  insert_subln: false
   exclude_layers:
     - embed_tokens
     - lm_head
@@ -52,9 +55,9 @@ packing:
 # The clipping math uses float32 but AMP captures activations in bfloat16
 optimizer:
   type: muonclip
-  lr_muon: 0.001     # MuonClip LR for hidden weights
-  lr_adam: 5e-5      # AdamW LR for embeddings, norms, lm_head
-  weight_decay: 0.0
+  lr_muon: 0.01      # MuonClip LR for hidden weights
+  lr_adam: 1e-4      # AdamW LR for embeddings, norms, lm_head
+  weight_decay: 0.01  # Regularization (applied to AdamW params)
   momentum: 0.95
   enable_clipping: false  # Disabled: bfloat16 dtype mismatch with AMP
   clipping_threshold: 50.0
@@ -85,12 +88,13 @@ gradient_accumulation_steps: 16  # Effective batch = 64, but 4x more tokens/step
 gradient_clipping: 1.0
 # auto_batch_size works with MuonClip after fix for upstream hook bug
 # MuonClipInitCallback re-registers hooks after BatchSizeFinder completes
-auto_batch_size: true
+auto_batch_size: false  # Disabled for debugging
 
 # Lambda warmup for gradual quantization
+# Increased from 200 to 1000 to match 15% curriculum warmup phase (~1145 steps)
 lambda_warmup:
   enabled: true
-  warmup_steps: 200
+  warmup_steps: 1000
   schedule: linear
 
 # === RESUME CONFIGURATION ===
@@ -115,7 +119,7 @@ objectives:
   dlm:
     enabled: true
     weight: 0.5  # Will be curriculum-controlled
-    mask_prob: 0.15
+    mask_prob: 0.5  # 50% for symmetric complementary masking (view1: 50%, view2: 50%)
     mask_token_id: 0
     use_complementary_masks: true  # Enabled: doubles batch with mask m and 1-m
 
@@ -137,21 +141,30 @@ teacher:
   use_flash_attention: false
 
 # === CURRICULUM ===
-# First 20%: warmup on fineweb-edu (CE only, no DLM)
-# Remaining 80%: mixed_pretrain with influence (CE + DLM)
+# Phase 1 (0-15%): Pure CE warmup on fineweb-edu
+# Phase 2 (15-40%): CE + DLM ramp-up on fineweb-edu
+# Phase 3 (40-100%): CE + DLM on mixed_pretrain with influence
 curriculum:
   enabled: true
   interpolation: linear
   phases:
-    # Phase 1: Warmup - CE only, fineweb-edu data
+    # Phase 1: Pure CE warmup - no DLM
     - name: warmup
-      end_ratio: 0.2
+      end_ratio: 0.15
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
         dlm: 0.0
 
-    # Phase 2: Main training - CE + DLM with influence remixing
+    # Phase 2: DLM ramp-up on fineweb-edu (still simple data)
+    - name: dlm_ramp
+      end_ratio: 0.40
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0
+        dlm: 0.5
+
+    # Phase 3: Main training - CE + DLM with influence remixing
     - name: main
       end_ratio: 1.0
       data_config: mixed_pretrain
@@ -196,6 +209,16 @@ logging:
 # Early stopping disabled for exploration
 early_stopping:
   enabled: false
+
+# === VALIDATION (C4 perplexity) ===
+# Periodic evaluation on held-out C4 validation set
+# License: ODC-BY (commercially friendly)
+validation:
+  enabled: true
+  config_name: c4_validation    # References data_handler config
+  val_check_interval: 500       # Evaluate every N steps
+  limit_val_batches: 50         # Number of validation batches (streaming)
+  batch_size: 8                 # Smaller batch for eval (no gradients)
 
 # Memory optimization
 memory:

@@ -175,13 +175,17 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     # Auto-convert to BitNet if needed
     if cfg.training.get("auto_convert", {}).get("enabled", True):
         exclude_layers = cfg.training.get("auto_convert", {}).get("exclude_layers", None)
+        # insert_subln=False by default to preserve pretrained weights
+        # Set to True only if running Stage 1.9 layer-wise distillation afterward
+        insert_subln = cfg.training.get("auto_convert", {}).get("insert_subln", False)
         model = auto_convert_if_needed(
             model,
             hidden_size=cfg.model.hidden_size,
             intermediate_size=cfg.model.intermediate_size,
             exclude_layers=exclude_layers,
+            insert_subln=insert_subln,
         )
-        logger.info("Model converted to BitNet")
+        logger.info(f"Model converted to BitNet (insert_subln={insert_subln})")
 
     # Handle LRC calibration stage
     if stage == "lrc_calibration":
@@ -359,10 +363,14 @@ def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
     # Logger
     wandb_logger = None
     if cfg.training.logging.wandb.get("enabled", False):
+        # Generate unique run ID to avoid conflicts
+        import uuid
+        run_id = f"{cfg.get('experiment_name', 'run')}-{uuid.uuid4().hex[:8]}"
         wandb_logger = WandbLogger(
             project=cfg.training.logging.wandb.get("project", "wrinklefree"),
             name=cfg.get("experiment_name"),
             save_dir=cfg.output_dir,
+            id=run_id,  # Unique ID ensures fresh run
         )
 
     # Handle gradient_clipping as either float or dict
@@ -374,6 +382,10 @@ def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
     else:
         gradient_clip_val = None  # ZClip callback handles it
 
+    # Validation config
+    val_cfg = cfg.training.get("validation", {})
+    val_enabled = val_cfg.get("enabled", False)
+
     trainer = pl.Trainer(
         max_steps=cfg.training.max_steps,
         accumulate_grad_batches=cfg.training.gradient_accumulation_steps,
@@ -383,7 +395,9 @@ def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
         callbacks=callbacks,
         logger=wandb_logger,
         log_every_n_steps=cfg.training.logging.get("log_interval", 10),
-        limit_val_batches=0,  # No validation during training (no val dataloader)
+        # Validation settings (C4 perplexity every N steps)
+        val_check_interval=val_cfg.get("val_check_interval", 500) if val_enabled else None,
+        limit_val_batches=val_cfg.get("limit_val_batches", 50) if val_enabled else 0,
         gradient_clip_val=gradient_clip_val,
         enable_checkpointing=True,
         default_root_dir=cfg.output_dir,
@@ -422,7 +436,10 @@ def main(cfg: DictConfig) -> None:
         total_steps=cfg.training.max_steps,
     )
 
-    # Create data module
+    # Create data module with validation support
+    val_cfg = cfg.training.get("validation", {})
+    val_enabled = val_cfg.get("enabled", False)
+
     datamodule = WrinkleFreeDataModule(
         tokenizer=tokenizer,
         batch_size=cfg.training.batch_size,
@@ -430,6 +447,9 @@ def main(cfg: DictConfig) -> None:
         config_name=cfg.data.get("config_name", "default"),
         with_probes=cfg.training.get("influence", {}).get("enabled", False),
         packed=cfg.training.get("packing", {}).get("enabled", True),
+        # Validation (C4 perplexity)
+        val_config_name=val_cfg.get("config_name") if val_enabled else None,
+        val_batch_size=val_cfg.get("batch_size", 8),
     )
 
     # Create Lightning module

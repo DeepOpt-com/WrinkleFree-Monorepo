@@ -257,3 +257,135 @@ class TestObjectiveManagerIntegration:
         module.training_step(batch, batch_idx=0)
 
         assert curriculum.current_step == initial_step + 1
+
+
+class TestValidationStep:
+    """Tests for validation_step (clean perplexity calculation)."""
+
+    @pytest.fixture
+    def model(self):
+        return DummyModel()
+
+    @pytest.fixture
+    def objective_manager(self):
+        objectives = {"dummy": DummyObjective()}
+        return ObjectiveManager(objectives=objectives, weights={"dummy": 1.0})
+
+    @pytest.fixture
+    def module(self, model, objective_manager):
+        return WrinkleFreeLightningModule(
+            model=model,
+            objective_manager=objective_manager,
+            optimizer_cfg={"type": "adamw", "learning_rate": 1e-4},
+        )
+
+    def test_validation_step_returns_loss(self, module):
+        """Test validation step returns a valid loss tensor."""
+        batch_size, seq_len = 2, 16
+        batch = {
+            "input_ids": torch.randint(0, 100, (batch_size, seq_len)),
+            "attention_mask": torch.ones(batch_size, seq_len),
+            "labels": torch.randint(0, 100, (batch_size, seq_len)),
+        }
+
+        # Mock log methods
+        module.log = MagicMock()
+        module.log_dict = MagicMock()
+
+        loss = module.validation_step(batch, batch_idx=0)
+
+        assert isinstance(loss, torch.Tensor)
+        assert loss.dim() == 0  # Scalar
+        assert not torch.isnan(loss)
+        assert loss > 0  # CE loss should be positive
+
+    def test_validation_step_computes_perplexity(self, module):
+        """Test validation step computes and logs perplexity."""
+        batch_size, seq_len = 2, 16
+        batch = {
+            "input_ids": torch.randint(0, 100, (batch_size, seq_len)),
+            "labels": torch.randint(0, 100, (batch_size, seq_len)),
+        }
+
+        logged_values = {}
+
+        def mock_log(name, value, **kwargs):
+            logged_values[name] = value
+
+        module.log = mock_log
+
+        loss = module.validation_step(batch, batch_idx=0)
+
+        # Check perplexity was logged
+        assert "val/perplexity" in logged_values
+        perplexity = logged_values["val/perplexity"]
+
+        # Perplexity should be exp(loss)
+        expected_ppl = torch.exp(loss)
+        assert torch.allclose(perplexity, expected_ppl, rtol=1e-5)
+
+    def test_validation_step_no_preprocessing(self, model):
+        """Test validation step does NOT apply DLM preprocessing."""
+        objective = DummyObjective()
+        objective.modifies_input = True
+        preprocess_called = []
+
+        def mock_preprocess(batch):
+            preprocess_called.append(True)
+            return batch
+
+        objective.preprocess_batch = mock_preprocess
+
+        manager = ObjectiveManager(
+            objectives={"dummy": objective},
+            weights={"dummy": 1.0},
+        )
+
+        module = WrinkleFreeLightningModule(
+            model=model,
+            objective_manager=manager,
+        )
+        module.log = MagicMock()
+
+        batch = {
+            "input_ids": torch.randint(0, 100, (2, 16)),
+            "labels": torch.randint(0, 100, (2, 16)),
+        }
+
+        module.validation_step(batch, batch_idx=0)
+
+        # Preprocessing should NOT be called during validation
+        assert len(preprocess_called) == 0
+
+    def test_validation_step_logs_correct_metrics(self, module):
+        """Test validation step logs val/loss, val/perplexity, val_loss."""
+        batch = {
+            "input_ids": torch.randint(0, 100, (2, 16)),
+            "labels": torch.randint(0, 100, (2, 16)),
+        }
+
+        logged_metrics = set()
+
+        def mock_log(name, value, **kwargs):
+            logged_metrics.add(name)
+
+        module.log = mock_log
+
+        module.validation_step(batch, batch_idx=0)
+
+        # Check all expected metrics are logged
+        assert "val/loss" in logged_metrics
+        assert "val/perplexity" in logged_metrics
+        assert "val_loss" in logged_metrics  # For checkpoint callback
+
+    def test_validation_step_uses_labels_or_input_ids(self, module):
+        """Test validation uses labels if present, otherwise input_ids."""
+        batch_without_labels = {
+            "input_ids": torch.randint(0, 100, (2, 16)),
+        }
+
+        module.log = MagicMock()
+
+        # Should not raise - uses input_ids as labels
+        loss = module.validation_step(batch_without_labels, batch_idx=0)
+        assert isinstance(loss, torch.Tensor)

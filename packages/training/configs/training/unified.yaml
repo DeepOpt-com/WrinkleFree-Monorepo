@@ -17,6 +17,7 @@ torch_compile:
   enabled: true
   mode: default
 
+# TODO: Disabled for now?
 # FP8 GEMM acceleration (H100/H200 only, auto-fallback to BF16)
 fp8:
   enabled: true
@@ -166,6 +167,16 @@ early_stopping:
   patience: 5
   min_delta: 0.01
   min_evals: 10
+
+# === VALIDATION (C4 perplexity) ===
+# Periodic evaluation on held-out C4 validation set
+# License: ODC-BY (commercially friendly)
+validation:
+  enabled: true
+  config_name: c4_validation    # References data_handler config
+  val_check_interval: 500       # Evaluate every N steps
+  limit_val_batches: 50         # Number of validation batches (streaming)
+  batch_size: 8                 # Smaller batch for eval (no gradients)
 
 # CheaperTraining influence-based data selection
 influence:

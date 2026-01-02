@@ -1,0 +1,27 @@
+# C4 Validation Dataset for Perplexity Evaluation
+# License: ODC-BY (Open Data Commons Attribution) - commercially friendly
+# Source: https://huggingface.co/datasets/allenai/c4
+#
+# Used for periodic validation during training to track perplexity on held-out data.
+
+name: c4_validation
+
+# Single-source mode (no influence mixing needed for eval)
+dataset:
+  path: allenai/c4
+  name: en
+  split: validation
+  streaming: true
+
+preprocessing:
+  max_length: 2048
+  truncation: true
+  padding: false
+  text_column: text
+  packed: true  # Use packing for consistent sequence lengths
+
+dataloader:
+  batch_size: 8  # Smaller batch for eval (no gradient memory)
+  num_workers: 2
+  prefetch_factor: 2
+  pin_memory: true

@@ -86,13 +86,21 @@ class WrinkleFreeLightningModule(pl.LightningModule):
 
         Extracts logits, hidden_states, and attentions from teacher model.
         Returns None if no teacher or objectives don't require it.
+
+        IMPORTANT: Uses _original_input_ids (unmasked) for teacher forward when DLM
+        preprocessing has been applied. AR teachers were never trained on masked
+        inputs and would produce garbage predictions on [MASK] tokens.
         """
         if self.teacher_model is None or not self.objective_manager.requires_teacher:
             return None
 
+        # Use original unmasked input_ids for AR teacher (not masked input from DLM)
+        # Falls back to batch["input_ids"] if DLM preprocessing wasn't applied
+        teacher_input_ids = batch.get("_original_input_ids", batch["input_ids"])
+
         with torch.no_grad():
             teacher_out = self.teacher_model(
-                input_ids=batch["input_ids"],
+                input_ids=teacher_input_ids,
                 attention_mask=batch.get("attention_mask"),
                 output_hidden_states=self.objective_manager.requires_hidden_states,
                 output_attentions=self.objective_manager.requires_attentions,
@@ -125,10 +133,10 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         metrics = self.objective_manager.get_wandb_metrics(manager_output, prefix="train")
         self.log_dict(metrics, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
 
-        # Log main metrics to progress bar
-        self.log("loss", manager_output.loss, prog_bar=True, sync_dist=True)
+        # Log main metrics to progress bar only (not to WandB - already in metrics dict)
+        self.log("loss", manager_output.loss, prog_bar=True, sync_dist=True, logger=False)
         if manager_output.perplexity is not None:
-            self.log("ppl", manager_output.perplexity, prog_bar=True, sync_dist=True)
+            self.log("ppl", manager_output.perplexity, prog_bar=True, sync_dist=True, logger=False)
 
         # Update token count
         batch_tokens = batch["input_ids"].numel()
@@ -141,21 +149,39 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         return manager_output.loss
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
-        """Validation step - same as training but without curriculum updates."""
-        batch = self.objective_manager.preprocess_batch(batch)
+        """Validation step - computes clean perplexity WITHOUT DLM preprocessing.
+
+        Unlike training, we skip DLM masking to get true language model perplexity
+        on held-out validation data (e.g., C4). This provides a fair comparison
+        metric across training runs regardless of which objectives are enabled.
+        """
+        # Forward pass WITHOUT preprocessing (no DLM masking)
         model_outputs = self.forward(**batch)
 
-        # Use same teacher extraction as training (includes attentions)
-        teacher_outputs = self._get_teacher_outputs(batch)
+        # Compute CE loss directly for clean perplexity
+        logits = model_outputs["logits"]
+        labels = batch.get("labels", batch["input_ids"])
 
-        manager_output = self.objective_manager(model_outputs, batch, teacher_outputs)
+        # Shift for causal LM (predict next token)
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+
+        # Cross-entropy loss (ignore padding with -100)
+        loss_fct = torch.nn.CrossEntropyLoss(reduction="mean", ignore_index=-100)
+        loss = loss_fct(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+        )
+
+        # Compute perplexity
+        perplexity = torch.exp(loss)
 
         # Log validation metrics
-        metrics = self.objective_manager.get_wandb_metrics(manager_output, prefix="val")
-        self.log_dict(metrics, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("val_loss", manager_output.loss, prog_bar=True, sync_dist=True)
+        self.log("val/loss", loss, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val/perplexity", perplexity, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True)
+        self.log("val_loss", loss, prog_bar=True, sync_dist=True)  # For checkpoint callback
 
-        return manager_output.loss
+        return loss
 
     def configure_optimizers(self):
         """Configure optimizer and scheduler.
