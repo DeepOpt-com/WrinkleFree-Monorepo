@@ -90,6 +90,7 @@ objectives:
     weight: 0.5
     mask_prob: 0.15
     mask_token_id: 0  # Use unk_token_id (0) as mask token for decoder-only models
+    use_complementary_masks: true  # Fast-dLLM v2: duplicate batch with m and (1-m) masks
 
   layerwise_distill:
     enabled: false  # Enable for distillation

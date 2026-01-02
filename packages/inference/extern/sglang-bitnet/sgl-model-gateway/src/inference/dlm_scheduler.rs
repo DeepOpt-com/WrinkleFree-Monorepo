@@ -8,16 +8,23 @@
 //! - **Block Diffusion**: Generate `block_size` (default 32) tokens in parallel
 //! - **Confidence Thresholding**: Unmask tokens above confidence threshold
 //! - **DualCache**: Hierarchical KV cache for sub-block reuse
+//! - **Token Shift**: Use logits[i-1] to predict token[i] (Fast-dLLM v2)
 //!
 //! ## Algorithm Overview
 //!
 //! 1. Initialize block with mask tokens
-//! 2. Forward pass to get logits for masked positions
-//! 3. Sample tokens and compute confidence (softmax probability)
+//! 2. Forward pass to get logits for positions *before* masked positions
+//! 3. Sample tokens using shifted logits and compute confidence
 //! 4. Unmask tokens where confidence > threshold
 //! 5. Always unmask at least one token (highest confidence)
 //! 6. Repeat until all tokens unmasked
 //! 7. Move to next block
+//!
+//! ## Token Shift Strategy
+//!
+//! Fast-dLLM v2 uses logits[i-1] to predict token[i]. This preserves the
+//! pretrained AR model's representation where hidden[i-1] predicts token[i].
+//! For masked position i, we request logits for position i-1.
 
 use super::batch_engine::{Batch, BatchConfig, BatchError, NativeBatchEngine};
 use super::batch_ffi::BitNetSeqId;
@@ -417,12 +424,20 @@ impl DlmScheduler {
                 let masked_only: bool;
                 let batch_offset: usize;
 
+                // TOKEN SHIFT: For masked position i, we need logits from position i-1.
+                // This aligns with Fast-dLLM v2 training where hidden[i-1] predicts token[i].
+                //
+                // We track which block positions are masked (logit_positions),
+                // then request logits for position i-1 for each masked position i.
+
                 if use_cached && first_token_unmasked {
                     // DualCache hit: Only compute for remaining masked positions
-                    // Clear KV cache for just the masked positions we're recomputing
+                    // Clear KV cache for positions whose logits we need
+                    // With token shift, for masked position i, we need position i-1
                     for i in start_idx..end_idx {
-                        if block_tokens[i] == mask_id {
-                            let pos = block_start_pos + i as i32;
+                        if block_tokens[i] == mask_id && i > 0 {
+                            // Need logits from i-1, so clear that position
+                            let pos = block_start_pos + (i as i32 - 1);
                             self.engine.kv_cache_seq_rm(seq_id, pos, pos + 1);
                         }
                     }
@@ -431,10 +446,15 @@ impl DlmScheduler {
                         .filter(|&i| block_tokens[i] == mask_id)
                         .collect();
 
-                    // Compact batch: only add masked tokens
+                    // Compact batch: add tokens for positions whose logits we need
+                    // For masked position i, we need logits from i-1
                     for &i in &logit_positions {
-                        let pos = block_start_pos + i as i32;
-                        self.batch.add(block_tokens[i], pos, seq_id, true);
+                        if i > 0 {
+                            let logit_pos = block_start_pos + (i as i32 - 1);
+                            // Add the token at position i-1 with need_logits=true
+                            let token_at_prev = if i > 0 { block_tokens[i - 1] } else { block_tokens[i] };
+                            self.batch.add(token_at_prev, logit_pos, seq_id, true);
+                        }
                     }
                     masked_only = true;
                     batch_offset = 0; // Not used when masked_only=true
@@ -445,12 +465,17 @@ impl DlmScheduler {
                     let block_end_pos = block_start_pos + block_size as i32;
                     self.engine.kv_cache_seq_rm(seq_id, current_pos, block_end_pos);
 
-                    // Add tokens from current small block onwards only
-                    // Previous small blocks already have valid KV cache
+                    // Add tokens from current small block onwards
+                    // With token shift: need_logits for position i-1 when position i is masked
                     for i in start_idx..block_size {
                         let token = block_tokens[i];
                         let pos = block_start_pos + i as i32;
-                        let need_logits = i < end_idx && token == mask_id;
+                        // Need logits at this position if the NEXT position is masked
+                        let next_masked = i + 1 < block_size && i + 1 < end_idx && block_tokens[i + 1] == mask_id;
+                        // Also need logits if this position itself is masked AND it's the first in block
+                        // (we use prefix cache for position -1)
+                        let this_masked = i < end_idx && token == mask_id && i == 0;
+                        let need_logits = next_masked || this_masked;
                         self.batch.add(token, pos, seq_id, need_logits);
                     }
 
@@ -475,17 +500,32 @@ impl DlmScheduler {
                 }
 
                 // Process masked positions with confidence thresholding
+                // TOKEN SHIFT: For masked position i, logits are at position i-1 in the batch
                 let mut candidates: Vec<(usize, i32, f32)> = Vec::new();
 
                 for (enum_idx, &block_idx) in logit_positions.iter().enumerate() {
+                    // Skip position 0 in block - would need logits from previous block
+                    // which is handled by the prefix cache during prefill
+                    if block_idx == 0 {
+                        // For first position in block, use prefix cache logits
+                        // This case should be rare as position 0 is typically not masked
+                        continue;
+                    }
+
                     // Determine batch index based on batch type:
-                    // - masked_only: sequential indices (0, 1, 2...)
-                    // - partial block: block_idx - batch_offset
+                    // - masked_only: sequential indices for positions with logits
+                    // - full block: logits are at position (block_idx - 1) - batch_offset
+                    //   because we need logits from i-1 to predict token at i
                     let batch_idx = if masked_only {
                         enum_idx as i32
                     } else {
-                        (block_idx - batch_offset) as i32
+                        // With token shift: logits for masked position i are at batch index (i-1) - batch_offset
+                        ((block_idx - 1) - batch_offset) as i32
                     };
+
+                    if batch_idx < 0 {
+                        continue; // Skip if we don't have the shifted logits
+                    }
 
                     if let Some(logits) = self.engine.get_logits(batch_idx) {
                         let probs = softmax(logits);

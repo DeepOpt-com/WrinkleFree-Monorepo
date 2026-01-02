@@ -50,6 +50,7 @@ def create_objective(name: str, config: dict[str, Any]) -> Objective:
             mask_token_id=config["mask_token_id"],
             mask_prob=config.get("mask_prob", 0.15),
             ignore_index=config.get("ignore_index", -100),
+            use_complementary_masks=config.get("use_complementary_masks", True),
         )
     elif name == "layerwise_distill":
         loss_type = config.get("loss_type", "mse_normalized")
