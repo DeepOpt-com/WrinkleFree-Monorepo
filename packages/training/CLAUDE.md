@@ -123,6 +123,24 @@ uv run python scripts/train.py training=unified \
 #   strict_model_load: true/false (allow missing keys)
 ```
 
+### DLM Inference Compatibility
+
+When training with DLM objective for inference, ensure these settings match:
+
+| Training Config | Inference Behavior | Notes |
+|-----------------|-------------------|-------|
+| `objectives.dlm.mask_token_id` | Auto-detected from vocab | **MUST match** - typically 0 (unk) |
+| `objectives.dlm.enabled=true` | Use `dlm_server` (not `native_server`) | DLM models require block diffusion |
+
+**Critical Notes**:
+1. The `mask_token_id` used during training must exist in the model's vocabulary
+2. DLM checkpoints require the Microsoft BitNet converter for GGUF (not standard llama.cpp)
+3. Use TQ1_0 or I2_S format (NOT TQ2_0 for bf16 checkpoints - produces garbage)
+
+**Performance Note**: The ~2.5x speedup from Fast-dLLM v2 block diffusion is theoretical. Actual speedup depends on model, hardware, and workload. Benchmark for your use case.
+
+See `packages/inference/docs/dlm-pipeline.md` for complete inference setup.
+
 ### PyTorch Lightning Training (New)
 
 The Lightning-based trainer provides a cleaner, more maintainable training loop with auto batch size scaling:

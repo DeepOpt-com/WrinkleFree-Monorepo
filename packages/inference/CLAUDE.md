@@ -168,7 +168,13 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## DLM Deployment (PRIMARY)
 
-**The DLM server uses Fast-dLLM v2 for ~2.5x faster inference via parallel block decoding.**
+**The DLM server uses Fast-dLLM v2 for faster inference via parallel block decoding.**
+
+> **Performance Note**: The ~2.5x speedup is theoretical (from the Fast-dLLM paper). Actual speedup depends on model, hardware, and workload. Benchmark for your use case.
+
+**Documentation**:
+- [DLM Pipeline Guide](docs/dlm-pipeline.md) - End-to-end setup
+- [DLM Troubleshooting](docs/dlm-troubleshooting.md) - Common issues
 
 ### IMPORTANT: DLM vs Regular BitNet
 
@@ -251,6 +257,19 @@ ls -lh models/my-model.gguf
 - "tensor out of bounds" error: Model file corrupted or incomplete conversion
 - "tokenizer not found": Missing tokenizer.json in checkpoint directory
 - "BitnetForCausalLM not found": Need to run sed command to fix architecture name
+
+See [DLM Troubleshooting Guide](docs/dlm-troubleshooting.md) for more details.
+
+### Training-Inference Configuration Sync
+
+These parameters **MUST match** between training and inference:
+
+| Training Config | Inference Config | Default |
+|-----------------|------------------|---------|
+| `objectives.dlm.mask_token_id` | Auto-detected or `--mask-token-id` | 0 (unk) |
+| Model vocab_size | GGUF metadata | Must match |
+
+See `packages/training/CLAUDE.md` for training-side configuration.
 
 ## Rust Server Build (No Python)
 

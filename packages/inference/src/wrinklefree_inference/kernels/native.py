@@ -1,8 +1,26 @@
 """Native C++ BitNet kernel with OpenMP parallelization.
 
-This module builds and wraps the native GEMV/GEMM kernels for 1.58-bit inference.
-Achieves ~300-900x speedup over pure Python and ~17-43K tok/s throughput.
+DEPRECATED: This module builds kernels at runtime and is superseded by sgl-kernel.
+
+Use ``sgl_kernel.quantization`` instead::
+
+    from sgl_kernel.quantization import bitnet_gemv, bitnet_gemm
+
+The sgl-kernel package provides pre-built SIMD-optimized kernels (AVX2/AVX512)
+that are faster and don't require runtime compilation.
+
+This module is kept for backward compatibility and testing. It builds and wraps
+native GEMV/GEMM kernels for 1.58-bit inference using pybind11 and OpenMP.
 """
+
+import warnings
+
+warnings.warn(
+    "wrinklefree_inference.kernels.native is deprecated. "
+    "Use sgl_kernel.quantization instead for better performance.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 import subprocess
 import sys

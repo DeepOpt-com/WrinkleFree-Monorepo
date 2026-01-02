@@ -7,8 +7,9 @@ use super::batch_engine::NativeBatchEngine;
 
 /// Configuration for Diffusion LLM inference.
 ///
-/// Fast-dLLM v2 uses block diffusion to decode multiple tokens in parallel,
-/// achieving ~2.5x speedup over autoregressive decoding.
+/// Fast-dLLM v2 uses block diffusion to decode multiple tokens in parallel.
+/// The ~2.5x speedup over autoregressive decoding is theoretical; actual
+/// performance depends on model, hardware, and workload characteristics.
 #[derive(Debug, Clone)]
 pub struct DlmConfig {
     /// Mask token ID (usually vocab_size - 1 for DLM-trained models)

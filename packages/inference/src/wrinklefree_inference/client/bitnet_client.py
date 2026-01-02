@@ -34,10 +34,20 @@ class BitNetClient:
 
     @classmethod
     def from_url(cls, url: str, timeout: int = 60) -> "BitNetClient":
-        """Create client from a full URL."""
-        # Strip trailing slash
+        """Create client from a full URL.
+
+        Args:
+            url: Full server URL (e.g., "http://localhost:30000")
+            timeout: Request timeout in seconds
+
+        Returns:
+            BitNetClient instance
+        """
         url = url.rstrip("/")
-        return cls.__new__(cls, base_url=url, timeout=timeout)
+        instance = cls.__new__(cls)
+        instance.base_url = url
+        instance.timeout = timeout
+        return instance
 
     def health_check(self) -> bool:
         """Check if server is healthy."""
@@ -218,6 +228,130 @@ class BitNetClient:
         prompt += "Assistant:"
         return prompt
 
+    def chat_openai(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        repetition_penalty: float = 1.1,
+        model: str = "default",
+        **kwargs,
+    ) -> str:
+        """
+        OpenAI-compatible chat completion for DLM server.
+
+        Uses the /v1/chat/completions endpoint with OpenAI message format.
+        This is the recommended method for DLM inference servers.
+
+        Args:
+            messages: List of message dicts with "role" and "content"
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            repetition_penalty: Penalty for repeated tokens
+            model: Model name (default: "default")
+            **kwargs: Additional parameters passed to API
+
+        Returns:
+            Assistant's response content
+        """
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "repetition_penalty": repetition_penalty,
+            "stream": False,
+            **kwargs,
+        }
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            choices = data.get("choices", [])
+            if choices:
+                return choices[0]["message"]["content"]
+            return ""
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Chat completion request failed: {e}")
+            raise
+
+    def chat_openai_stream(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        repetition_penalty: float = 1.1,
+        model: str = "default",
+        **kwargs,
+    ) -> Iterator[str]:
+        """
+        OpenAI-compatible streaming chat completion for DLM server.
+
+        Uses the /v1/chat/completions endpoint with SSE streaming.
+        Yields tokens as they are generated.
+
+        Args:
+            messages: List of message dicts with "role" and "content"
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            repetition_penalty: Penalty for repeated tokens
+            model: Model name (default: "default")
+            **kwargs: Additional parameters passed to API
+
+        Yields:
+            Generated tokens as strings
+        """
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "repetition_penalty": repetition_penalty,
+            "stream": True,
+            **kwargs,
+        }
+
+        try:
+            with requests.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                stream=True,
+                timeout=self.timeout,
+            ) as response:
+                response.raise_for_status()
+
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+
+                    line_str = line.decode("utf-8")
+                    if not line_str.startswith("data: "):
+                        continue
+
+                    data_str = line_str[6:]  # Remove "data: " prefix
+                    if data_str == "[DONE]":
+                        break
+
+                    try:
+                        data = json.loads(data_str)
+                        choices = data.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Streaming chat request failed: {e}")
+            raise
+
     def tokenize(self, text: str) -> list[int]:
         """
         Tokenize text.
@@ -384,6 +518,115 @@ class AsyncBitNetClient:
                             yield data["content"]
                     except json.JSONDecodeError:
                         continue
+
+    async def chat_openai(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        repetition_penalty: float = 1.1,
+        model: str = "default",
+        **kwargs,
+    ) -> str:
+        """
+        Async OpenAI-compatible chat completion for DLM server.
+
+        Uses the /v1/chat/completions endpoint with OpenAI message format.
+
+        Args:
+            messages: List of message dicts with "role" and "content"
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            repetition_penalty: Penalty for repeated tokens
+            model: Model name (default: "default")
+            **kwargs: Additional parameters passed to API
+
+        Returns:
+            Assistant's response content
+        """
+        session = await self._get_session()
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "repetition_penalty": repetition_penalty,
+            "stream": False,
+            **kwargs,
+        }
+
+        response = await session.post(
+            f"{self.base_url}/v1/chat/completions",
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        choices = data.get("choices", [])
+        if choices:
+            return choices[0]["message"]["content"]
+        return ""
+
+    async def chat_openai_stream(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        repetition_penalty: float = 1.1,
+        model: str = "default",
+        **kwargs,
+    ) -> AsyncIterator[str]:
+        """
+        Async OpenAI-compatible streaming chat completion for DLM server.
+
+        Uses the /v1/chat/completions endpoint with SSE streaming.
+
+        Args:
+            messages: List of message dicts with "role" and "content"
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            repetition_penalty: Penalty for repeated tokens
+            model: Model name (default: "default")
+            **kwargs: Additional parameters passed to API
+
+        Yields:
+            Generated tokens as strings
+        """
+        session = await self._get_session()
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "repetition_penalty": repetition_penalty,
+            "stream": True,
+            **kwargs,
+        }
+
+        async with session.stream(
+            "POST",
+            f"{self.base_url}/v1/chat/completions",
+            json=payload,
+        ) as response:
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+
+                data_str = line[6:]  # Remove "data: " prefix
+                if data_str == "[DONE]":
+                    break
+
+                try:
+                    data = json.loads(data_str)
+                    choices = data.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                except json.JSONDecodeError:
+                    continue
 
     async def __aenter__(self) -> "AsyncBitNetClient":
         await self._get_session()

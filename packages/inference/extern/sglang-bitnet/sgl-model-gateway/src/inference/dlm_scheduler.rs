@@ -1,7 +1,13 @@
 //! Batch scheduler for Fast-dLLM v2 block diffusion inference.
 //!
-//! This module implements the Fast-dLLM v2 algorithm (arXiv:2509.26328) for
-//! parallel token generation using block diffusion.
+//! This module implements the Fast-dLLM v2 algorithm for parallel token
+//! generation using block diffusion.
+//!
+//! ## Performance Note
+//!
+//! The ~2.5x speedup over autoregressive decoding is **theoretical** based on
+//! the Fast-dLLM paper. Actual performance depends on model, hardware, and
+//! workload characteristics. Benchmarking is recommended for your use case.
 //!
 //! ## Key Features
 //!
