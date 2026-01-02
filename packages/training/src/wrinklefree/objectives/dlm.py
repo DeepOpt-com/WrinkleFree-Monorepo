@@ -71,6 +71,12 @@ class DLMObjective(Objective):
         device = input_ids.device
         batch_size, seq_len = input_ids.shape
 
+        # Validate minimum sequence length
+        if seq_len <= 2:
+            raise ValueError(
+                f"DLM requires seq_len > 2 (need at least 3 tokens: BOS, content, EOS), got {seq_len}"
+            )
+
         # Store originals before modification
         batch["_original_input_ids"] = input_ids.clone()
         batch["_original_labels"] = batch.get("labels", input_ids).clone()
@@ -107,6 +113,11 @@ class DLMObjective(Objective):
             # Duplicate other batch tensors that need to match batch size
             if "labels" in batch:
                 batch["labels"] = torch.cat([batch["labels"], batch["labels"]], dim=0)
+
+            # Also double _original_labels for distillation objectives
+            batch["_original_labels"] = torch.cat(
+                [batch["_original_labels"], batch["_original_labels"]], dim=0
+            )
 
             # Apply masking
             masked_input_ids = input_ids_doubled.clone()
@@ -179,7 +190,7 @@ class DLMObjective(Objective):
             metrics={
                 "loss": loss.detach(),
                 "num_masked": num_masked,
-                "mask_ratio": num_masked / total_tokens,
+                "mask_ratio": num_masked / total_tokens if total_tokens > 0 else 0.0,
             },
         )
 

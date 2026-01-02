@@ -30,7 +30,9 @@ class TestDLMStoresOriginals:
         processed = obj.preprocess_batch(batch)
 
         assert "_original_labels" in processed
-        assert torch.equal(processed["_original_labels"], labels)
+        # With complementary masks (default), batch is doubled so _original_labels is also doubled
+        # First half should match original labels
+        assert torch.equal(processed["_original_labels"][:2], labels)
 
     def test_original_labels_not_masked(self):
         """Test that _original_labels are not masked."""
@@ -119,13 +121,11 @@ class TestCombinedObjectiveManager:
         batch_size, seq_len, vocab_size = 2, 10, 100
         input_ids = torch.randint(0, vocab_size - 1, (batch_size, seq_len))  # Avoid mask token
         labels = input_ids.clone()
-        logits = torch.randn(batch_size, seq_len, vocab_size)
 
         batch = {
             "input_ids": input_ids,
             "labels": labels,
         }
-        model_outputs = {"logits": logits}
 
         # Preprocess (DLM applies masking)
         processed_batch = manager.preprocess_batch(batch)
@@ -133,6 +133,11 @@ class TestCombinedObjectiveManager:
         # Verify originals are stored
         assert "_original_input_ids" in processed_batch
         assert "_original_labels" in processed_batch
+
+        # With complementary masks, batch is doubled (2 -> 4)
+        doubled_batch_size = processed_batch["input_ids"].shape[0]
+        logits = torch.randn(doubled_batch_size, seq_len, vocab_size)
+        model_outputs = {"logits": logits}
 
         # Forward pass
         output = manager(model_outputs, processed_batch)
@@ -161,10 +166,13 @@ class TestCombinedObjectiveManager:
         batch_size, seq_len, vocab_size = 2, 10, 100
         input_ids = torch.randint(0, vocab_size - 1, (batch_size, seq_len))
         labels = input_ids.clone()
-        logits = torch.randn(batch_size, seq_len, vocab_size)
 
         batch = {"input_ids": input_ids, "labels": labels}
         processed_batch = manager.preprocess_batch(batch)
+
+        # With complementary masks, batch is doubled
+        doubled_batch_size = processed_batch["input_ids"].shape[0]
+        logits = torch.randn(doubled_batch_size, seq_len, vocab_size)
         model_outputs = {"logits": logits}
 
         output = manager(model_outputs, processed_batch)

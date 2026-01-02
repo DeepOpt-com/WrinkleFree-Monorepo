@@ -7,12 +7,15 @@ Distills relation matrices: R = Softmax(A · A^T / sqrt(d_r))
 from __future__ import annotations
 
 import math
+import logging
 from typing import Any, Optional
 
 import torch
 import torch.nn.functional as F
 
 from wrinklefree.objectives.base import Objective, ObjectiveOutput
+
+logger = logging.getLogger(__name__)
 
 
 class AttentionRelationDistillationObjective(Objective):
@@ -126,6 +129,10 @@ class AttentionRelationDistillationObjective(Objective):
 
         # Handle head count mismatch: Average over heads to get (B, 1, S, S)
         if student_R.shape[1] != teacher_R.shape[1]:
+            logger.warning(
+                f"Head count mismatch: student={student_R.shape[1]}, teacher={teacher_R.shape[1]}. "
+                "Averaging over heads - this may reduce training signal quality."
+            )
             student_R = student_R.mean(dim=1, keepdim=True)
             teacher_R = teacher_R.mean(dim=1, keepdim=True)
 

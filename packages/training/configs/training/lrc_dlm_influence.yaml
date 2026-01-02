@@ -77,11 +77,11 @@ scheduler:
 
 # === TRAINING PARAMETERS ===
 total_tokens: 1_000_000_000  # 1B tokens for testing (scale up for prod)
-# max_steps computed: 1B tokens / (batch * accum * seq_len) = 1B / (16 * 4 * 512) = ~30,500 steps
-max_steps: 30500  # 1B tokens at batch=16, accum=4, seq=512
-max_seq_length: 512
-batch_size: 16  # Starting batch size (BatchSizeFinder will scale up)
-gradient_accumulation_steps: 4  # Effective batch = 64
+# max_steps computed: 1B tokens / (batch * accum * seq_len) = 1B / (4 * 16 * 2048) = ~7,630 steps
+max_steps: 7630  # 1B tokens at batch=4, accum=16, seq=2048
+max_seq_length: 2048  # Longer context for better training signal
+batch_size: 4  # Reduced for longer sequences (BatchSizeFinder may adjust)
+gradient_accumulation_steps: 16  # Effective batch = 64, but 4x more tokens/step
 gradient_clipping: 1.0
 # auto_batch_size works with MuonClip after fix for upstream hook bug
 # MuonClipInitCallback re-registers hooks after BatchSizeFinder completes
@@ -117,7 +117,7 @@ objectives:
     weight: 0.5  # Will be curriculum-controlled
     mask_prob: 0.15
     mask_token_id: 0
-    use_complementary_masks: false  # Disabled to avoid batch size mismatch
+    use_complementary_masks: true  # Enabled: doubles batch with mask m and 1-m
 
   # LRC reconstruction (disabled - requires teacher model setup)
   # Enable later with teacher model for post-quantization recovery

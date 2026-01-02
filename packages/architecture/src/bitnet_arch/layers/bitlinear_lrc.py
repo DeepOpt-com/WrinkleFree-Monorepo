@@ -68,6 +68,13 @@ class BitLinearLRC(BitLinear):
     ):
         super().__init__(in_features, out_features, bias=bias, eps=eps)
 
+        # Validate flag combinations
+        if trainable_weight and not keep_original_weight:
+            raise ValueError(
+                "trainable_weight=True requires keep_original_weight=True "
+                "(STE needs original weights for gradient flow)"
+            )
+
         # Compute rank from percentage if not explicitly provided
         if rank is None:
             rank = max(1, int(min(in_features, out_features) * rank_percentage))
@@ -103,6 +110,12 @@ class BitLinearLRC(BitLinear):
         Note: init_lrc_from_svd() requires the original weight, so call that
         before setting keep_original_weight=False.
         """
+        if self.weight.numel() == 0:
+            raise RuntimeError(
+                "Cannot compute quantized weights: original weight was deleted. "
+                "This layer was created with keep_original_weight=False."
+            )
+
         with torch.no_grad():
             self.weight_quantized.data.copy_(self.weight_quant(self.weight))
 

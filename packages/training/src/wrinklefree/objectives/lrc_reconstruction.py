@@ -150,6 +150,7 @@ class LRCReconstructionObjective(Objective):
             total_loss = total_loss + weights[idx] * layer_loss
 
         # Apply temperature scaling
+        # Note: temperature > 1 reduces loss magnitude (inverse of typical distillation scaling)
         total_loss = total_loss / self.temperature
 
         mean_layer_loss = torch.stack(layer_losses).mean()
@@ -182,6 +183,8 @@ class LRCReconstructionObjective(Objective):
                     f"must match num_layers ({num_layers})"
                 )
             total = sum(self.layer_weights_config)
+            if total <= 0:
+                raise ValueError(f"layer_weights must sum to > 0, got {total}")
             return [w / total for w in self.layer_weights_config]
         else:
             raise ValueError(f"Unknown layer_weights config: {self.layer_weights_config}")

@@ -9,6 +9,7 @@ Training job launcher for 1.58-bit quantized LLMs. Uses SkyPilot for managed GPU
 3. **NEVER CANCEL OTHERS' JOBS**: Only cancel SkyPilot jobs you started in this session
 4. **USE NEBIUS**: Prefer Nebius over RunPod/GCP (better availability, lower cost)
 5. **CLEAN BEFORE RETRY**: Run `sky exec <cluster> "rm -rf /tmp/checkpoints/*"` before retrying failed jobs
+6. **FIX, DON'T FALL BACK**: When something breaks, FIX IT. Don't silently fall back to alternatives (e.g., don't switch from MuonClip to AdamW - fix MuonClip)
 
 ## Quick Smoke Test (Lightning)
 
