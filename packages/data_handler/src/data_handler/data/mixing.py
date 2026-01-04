@@ -164,9 +164,7 @@ class MixedDataset(IterableDataset):
                 samples=samples_per_source,
                 text_column=mixture.text_column,
             )
-            # Use streaming=False to avoid deadlock with main training DataLoader
-            # (multiple streaming datasets can conflict when using Ray)
-            probe_ds = DomainProbeDataset(probe_config, streaming=False)
+            probe_ds = DomainProbeDataset(probe_config)
             packed_ds = PackedDataset(probe_ds, tokenizer, max_length)
             loaders[mixture.name] = DataLoader(packed_ds, batch_size=batch_size)
 
