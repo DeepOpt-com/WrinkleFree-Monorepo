@@ -416,6 +416,7 @@ def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
         # Validation settings (C4 perplexity every N steps)
         val_check_interval=val_cfg.get("val_check_interval", 500) if val_enabled else None,
         limit_val_batches=val_cfg.get("limit_val_batches", 50) if val_enabled else 0,
+        num_sanity_val_steps=0,  # Disable sanity check to avoid potential hangs
         gradient_clip_val=gradient_clip_val,
         enable_checkpointing=True,
         default_root_dir=cfg.output_dir,
@@ -494,8 +495,13 @@ def main(cfg: DictConfig) -> None:
     trainer = create_trainer(cfg, callbacks)
 
     # Train!
+    import sys
+    print("[DEBUG] About to call trainer.fit()...", flush=True)
+    sys.stdout.flush()
     logger.info("Starting training...")
     trainer.fit(module, datamodule)
+    print("[DEBUG] trainer.fit() completed!", flush=True)
+    sys.stdout.flush()
 
     logger.info("Training complete!")
 
