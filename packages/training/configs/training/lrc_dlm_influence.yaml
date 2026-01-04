@@ -47,13 +47,16 @@ packing:
   enabled: true
 
 # === OPTIMIZER ===
-# AdamW - stable default for BitNet training
-# MuonClip disabled: lr_muon=0.01 causes divergence with BitNet (see GitHub issue)
+# Official PyTorch Muon + AdamW (PyTorch 2.9+)
+# - Muon: 2D weights (attention, FFN) with Newton-Schulz orthogonalization
+# - AdamW: Embeddings, biases, lm_head, LayerNorm
+# Built-in muP scaling - LR doesn't need retuning as model scales
 optimizer:
-  type: adamw
-  learning_rate: 1e-4  # Learning rate for all params
-  weight_decay: 0.01   # Regularization
-  use_8bit: true       # Uses bitsandbytes AdamW8bit
+  type: muon  # Official PyTorch Muon + AdamW
+  lr_muon: 0.02  # Muon LR for 2D weights (recommended default)
+  lr_adam: 3e-4  # AdamW LR for embeddings/biases
+  weight_decay: 0.01
+  momentum: 0.95  # Muon momentum
 
 # Scheduler: WSD with short warmup
 scheduler:

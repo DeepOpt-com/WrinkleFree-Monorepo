@@ -34,12 +34,16 @@ fp8:
 packing:
   enabled: true
 
-# Optimization (8-bit AdamW for memory efficiency)
+# Official PyTorch Muon + AdamW (PyTorch 2.9+)
+# - Muon: 2D weights (attention, FFN) with Newton-Schulz orthogonalization
+# - AdamW: Embeddings, biases, lm_head, LayerNorm
+# Built-in muP scaling - LR doesn't need retuning as model scales
 optimizer:
-  type: adamw
-  learning_rate: 5e-5
-  weight_decay: 0.0
-  use_8bit: true  # Uses bitsandbytes AdamW8bit (set false for standard AdamW)
+  type: muon  # Official PyTorch Muon + AdamW
+  lr_muon: 0.02  # Muon LR for 2D weights (recommended default)
+  lr_adam: 3e-4  # AdamW LR for embeddings/biases
+  weight_decay: 0.01
+  momentum: 0.95  # Muon momentum
 
 scheduler:
   type: wsd  # Warmup-Stable-Decay

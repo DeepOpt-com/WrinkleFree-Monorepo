@@ -17,6 +17,63 @@ from wrinklefree.objectives import ObjectiveManager
 logger = logging.getLogger(__name__)
 
 
+class CombinedMuonAdamWOptimizer(torch.optim.Optimizer):
+    """Combined optimizer wrapper for Muon + AdamW.
+
+    Presents a single optimizer interface to Lightning while internally
+    managing both Muon (for 2D weights) and AdamW (for embeddings/biases).
+
+    This allows using automatic optimization with Lightning while getting
+    the benefits of Muon's Newton-Schulz orthogonalization for matrix weights.
+    """
+
+    def __init__(self, muon_opt, adam_opt, lr: float):
+        # Initialize with empty param_groups - we manage them via sub-optimizers
+        # Use a dummy parameter to satisfy Optimizer requirements
+        self.muon_opt = muon_opt
+        self.adam_opt = adam_opt
+        # Store defaults for scheduler compatibility
+        self.defaults = {"lr": lr}
+        # Combine param_groups for state_dict compatibility
+        self.param_groups = muon_opt.param_groups + adam_opt.param_groups
+        # State dict is managed by sub-optimizers
+        self.state = {}
+
+    def step(self, closure=None):
+        """Step both optimizers."""
+        loss = None
+        if closure is not None:
+            loss = closure()
+        self.muon_opt.step()
+        self.adam_opt.step()
+        return loss
+
+    def zero_grad(self, set_to_none: bool = True):
+        """Zero gradients for both optimizers."""
+        self.muon_opt.zero_grad(set_to_none=set_to_none)
+        self.adam_opt.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        """Return combined state dict."""
+        return {
+            "muon": self.muon_opt.state_dict(),
+            "adam": self.adam_opt.state_dict(),
+        }
+
+    def load_state_dict(self, state_dict):
+        """Load combined state dict."""
+        if "muon" in state_dict and "adam" in state_dict:
+            self.muon_opt.load_state_dict(state_dict["muon"])
+            self.adam_opt.load_state_dict(state_dict["adam"])
+        else:
+            # Fallback for legacy state dicts
+            logger.warning("Loading legacy optimizer state dict format")
+
+    def add_param_group(self, param_group):
+        """Not supported for combined optimizer."""
+        raise NotImplementedError("Cannot add param groups to combined optimizer")
+
+
 class WrinkleFreeLightningModule(pl.LightningModule):
     """Lightning module for WrinkleFree training.
 
@@ -186,16 +243,29 @@ class WrinkleFreeLightningModule(pl.LightningModule):
     def configure_optimizers(self):
         """Configure optimizer and scheduler.
 
-        Supports Muon (default) and AdamW optimizers.
-        AdamW uses 8-bit (bitsandbytes) by default for memory efficiency.
-        Set optimizer.use_8bit=false to use standard AdamW.
+        Supports:
+        - "muon" (default): Official PyTorch Muon + AdamW (returns two optimizers)
+        - "muonclip": Legacy muon-clip with QK-clipping (single optimizer)
+        - "adamw": Standard AdamW, uses 8-bit by default for memory efficiency
+
+        For multi-optimizer setups (Muon), returns [muon_opt, adam_opt] with
+        corresponding schedulers for each.
         """
-        optimizer_type = self.optimizer_cfg.get("type", "muonclip")
+        optimizer_type = self.optimizer_cfg.get("type", "muon")  # New default
         learning_rate = self.optimizer_cfg.get("learning_rate", 1e-4)
         weight_decay = self.optimizer_cfg.get("weight_decay", 0.1)
         use_8bit = self.optimizer_cfg.get("use_8bit", True)
 
-        if optimizer_type.lower() == "muonclip":
+        if optimizer_type.lower() == "muon":
+            # Official PyTorch Muon (2.9+) with combined wrapper
+            optimizer = self._create_pytorch_muon_optimizer(
+                lr_muon=self.optimizer_cfg.get("lr_muon", 0.02),
+                lr_adam=self.optimizer_cfg.get("lr_adam", 3e-4),
+                weight_decay=self.optimizer_cfg.get("weight_decay", 0.01),
+                momentum=self.optimizer_cfg.get("momentum", 0.95),
+            )
+        elif optimizer_type.lower() == "muonclip":
+            # Legacy muon-clip (keep for backward compatibility)
             optimizer = self._create_muon_optimizer(learning_rate, weight_decay)
         elif optimizer_type.lower() == "adamw_8bit":
             # Explicit 8-bit request (backwards compat)
@@ -213,7 +283,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             else:
                 optimizer = self._create_adamw_optimizer(learning_rate, weight_decay)
 
-        # Create scheduler if configured
+        # Create scheduler if configured (single optimizer path)
         scheduler_config = None
         if self.scheduler_cfg:
             scheduler = self._create_scheduler(optimizer)
@@ -412,6 +482,60 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         )
         logger.info(f"Created AdamW optimizer: lr={learning_rate:.2e}")
         return optimizer
+
+    def _create_pytorch_muon_optimizer(
+        self,
+        lr_muon: float = 0.02,
+        lr_adam: float = 3e-4,
+        weight_decay: float = 0.01,
+        momentum: float = 0.95,
+    ):
+        """Create combined Muon + AdamW optimizer using official PyTorch Muon (2.9+).
+
+        Returns a CombinedOptimizer wrapper that presents a single optimizer interface
+        to Lightning while internally managing both Muon and AdamW.
+
+        Parameter split (following Keller Jordan's recommendations):
+        - Muon: 2D+ weights (attention, FFN projections), excluding embeddings/lm_head
+        - AdamW: Embeddings, biases, lm_head, LayerNorm gains
+
+        Default learning rates:
+        - Muon: 0.02 (has built-in muP scaling, doesn't need retuning)
+        - AdamW: 3e-4 (standard for embeddings/biases)
+        """
+        muon_params = []
+        adam_params = []
+
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            # Muon: 2D+ weights, excluding embeddings and lm_head
+            if param.ndim >= 2 and "embed" not in name.lower() and "lm_head" not in name.lower():
+                muon_params.append(param)
+            else:
+                adam_params.append(param)
+
+        muon_opt = torch.optim.Muon(
+            muon_params,
+            lr=lr_muon,
+            momentum=momentum,
+            weight_decay=weight_decay,
+        )
+        adam_opt = torch.optim.AdamW(
+            adam_params,
+            lr=lr_adam,
+            betas=(0.9, 0.95),
+            weight_decay=weight_decay,
+        )
+
+        # Wrap both optimizers in a combined interface for Lightning
+        combined = CombinedMuonAdamWOptimizer(muon_opt, adam_opt, lr_muon)
+
+        logger.info(
+            f"Created PyTorch Muon + AdamW: {len(muon_params)} Muon params (lr={lr_muon}), "
+            f"{len(adam_params)} AdamW params (lr={lr_adam})"
+        )
+        return combined
 
     def _create_scheduler(self, optimizer):
         """Create learning rate scheduler."""
