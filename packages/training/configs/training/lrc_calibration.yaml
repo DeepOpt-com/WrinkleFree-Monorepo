@@ -26,6 +26,13 @@ lrc:
   # False (default): Only U, V trainable (memory efficient)
   # True: Weights + U, V trainable via STE (higher memory, better results)
   trainable_weight: false
+  # Delete original weights after quantization to save memory
+  # Only valid when trainable_weight=false (no STE gradient flow needed)
+  keep_original_weight: false
+
+# Lambda warmup disabled - LRC uses pre-computed quantized weights
+lambda_warmup:
+  enabled: false
 
 # Teacher model (original fp16 model for reconstruction targets)
 teacher:

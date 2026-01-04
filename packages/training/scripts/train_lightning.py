@@ -195,16 +195,21 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             lrc_cfg = cfg.training.get("lrc", {})
             rank_percentage = lrc_cfg.get("rank_percentage", 0.1)
             init_method = lrc_cfg.get("init_method", "zeros")
+            keep_original_weight = lrc_cfg.get("keep_original_weight", True)
+            trainable_weight = lrc_cfg.get("trainable_weight", False)
 
             logger.info(
                 f"LRC Calibration: Converting BitLinear → BitLinearLRC "
-                f"(rank={rank_percentage*100:.0f}%, init={init_method})"
+                f"(rank={rank_percentage*100:.0f}%, init={init_method}, "
+                f"keep_weight={keep_original_weight}, trainable={trainable_weight})"
             )
 
             model = convert_bitlinear_to_lrc(
                 model,
                 rank_percentage=rank_percentage,
                 init_method=init_method,
+                keep_original_weight=keep_original_weight,
+                trainable_weight=trainable_weight,
             )
 
             # Freeze all parameters except LRC matrices (U, V)
