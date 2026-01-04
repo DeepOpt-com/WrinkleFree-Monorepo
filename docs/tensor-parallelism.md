@@ -38,20 +38,16 @@ With TP=2, DP=4:
 
 ### Training with TP+FSDP2
 
-```bash
-# 8 GPUs with TP=2, DP=4
-torchrun --standalone --nproc_per_node=8 \
-  scripts/train.py \
-  model=smollm2_135m \
-  training=stage2_pretrain \
-  distributed=tp_fsdp \
-  distributed.tensor_parallel.tp_size=2
+> **Note:** The legacy `train.py` has been removed. Use the Lightning trainer for distributed training.
 
-# 8 GPUs with TP=8, DP=1 (pure tensor parallelism)
-torchrun --standalone --nproc_per_node=8 \
-  scripts/train.py \
-  distributed=tp_fsdp \
-  distributed.tensor_parallel.tp_size=8
+```bash
+# Multi-GPU with Lightning (handles distributed automatically)
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=unified \
+  distributed=fsdp_multi
+
+# For tensor parallelism experiments, see packages/training/configs/distributed/
 ```
 
 ### Smoke Test

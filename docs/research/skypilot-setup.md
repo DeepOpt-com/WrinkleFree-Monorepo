@@ -290,10 +290,10 @@ run: |
     3)   CONFIG="stage3_distill" ;;
   esac
 
-  uv run python scripts/train.py \
+  uv run python scripts/train_lightning.py \
     model=${MODEL} \
     training=${CONFIG} \
-    training.output_dir=/checkpoint/${MODEL}/stage${STAGE} \
+    output_dir=/checkpoint/${MODEL}/stage${STAGE} \
     gcs.enabled=true \
     gcs.bucket=wrinklefree-checkpoints
 ```

@@ -133,10 +133,6 @@ uv run --package wrinklefree python packages/training/scripts/train_lightning.py
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
   model=smollm2_135m training=unified training.auto_batch_size=true
 
-# Legacy trainer (still supported)
-uv run --package wrinklefree python packages/training/scripts/train.py \
-  model=smollm2_135m training=stage2_pretrain training.max_steps=10
-
 # Run unit tests
 uv run --package wrinklefree pytest packages/training/tests/unit/
 ```

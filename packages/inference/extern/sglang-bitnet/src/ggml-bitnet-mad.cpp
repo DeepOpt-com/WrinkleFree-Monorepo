@@ -113,10 +113,142 @@ void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs, const void * vx, size_t b
 
     (void)bs; (void)bx; (void)by; (void)nrc;  // unused parameters
 
-#if defined(__AVX512F__) && defined(__AVX512BW__)
-    // AVX-512 optimized path for AMD EPYC Genoa / Intel Sapphire Rapids
-    // Uses 4 independent 256-bit accumulators for ILP, then combines at the end
-    // This avoids the complexity of 512-bit operations on 256-bit data chunks
+#if defined(__AVX512VNNI__) && defined(__AVX512BW__)
+    // AVX-512 VNNI optimized path for AMD EPYC Genoa / Intel Ice Lake+
+    // Uses vpdpbusd (4-way u8*i8 dot product) for maximum throughput
+    // VNNI can do 4x u8*i8 multiplies + accumulate in single instruction
+
+    // 4 independent 512-bit accumulators for ILP
+    __m512i accu0 = _mm512_setzero_si512();
+    __m512i accu1 = _mm512_setzero_si512();
+    __m512i accu2 = _mm512_setzero_si512();
+    __m512i accu3 = _mm512_setzero_si512();
+
+    for (int i = 0; i < group32_num; i++) {
+        const int base_w = i * 32 * 32;
+        const int base_a = i * 128 * 32;
+
+        // Process 32 blocks with 4-way unrolling
+        // Each iteration processes 4 blocks using 512-bit registers
+        for (int j = 0; j < 32; j += 4) {
+            // Prefetch next iteration's data
+            if (j + 8 < 32) {
+                _mm_prefetch((const char*)(x + base_w + (j + 8) * 32), _MM_HINT_T0);
+                _mm_prefetch((const char*)(y + base_a + (j + 8) * 128), _MM_HINT_T0);
+            }
+
+            // Block j: Load 32 bytes of weights, unpack to 128 bytes
+            {
+                // Load packed weights (32 bytes = 128 2-bit values)
+                __m256i xq8_packed = _mm256_loadu_si256((const __m256i*)(x + base_w + j * 32));
+
+                // Unpack 2-bit to 8-bit using shifts and masks
+                __m256i xq8_3 = _mm256_and_si256(xq8_packed, _mm256_set1_epi8(0x03));
+                __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 2), _mm256_set1_epi8(0x03));
+                __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 4), _mm256_set1_epi8(0x03));
+                __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 6), _mm256_set1_epi8(0x03));
+
+                // Load 128 bytes of activations as two 512-bit loads
+                __m512i y_lo = _mm512_loadu_si512((const __m512i*)(y + base_a + j * 128));
+                __m512i y_hi = _mm512_loadu_si512((const __m512i*)(y + base_a + j * 128 + 64));
+
+                // Combine unpacked weights into 512-bit registers
+                // xq8_0 and xq8_1 go into one 512-bit, xq8_2 and xq8_3 into another
+                __m512i w_lo = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_0), xq8_1, 1);
+                __m512i w_hi = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_2), xq8_3, 1);
+
+                // Use VNNI: vpdpbusd does u8*i8 -> i32 accumulation
+                // Each 32-bit lane accumulates 4 products
+                accu0 = _mm512_dpbusd_epi32(accu0, w_lo, y_lo);
+                accu0 = _mm512_dpbusd_epi32(accu0, w_hi, y_hi);
+            }
+
+            // Block j+1
+            {
+                __m256i xq8_packed = _mm256_loadu_si256((const __m256i*)(x + base_w + (j + 1) * 32));
+                __m256i xq8_3 = _mm256_and_si256(xq8_packed, _mm256_set1_epi8(0x03));
+                __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 2), _mm256_set1_epi8(0x03));
+                __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 4), _mm256_set1_epi8(0x03));
+                __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 6), _mm256_set1_epi8(0x03));
+
+                __m512i y_lo = _mm512_loadu_si512((const __m512i*)(y + base_a + (j + 1) * 128));
+                __m512i y_hi = _mm512_loadu_si512((const __m512i*)(y + base_a + (j + 1) * 128 + 64));
+
+                __m512i w_lo = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_0), xq8_1, 1);
+                __m512i w_hi = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_2), xq8_3, 1);
+
+                accu1 = _mm512_dpbusd_epi32(accu1, w_lo, y_lo);
+                accu1 = _mm512_dpbusd_epi32(accu1, w_hi, y_hi);
+            }
+
+            // Block j+2
+            {
+                __m256i xq8_packed = _mm256_loadu_si256((const __m256i*)(x + base_w + (j + 2) * 32));
+                __m256i xq8_3 = _mm256_and_si256(xq8_packed, _mm256_set1_epi8(0x03));
+                __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 2), _mm256_set1_epi8(0x03));
+                __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 4), _mm256_set1_epi8(0x03));
+                __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 6), _mm256_set1_epi8(0x03));
+
+                __m512i y_lo = _mm512_loadu_si512((const __m512i*)(y + base_a + (j + 2) * 128));
+                __m512i y_hi = _mm512_loadu_si512((const __m512i*)(y + base_a + (j + 2) * 128 + 64));
+
+                __m512i w_lo = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_0), xq8_1, 1);
+                __m512i w_hi = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_2), xq8_3, 1);
+
+                accu2 = _mm512_dpbusd_epi32(accu2, w_lo, y_lo);
+                accu2 = _mm512_dpbusd_epi32(accu2, w_hi, y_hi);
+            }
+
+            // Block j+3
+            {
+                __m256i xq8_packed = _mm256_loadu_si256((const __m256i*)(x + base_w + (j + 3) * 32));
+                __m256i xq8_3 = _mm256_and_si256(xq8_packed, _mm256_set1_epi8(0x03));
+                __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 2), _mm256_set1_epi8(0x03));
+                __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 4), _mm256_set1_epi8(0x03));
+                __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 6), _mm256_set1_epi8(0x03));
+
+                __m512i y_lo = _mm512_loadu_si512((const __m512i*)(y + base_a + (j + 3) * 128));
+                __m512i y_hi = _mm512_loadu_si512((const __m512i*)(y + base_a + (j + 3) * 128 + 64));
+
+                __m512i w_lo = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_0), xq8_1, 1);
+                __m512i w_hi = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_2), xq8_3, 1);
+
+                accu3 = _mm512_dpbusd_epi32(accu3, w_lo, y_lo);
+                accu3 = _mm512_dpbusd_epi32(accu3, w_hi, y_hi);
+            }
+        }
+    }
+
+    // Handle remaining blocks
+    for (int i = 0; i < groupla_num; i++) {
+        for (int j = 0; j < la_num; j++) {
+            __m256i xq8_packed = _mm256_loadu_si256((const __m256i*)(x + group32_num * 32 * 32 + j * 32));
+            __m256i xq8_3 = _mm256_and_si256(xq8_packed, _mm256_set1_epi8(0x03));
+            __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 2), _mm256_set1_epi8(0x03));
+            __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 4), _mm256_set1_epi8(0x03));
+            __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_packed, 6), _mm256_set1_epi8(0x03));
+
+            __m512i y_lo = _mm512_loadu_si512((const __m512i*)(y + group32_num * 128 * 32 + j * 128));
+            __m512i y_hi = _mm512_loadu_si512((const __m512i*)(y + group32_num * 128 * 32 + j * 128 + 64));
+
+            __m512i w_lo = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_0), xq8_1, 1);
+            __m512i w_hi = _mm512_inserti64x4(_mm512_castsi256_si512(xq8_2), xq8_3, 1);
+
+            accu0 = _mm512_dpbusd_epi32(accu0, w_lo, y_lo);
+            accu0 = _mm512_dpbusd_epi32(accu0, w_hi, y_hi);
+        }
+    }
+
+    // Reduce all 4 accumulators
+    __m512i combined01 = _mm512_add_epi32(accu0, accu1);
+    __m512i combined23 = _mm512_add_epi32(accu2, accu3);
+    __m512i combined = _mm512_add_epi32(combined01, combined23);
+    int sumi = _mm512_reduce_add_epi32(combined);
+    *s = (float)sumi;
+
+#elif defined(__AVX512F__) && defined(__AVX512BW__)
+    // AVX-512 fallback (no VNNI) - uses maddubs_epi16 approach
+    // Uses 4 independent 256-bit accumulators for ILP
 
     __m256i mask = _mm256_set1_epi8(0x03);
 
@@ -140,11 +272,10 @@ void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs, const void * vx, size_t b
 
         // Process 32 blocks with 4-way unrolling
         for (int j = 0; j < 32; j += 4) {
-            // Software prefetch next iteration's data (improves memory latency)
+            // Software prefetch next iteration's data
             if (j + 8 < 32) {
                 _mm_prefetch((const char*)(x + base_w + (j + 8) * 32), _MM_HINT_T0);
                 _mm_prefetch((const char*)(y + base_a + (j + 8) * 128), _MM_HINT_T0);
-                _mm_prefetch((const char*)(y + base_a + (j + 8) * 128 + 64), _MM_HINT_T0);
             }
 
             // Block j -> inner0
@@ -270,7 +401,7 @@ void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs, const void * vx, size_t b
         accu0 = _mm256_add_epi32(accu0, _mm256_madd_epi16(accula, ones));
     }
 
-    // Combine all 4 accumulators using AVX-512 for fast reduction
+    // Combine all 4 accumulators
     __m256i combined01 = _mm256_add_epi32(accu0, accu1);
     __m256i combined23 = _mm256_add_epi32(accu2, accu3);
     __m256i combined = _mm256_add_epi32(combined01, combined23);

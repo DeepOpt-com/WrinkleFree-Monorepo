@@ -60,27 +60,28 @@ sources:
     streaming: true
 
 # Multi-domain probe for influence calculation
-# Samples FROM our training sources (reduced to 1000 total for memory efficiency)
+# IMPORTANT: Keep samples LOW to avoid OOM during gradient caching
+# Each sample requires ~500MB for full gradient storage
 probe:
   domains:
     web_edu:
       path: HuggingFaceFW/fineweb-edu
       subset: sample-10BT
-      samples: 50  # Active - increased for 2 dataset config
+      samples: 16  # Reduced for memory - main validation domain
       text_column: text
       split: train
 
     code:
       path: nick007x/github-code-2025
       subset: null
-      samples: 30  # Re-enabled with HF auth
+      samples: 0  # DISABLED: Memory intensive
       text_column: content
       split: train
 
     math:
       path: HuggingFaceTB/finemath
       subset: finemath-3plus
-      samples: 50  # Active - increased for 2 dataset config
+      samples: 16  # Reduced for memory
       text_column: text
       split: train
 
@@ -109,7 +110,7 @@ probe:
       text_separator: "\n\n"
       split: train
 
-  total_samples: 130  # Sum of active probe samples (50+30+50)
+  total_samples: 32  # Sum of active probe samples (16+16)
   streaming: true
 
 # Preprocessing settings
