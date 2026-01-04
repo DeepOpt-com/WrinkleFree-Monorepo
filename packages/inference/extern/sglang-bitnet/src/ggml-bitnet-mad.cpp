@@ -103,8 +103,8 @@ size_t quantize_i2_s(const float * src, void * dst, int64_t nrow, int64_t n_per_
 }
 
 void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
-    const uint8_t *    x = (uint8_t *)vx;
-    const int8_t  *    y = (int8_t *)vy;
+    const uint8_t * x = static_cast<const uint8_t *>(vx);
+    const int8_t  * y = static_cast<const int8_t *>(vy);
 
     const int nb = n / QK_I2_S;
     const int group32_num = nb / 32;
@@ -128,14 +128,22 @@ void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs, const void * vx, size_t b
         const int base_w = i * 32 * 32;
         const int base_a = i * 128 * 32;
 
+        // Prefetch next group's data to L2 cache (farther ahead)
+        if (i + 1 < group32_num) {
+            const int next_base_w = (i + 1) * 32 * 32;
+            const int next_base_a = (i + 1) * 128 * 32;
+            _mm_prefetch((const char*)(x + next_base_w), _MM_HINT_T1);
+            _mm_prefetch((const char*)(y + next_base_a), _MM_HINT_T1);
+            _mm_prefetch((const char*)(y + next_base_a + 512), _MM_HINT_T1);
+        }
+
         // Process 32 blocks with 4-way unrolling
         // Each iteration processes 4 blocks using 512-bit registers
         for (int j = 0; j < 32; j += 4) {
-            // Prefetch next iteration's data
-            if (j + 8 < 32) {
-                _mm_prefetch((const char*)(x + base_w + (j + 8) * 32), _MM_HINT_T0);
-                _mm_prefetch((const char*)(y + base_a + (j + 8) * 128), _MM_HINT_T0);
-            }
+            // Prefetch next iteration's data to L1 (unconditional - past-end prefetch is harmless)
+            _mm_prefetch((const char*)(x + base_w + (j + 8) * 32), _MM_HINT_T0);
+            _mm_prefetch((const char*)(y + base_a + (j + 8) * 128), _MM_HINT_T0);
+            _mm_prefetch((const char*)(y + base_a + (j + 8) * 128 + 64), _MM_HINT_T0);
 
             // Block j: Load 32 bytes of weights, unpack to 128 bytes
             {
@@ -270,13 +278,21 @@ void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs, const void * vx, size_t b
         const int base_w = i * 32 * 32;
         const int base_a = i * 128 * 32;
 
+        // Prefetch next group's data to L2 cache
+        if (i + 1 < group32_num) {
+            const int next_base_w = (i + 1) * 32 * 32;
+            const int next_base_a = (i + 1) * 128 * 32;
+            _mm_prefetch((const char*)(x + next_base_w), _MM_HINT_T1);
+            _mm_prefetch((const char*)(y + next_base_a), _MM_HINT_T1);
+            _mm_prefetch((const char*)(y + next_base_a + 512), _MM_HINT_T1);
+        }
+
         // Process 32 blocks with 4-way unrolling
         for (int j = 0; j < 32; j += 4) {
-            // Software prefetch next iteration's data
-            if (j + 8 < 32) {
-                _mm_prefetch((const char*)(x + base_w + (j + 8) * 32), _MM_HINT_T0);
-                _mm_prefetch((const char*)(y + base_a + (j + 8) * 128), _MM_HINT_T0);
-            }
+            // Software prefetch next iteration's data to L1 (unconditional)
+            _mm_prefetch((const char*)(x + base_w + (j + 8) * 32), _MM_HINT_T0);
+            _mm_prefetch((const char*)(y + base_a + (j + 8) * 128), _MM_HINT_T0);
+            _mm_prefetch((const char*)(y + base_a + (j + 8) * 128 + 64), _MM_HINT_T0);
 
             // Block j -> inner0
             {
