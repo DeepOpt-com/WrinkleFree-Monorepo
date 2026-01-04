@@ -133,12 +133,17 @@ bitnet_model = convert_model_to_bitnet(model)
 bitnet_model = auto_convert_if_needed(model)
 ```
 
-### Lambda Warmup
+### Lambda Warmup (Optional, Disabled by Default)
+
+Lambda warmup gradually increases quantization strength from 0 to 1. When disabled (default), `get_current_lambda()` returns 1.0 and the model trains with full quantization from step 0.
 
 ```python
 from bitnet_arch import LambdaWarmup, set_global_lambda_warmup, get_current_lambda
 
-# Create warmup schedule (1000 steps from lambda=0 to lambda=1)
+# Without warmup (default): get_current_lambda() returns 1.0
+# Full ternary quantization from the start
+
+# To enable gradual warmup:
 warmup = LambdaWarmup(warmup_steps=1000)
 set_global_lambda_warmup(warmup)
 

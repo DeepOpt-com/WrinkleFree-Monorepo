@@ -61,9 +61,10 @@ gradient_accumulation_steps: 16
 gradient_clipping: 1.0
 auto_batch_size: false  # Enable for Lightning BatchSizeFinder
 
-# Lambda warmup for gradual quantization
+# Lambda warmup for gradual quantization (disabled by default)
+# When disabled, model trains with full quantization from step 0
 lambda_warmup:
-  enabled: true
+  enabled: false
   warmup_steps: 500
   schedule: linear
 
