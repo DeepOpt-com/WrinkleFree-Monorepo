@@ -117,8 +117,9 @@ class TestMetaParameterManager:
 
         obj_weights = manager.get_objective_weights()
         min_w, max_w = manager.config.constraints.objective_weight_range
-        assert obj_weights["ce"] >= min_w
-        assert obj_weights["dlm"] >= min_w
+        # Use tolerance for floating point comparison
+        assert obj_weights["ce"] >= min_w - 1e-6
+        assert obj_weights["dlm"] >= min_w - 1e-6
 
     def test_lr_scale_constraints(self, manager):
         """Test that LR scales respect constraints."""
@@ -265,7 +266,8 @@ class TestParetoGradientSolver:
         g1 = torch.tensor([10.0, 0.0])
         g2 = torch.tensor([0.0, 1.0])
 
-        result = solver.solve_mgda([g1, g2])
+        # Use solve() which applies normalization, not solve_mgda() directly
+        result = solver.solve([g1, g2])
 
         # With normalization, magnitudes shouldn't dominate
         # Both directions should be roughly equal
