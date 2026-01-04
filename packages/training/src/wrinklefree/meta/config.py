@@ -1,9 +1,14 @@
-"""Configuration for meta-optimization outer loop.
+"""Configuration for efficient meta-optimization.
+
+This module provides configuration classes for two complementary methods:
+1. LDC-MTL: Objective weight optimization (CE vs DLM vs distillation)
+2. ODM: Dataset weight optimization (web vs code vs math)
+
+Both methods are O(1) complexity and require no external dependencies.
 
 References:
-- LibMOON (NeurIPS 2024): https://arxiv.org/abs/2409.02969
-- ScaleBiO (2024): https://arxiv.org/abs/2406.19976
-- DataInf (ICLR 2024): https://openreview.net/forum?id=9m02ib92Wz
+- LDC-MTL: https://arxiv.org/abs/2502.08585
+- ODM: https://arxiv.org/abs/2312.02406
 """
 
 from dataclasses import dataclass, field
@@ -11,100 +16,84 @@ from typing import Literal, Optional
 
 
 @dataclass
-class ParetoConfig:
-    """Configuration for Pareto gradient solver.
+class LDCMTLConfig:
+    """LDC-MTL configuration for objective weight optimization.
 
-    Reference: LibMOON (https://github.com/xzhang2523/libmoon)
+    LDC-MTL (Loss Discrepancy Control for Multi-Task Learning) uses a small
+    router network to learn optimal task weights with O(1) complexity.
+
+    Attributes:
+        enabled: Whether to enable LDC-MTL objective weighting
+        lambda_penalty: Weight for the discrepancy penalty (higher = more balanced)
+        hidden_dim: Hidden layer dimension for the router MLP
+        router_lr: Learning rate for the router optimizer
     """
 
-    method: Literal["mgda", "epo", "linear"] = "mgda"
-    max_iter: int = 10
-    tol: float = 1e-4
-    normalize_gradients: bool = True
-    # For EPO: preference weights for each validation objective
-    preferences: Optional[list[float]] = None
+    enabled: bool = True
+    lambda_penalty: float = 0.1
+    hidden_dim: int = 32
+    router_lr: float = 1e-3
 
 
 @dataclass
-class ValidationObjectiveConfig:
-    """Configuration for a validation objective in Pareto optimization."""
+class ODMConfig:
+    """ODM (EXP3) configuration for dataset weight optimization.
 
-    name: str
-    loader: str  # Reference to a dataloader config
-    weight: float = 1.0  # Initial preference weight
+    ODM (Online Data Mixing) uses the EXP3 multi-armed bandit algorithm
+    to learn optimal dataset sampling probabilities during training.
 
+    Attributes:
+        enabled: Whether to enable ODM dataset weighting
+        reward_smoothing: EMA coefficient for reward updates (0-1, higher = more smoothing)
+        warmup_ratio: Fraction of training to use uniform weights (0-1)
+        min_weight: Minimum allowed sampling probability per dataset
+        max_weight: Maximum allowed sampling probability per dataset
+    """
 
-@dataclass
-class MetaConstraintsConfig:
-    """Constraints for meta-parameters."""
-
-    dataset_weight_range: tuple[float, float] = (0.05, 0.60)
-    objective_weight_range: tuple[float, float] = (0.01, 2.0)
-    lr_scale_range: tuple[float, float] = (0.5, 2.0)
-
-
-@dataclass
-class MetaGradientConfig:
-    """Configuration for meta-gradient estimation."""
-
-    method: Literal["datainf", "finite_difference"] = "datainf"
-    lambda_reg: float = 1e-4
-    samples_per_source: int = 256
-    use_aggregated_gradient: bool = True
+    enabled: bool = True
+    reward_smoothing: float = 0.9
+    warmup_ratio: float = 0.01
+    min_weight: float = 0.05
+    max_weight: float = 0.60
 
 
 @dataclass
 class MetaOptimizationConfig:
-    """Configuration for meta-optimization outer loop.
+    """Unified configuration for meta-optimization.
 
-    This enables joint optimization of:
-    - Dataset mixture weights (extends existing InfluenceTracker)
-    - Objective weights (CE, DLM, distillation, etc.)
-    - Learning rate scales (per parameter group)
+    Combines LDC-MTL (objective weights) and ODM (dataset weights) into
+    a single configuration. Both can be enabled independently.
 
-    Using influence-based gradient estimation with multi-objective
-    Pareto optimization for validation signals.
+    Example YAML config:
+        meta_optimization:
+          enabled: true
+          ldc_mtl:
+            enabled: true
+            lambda_penalty: 0.1
+            hidden_dim: 32
+            router_lr: 0.001
+          odm:
+            enabled: true
+            reward_smoothing: 0.9
+            warmup_ratio: 0.01
+            min_weight: 0.05
+            max_weight: 0.60
+          log_interval: 100
+
+    Attributes:
+        enabled: Master switch for meta-optimization
+        ldc_mtl: LDC-MTL config for objective weights
+        odm: ODM config for dataset weights
+        log_interval: Steps between logging meta-optimization metrics
     """
 
     enabled: bool = False
 
-    # Which meta-parameters to optimize
-    optimize_dataset_weights: bool = True
-    optimize_objective_weights: bool = True
-    optimize_learning_rates: bool = False  # Experimental
+    # Objective weights (LDC-MTL)
+    ldc_mtl: LDCMTLConfig = field(default_factory=LDCMTLConfig)
 
-    # Update schedule
-    update_interval: int = 1000
-    warmup_steps: int = 500
-
-    # Gradient estimation
-    gradient: MetaGradientConfig = field(default_factory=MetaGradientConfig)
-
-    # Pareto optimization
-    pareto: ParetoConfig = field(default_factory=ParetoConfig)
-
-    # Validation objectives for multi-objective optimization
-    validation_objectives: list[ValidationObjectiveConfig] = field(default_factory=list)
-
-    # Meta-learning hyperparameters
-    meta_lr: float = 0.1
-    meta_momentum: float = 0.9
-
-    # Constraints
-    constraints: MetaConstraintsConfig = field(default_factory=MetaConstraintsConfig)
+    # Dataset weights (ODM/EXP3)
+    odm: ODMConfig = field(default_factory=ODMConfig)
 
     # Logging
     log_interval: int = 100
-    log_pareto_front: bool = True
-
-    def __post_init__(self):
-        """Set default validation objectives if none provided."""
-        if self.enabled and not self.validation_objectives:
-            # Default to validation perplexity as single objective
-            self.validation_objectives = [
-                ValidationObjectiveConfig(
-                    name="validation_perplexity",
-                    loader="validation",
-                    weight=1.0,
-                )
-            ]

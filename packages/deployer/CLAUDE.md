@@ -121,7 +121,8 @@ sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
 # Influence-based data remixing (tests InfluenceTrackerCallback)
 sky launch skypilot/smoke_test_influence.yaml -y --cluster influence-smoke
 
-# Meta-optimization (LibMOON-style Pareto + DataInf influence)
+# Meta-optimization (LDC-MTL + ODM, O(1) complexity)
+# References: arxiv:2502.08585 (LDC-MTL), arxiv:2312.02406 (ODM/EXP3)
 sky launch skypilot/smoke_test_meta_opt_1gpu.yaml -y --cluster meta-1gpu  # 1x L40
 sky launch skypilot/smoke_test_meta_opt_2gpu.yaml -y --cluster meta-2gpu  # 2x L40 FSDP
 

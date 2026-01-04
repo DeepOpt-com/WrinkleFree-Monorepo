@@ -21,6 +21,7 @@
 |------|---------|
 | **Training (Lightning)** | `uv run --package wrinklefree python scripts/train_lightning.py model=smollm2_135m training=unified` |
 | Training with auto batch | `... training.auto_batch_size=true` |
+| Meta-optimization | `... training.meta_optimization.enabled=true` |
 | BitDistill distillation | `... training=bitdistill_full` |
 | LRC calibration | `... training=lrc_calibration` |
 | Deploy to cloud | `cd packages/deployer && wf train -m smollm2_135m -s 2 --cloud nebius` |
@@ -72,6 +73,14 @@
 │  └─────────────────────────────────────────────────────┘   │
 │         ↓                                                   │
 │  Callbacks: BatchSizeFinder, GCS, ZClip, TokenCount        │
+│         ↓                                                   │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │           Meta-Optimization (optional)              │   │
+│  │  ┌──────────────┐    ┌──────────────┐              │   │
+│  │  │  LDC-MTL     │    │  ODM/EXP3    │              │   │
+│  │  │  (obj wts)   │    │  (data wts)  │              │   │
+│  │  └──────────────┘    └──────────────┘              │   │
+│  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 

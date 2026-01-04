@@ -1,19 +1,22 @@
-"""Tests for meta-optimization module.
+"""Tests for efficient meta-optimization module.
 
 Tests:
-- MetaParameterManager: weight management and updates
-- ParetoGradientSolver: MGDA and EPO algorithms
-- MetaOptimizationConfig: configuration validation
+- LDCMTLManager: Objective weight optimization via router network
+- OnlineDataMixer: Dataset weight optimization via EXP3 bandit
+- MetaOptimizationConfig: Configuration validation
 """
 
 import pytest
 import torch
 
 from wrinklefree.meta import (
+    LDCMTLConfig,
+    LDCMTLManager,
     MetaOptimizationConfig,
-    MetaParameterManager,
-    ParetoConfig,
-    ParetoGradientSolver,
+    ODMConfig,
+    ObjectiveRouter,
+    OnlineDataMixer,
+    compute_loss_discrepancy,
 )
 
 
@@ -24,330 +27,325 @@ class TestMetaOptimizationConfig:
         """Test default configuration values."""
         config = MetaOptimizationConfig()
         assert config.enabled is False
-        assert config.optimize_dataset_weights is True
-        assert config.optimize_objective_weights is True
-        assert config.optimize_learning_rates is False
-        assert config.update_interval == 1000
-        assert config.warmup_steps == 500
+        assert config.ldc_mtl.enabled is True
+        assert config.odm.enabled is True
+        assert config.log_interval == 100
 
-    def test_enabled_config_gets_default_validation_objectives(self):
-        """Test that enabled config gets default validation objective."""
-        config = MetaOptimizationConfig(enabled=True)
-        assert len(config.validation_objectives) == 1
-        assert config.validation_objectives[0].name == "validation_perplexity"
+    def test_ldc_mtl_config_defaults(self):
+        """Test LDC-MTL config defaults."""
+        config = LDCMTLConfig()
+        assert config.enabled is True
+        assert config.lambda_penalty == 0.1
+        assert config.hidden_dim == 32
+        assert config.router_lr == 1e-3
 
-    def test_pareto_config_defaults(self):
-        """Test Pareto config defaults."""
-        config = ParetoConfig()
-        assert config.method == "mgda"
-        assert config.max_iter == 10
-        assert config.normalize_gradients is True
+    def test_odm_config_defaults(self):
+        """Test ODM config defaults."""
+        config = ODMConfig()
+        assert config.enabled is True
+        assert config.reward_smoothing == 0.9
+        assert config.warmup_ratio == 0.01
+        assert config.min_weight == 0.05
+        assert config.max_weight == 0.60
 
 
-class TestMetaParameterManager:
-    """Tests for MetaParameterManager."""
+class TestObjectiveRouter:
+    """Tests for ObjectiveRouter."""
+
+    def test_forward_shape(self):
+        """Test router output shape."""
+        router = ObjectiveRouter(num_objectives=3, hidden_dim=16)
+        losses = torch.tensor([1.0, 2.0, 3.0])
+        weights = router(losses)
+        assert weights.shape == (3,)
+
+    def test_forward_sums_to_one(self):
+        """Test router outputs sum to 1 (softmax)."""
+        router = ObjectiveRouter(num_objectives=3)
+        losses = torch.tensor([0.5, 1.5, 2.0])
+        weights = router(losses)
+        assert abs(weights.sum().item() - 1.0) < 1e-6
+
+    def test_forward_all_positive(self):
+        """Test router outputs are all positive."""
+        router = ObjectiveRouter(num_objectives=4)
+        losses = torch.tensor([0.1, 0.2, 0.3, 0.4])
+        weights = router(losses)
+        assert (weights > 0).all()
+
+
+class TestLossDiscrepancy:
+    """Tests for compute_loss_discrepancy."""
+
+    def test_zero_discrepancy_for_equal_weighted_losses(self):
+        """Equal weighted losses should have zero discrepancy."""
+        losses = torch.tensor([1.0, 1.0, 1.0])
+        weights = torch.tensor([1/3, 1/3, 1/3])
+        discrepancy = compute_loss_discrepancy(losses, weights)
+        assert abs(discrepancy.item()) < 1e-6
+
+    def test_nonzero_discrepancy_for_unequal(self):
+        """Unequal weighted losses should have positive discrepancy."""
+        losses = torch.tensor([1.0, 2.0, 3.0])
+        weights = torch.tensor([0.5, 0.3, 0.2])
+        discrepancy = compute_loss_discrepancy(losses, weights)
+        assert discrepancy.item() > 0
+
+
+class TestLDCMTLManager:
+    """Tests for LDCMTLManager."""
 
     @pytest.fixture
     def config(self):
-        """Create a test config."""
-        return MetaOptimizationConfig(
+        """Create test config."""
+        return LDCMTLConfig(
             enabled=True,
-            optimize_dataset_weights=True,
-            optimize_objective_weights=True,
-            optimize_learning_rates=True,
-            meta_lr=0.1,
-            meta_momentum=0.9,
+            lambda_penalty=0.1,
+            hidden_dim=16,
+            router_lr=1e-3,
         )
 
     @pytest.fixture
     def manager(self, config):
-        """Create a test manager."""
-        return MetaParameterManager(
-            config=config,
-            dataset_names=["web", "code", "math"],
+        """Create test manager."""
+        return LDCMTLManager(
             objective_names=["ce", "dlm"],
-            optimizer_param_groups=["muon", "adamw"],
+            config=config,
+            device=torch.device("cpu"),
         )
 
     def test_initialization(self, manager):
-        """Test that manager initializes correctly."""
-        # Dataset weights should be uniform (softmax of zeros)
-        weights = manager.get_dataset_weights()
-        assert len(weights) == 3
+        """Test manager initializes correctly."""
+        weights = manager.get_weights()
+        assert len(weights) == 2
+        assert "ce" in weights
+        assert "dlm" in weights
+        # Initial weights should be roughly equal
+        assert abs(weights["ce"] - weights["dlm"]) < 0.3
+
+    def test_compute_weighted_loss(self, manager):
+        """Test weighted loss computation."""
+        losses = {"ce": torch.tensor(1.0), "dlm": torch.tensor(2.0)}
+        total_loss, weights = manager.compute_weighted_loss(losses)
+
+        assert total_loss.shape == ()
+        assert total_loss.item() > 0
+        assert len(weights) == 2
         assert abs(sum(weights.values()) - 1.0) < 1e-6
-        assert abs(weights["web"] - 1/3) < 1e-6
 
-        # Objective weights should sum to 1.0 (softmax normalized)
-        obj_weights = manager.get_objective_weights()
-        assert len(obj_weights) == 2
-        assert abs(sum(obj_weights.values()) - 1.0) < 1e-6
-        # With 2 objectives from zero logits, each gets 0.5
-        assert abs(obj_weights["ce"] - 0.5) < 1e-6
-        assert abs(obj_weights["dlm"] - 0.5) < 1e-6
-
-        # LR scales should be 1.0
-        lr_scales = manager.get_lr_scales()
-        assert len(lr_scales) == 2
-        assert lr_scales["muon"] == 1.0
-
-    def test_update_dataset_weights(self, manager):
-        """Test gradient update for dataset weights."""
-        # Gradient suggesting to increase 'code' weight
-        grads = {"web": 0.1, "code": -0.2, "math": 0.1}
-        manager.update_from_gradients(dataset_grads=grads)
-
-        weights = manager.get_dataset_weights()
-        # 'code' should now have higher weight (negative gradient = increase)
-        assert weights["code"] > weights["web"]
-        assert weights["code"] > weights["math"]
-
-    def test_update_objective_weights(self, manager):
-        """Test gradient update for objective weights."""
-        grads = {"ce": -0.1, "dlm": 0.1}
-        manager.update_from_gradients(objective_grads=grads)
-
-        obj_weights = manager.get_objective_weights()
-        # 'ce' should increase (negative gradient)
-        assert obj_weights["ce"] > obj_weights["dlm"]
-
-    def test_objective_weight_constraints(self, manager):
-        """Test that objective weights respect constraints."""
-        # Apply large negative gradient (should try to push below min)
-        grads = {"ce": 10.0, "dlm": 10.0}
-        for _ in range(100):  # Many updates
-            manager.update_from_gradients(objective_grads=grads)
-
-        obj_weights = manager.get_objective_weights()
-        min_w, max_w = manager.config.constraints.objective_weight_range
-        # Use tolerance for floating point comparison
-        assert obj_weights["ce"] >= min_w - 1e-6
-        assert obj_weights["dlm"] >= min_w - 1e-6
-
-    def test_lr_scale_constraints(self, manager):
-        """Test that LR scales respect constraints."""
-        grads = {"muon": 10.0, "adamw": 10.0}
-        for _ in range(100):
-            manager.update_from_gradients(lr_grads=grads)
-
-        lr_scales = manager.get_lr_scales()
-        min_s, max_s = manager.config.constraints.lr_scale_range
-        assert lr_scales["muon"] >= min_s
-        assert lr_scales["adamw"] >= min_s
+    def test_step_updates_router(self, manager):
+        """Test that step() updates the router."""
+        losses = {"ce": torch.tensor(1.0, requires_grad=True), "dlm": torch.tensor(2.0, requires_grad=True)}
+        total_loss, _ = manager.compute_weighted_loss(losses)
+        total_loss.backward()
+        manager.step()
+        # No error means success
 
     def test_state_dict_roundtrip(self, manager):
         """Test save/load state dict."""
-        # Make some updates
-        manager.update_from_gradients(
-            dataset_grads={"web": -0.1, "code": 0.1, "math": 0.0},
-            objective_grads={"ce": 0.1, "dlm": -0.1},
-        )
+        # Get initial weights
+        initial_weights = manager.get_weights()
 
         # Save state
         state = manager.state_dict()
+        assert "router_state" in state
+        assert "optimizer_state" in state
 
         # Create new manager and load
-        new_manager = MetaParameterManager(
-            config=manager.config,
-            dataset_names=["web", "code", "math"],
+        new_manager = LDCMTLManager(
             objective_names=["ce", "dlm"],
-            optimizer_param_groups=["muon", "adamw"],
+            config=manager.config,
+            device=torch.device("cpu"),
         )
         new_manager.load_state_dict(state)
 
-        # Check weights match
-        assert manager.get_dataset_weights() == new_manager.get_dataset_weights()
-        assert manager.get_objective_weights() == new_manager.get_objective_weights()
+        # Check weights preserved
+        loaded_weights = new_manager.get_weights()
+        for name in initial_weights:
+            assert abs(initial_weights[name] - loaded_weights[name]) < 1e-6
 
     def test_wandb_metrics(self, manager):
         """Test WandB metrics generation."""
-        metrics = manager.get_wandb_metrics(prefix="meta")
+        metrics = manager.get_wandb_metrics()
 
-        assert "meta/dataset_weight_web" in metrics
-        assert "meta/dataset_weight_code" in metrics
-        assert "meta/objective_weight_ce" in metrics
-        assert "meta/lr_scale_muon" in metrics
+        assert "meta/ldc_mtl/objective_weight_ce" in metrics
+        assert "meta/ldc_mtl/objective_weight_dlm" in metrics
 
 
-class TestParetoGradientSolver:
-    """Tests for ParetoGradientSolver."""
+class TestOnlineDataMixer:
+    """Tests for OnlineDataMixer (EXP3)."""
 
     @pytest.fixture
-    def solver(self):
-        """Create solver with default config."""
-        return ParetoGradientSolver(ParetoConfig())
-
-    def test_single_objective(self, solver):
-        """Test with single objective (should return gradient as-is)."""
-        g = torch.tensor([1.0, 2.0, 3.0])
-        result = solver.solve([g])
-        assert torch.allclose(result, g)
-
-    def test_mgda_aligned_gradients(self, solver):
-        """Test MGDA with aligned gradients."""
-        # Two gradients pointing in same direction
-        g1 = torch.tensor([1.0, 0.0])
-        g2 = torch.tensor([2.0, 0.0])
-
-        result = solver.solve_mgda([g1, g2])
-
-        # Result should point in same direction
-        assert result[0] > 0
-        assert abs(result[1]) < 1e-6
-
-    def test_mgda_orthogonal_gradients(self, solver):
-        """Test MGDA with orthogonal gradients."""
-        g1 = torch.tensor([1.0, 0.0])
-        g2 = torch.tensor([0.0, 1.0])
-
-        result = solver.solve_mgda([g1, g2])
-
-        # Result should be in first quadrant (positive in both dims)
-        # because that's the only direction that improves both
-        assert result[0] > 0
-        assert result[1] > 0
-
-    def test_mgda_conflicting_gradients(self, solver):
-        """Test MGDA with conflicting gradients."""
-        g1 = torch.tensor([1.0, 0.0])
-        g2 = torch.tensor([-1.0, 0.0])
-
-        result = solver.solve_mgda([g1, g2])
-
-        # When gradients conflict, MGDA should find compromise
-        # Result should have smaller norm than inputs
-        assert result.norm() < max(g1.norm(), g2.norm())
-
-    def test_mgda_three_objectives(self, solver):
-        """Test MGDA with three objectives."""
-        g1 = torch.tensor([1.0, 0.0, 0.0])
-        g2 = torch.tensor([0.0, 1.0, 0.0])
-        g3 = torch.tensor([0.0, 0.0, 1.0])
-
-        result = solver.solve_mgda([g1, g2, g3])
-
-        # All components should be positive
-        assert (result > 0).all()
-
-    def test_pareto_weights_sum_to_one(self, solver):
-        """Test that Pareto weights form valid simplex."""
-        g1 = torch.tensor([1.0, 2.0])
-        g2 = torch.tensor([2.0, 1.0])
-
-        weights = solver.compute_pareto_weights([g1, g2])
-
-        assert abs(weights.sum() - 1.0) < 1e-6
-        assert (weights >= 0).all()
-
-    def test_epo_with_preferences(self, solver):
-        """Test EPO with preference weights."""
-        g1 = torch.tensor([1.0, 0.0])
-        g2 = torch.tensor([0.0, 1.0])
-
-        # Prefer first objective more
-        result = solver.solve_epo([g1, g2], preferences=[0.8, 0.2])
-
-        # Result should be biased toward first gradient
-        assert result[0] > result[1]
-
-    def test_linear_scalarization(self, solver):
-        """Test linear scalarization method."""
-        g1 = torch.tensor([1.0, 0.0])
-        g2 = torch.tensor([0.0, 1.0])
-
-        result = solver.solve_linear([g1, g2], weights=[0.7, 0.3])
-
-        # Should be weighted sum
-        expected = 0.7 * g1 + 0.3 * g2
-        assert torch.allclose(result, expected)
-
-    def test_normalization(self):
-        """Test gradient normalization option."""
-        solver = ParetoGradientSolver(ParetoConfig(normalize_gradients=True))
-
-        # Gradients with different magnitudes
-        g1 = torch.tensor([10.0, 0.0])
-        g2 = torch.tensor([0.0, 1.0])
-
-        # Use solve() which applies normalization, not solve_mgda() directly
-        result = solver.solve([g1, g2])
-
-        # With normalization, magnitudes shouldn't dominate
-        # Both directions should be roughly equal
-        assert abs(result[0] - result[1]) < 0.5
-
-
-class TestMetaGradientIntegration:
-    """Integration tests for meta-gradient computation.
-
-    These tests verify the full pipeline works together.
-    """
-
-    def test_pareto_with_meta_manager(self):
-        """Test Pareto solver integrates with meta manager."""
-        config = MetaOptimizationConfig(
+    def config(self):
+        """Create test config."""
+        return ODMConfig(
             enabled=True,
-            meta_lr=0.1,
+            reward_smoothing=0.9,
+            warmup_ratio=0.01,
+            min_weight=0.05,
+            max_weight=0.60,
         )
-        manager = MetaParameterManager(
+
+    @pytest.fixture
+    def mixer(self, config):
+        """Create test mixer."""
+        return OnlineDataMixer(
+            dataset_names=["web", "code", "math"],
             config=config,
-            dataset_names=["a", "b"],
-            objective_names=["ce"],
         )
-        solver = ParetoGradientSolver()
 
-        # Simulate two validation objectives with different preferences
-        # Val 1: prefers dataset a
-        meta_grads_1 = {"a": -0.5, "b": 0.5}
-        # Val 2: prefers dataset b
-        meta_grads_2 = {"a": 0.5, "b": -0.5}
+    def test_initialization(self, mixer):
+        """Test mixer initializes correctly."""
+        weights = mixer.get_sampling_weights()
+        assert len(weights) == 3
+        assert "web" in weights
+        assert "code" in weights
+        assert "math" in weights
 
-        # Convert to tensors for Pareto solver
-        grad_1 = torch.tensor([meta_grads_1["a"], meta_grads_1["b"]])
-        grad_2 = torch.tensor([meta_grads_2["a"], meta_grads_2["b"]])
+    def test_initial_weights_roughly_uniform(self, mixer):
+        """Test initial weights are roughly uniform."""
+        weights = mixer.get_sampling_weights()
+        for w in weights.values():
+            assert 0.2 < w < 0.5  # Roughly 1/3 each
 
-        # Solve Pareto
-        combined = solver.solve([grad_1, grad_2])
+    def test_weights_sum_to_one(self, mixer):
+        """Test weights always sum to 1."""
+        weights = mixer.get_sampling_weights()
+        assert abs(sum(weights.values()) - 1.0) < 1e-6
 
-        # Apply to manager
-        combined_dict = {"a": combined[0].item(), "b": combined[1].item()}
-        manager.update_from_gradients(dataset_grads=combined_dict)
+    def test_exploration_rate_decay(self, mixer):
+        """Test exploration rate decreases over time."""
+        eps_0 = mixer.get_exploration_rate()
 
-        # Weights should be balanced (conflicting preferences average out)
-        weights = manager.get_dataset_weights()
-        assert abs(weights["a"] - weights["b"]) < 0.3  # Roughly equal
+        mixer.step_count = 100
+        eps_100 = mixer.get_exploration_rate()
+
+        mixer.step_count = 1000
+        eps_1000 = mixer.get_exploration_rate()
+
+        assert eps_0 >= eps_100 >= eps_1000
+
+    def test_update_changes_rewards(self, mixer):
+        """Test update() modifies avg_rewards."""
+        initial_rewards = mixer.avg_rewards.copy()
+
+        losses = {"web": 1.0, "code": 2.0, "math": 0.5}
+        mixer.update(losses)
+
+        assert mixer.avg_rewards != initial_rewards
+
+    def test_update_favors_high_loss(self, mixer):
+        """Test that domains with higher loss get higher rewards."""
+        # Run many updates with consistent losses
+        for _ in range(100):
+            losses = {"web": 1.0, "code": 3.0, "math": 0.5}
+            mixer.update(losses)
+
+        # Code should have highest reward (highest loss)
+        assert mixer.avg_rewards["code"] > mixer.avg_rewards["web"]
+        assert mixer.avg_rewards["code"] > mixer.avg_rewards["math"]
+
+    def test_constraints_enforced(self, mixer):
+        """Test min/max weight constraints are enforced."""
+        # Force extreme rewards
+        mixer.avg_rewards = {"web": 100.0, "code": 0.0, "math": 0.0}
+        mixer.step_count = 1000
+
+        weights = mixer.get_sampling_weights()
+
+        assert weights["web"] <= mixer.config.max_weight + 0.01
+        assert weights["code"] >= mixer.config.min_weight - 0.01
+        assert weights["math"] >= mixer.config.min_weight - 0.01
+
+    def test_warmup_detection(self, mixer):
+        """Test warmup period detection."""
+        assert mixer.is_in_warmup(0, 10000) is True
+        assert mixer.is_in_warmup(50, 10000) is True
+        assert mixer.is_in_warmup(100, 10000) is False  # 1% of 10000
+
+    def test_uniform_weights(self, mixer):
+        """Test uniform weights for warmup."""
+        weights = mixer.get_uniform_weights()
+        for w in weights.values():
+            assert abs(w - 1/3) < 1e-6
+
+    def test_state_dict_roundtrip(self, mixer):
+        """Test save/load state dict."""
+        # Make some updates
+        mixer.update({"web": 1.0, "code": 2.0, "math": 0.5})
+        mixer.update({"web": 1.5, "code": 1.0, "math": 2.0})
+
+        # Save state
+        state = mixer.state_dict()
+
+        # Create new mixer and load
+        new_mixer = OnlineDataMixer(
+            dataset_names=["web", "code", "math"],
+            config=mixer.config,
+        )
+        new_mixer.load_state_dict(state)
+
+        assert mixer.avg_rewards == new_mixer.avg_rewards
+        assert mixer.step_count == new_mixer.step_count
+
+    def test_wandb_metrics(self, mixer):
+        """Test WandB metrics generation."""
+        metrics = mixer.get_wandb_metrics()
+
+        assert "meta/odm/dataset_weight_web" in metrics
+        assert "meta/odm/dataset_weight_code" in metrics
+        assert "meta/odm/exploration_rate" in metrics
 
 
 class TestEdgeCases:
     """Edge case tests."""
 
-    def test_empty_dataset_names(self):
-        """Test manager with no datasets."""
-        config = MetaOptimizationConfig(enabled=True)
-        manager = MetaParameterManager(
-            config=config,
-            dataset_names=[],
+    def test_single_objective_ldc_mtl(self):
+        """Test LDC-MTL with single objective (edge case)."""
+        config = LDCMTLConfig()
+        manager = LDCMTLManager(
             objective_names=["ce"],
-        )
-        assert manager.get_dataset_weights() == {}
-
-    def test_zero_gradients(self):
-        """Test update with zero gradients."""
-        config = MetaOptimizationConfig(enabled=True, meta_lr=0.1)
-        manager = MetaParameterManager(
             config=config,
-            dataset_names=["a", "b"],
-            objective_names=["ce"],
+            device=torch.device("cpu"),
         )
 
-        initial_weights = manager.get_dataset_weights().copy()
-        manager.update_from_gradients(dataset_grads={"a": 0.0, "b": 0.0})
-        final_weights = manager.get_dataset_weights()
+        losses = {"ce": torch.tensor(1.0)}
+        total_loss, weights = manager.compute_weighted_loss(losses)
 
-        # Weights should not change with zero gradients
-        assert initial_weights == final_weights
+        assert weights["ce"] == 1.0  # Only one objective
 
-    def test_pareto_empty_list(self):
-        """Test Pareto solver with empty gradient list."""
-        solver = ParetoGradientSolver()
-        with pytest.raises(ValueError):
-            solver.solve([])
+    def test_single_dataset_odm(self):
+        """Test ODM with single dataset (edge case)."""
+        config = ODMConfig()
+        mixer = OnlineDataMixer(
+            dataset_names=["web"],
+            config=config,
+        )
+
+        weights = mixer.get_sampling_weights()
+        assert weights["web"] == 1.0
+
+    def test_zero_losses(self):
+        """Test with zero losses."""
+        config = LDCMTLConfig()
+        manager = LDCMTLManager(
+            objective_names=["ce", "dlm"],
+            config=config,
+            device=torch.device("cpu"),
+        )
+
+        losses = {"ce": torch.tensor(0.0), "dlm": torch.tensor(0.0)}
+        total_loss, weights = manager.compute_weighted_loss(losses)
+
+        assert total_loss.item() == 0.0
+
+    def test_odm_unknown_domain(self):
+        """Test ODM handles unknown domain gracefully."""
+        config = ODMConfig()
+        mixer = OnlineDataMixer(
+            dataset_names=["web", "code"],
+            config=config,
+        )
+
+        # Should log warning but not crash
+        mixer.update({"unknown": 1.0})
