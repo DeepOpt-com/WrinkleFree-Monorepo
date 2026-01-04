@@ -13,15 +13,15 @@
 # Usage:
 #   cd packages/deployer
 #   source credentials/.env
-#   sky launch skypilot/lrc_dlm_influence_train.yaml -y --cluster lrc-dlm-train
+#   sky launch skypilot/bitdistill_dlm_influence.yaml -y --cluster bitdistill-dlm
 #
 # Monitor:
-#   sky logs lrc-dlm-train
+#   sky logs bitdistill-dlm
 #
 # Teardown:
-#   sky down lrc-dlm-train -y
+#   sky down bitdistill-dlm -y
 
-name: wrinklefree-lrc-dlm-influence
+name: wrinklefree-bitdistill-dlm-influence
 
 resources:
   accelerators: L40S:1
@@ -41,13 +41,14 @@ envs:
   GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
   GCS_BUCKET: wrinklefree-checkpoints
   MODEL: smollm2_135m
-  TRAINING_CONFIG: lrc_dlm_influence
+  TRAINING_CONFIG: bitdistill_dlm_influence
   TOTAL_TOKENS: 5000000000  # 5B tokens
-  MAX_STEPS: 76294  # 5B tokens / (8*4*2048) tokens per step
-  MUON_LR: 0.01  # User requested learning rate
-  EXPERIMENT_NAME: bitnet_muon_5b
+  MAX_STEPS: 38147  # 5B tokens / (8*8*2048) tokens per step (auto batch, grad_accum=8)
+  MUON_LR: 0.01  # Muon LR for 2D weights
+  ADAM_LR: 1.5e-4  # AdamW LR for embeddings/biases (halved from 3e-4)
+  EXPERIMENT_NAME: bitnet_muon_5b_v2
   WANDB_PROJECT: wrinklefree
-  WANDB_RUN_ID: lrc-dlm-${SKYPILOT_TASK_ID}
+  WANDB_RUN_ID: bitdistill-dlm-${SKYPILOT_TASK_ID}
   HF_HUB_ENABLE_HF_TRANSFER: "1"
 
 setup: |
@@ -127,7 +128,9 @@ run: |
   echo "Training Config: $TRAINING_CONFIG"
   echo "Total Tokens: $TOTAL_TOKENS (5B)"
   echo "Max Steps: $MAX_STEPS"
-  echo "Muon LR: $MUON_LR"
+  echo "Muon LR: $MUON_LR (2D weights)"
+  echo "AdamW LR: $ADAM_LR (embeddings/biases)"
+  echo "Auto Batch Size: enabled"
   echo "Experiment: $EXPERIMENT_NAME"
   echo "WandB Project: $WANDB_PROJECT"
   echo "GCS Bucket: $GCS_BUCKET"
@@ -153,16 +156,18 @@ run: |
   export DATA_NUM_WORKERS=0
 
   echo "[Training] Starting Lightning training..."
-  # Using unified config which worked in smoke test (simpler than lrc_dlm_influence)
+  # Using unified config with Muon+AdamW optimizer and auto batch sizing
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=unified \
     data.config_name=mixed_pretrain \
     training.max_steps=${MAX_STEPS} \
-    training.batch_size=8 \
-    training.gradient_accumulation_steps=4 \
+    training.auto_batch_size=true \
+    training.gradient_accumulation_steps=8 \
     training.optimizer.type=muon \
     training.optimizer.lr_muon=${MUON_LR} \
+    training.optimizer.lr_adam=${ADAM_LR} \
+    training.lambda_warmup.enabled=false \
     training.influence.enabled=true \
     training.influence.method=datainf \
     training.influence.update_interval=500 \
