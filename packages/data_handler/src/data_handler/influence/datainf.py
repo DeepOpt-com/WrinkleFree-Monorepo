@@ -88,6 +88,13 @@ class DataInfCalculator:
             # Move to CPU immediately to save GPU memory
             all_grads.append(batch_grads.cpu())
 
+        # Handle empty dataloader case
+        if not all_grads:
+            raise ValueError(
+                "No probe gradients collected. The probe dataloader was empty. "
+                "Check that the domain has samples > 0 in the config."
+            )
+
         # Concatenate all gradients (on CPU to save GPU memory)
         self._probe_gradients = torch.cat(all_grads, dim=0)  # Now on CPU
         self._probe_grad_norms_sq = torch.sum(self._probe_gradients ** 2, dim=1)

@@ -42,8 +42,10 @@ envs:
   GCS_BUCKET: wrinklefree-checkpoints
   MODEL: smollm2_135m
   TRAINING_CONFIG: lrc_dlm_influence
-  TOTAL_TOKENS: 1000000000  # 1B tokens
-  EXPERIMENT_NAME: bitnet_adamw_ckpt_fix
+  TOTAL_TOKENS: 5000000000  # 5B tokens
+  MAX_STEPS: 76294  # 5B tokens / (8*4*2048) tokens per step
+  MUON_LR: 0.01  # User requested learning rate
+  EXPERIMENT_NAME: bitnet_muon_5b
   WANDB_PROJECT: wrinklefree
   WANDB_RUN_ID: lrc-dlm-${SKYPILOT_TASK_ID}
   HF_HUB_ENABLE_HF_TRANSFER: "1"
@@ -119,29 +121,30 @@ run: |
   echo "WANDB_API_KEY length: ${#WANDB_API_KEY}"
 
   echo "================================================"
-  echo "WrinkleFree LRC + DLM + Influence Training"
+  echo "WrinkleFree BitNet + DLM + Influence Training"
   echo "================================================"
   echo "Model: $MODEL"
   echo "Training Config: $TRAINING_CONFIG"
-  echo "Total Tokens: $TOTAL_TOKENS"
+  echo "Total Tokens: $TOTAL_TOKENS (5B)"
+  echo "Max Steps: $MAX_STEPS"
+  echo "Muon LR: $MUON_LR"
   echo "Experiment: $EXPERIMENT_NAME"
   echo "WandB Project: $WANDB_PROJECT"
   echo "GCS Bucket: $GCS_BUCKET"
   echo "================================================"
   echo ""
   echo "Training Schedule:"
-  echo "- First 20%: fineweb-edu warmup (CE + LRC)"
-  echo "- Remaining 80%: mixed_pretrain with influence (CE + DLM + LRC)"
+  echo "- First 20%: warmup (CE only)"
+  echo "- Remaining 80%: mixed_pretrain with influence (CE + DLM)"
   echo ""
   echo "Objectives:"
   echo "- continue_pretrain (CE): weight=1.0"
   echo "- dlm: weight=0.5 (after warmup)"
-  echo "- lrc_reconstruction: weight=0.3"
   echo ""
   echo "Influence Settings:"
-  echo "- warmup_steps: 2000"
+  echo "- warmup_steps: 200"
   echo "- update_interval: 500"
-  echo "- learning_rate: 0.15"
+  echo "- learning_rate: 0.1"
   echo "================================================"
   echo ""
 
@@ -155,10 +158,11 @@ run: |
     model=${MODEL} \
     training=unified \
     data.config_name=mixed_pretrain \
-    training.max_steps=7630 \
+    training.max_steps=${MAX_STEPS} \
     training.batch_size=8 \
     training.gradient_accumulation_steps=4 \
     training.optimizer.type=muon \
+    training.optimizer.lr_muon=${MUON_LR} \
     training.influence.enabled=true \
     training.influence.method=datainf \
     training.influence.update_interval=500 \

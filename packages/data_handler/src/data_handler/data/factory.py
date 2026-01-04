@@ -24,8 +24,11 @@ Usage:
     )
 """
 
+import logging
 import os
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Prevent HuggingFace datasets from hanging on multi-core systems
 # Reference: https://github.com/huggingface/datasets/issues/6079
@@ -430,6 +433,12 @@ def _create_multi_domain_probes(
 
     for domain, domain_cfg in domains.items():
         if not isinstance(domain_cfg, dict):
+            continue
+
+        # Skip domains with 0 samples (disabled in config)
+        samples = domain_cfg.get("samples", 2000)
+        if samples <= 0:
+            logger.info(f"Skipping probe domain '{domain}': samples=0 (disabled)")
             continue
 
         probe_config = DomainProbeConfig(

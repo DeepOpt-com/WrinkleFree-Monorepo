@@ -135,7 +135,17 @@ class MixtureWeightCalculator:
         Args:
             show_progress: Whether to show progress bar
         """
-        for domain in self.domain_probe_loaders:
+        for domain, loader in self.domain_probe_loaders.items():
+            # Skip domains with empty dataloaders (samples=0 in config)
+            try:
+                # Check if loader has any samples by peeking at length
+                if hasattr(loader, '__len__') and len(loader) == 0:
+                    print(f"Skipping domain {domain}: empty dataloader")
+                    continue
+            except (TypeError, NotImplementedError):
+                # IterableDataset doesn't have __len__, that's fine
+                pass
+
             print(f"Caching probe gradients for domain: {domain}")
             self.cache_domain_probe_gradients(domain, show_progress=show_progress)
 
@@ -228,7 +238,9 @@ class MixtureWeightCalculator:
         Returns:
             Average influence score (can be negative)
         """
-        if not self._probe_cached:
+        # In multi-domain mode, domain probes should already be cached by caller
+        # In single-probe mode, cache if not done yet
+        if not self.multi_domain_mode and not self._probe_cached:
             self.cache_probe_gradients()
 
         max_samples = max_samples or self.config.samples_per_dataset

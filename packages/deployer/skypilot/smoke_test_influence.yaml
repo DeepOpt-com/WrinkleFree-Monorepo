@@ -50,18 +50,35 @@ setup: |
     export PATH="$HOME/.cargo/bin:$PATH"
   fi
 
+  # Install gcloud CLI if not available (required for GCS checkpoint uploads)
+  echo "Checking gcloud CLI..."
+  if ! gcloud version &> /dev/null; then
+    echo "Installing gcloud CLI..."
+    curl -sSL https://sdk.cloud.google.com > /tmp/install_gcloud.sh
+    bash /tmp/install_gcloud.sh --disable-prompts --install-dir=$HOME
+    export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  fi
+  echo "gcloud version: $(gcloud version 2>/dev/null | head -1)"
+
+  # Authenticate gcloud with service account
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  echo "GCS authentication configured"
+
   uv sync --all-packages
   echo "Setup complete!"
 
 run: |
   set -e
   cd ~/sky_workdir
-  export PATH="$HOME/.cargo/bin:$PATH"
+  export PATH="$HOME/.cargo/bin:$HOME/google-cloud-sdk/bin:$PATH"
 
   source /tmp/credentials.env
   source /tmp/global.env
   export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
   export WANDB_API_KEY="${WANDB_API_KEY}"
+
+  # Re-authenticate gcloud (in case setup ran in different shell)
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json 2>/dev/null || true
   export HF_HUB_DOWNLOAD_TIMEOUT=300  # Increase timeout to 5 minutes
   export HF_HUB_ENABLE_HF_TRANSFER=1  # Use faster/more reliable transfer library
   export HF_DATASETS_OFFLINE=0
@@ -156,10 +173,25 @@ run: |
     echo "✗ WARNING: No influence messages in logs"
   fi
 
+  # Verify weight updates
+  echo ""
+  echo "[Verify] Weight updates:"
+  if grep -q "updated weights" training.log || grep -q "optimal weights" training.log; then
+    echo "✓ Weight update messages found"
+    grep -E "(updated weights|optimal weights)" training.log | tail -5
+  else
+    echo "✗ WARNING: No weight update messages found"
+  fi
+
   # Verify checkpoints
   echo ""
-  echo "[Verify] Checkpoints:"
+  echo "[Verify] Local Checkpoints:"
   find $CHECKPOINT_DIR -type f -name "*.ckpt" | head -10
+
+  # Verify GCS uploads
+  echo ""
+  echo "[Verify] GCS Checkpoints:"
+  gcloud storage ls "gs://${GCS_BUCKET}/checkpoints/" 2>/dev/null | head -10 || echo "GCS listing failed"
 
   # WandB link
   echo ""

@@ -134,6 +134,17 @@ class InfluenceTracker:
                 influence_config, mixture_config, probe_dataloaders
             )
 
+        # Tracking state (shared by both methods)
+        self._initialized = False
+        self._weight_history: list[dict[str, float]] = []
+        self._last_update_step = 0
+
+        logger.info(
+            f"InfluenceTracker: enabled (method={self.method}, "
+            f"update_interval={self.update_interval}, "
+            f"warmup={self.warmup_steps}, lr={self.learning_rate})"
+        )
+
     def _setup_datainf_calculator(
         self,
         influence_config: InfluenceConfig,
@@ -199,17 +210,6 @@ class InfluenceTracker:
             f"InfluenceTracker: InfluenceDistillation mode "
             f"(jvp_layers={distill_config.jvp.num_jvp_layers}, "
             f"landmarks={distill_config.landmark.num_landmarks})"
-        )
-
-        # Tracking state (for both methods)
-        self._initialized = False
-        self._weight_history: list[dict[str, float]] = []
-        self._last_update_step = 0
-
-        logger.info(
-            f"InfluenceTracker: enabled (method={self.method}, "
-            f"update_interval={self.update_interval}, "
-            f"warmup={self.warmup_steps}, lr={self.learning_rate})"
         )
 
     def on_train_begin(self):
