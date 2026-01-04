@@ -444,9 +444,12 @@ def create_callbacks(cfg: DictConfig) -> list:
 
 def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
     """Create Lightning Trainer from config."""
-    # Determine strategy
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    if world_size > 1:
+    # Determine strategy based on number of available GPUs
+    # NOTE: WORLD_SIZE isn't set yet (Lightning sets it later), so use cuda.device_count()
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    logger.info(f"Detected {num_gpus} GPUs for training")
+
+    if num_gpus > 1:
         strategy_name = cfg.distributed.get("strategy", "ddp")
         if strategy_name == "fsdp":
             # Create proper FSDPStrategy with mixed precision for bfloat16 training
