@@ -4,13 +4,15 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-WrinkleFree Inference Engine serves **DLM-BitNet** models (Diffusion Language Models with 1.58-bit quantization):
+WrinkleFree Inference Engine serves **BitNet** models (1.58-bit quantized LLMs):
 
-- **Server**: Rust `dlm_server` with Fast-dLLM v2 block diffusion
 - **Model Format**: GGUF (converted from training checkpoints)
 - **Architecture Support**: BitNet with SubLN (Sub-Layer Normalization)
+- **Inference Options**:
+  - **llama-cli**: Standard autoregressive decoding (works for all models)
+  - **dlm_server**: Fast-dLLM v2 block diffusion (speed optimization for DLM-trained models)
 
-**CRITICAL**: This package is for **DLM inference ONLY**. DLM models use block diffusion decoding, NOT autoregressive decoding. Using llama-cli or native_server produces garbage output.
+**Note**: Models trained with `training=unified` support BOTH autoregressive and block diffusion inference. The unified config trains with CE loss (autoregressive) + DLM loss (diffusion), so llama-cli works correctly. Use dlm_server for potential speed gains via parallel token prediction.
 
 **Note**: All paths in this document are relative to `packages/inference/`.
 
@@ -158,11 +160,13 @@ packages/inference/
 - Conversion: `convert_hf_to_gguf.py`, `gguf-py/`
 - Non-essential code moved to `_deprecated/`
 
-## Server
+## Server Options
 
-The **only** server for DLM models is `dlm_server`. It implements Fast-dLLM v2 block diffusion.
+**For unified-trained models (CE + DLM):**
+- **llama-cli**: Works correctly for autoregressive generation
+- **dlm_server**: Faster inference via block diffusion (recommended for production)
 
-**DO NOT use llama-cli, native_server, or any autoregressive decoder** - they produce garbage output for DLM models.
+**dlm_server** implements Fast-dLLM v2 and can achieve speedups by predicting multiple tokens in parallel. However, llama-cli is a valid fallback for testing and debugging.
 
 ## Build llama.cpp
 

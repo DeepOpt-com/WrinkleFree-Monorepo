@@ -130,23 +130,27 @@ uv run python scripts/train_lightning.py training=unified \
 #   strict_model_load: true/false (allow missing keys)
 ```
 
-### DLM Inference Compatibility
+### Inference Compatibility
 
-When training with DLM objective for inference, ensure these settings match:
+Models trained with `training=unified` support **BOTH** inference modes:
+- **Autoregressive** (llama-cli): Works because we train with CE loss throughout
+- **Block diffusion** (dlm_server): Works because we train with DLM loss; may be faster
 
-| Training Config | Inference Behavior | Notes |
-|-----------------|-------------------|-------|
-| `objectives.dlm.mask_token_id` | Auto-detected from vocab | **MUST match** - typically 0 (unk) |
-| `objectives.dlm.enabled=true` | Use `dlm_server` (not `native_server`) | DLM models require block diffusion |
+| Training Config | Inference Mode | Notes |
+|-----------------|----------------|-------|
+| `objectives.continue_pretrain.enabled=true` | llama-cli (autoregressive) | Standard next-token prediction |
+| `objectives.dlm.enabled=true` | dlm_server (block diffusion) | Parallel token prediction, potentially faster |
 
 **Critical Notes**:
-1. The `mask_token_id` used during training must exist in the model's vocabulary
-2. DLM checkpoints require the Microsoft BitNet converter for GGUF (not standard llama.cpp)
-3. Use TQ1_0 or I2_S format (NOT TQ2_0 for bf16 checkpoints - produces garbage)
+1. Use I2_S format for production (fastest, AVX-512 optimized)
+2. **NEVER use TQ2_0** for bf16 checkpoints - it corrupts ternary weights
+3. If llama-cli produces garbage, check quantization format first
 
-**Performance Note**: The ~2.5x speedup from Fast-dLLM v2 block diffusion is theoretical. Actual speedup depends on model, hardware, and workload. Benchmark for your use case.
+**DLM Settings** (if using dlm_server):
+- `mask_token_id` must match between training and inference (typically 0)
+- Block diffusion speedup depends on model size and hardware
 
-See `packages/inference/docs/dlm-pipeline.md` for complete inference setup.
+See `packages/inference/CLAUDE.md` for conversion and serving details.
 
 ### PyTorch Lightning Training (New)
 
