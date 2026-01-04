@@ -4,610 +4,268 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-WrinkleFree Inference Engine serves **DLM (Diffusion Language Model)** checkpoints with 1.58-bit quantization:
-- **Primary Backend**: Rust `dlm_server` with Fast-dLLM v2 block diffusion (NO PYTHON)
-- **Model Format**: GGUF (converted from DLM safetensors checkpoints)
+WrinkleFree Inference Engine serves **DLM-BitNet** models (Diffusion Language Models with 1.58-bit quantization):
+
+- **Primary Server**: Rust `dlm_server` with Fast-dLLM v2 block diffusion
+- **Model Format**: GGUF (converted from training checkpoints)
 - **Frontend**: Streamlit chat UI with SSE streaming
-- **Deployment**: Vultr High Frequency (~$0.29/hr), GCP C3D
+- **Architecture Support**: BitNet with optional SubLN (Sub-Layer Normalization)
 
-**IMPORTANT**: Use `dlm_server` (NOT `native_server`) for DLM checkpoints!
+**Key Rule**: Use `dlm_server` for DLM checkpoints, `native_server` for regular BitNet.
 
-## Monorepo Integration
+## Quick Reference
 
-This package is part of the WrinkleFree monorepo.
-
-**Related packages**:
-| Package | Relationship |
-|---------|--------------|
-| `training` | Produces models to serve |
-| `deployer` | Cloud deployment orchestration |
-| `eval` | Uses inference for benchmarks |
-
-**External submodules**:
-- `extern/sglang-bitnet/` - SGLang fork with BitNet support
-- `extern/BitNet/` (at monorepo root) - Microsoft BitNet.cpp
-
-**Running from monorepo root**:
-```bash
-# Start server
-uv run --package wrinklefree-inference python packages/inference/scripts/launch_sglang_bitnet.sh
-
-# Run Streamlit UI
-uv run --package wrinklefree-inference streamlit run packages/inference/demo/serve_sglang.py
-```
-
-## Build & Server Throttling (IMPORTANT)
-
-All launch scripts have **hard-coded CPU limits** to prevent system freeze:
-- **Builds**: Limited to 4 parallel jobs (`-j4`)
-- **Servers**: Pinned to 8 cores via `taskset -c 0-7`
-
-For manual builds, use the safe wrapper:
-```bash
-./scripts/build-safe.sh cargo build --release
-./scripts/build-safe.sh cmake --build build
-```
-
-## CPU-Only Quick Start (Recommended)
-
-**One-time setup** - run the setup script:
-```bash
-./scripts/setup-cpu.sh
-```
-
-**Start serving**:
-```bash
-# Full stack (server + chat UI)
-./scripts/serve.sh --backend sglang
-
-# Or individual components:
-./scripts/launch_sglang_bitnet.sh  # Server on port 30000
-uv run streamlit run demo/serve_sglang.py --server.port 7860  # Chat UI
-```
-
-**Test API**:
-```bash
-curl http://localhost:30000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
-```
-
-## Native sgl-kernel Server (RECOMMENDED - 29+ tok/s)
-
-The native server uses sgl-kernel's optimized SIMD kernels (AVX2/AVX512) for maximum CPU throughput.
-
-**Key optimizations:**
-- `bitnet_gemv` for single-token decode (8x faster than gemm)
-- Greedy decoding by default (eliminates sampling overhead)
-- Repetition penalty to reduce output loops
-- KV cache for efficient autoregressive generation
-
-### Quick Start (One Command)
-
-```bash
-# Download checkpoint from GCS (one-time, excludes optimizer state)
-mkdir -p models/dlm-bitnet-2b
-gcloud storage cp \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.json' \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.safetensors' \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.jinja' \
-    models/dlm-bitnet-2b/
-
-# Start server (auto-converts to .bin if needed)
-./scripts/serve_native.sh models/dlm-bitnet-2b
-
-# Start Streamlit UI (in another terminal)
-uv run streamlit run demo/serve_sglang.py --server.port 7860
-```
-
-### Full Workflow
-
-**Step 1: Prerequisites**
-```bash
-# Install sgl-kernel with BitNet support (one-time)
-./scripts/setup-cpu.sh
-```
-
-**Step 2: Download checkpoint from GCS**
-```bash
-mkdir -p models/dlm-bitnet-2b
-gcloud storage cp \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.json' \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.safetensors' \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.jinja' \
-    models/dlm-bitnet-2b/
-```
-
-**Step 3: Start server** (auto-converts checkpoint to packed .bin format)
-```bash
-./scripts/serve_native.sh models/dlm-bitnet-2b
-```
-
-**Step 4: Test**
-```bash
-curl http://localhost:30000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
-```
-
-**Performance:** ~29 tok/s on GCP c3d-standard-32 (AMD EPYC Genoa with AVX512)
-
-**Files:**
-| File | Purpose |
+| Task | Command |
 |------|---------|
-| `scripts/serve_native.sh` | One-command wrapper (auto-converts + serves) |
-| `scripts/serve_bitnet_native.py` | Native server with TL2 kernels |
-| `scripts/convert_to_sglkernel.py` | Converts bf16 checkpoints to packed format |
-| `demo/serve_sglang.py` | Streamlit chat UI |
+| Convert checkpoint to GGUF | `python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o model.gguf` |
+| Start DLM server | `./scripts/launch_rust_gateway.sh --native -m model.gguf` |
+| Start chat UI | `uv run streamlit run demo/serve_sglang.py --server.port 7860` |
+| Test API | `curl http://localhost:30000/v1/chat/completions -d '{"messages":[{"role":"user","content":"Hi"}]}'` |
 
-## BitNet.cpp Quick Start (Alternative - 1.6x slower)
+## GGUF Conversion (CRITICAL)
 
-**Prerequisites**: `clang` compiler required (`sudo apt install clang`)
+### Converter Selection Guide
 
-```bash
-# Build BitNet.cpp (one-time) - uses setup_env.py to generate kernel headers
-cd extern/BitNet
-git submodule update --init --recursive
-python setup_env.py --hf-repo microsoft/BitNet-b1.58-2B-4T -q i2_s
-cd ../..
+| Checkpoint Type | Converter | Output Format | Notes |
+|-----------------|-----------|---------------|-------|
+| **WrinkleFree DLM** (bf16) | `scripts/convert_checkpoint_to_gguf.py` | `i2_s` (default) | Auto-fixes arch name |
+| **WrinkleFree SubLN** | Export first, then convert | `f16` or `tq1_0` | Requires tensor rename |
+| Microsoft BitNet | `extern/BitNet/utils/convert-hf-to-gguf-bitnet.py` | `i2_s` | Packed 2-bit weights |
+| Standard HuggingFace | `extern/sglang-bitnet/3rdparty/llama.cpp/convert_hf_to_gguf.py` | Any | Generic converter |
 
-# Start server (option 1: script)
-./scripts/launch_bitnet_cpp.sh
-
-# Start server (option 2: direct) - model is downloaded to models/ by setup_env.py
-./extern/BitNet/build/bin/llama-server -m extern/BitNet/models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf --host 0.0.0.0 --port 8080
-
-# Start Streamlit chat UI (with BitNet.cpp backend)
-BITNET_BACKEND=bitnet_cpp uv run streamlit run demo/serve_sglang.py --server.port 7860
-
-# Test
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "bitnet", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
-```
-
-## DLM Deployment (PRIMARY)
-
-**The DLM server uses Fast-dLLM v2 for faster inference via parallel block decoding.**
-
-> **Performance Note**: The ~2.5x speedup is theoretical (from the Fast-dLLM paper). Actual speedup depends on model, hardware, and workload. Benchmark for your use case.
-
-**Documentation**:
-- [DLM Pipeline Guide](docs/dlm-pipeline.md) - End-to-end setup
-- [DLM Troubleshooting](docs/dlm-troubleshooting.md) - Common issues
-
-### IMPORTANT: DLM vs Regular BitNet
-
-| Model Type | Example | Server | Notes |
-|------------|---------|--------|-------|
-| **DLM checkpoint** | `gs://wrinklefree-checkpoints/dlm/...` | `dlm_server` | Trained with mask tokens |
-| Regular BitNet | `microsoft/BitNet-b1.58-2B-4T` | `native_server` | No DLM support |
-
-**The Microsoft BitNet model is NOT a DLM model!** You must use a WrinkleFree DLM checkpoint.
-
-### Quick Start (DLM Checkpoint)
+### Standard DLM Checkpoint Conversion
 
 ```bash
-# 1. Download DLM checkpoint from GCS
-mkdir -p models/dlm-bitnet-2b
-gsutil -m cp -r 'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-3600/*' \
-  models/dlm-bitnet-2b/
+# 1. Convert to GGUF (auto-fixes BitNetForCausalLM → BitnetForCausalLM)
+python scripts/convert_checkpoint_to_gguf.py \
+  /path/to/checkpoint \
+  --outfile models/model.gguf \
+  --outtype i2_s \
+  --validate
 
-# 2. Fix architecture name for llama.cpp (capital N → lowercase n)
-sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' models/dlm-bitnet-2b/config.json
-
-# 3. Convert to GGUF format using Microsoft BitNet converter (handles packed 2-bit weights)
-uv run python extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py \
-  models/dlm-bitnet-2b --outfile models/dlm-bitnet-2b.gguf --outtype i2_s
-
-# 4. Upload to server and restart (example for Vultr)
-rsync -avz models/dlm-bitnet-2b.gguf root@<server-ip>:/opt/wrinklefree/models/
-ssh root@<server-ip> "pm2 restart dlm-server"
-
-# 5. Test
-curl http://<ip>:30000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":50}'
+# 2. Test with llama-cli
+./extern/sglang-bitnet/3rdparty/llama.cpp/build/bin/llama-cli \
+  -m models/model.gguf -p "Hello" -n 50
 ```
 
-**Expected output**: Coherent response (e.g., "2 + 2 equals 4")
+### SubLN Checkpoint Conversion (WrinkleFree Training)
 
-### Server Binaries (All Rust, No Python)
-
-| Binary | Decoding Method | Use Case | Notes |
-|--------|-----------------|----------|-------|
-| **`dlm_server`** | Fast-dLLM v2 block diffusion | DLM checkpoints | ~2.5x faster, parallel decode |
-| `native_server` | Autoregressive (token-by-token) | Regular BitNet | Standard decoding |
-| `batch_server` | Batched autoregressive | Multi-user | Continuous batching |
-
-**For DLM checkpoints, always use `dlm_server`** - it implements the block diffusion algorithm that makes DLM fast.
-
-### DLM Decode Modes
-
-The `dlm_server` supports three decode modes per the Fast-dLLM v2 paper (arXiv:2509.26328):
-
-| Mode | Threshold | Throughput | Quality | Use Case |
-|------|-----------|------------|---------|----------|
-| `greedy` | N/A | ~61 tok/s | Baseline | Maximum speed |
-| `iterative` | 0.5 | ~61 tok/s | ~Greedy | Speed with paper algorithm |
-| `iterative` | 0.7 | ~54 tok/s | Good | Good balance |
-| `iterative` | 0.9 | ~21 tok/s | **Best** | Per-paper quality (slow) |
-| **`adaptive`** | 0.9 | **~61 tok/s** | **Best** | **RECOMMENDED: speed + quality** |
-
-**CLI Usage**:
-```bash
-# Greedy mode (default, fastest)
-./dlm_server -m model.gguf --decode-mode greedy
-
-# Adaptive mode - RECOMMENDED (per-paper quality at greedy speed)
-./dlm_server -m model.gguf --decode-mode adaptive --threshold 0.9
-
-# Iterative mode with confidence threshold (per-paper correctness, slower)
-./dlm_server -m model.gguf --decode-mode iterative --threshold 0.9
-```
-
-**How adaptive mode works** (progressive thresholds):
-1. Fill block with MASK tokens
-2. **Iteration 1**: θ=0.5 → quickly unmask easy tokens
-3. **Iteration 2**: θ=0.7 → unmask moderately confident tokens
-4. **Iteration 3+**: θ=final → full refinement for hard tokens
-5. Repeat until all tokens unmasked
-
-This reduces total iterations (~3x faster) while maintaining quality for uncertain positions.
-
-**How iterative mode works** (fixed threshold):
-1. Fill block with MASK tokens
-2. Forward pass → get logits for all positions
-3. Compute confidence (softmax probability) for each prediction
-4. Unmask tokens above threshold (or at least one for progress)
-5. Repeat until all tokens unmasked
-
-Higher threshold = more iterations = more refinement = better quality.
-
-### Convert DLM Checkpoint to GGUF (CRITICAL)
-
-**WARNING: DLM checkpoints have PACKED 2-bit weights that require special handling!**
-
-DLM checkpoints store weights in a **packed 2-bit format** (4 values per byte) with separate `weight_scale` tensors. Using the standard llama.cpp converter will produce **gibberish output** or shape mismatch errors.
-
-**Use Microsoft BitNet's converter** at `extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py`:
+SubLN models require tensor renaming before GGUF conversion:
 
 ```bash
-# IMPORTANT: Fix architecture name first (our training uses BitNetForCausalLM, llama.cpp expects BitnetForCausalLM)
-sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' models/my-checkpoint/config.json
+# 1. Export SubLN checkpoint (renames .0/.1 → attn_sub_norm/ffn_sub_norm)
+uv run --package wrinklefree python packages/training/scripts/export_subln_checkpoint.py \
+  --checkpoint /path/to/lightning_checkpoint.pt \
+  --output-dir models/exported-subln \
+  --config-path /path/to/config.json
 
-# Convert to GGUF using Microsoft BitNet converter (handles packed weights)
-uv run python extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py \
-  models/my-checkpoint --outfile models/my-model.gguf --outtype i2_s
+# 2. Convert to GGUF (use F16 or TQ1_0, NOT TQ2_0 for bf16!)
+python extern/sglang-bitnet/3rdparty/llama.cpp/convert_hf_to_gguf.py \
+  models/exported-subln \
+  --outfile models/model-subln.gguf \
+  --outtype f16
 
-# Verify conversion - should be ~1.1GB for I2_S format
-ls -lh models/my-model.gguf
+# 3. Test loading (output may be nonsense for DLM - needs block diffusion)
+./extern/sglang-bitnet/3rdparty/llama.cpp/build/bin/llama-cli \
+  -m models/model-subln.gguf -p "Hello" -n 20
 ```
 
-**DO NOT USE:**
-- `extern/sglang-bitnet/3rdparty/llama.cpp/convert_hf_to_gguf.py` - doesn't unpack 2-bit weights
-- `llama-quantize` for post-hoc I2_S/TQ2_0 quantization - corrupts already-ternary weights
+### Output Format Guide
 
-**How the fix works** (in `convert-hf-to-gguf-bitnet.py`):
-1. Build a `scale_map` from `weight_scale` tensors
-2. Unpack 2-bit packed weights: `(data >> shift) & 3 - 1` to get ternary values
-3. Reshape from `[N/4, ...]` to `[N, ...]`
+| Format | Size (2B) | Speed | Use Case |
+|--------|-----------|-------|----------|
+| **i2_s** | ~1.1GB | Fast | **Default, recommended for vanilla llama.cpp** |
+| **tq1_0** | ~1.1GB | Fast | Good for bf16 DLM checkpoints |
+| tq2_0 | ~1.2GB | Fast | **AVOID for bf16 checkpoints - produces garbage!** |
+| f16 | ~4.5GB | Slow | Reference/debugging only |
+| tl1/tl2 | ~1.1GB | Fastest | Requires kernel config, CPU-specific |
 
-**Troubleshooting**:
-- **Gibberish output** ("GGGGG..." or nonsense): Used wrong converter or post-hoc quantization
-- **Shape mismatch** ("expected 2560, 2560, got 660, 2560, 1, 1"): Packed weights not unpacked
-- "tensor out of bounds" error: Model file corrupted or incomplete conversion
-- "tokenizer not found": Missing tokenizer.json in checkpoint directory
-- "BitnetForCausalLM not found": Need to run sed command to fix architecture name
+**CRITICAL**: Never use TQ2_0 for bf16 DLM checkpoints - it corrupts already-ternary weights!
 
-See [DLM Troubleshooting Guide](docs/dlm-troubleshooting.md) for more details.
+### Common Conversion Errors
 
-### Training-Inference Configuration Sync
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "BitnetForCausalLM not found" | Arch name mismatch | Use `convert_checkpoint_to_gguf.py` (auto-fixes) |
+| Shape mismatch errors | Packed weights not unpacked | Use Microsoft BitNet converter |
+| Gibberish output | Wrong quantization type | Use `i2_s` or `tq1_0`, not `tq2_0` |
+| Missing tokenizer | Incomplete checkpoint | Copy `tokenizer.json` + `tokenizer_config.json` |
+| SubLN tensor errors | Tensors not renamed | Run `export_subln_checkpoint.py` first |
 
-These parameters **MUST match** between training and inference:
+## Model Types
 
-| Training Config | Inference Config | Default |
-|-----------------|------------------|---------|
-| `objectives.dlm.mask_token_id` | Auto-detected or `--mask-token-id` | 0 (unk) |
-| Model vocab_size | GGUF metadata | Must match |
+### DLM (Diffusion Language Model)
 
-See `packages/training/CLAUDE.md` for training-side configuration.
+DLM models use block diffusion decoding - they generate multiple tokens per forward pass by iteratively unmasking.
 
-## Rust Server Build (No Python)
+**Requirements**:
+- Trained with DLM objective (`objectives.dlm.enabled=true`)
+- `mask_token_id` must match training (default: 0)
+- **Must use `dlm_server`** - autoregressive decoding produces nonsense
 
-### Manual Build (with -march=native for AVX512)
+**Decoding Modes** (dlm_server):
+| Mode | Threshold | Speed | Quality |
+|------|-----------|-------|---------|
+| `greedy` | N/A | ~61 tok/s | Baseline |
+| `adaptive` | 0.9 | ~61 tok/s | **Best (recommended)** |
+| `iterative` | 0.9 | ~21 tok/s | Best (slow) |
 
-```bash
-# 1. Build llama.cpp with native SIMD
-cd extern/sglang-bitnet/3rdparty/llama.cpp
-cmake -B build \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_CXX_COMPILER=clang++ \
-  -DCMAKE_C_FLAGS="-march=native -mtune=native -O3" \
-  -DCMAKE_CXX_FLAGS="-march=native -mtune=native -O3" \
-  -DLLAMA_NATIVE=ON -G Ninja
-ninja -C build -j$(nproc)
-cd ../../../..
+### Regular BitNet
 
-# 2. Build Rust gateway with native inference
-cd extern/sglang-bitnet/sgl-model-gateway
-NATIVE_SIMD=1 RUSTFLAGS="-C target-cpu=native" \
-  cargo build --release --features native-inference
-cd ../../..
+Standard autoregressive BitNet models (e.g., `microsoft/BitNet-b1.58-2B-4T`).
 
-# 3. Run
-./scripts/launch_rust_gateway.sh --native
+**Requirements**:
+- Use `native_server` or `batch_server`
+- Works with standard llama-cli
+
+### SubLN (Sub-Layer Normalization)
+
+SubLN adds normalization before output projections for training stability.
+
+**Tensor naming**:
+```
+WrinkleFree format:              llama.cpp format:
+.self_attn.o_proj.0.weight  →   .self_attn.attn_sub_norm.weight
+.self_attn.o_proj.1.weight  →   .self_attn.o_proj.weight
+.mlp.down_proj.0.weight     →   .mlp.ffn_sub_norm.weight
+.mlp.down_proj.1.weight     →   .mlp.down_proj.weight
 ```
 
-**Architecture**: HTTP (Axum/Rust) → C++ SIMD Kernels (no Python)
-
-**Performance**: Scales with CPU frequency - 3.0+ GHz CPUs recommended
-
-## SGLang Quick Start (Supports Continuous Batching)
-
-SGLang is the recommended backend for multi-user scenarios due to **continuous batching** support:
-- 1.72x speedup with 4 concurrent requests
-- 5.12x speedup with 8 concurrent requests
-- 71.3 tok/s total throughput with 16 concurrent requests
-
-```bash
-# Install dependencies (use setup script)
-./scripts/setup-cpu.sh
-
-# Start SGLang server
-./scripts/launch_sglang_bitnet.sh
-
-# Start Streamlit chat UI
-uv run streamlit run demo/serve_sglang.py --server.port 7860
-
-# Test via curl
-curl http://localhost:30000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
-```
-
-### Test Continuous Batching
-```bash
-# Run batching tests (requires running server)
-INFERENCE_URL=http://localhost:30000 uv run pytest tests/test_continuous_batching.py -v
-```
+Use `export_subln_checkpoint.py` to rename before GGUF conversion.
 
 ## Architecture
 
 ```
-demo/
-└── serve_sglang.py                        # Streamlit chat frontend
-
-scripts/
-├── launch_rust_gateway.sh                 # Rust gateway (PRIMARY - no Python)
-├── deploy_vultr.sh                        # Deploy to Vultr High Frequency
-├── launch_sglang_bitnet.sh                # SGLang Python server (batching)
-├── launch_bitnet_cpp.sh                   # BitNet.cpp server (fallback)
-├── convert_to_sglkernel.py                # Convert bf16 checkpoints to packed format
-├── convert_dlm_to_gguf.py                 # Convert DLM checkpoints to GGUF
-├── build-safe.sh                          # Safe build wrapper (4 jobs, 8 cores)
-└── reference/                             # Python server implementations (for debugging)
-    ├── serve_bitnet_native.py             # Python sgl-kernel server
-    └── serve_sglkernel_native.py          # Alternative Python server
-
-deploy/
-├── setup_remote_rust.sh                   # Remote setup (builds Rust + llama.cpp)
-├── ecosystem_rust.config.js               # pm2 config for Rust server
-├── start_rust_server.sh                   # pm2 start script
-└── start_streamlit.sh                     # Streamlit start script
-
-src/wrinklefree_inference/
-├── sglang_backend/                        # SGLang integration utilities
-├── kernels/                               # Kernel wrappers
-├── kv_cache/                              # KV cache utilities
-├── client/                                # API client
-└── moe/                                   # MoE support
-
-extern/
-├── sglang-bitnet/                         # SGLang with native BitNet kernels (self-contained)
-│   ├── 3rdparty/llama.cpp/                # llama.cpp fork with BitNet support
-│   ├── include/                           # BitNet kernel headers
-│   ├── src/                               # BitNet kernel sources
-│   ├── sgl-model-gateway/                 # Rust HTTP gateway
-│   │   └── src/inference/                 # Native C++ FFI bindings
-│   ├── sgl-kernel/                        # Native SIMD kernels (AVX2/AVX512)
-│   │   └── csrc/inference/                # C++ inference engine
-│   └── python/sglang/srt/models/bitnet.py # BitNet model (Python)
-└── BitNet/                                # Microsoft BitNet.cpp (reference only, not used by Rust gateway)
-
-legacy/                                    # Archived code (see legacy/README.md)
+packages/inference/
+├── scripts/
+│   ├── convert_checkpoint_to_gguf.py  # PRIMARY converter (auto-fixes, validates)
+│   ├── convert_dlm_to_gguf.py         # TL1/TL2 specific conversion
+│   ├── convert_to_sglkernel.py        # For sgl-kernel packed format
+│   ├── launch_rust_gateway.sh         # Start Rust DLM server
+│   └── serve.sh                       # Full stack launcher
+├── demo/
+│   └── serve_sglang.py                # Streamlit chat UI
+├── extern/
+│   └── sglang-bitnet/
+│       ├── 3rdparty/llama.cpp/        # Stripped to BitNet essentials
+│       │   ├── convert_hf_to_gguf.py  # Generic HF→GGUF converter
+│       │   ├── gguf-py/               # GGUF Python library
+│       │   ├── src/                   # Core llama.cpp
+│       │   ├── ggml/                  # GGML tensor library
+│       │   ├── examples/main/         # llama-cli
+│       │   └── examples/quantize/     # llama-quantize
+│       └── sgl-model-gateway/         # Rust HTTP server
+└── src/wrinklefree_inference/         # Python utilities
 ```
 
-## Key Files
+**llama.cpp is stripped** to BitNet/DLM essentials only:
+- Core: `src/`, `ggml/`, `common/`, `include/`
+- Tools: `examples/main/` (llama-cli), `examples/quantize/`
+- Conversion: `convert_hf_to_gguf.py`, `gguf-py/`
+- Non-essential code moved to `_deprecated/`
 
-| File | Purpose |
-|------|---------|
-| `extern/sglang-bitnet/sgl-model-gateway/` | **Primary server** - Rust with C++ inference |
-| `scripts/launch_rust_gateway.sh` | Launch Rust server locally |
-| `scripts/deploy_vultr.sh` | Deploy to Vultr High Frequency |
-| `deploy/setup_remote_rust.sh` | Remote build script with -march=native |
-| `demo/serve_sglang.py` | Streamlit chat UI frontend |
-| `extern/sglang-bitnet/3rdparty/llama.cpp/` | C++ SIMD inference engine |
+## Server Selection
 
-## Common Tasks
+| Server | Decoding | Use Case | API |
+|--------|----------|----------|-----|
+| **`dlm_server`** | Block diffusion | DLM checkpoints | OpenAI-compatible |
+| `native_server` | Autoregressive | Regular BitNet | OpenAI-compatible |
+| `batch_server` | Batched AR | Multi-user production | OpenAI-compatible |
+| SGLang | AR + batching | Python debugging | OpenAI-compatible |
 
-### Deploy to Vultr High Frequency (Recommended)
+**For DLM checkpoints, always use `dlm_server`** - it implements Fast-dLLM v2.
 
-Vultr High Frequency instances offer 3+ GHz CPUs at competitive prices.
+## Build llama.cpp
 
 ```bash
-# 1. Set API key (one-time)
-export VULTR_API_KEY=your_key_here  # Or add to ~/.config/.env.global
+cd extern/sglang-bitnet/3rdparty/llama.cpp
 
-# 2. Create instance via CLI
-vultr-cli instance create \
-  --plan vhf-8c-32gb \
-  --region lax \
-  --os 2284 \
-  --label "bitnet-rust" \
-  --ssh-keys "your-ssh-key-id"
+# Configure (with AVX512 if available)
+cmake -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DLLAMA_NATIVE=ON
 
-# 3. Deploy (builds Rust server with -march=native)
-./scripts/deploy_vultr.sh <instance-ip>
+# Build (throttled to prevent system freeze)
+cmake --build build -j4
 
-# 4. Test
-curl http://<ip>:30000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
-```
-
-**Pricing** (High Frequency):
-| Plan | vCPU | RAM | Price/hr |
-|------|------|-----|----------|
-| vhf-4c-16gb | 4 | 16GB | ~$0.14 |
-| vhf-8c-32gb | 8 | 32GB | ~$0.29 |
-
-**Cleanup** (stop billing):
-```bash
-vultr-cli instance delete <instance-id>
-```
-
-### Deploy to other clouds
-```bash
-cd ../deployer
-# GCP C3D (production)
-sky launch skypilot/inference/gcp_c3d.yaml -y --cluster ie-c3d
-# RunPod (development)
-sky launch skypilot/inference/runpod_cpu.yaml -y --cluster ie-runpod
-```
-
-### Run KV cache validation
-```bash
-uv run python scripts/validate_kv_cache.py --url http://localhost:30000
-```
-
-### Benchmark kernels
-```bash
-uv run python scripts/benchmark_kernels.py
+# Verify
+ls build/bin/llama-cli build/bin/llama-quantize
+ls build/src/libllama.so build/ggml/src/libggml.so
 ```
 
 ## Testing
 
 ```bash
-# Run all tests
+# Test GGUF conversion
+python scripts/convert_checkpoint_to_gguf.py --help
+
+# Test model loading
+./extern/sglang-bitnet/3rdparty/llama.cpp/build/bin/llama-cli \
+  -m models/model.gguf -p "Hello" -n 10
+
+# Run unit tests
 uv run pytest tests/ -v
 
 # Integration tests (requires running server)
 INFERENCE_URL=http://localhost:30000 uv run pytest tests/ -v -m integration
 ```
 
-## sglang-bitnet Setup
+## Deployment
 
-**IMPORTANT**: We use a custom fork of SGLang at `extern/sglang-bitnet/`, NOT the upstream sglang package.
-This fork includes native SIMD kernels (AVX2/AVX512) for BitNet inference. Do not install sglang from PyPI.
-
-**Run on Desktop**: Heavy builds and server runs should be done on Desktop (ssh Desktop), not locally.
-
-### Full CPU-only Setup (one-time)
+### Local Development
 
 ```bash
-# 1. Initialize submodule
-git submodule update --init extern/sglang-bitnet
+# 1. Build llama.cpp
+cd extern/sglang-bitnet/3rdparty/llama.cpp && cmake -B build && cmake --build build -j4 && cd -
 
-# 2. Install CPU-only PyTorch
-.venv/bin/pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# 2. Convert model
+python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o models/model.gguf
 
-# 3. Install vllm CPU stub (provides fallback ops without CUDA)
-.venv/bin/pip install -e extern/vllm-cpu-stub
+# 3. Start server
+./scripts/launch_rust_gateway.sh --native -m models/model.gguf
 
-# 4. Install sglang from our fork
-.venv/bin/pip install -e extern/sglang-bitnet/python
-
-# 5. Build sgl-kernel with BitNet kernels
-.venv/bin/pip install scikit-build-core cmake ninja
-.venv/bin/pip install -e extern/sglang-bitnet/sgl-kernel --no-build-isolation
-
-# 6. Copy .so to source dir (required for editable install)
-cp .venv/lib/python3.12/site-packages/sgl_kernel/common_ops.*.so \
-   extern/sglang-bitnet/sgl-kernel/python/sgl_kernel/
+# 4. Start UI (another terminal)
+uv run streamlit run demo/serve_sglang.py --server.port 7860
 ```
 
-### Verify BitNet Kernels
-
-```python
-from sgl_kernel.quantization import bitnet_check_kernel_available
-print(bitnet_check_kernel_available())  # Should be True
-```
-
-### Start Server
+### Vultr High Frequency (Production)
 
 ```bash
-.venv/bin/python -m sglang.launch_server \
-    --model-path microsoft/bitnet-b1.58-2B-4T \
-    --port 30000 --device cpu
+# Deploy with -march=native optimization
+./scripts/deploy_vultr.sh <instance-ip>
+
+# Test
+curl http://<ip>:30000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
 ```
 
-## Chat Template
+## Monorepo Integration
 
-BitNet-b1.58-2B-4T uses a simple chat template (from HuggingFace tokenizer_config.json):
+| Package | Relationship |
+|---------|--------------|
+| `training` | Produces checkpoints to convert and serve |
+| `deployer` | Cloud deployment orchestration (SkyPilot) |
+| `eval` | Uses inference for benchmarks |
+| `architecture` | BitLinear/SubLN layer definitions |
 
-```
-Role: content<|eot_id|>
-```
+## Related Files
 
-Example: `System: You are helpful<|eot_id|>User: Hello<|eot_id|>Assistant:`
+| File | Purpose |
+|------|---------|
+| `packages/training/scripts/export_subln_checkpoint.py` | Export SubLN checkpoints for GGUF |
+| `extern/BitNet/utils/convert-hf-to-gguf-bitnet.py` | Microsoft BitNet converter |
+| `extern/sglang-bitnet/sgl-model-gateway/` | Rust HTTP server (DLM + native) |
+| `models/` | Local GGUF models (gitignored) |
 
-SGLang automatically applies this template when using the OpenAI-compatible `/v1/chat/completions` endpoint.
+## Build Throttling
 
-## Model Conversion (IMPORTANT for Custom Checkpoints)
+All scripts are throttled to prevent system freeze:
+- **Builds**: Limited to 4 parallel jobs (`-j4`)
+- **Servers**: Pinned to 8 cores via `taskset -c 0-7`
 
-When serving custom DLM/BitNet checkpoints (not official microsoft/BitNet models), you may need to convert them:
-
-### Converting bf16 Checkpoints to Packed Format
-
-Use `convert_to_sglkernel.py` to convert bf16/fp16 training checkpoints to optimized 2-bit packed format:
-
+For manual builds, use the safe wrapper:
 ```bash
-# Convert checkpoint (reduces size by ~2.5x)
-python scripts/convert_to_sglkernel.py models/my-checkpoint models/my-checkpoint.bin
-
-# With quantized lm_head for 2x faster inference (adds ~82MB)
-python scripts/convert_to_sglkernel.py models/my-checkpoint models/my-checkpoint.bin --pack-lm-head
+./scripts/build-safe.sh cmake --build build
 ```
-
-**Input**: HuggingFace checkpoint directory with `config.json` and `model.safetensors`
-**Output**: Binary file with packed 2-bit weights for sgl-kernel
-
-### Weight Formats
-
-| Format | Description | Size | Speed |
-|--------|-------------|------|-------|
-| bf16 (online) | Training weights, quantized on-the-fly | 4.5GB | ~2 tok/s |
-| packed (offline) | Pre-quantized for inference | 1.8GB | ~26 tok/s |
-| GGUF | llama.cpp format for BitNet.cpp | 1.1GB | ~26 tok/s |
-
-### Testing Custom Checkpoints
-
-```bash
-# Validate conversion
-python scripts/test_sglkernel_inference.py --checkpoint models/my-checkpoint
-
-# Test server inference
-python scripts/test_sglkernel_inference.py --server-url http://localhost:30000
-```
-
-## Notes
-
-### Backend Selection Guide
-
-| Backend | Best For | Decoding | Speed | Python? |
-|---------|----------|----------|-------|---------|
-| **`dlm_server`** | DLM checkpoints | Block diffusion | **~2.5x faster** | No |
-| `native_server` | Regular BitNet | Autoregressive | Baseline | No |
-| `batch_server` | Multi-user | Batched AR | Scales with users | No |
-| SGLang | Legacy/batching | AR | ~16 tok/s | Yes |
-
-**Recommendations:**
-- **`dlm_server`** for DLM checkpoints (the whole point of this project!)
-- **`batch_server`** for multi-user production with regular BitNet
-- Python servers moved to `scripts/reference/` for debugging only
-
-**Notes:**
-- All Rust servers: OpenAI-compatible API (`/v1/chat/completions`)
-- All Rust servers: GGUF model format (convert with `convert_dlm_to_gguf.py`)
-- Custom SGLang fork: `extern/sglang-bitnet/` (NOT upstream PyPI)
