@@ -130,8 +130,6 @@ class InfluenceTracker:
                 influence_config, mixture_config, probe_dataloaders
             )
 
-        logger.info("InfluenceTracker: __init__ complete")
-
     def _setup_datainf_calculator(
         self,
         influence_config: InfluenceConfig,

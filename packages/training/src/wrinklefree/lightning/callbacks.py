@@ -559,21 +559,14 @@ class InfluenceTrackerCallback(Callback):
             tracker_config = self.config
 
         # Create the tracker (it will self-disable if not configured)
-        import sys
-        print("[DEBUG] InfluenceTrackerCallback: creating tracker...", flush=True)
-        sys.stdout.flush()
         self._tracker = InfluenceTracker(
             config=tracker_config,
             model=pl_module.model,
             mixed_dataset=mixed_dataset,
             probe_dataloaders=probe_dataloaders,
         )
-        print("[DEBUG] InfluenceTrackerCallback: tracker created", flush=True)
-        sys.stdout.flush()
 
         self._enabled = self._tracker.is_enabled
-        print(f"[DEBUG] InfluenceTrackerCallback: is_enabled={self._enabled}", flush=True)
-        sys.stdout.flush()
         if self._enabled:
             logger.info("InfluenceTrackerCallback: initialized and enabled")
         else:
@@ -582,7 +575,6 @@ class InfluenceTrackerCallback(Callback):
                 f"(mixed_dataset={mixed_dataset is not None}, "
                 f"influence.enabled={tracker_config.get('influence', {}).get('enabled', False)})"
             )
-        print("[DEBUG] InfluenceTrackerCallback.setup() COMPLETED", flush=True)
 
     def on_train_start(
         self,
@@ -590,11 +582,8 @@ class InfluenceTrackerCallback(Callback):
         pl_module: pl.LightningModule,
     ) -> None:
         """Cache probe gradients at training start."""
-        print("[DEBUG] InfluenceTrackerCallback.on_train_start() CALLED", flush=True)
         if self._tracker and self._enabled:
-            print("[DEBUG] Calling tracker.on_train_begin()...", flush=True)
             self._tracker.on_train_begin()
-            print("[DEBUG] tracker.on_train_begin() COMPLETED", flush=True)
 
     def on_train_batch_end(
         self,

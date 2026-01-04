@@ -111,10 +111,8 @@ class WrinkleFreeDataModule(pl.LightningDataModule):
 
     def train_dataloader(self) -> DataLoader:
         """Return training dataloader."""
-        print("[DEBUG] WrinkleFreeDataModule.train_dataloader() called", flush=True)
         if self.train_dataloader_instance is None:
             raise RuntimeError("Call setup() before accessing train_dataloader")
-        print("[DEBUG] Returning train_dataloader_instance", flush=True)
         return self.train_dataloader_instance
 
     def val_dataloader(self):
