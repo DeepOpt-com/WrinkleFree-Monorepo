@@ -43,7 +43,7 @@ envs:
   MODEL: smollm2_135m
   TRAINING_CONFIG: bitdistill_dlm_influence
   TOTAL_TOKENS: 5000000000  # 5B tokens
-  MAX_STEPS: 38147  # 5B tokens / (8*8*2048) tokens per step (auto batch, grad_accum=8)
+  MAX_STEPS: 47684  # 5B tokens / (4*16*2048) tokens per step (batch=4, grad_accum=16)
   MUON_LR: 0.01  # Muon LR for 2D weights
   ADAM_LR: 1.5e-4  # AdamW LR for embeddings/biases (halved from 3e-4)
   EXPERIMENT_NAME: bitnet_muon_5b_v2
@@ -130,7 +130,8 @@ run: |
   echo "Max Steps: $MAX_STEPS"
   echo "Muon LR: $MUON_LR (2D weights)"
   echo "AdamW LR: $ADAM_LR (embeddings/biases)"
-  echo "Auto Batch Size: enabled"
+  echo "Batch Size: 4 (fixed for influence compatibility)"
+  echo "Grad Accum: 16"
   echo "Experiment: $EXPERIMENT_NAME"
   echo "WandB Project: $WANDB_PROJECT"
   echo "GCS Bucket: $GCS_BUCKET"
@@ -162,8 +163,9 @@ run: |
     training=unified \
     data.config_name=mixed_pretrain \
     training.max_steps=${MAX_STEPS} \
-    training.auto_batch_size=true \
-    training.gradient_accumulation_steps=8 \
+    training.auto_batch_size=false \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=16 \
     training.optimizer.type=muon \
     training.optimizer.lr_muon=${MUON_LR} \
     training.optimizer.lr_adam=${ADAM_LR} \
