@@ -25,10 +25,10 @@
 name: wrinklefree-meta-opt-1gpu
 
 resources:
-  accelerators: L40:1
-  memory: 64+
+  accelerators: L40S:1
+  memory: 128+  # Need 128GB+ RAM for influence gradient caching
   use_spot: false
-  cloud: runpod
+  cloud: nebius
   disk_size: 100
 
 # Sync from InfluenceClean worktree
@@ -99,13 +99,20 @@ run: |
 
   echo ""
   echo "[Training] Running unified training with meta-optimization..."
+  # NOTE: Using explicit batch_size=4 (not auto) and num_workers=0 because:
+  # - auto_batch_size finds max batch that fits GPU, leaving no headroom for influence
+  # - dataloader workers with fork inherit full memory space, causing OOM
+  export TOKENIZERS_PARALLELISM=false
+  export DATALOADER_NUM_WORKERS=0
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=unified \
     data.config_name=mixed_pretrain \
     distributed=single_gpu \
     training.max_steps=${MAX_STEPS} \
-    training.auto_batch_size=true \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=16 \
+    training.auto_batch_size=false \
     training.meta_optimization.enabled=true \
     training.meta_optimization.update_interval=10 \
     training.meta_optimization.warmup_steps=5 \
@@ -130,8 +137,10 @@ run: |
   # Verify meta-optimization metrics were logged
   echo ""
   echo "Expected WandB metrics:"
-  echo "  - meta/dataset_weight_* (should update after step 15)"
-  echo "  - meta/objective_weight_* (should update after step 15)"
+  echo "  - meta/dataset_weight_* (should update after step 15, sum to 1)"
+  echo "  - meta/objective_weight_* (should update after step 15, sum to 1)"
+  echo "  - hyperparameters/data_mix/* (dataset weights)"
+  echo "  - hyperparameters/task_weight/* (objective weights)"
   echo "  - train/loss (should decrease)"
   echo ""
   echo "WandB run: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"

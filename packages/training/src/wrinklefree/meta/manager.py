@@ -59,7 +59,7 @@ class MetaParameterManager:
 
         # Initialize meta-parameters as raw values (will be transformed for use)
         self._dataset_logits: Optional[torch.Tensor] = None
-        self._objective_weights: Optional[torch.Tensor] = None
+        self._objective_logits: Optional[torch.Tensor] = None  # Softmax-normalized to sum to 1
         self._lr_scales: Optional[torch.Tensor] = None
 
         # Momentum buffers for meta-updates
@@ -89,9 +89,10 @@ class MetaParameterManager:
         logger.info(f"Initialized dataset weights for {n} datasets: {self.dataset_names}")
 
     def _init_objective_weights(self) -> None:
-        """Initialize objective weights to 1.0."""
+        """Initialize objective weights via logits (softmax-normalized to sum to 1)."""
         n = len(self.objective_names)
-        self._objective_weights = torch.ones(n, device=self.device)
+        # Use logits like dataset weights - softmax gives uniform weights that sum to 1
+        self._objective_logits = torch.zeros(n, device=self.device)
         self._objective_velocity = torch.zeros(n, device=self.device)
         logger.info(f"Initialized objective weights for {n} objectives: {self.objective_names}")
 
@@ -119,12 +120,15 @@ class MetaParameterManager:
         }
 
     def get_objective_weights(self) -> dict[str, float]:
-        """Get current objective weights."""
-        if self._objective_weights is None:
+        """Get current objective weights (normalized via softmax to sum to 1)."""
+        if self._objective_logits is None:
             return {}
 
+        # Softmax for normalization (sum to 1, all positive)
+        weights = F.softmax(self._objective_logits, dim=0)
+
         return {
-            name: self._objective_weights[i].item()
+            name: weights[i].item()
             for i, name in enumerate(self.objective_names)
         }
 
@@ -171,18 +175,17 @@ class MetaParameterManager:
             # (done implicitly through clamped logits)
             self._apply_dataset_constraints()
 
-        # Update objective weights
-        if objective_grads is not None and self._objective_weights is not None:
+        # Update objective weights (via logits, softmax-normalized to sum to 1)
+        if objective_grads is not None and self._objective_logits is not None:
             grad = torch.tensor(
                 [objective_grads.get(name, 0.0) for name in self.objective_names],
                 device=self.device,
             )
             self._objective_velocity = momentum * self._objective_velocity + (1 - momentum) * grad
-            self._objective_weights = self._objective_weights - lr * self._objective_velocity
+            self._objective_logits = self._objective_logits - lr * self._objective_velocity
 
-            # Clamp to constraint range
-            min_w, max_w = self.config.constraints.objective_weight_range
-            self._objective_weights = self._objective_weights.clamp(min_w, max_w)
+            # Apply constraints (similar to dataset weights)
+            self._apply_objective_constraints()
 
         # Update LR scales
         if lr_grads is not None and self._lr_scales is not None:
@@ -223,6 +226,21 @@ class MetaParameterManager:
         # We use log of clamped weights as new logits (up to constant)
         self._dataset_logits = torch.log(clamped + 1e-8)
 
+    def _apply_objective_constraints(self) -> None:
+        """Apply min/max constraints to objective weights via logit adjustment.
+
+        Same approach as dataset weights - clamp softmax output and convert back.
+        """
+        min_w, max_w = self.config.constraints.objective_weight_range
+        weights = F.softmax(self._objective_logits, dim=0)
+
+        # Simple projection: clamp weights and renormalize
+        clamped = weights.clamp(min_w, max_w)
+        clamped = clamped / clamped.sum()  # Renormalize to sum to 1
+
+        # Convert back to logits
+        self._objective_logits = torch.log(clamped + 1e-8)
+
     def apply_to_training(
         self,
         mixed_dataset=None,
@@ -247,7 +265,7 @@ class MetaParameterManager:
                 logger.debug(f"Applied dataset weights via update_weights: {weights}")
 
         # Apply objective weights
-        if objective_manager is not None and self._objective_weights is not None:
+        if objective_manager is not None and self._objective_logits is not None:
             weights = self.get_objective_weights()
             if hasattr(objective_manager, "set_weights"):
                 objective_manager.set_weights(weights)
@@ -390,7 +408,7 @@ class MetaParameterManager:
         """Get state dict for checkpointing."""
         return {
             "dataset_logits": self._dataset_logits,
-            "objective_weights": self._objective_weights,
+            "objective_logits": self._objective_logits,
             "lr_scales": self._lr_scales,
             "dataset_velocity": self._dataset_velocity,
             "objective_velocity": self._objective_velocity,
@@ -402,8 +420,8 @@ class MetaParameterManager:
         """Load state dict from checkpoint."""
         if "dataset_logits" in state_dict and state_dict["dataset_logits"] is not None:
             self._dataset_logits = state_dict["dataset_logits"].to(self.device)
-        if "objective_weights" in state_dict and state_dict["objective_weights"] is not None:
-            self._objective_weights = state_dict["objective_weights"].to(self.device)
+        if "objective_logits" in state_dict and state_dict["objective_logits"] is not None:
+            self._objective_logits = state_dict["objective_logits"].to(self.device)
         if "lr_scales" in state_dict and state_dict["lr_scales"] is not None:
             self._lr_scales = state_dict["lr_scales"].to(self.device)
         if "dataset_velocity" in state_dict and state_dict["dataset_velocity"] is not None:

@@ -77,11 +77,13 @@ class TestMetaParameterManager:
         assert abs(sum(weights.values()) - 1.0) < 1e-6
         assert abs(weights["web"] - 1/3) < 1e-6
 
-        # Objective weights should be 1.0
+        # Objective weights should sum to 1.0 (softmax normalized)
         obj_weights = manager.get_objective_weights()
         assert len(obj_weights) == 2
-        assert obj_weights["ce"] == 1.0
-        assert obj_weights["dlm"] == 1.0
+        assert abs(sum(obj_weights.values()) - 1.0) < 1e-6
+        # With 2 objectives from zero logits, each gets 0.5
+        assert abs(obj_weights["ce"] - 0.5) < 1e-6
+        assert abs(obj_weights["dlm"] - 0.5) < 1e-6
 
         # LR scales should be 1.0
         lr_scales = manager.get_lr_scales()

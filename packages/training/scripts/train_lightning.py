@@ -535,6 +535,12 @@ def main(cfg: DictConfig) -> None:
     val_cfg = cfg.training.get("validation", {})
     val_enabled = val_cfg.get("enabled", False)
 
+    # Determine num_workers: from config, env var, or default
+    # For influence + probe gradient caching, use 0 to avoid memory explosion
+    num_workers = cfg.data.get("num_workers", None)
+    if num_workers is None:
+        num_workers = int(os.environ.get("DATALOADER_NUM_WORKERS", "4"))
+
     datamodule = WrinkleFreeDataModule(
         tokenizer=tokenizer,
         batch_size=cfg.training.batch_size,
@@ -542,6 +548,7 @@ def main(cfg: DictConfig) -> None:
         config_name=cfg.data.get("config_name", "default"),
         with_probes=cfg.training.get("influence", {}).get("enabled", False),
         packed=cfg.training.get("packing", {}).get("enabled", True),
+        num_workers=num_workers,
         # Validation (C4 perplexity)
         val_config_name=val_cfg.get("config_name") if val_enabled else None,
         val_batch_size=val_cfg.get("batch_size", 8),
