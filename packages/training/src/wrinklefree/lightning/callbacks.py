@@ -905,16 +905,34 @@ class InfluenceAwareBatchSizeFinder(BatchSizeFinder):
         This ensures the found batch size accounts for influence memory.
         """
         # Initialize influence cache FIRST to reserve memory
-        if (
-            self.influence_callback._tracker is not None
-            and self.influence_callback._enabled
-        ):
-            if not self.influence_callback._tracker.is_initialized:
+        tracker = self.influence_callback._tracker
+        enabled = self.influence_callback._enabled
+
+        logger.info(
+            f"InfluenceAwareBatchSizeFinder: on_fit_start called "
+            f"(tracker={tracker is not None}, enabled={enabled})"
+        )
+
+        if tracker is not None and enabled:
+            if not tracker.is_initialized:
                 logger.info(
                     "InfluenceAwareBatchSizeFinder: initializing influence cache "
                     "to reserve memory before batch size search"
                 )
-                self.influence_callback._tracker.on_train_begin()
+                tracker.on_train_begin()
+                logger.info(
+                    "InfluenceAwareBatchSizeFinder: influence cache initialized, "
+                    "now running batch size search"
+                )
+            else:
+                logger.info(
+                    "InfluenceAwareBatchSizeFinder: influence cache already initialized"
+                )
+        else:
+            logger.warning(
+                f"InfluenceAwareBatchSizeFinder: skipping influence init "
+                f"(tracker={tracker is not None}, enabled={enabled})"
+            )
 
         # Now run standard batch size search with remaining memory
         super().on_fit_start(trainer, pl_module)
