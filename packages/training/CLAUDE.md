@@ -31,6 +31,16 @@ WrinkleFree is a repository for training and serving 1.58-bit (ternary) LLM mode
 - **Package management**: uv
 - **Distributed**: FSDP for single/multi-GPU
 - **Precision**: bfloat16 for training stability
+- **TF32**: Enabled by default for Ampere+ GPUs (10-20% matmul speedup)
+
+## Performance Optimizations
+
+| Optimization | Status | Speedup | Notes |
+|--------------|--------|---------|-------|
+| **TF32** | Enabled | 10-20% | Auto-enabled for Ampere+ GPUs (A100, H100, RTX 30xx/40xx) |
+| **Sequence Packing** | Enabled | 1.4-2x | Packs sequences to reduce padding waste |
+| **torch.compile** | Not used | - | Incompatible with FSDP multi-GPU |
+| **FlashAttention (SDPA)** | Via HuggingFace | ~2x attention | HF models use SDPA by default |
 
 ## Monorepo Integration
 

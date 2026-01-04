@@ -437,6 +437,15 @@ def main(cfg: DictConfig) -> None:
     rank = int(os.environ.get("RANK", 0))
     setup_logging(rank)
 
+    # Enable TF32 for Ampere+ GPUs (A100, H100, RTX 30xx/40xx)
+    # TF32 accelerates bf16 matmul by using reduced-precision accumulation internally.
+    # This gives 10-20% speedup with negligible accuracy impact for LLM training.
+    # See: https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    if rank == 0:
+        logger.info("TF32 enabled for CUDA matmul and cuDNN")
+
     # Log config
     if rank == 0:
         logger.info("=" * 60)
