@@ -1,6 +1,11 @@
 //! FFI bindings to the C++ BitNet batch inference engine.
 //!
 //! These bindings match the C API defined in bitnet_batch.h
+//!
+//! Note: Some types and functions are exposed for C API compatibility
+//! but may not be used by the Rust code directly.
+
+#![allow(dead_code)] // FFI bindings - intentionally expose full C API
 
 use libc::{c_char, c_int, c_void};
 use std::ffi::CStr;

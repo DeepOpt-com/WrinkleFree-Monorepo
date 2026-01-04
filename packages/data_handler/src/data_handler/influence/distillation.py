@@ -420,16 +420,17 @@ class InfluenceDistillation(InfluenceCalculator, DataSelector):
         batch_embeds = self.jvp_extractor.compute_batch_embeddings(batch)
 
         # Compute coefficients for this batch
-        E_batch = batch_embeds.to(device)
-        E_L = self._landmark_embeddings.to(device)
-        L_chol = self._cholesky_factor.to(device)
+        # Cast all to float32 for numerical stability (model may be bfloat16)
+        E_batch = batch_embeds.to(device).float()
+        E_L = self._landmark_embeddings.to(device).float()
+        L_chol = self._cholesky_factor.to(device).float()
 
         rhs = E_batch @ E_L.T  # [B, L]
         C_batch = torch.cholesky_solve(rhs.T, L_chol).T  # [B, L]
 
-        # Propagate influence
-        G_L = self._landmark_gradients.to(device)
-        g_T = self._target_gradient.to(device)
+        # Propagate influence (cast gradients to float32)
+        G_L = self._landmark_gradients.to(device).float()
+        g_T = self._target_gradient.to(device).float()
         p_L = G_L @ g_T  # [L]
         p_batch = C_batch @ p_L  # [B]
 

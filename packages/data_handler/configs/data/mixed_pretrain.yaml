@@ -16,35 +16,35 @@ sources:
   - name: dclm
     path: mlfoundations/dclm-baseline-1.0-parquet  # Parquet version (cleaner)
     subset: null
-    weight: 0.25  # 25% high-quality web (Apple's curated 4T tokens)
+    weight: 0  # DISABLED: Slow to load for smoke test
     text_column: text
     streaming: true
 
   - name: fineweb_edu
     path: HuggingFaceFW/fineweb-edu
     subset: sample-10BT
-    weight: 0.35  # 35% educational content (increased from 30% - high quality)
+    weight: 0.50  # Primary educational content
     text_column: text
     streaming: true
 
   - name: github_code
     path: nick007x/github-code-2025  # MIT licensed, 2025 curated code
     subset: null
-    weight: 0.10  # 10% code (reduced from 15% - code datasets are noisy)
+    weight: 0.20  # Code (re-enabled with HF auth)
     text_column: content
     streaming: true
 
   - name: finemath
     path: HuggingFaceTB/finemath  # 34B tokens math text (ODC-By license, commercially friendly)
     subset: finemath-3plus
-    weight: 0.15  # 15% mathematical reasoning
+    weight: 0.30  # Mathematical reasoning
     text_column: text
     streaming: true
 
   - name: slimpajama
     path: cerebras/SlimPajama-627B  # Cleaned RedPajama (Apache 2.0)
     subset: null
-    weight: 0.15  # 15% diverse content
+    weight: 0  # DISABLED: HuggingFace CDN 502 errors (2026-01)
     text_column: text
     streaming: true
 
@@ -66,42 +66,42 @@ probe:
     web_edu:
       path: HuggingFaceFW/fineweb-edu
       subset: sample-10BT
-      samples: 34  # Reduced for memory efficiency
+      samples: 50  # Active - increased for 2 dataset config
       text_column: text
       split: train
 
     code:
       path: nick007x/github-code-2025
       subset: null
-      samples: 33
+      samples: 30  # Re-enabled with HF auth
       text_column: content
       split: train
 
     math:
       path: HuggingFaceTB/finemath
       subset: finemath-3plus
-      samples: 33
+      samples: 50  # Active - increased for 2 dataset config
       text_column: text
       split: train
 
     dclm:
       path: mlfoundations/dclm-baseline-1.0-parquet
       subset: null
-      samples: 33
+      samples: 0  # DISABLED: Slow to load for smoke test
       text_column: text
       split: train
 
     diverse:
       path: cerebras/SlimPajama-627B
       subset: null
-      samples: 33
+      samples: 0  # DISABLED: HuggingFace CDN 502 errors (2026-01)
       text_column: text
       split: train
 
     reasoning:
       path: PleIAs/SYNTH
       subset: null
-      samples: 34
+      samples: 0  # DISABLED: Not used in 2-dataset config
       text_column:
         - query
         - synthetic_reasoning
@@ -109,7 +109,7 @@ probe:
       text_separator: "\n\n"
       split: train
 
-  total_samples: 200  # Reduced from 1200 to prevent OOM during influence updates
+  total_samples: 130  # Sum of active probe samples (50+30+50)
   streaming: true
 
 # Preprocessing settings

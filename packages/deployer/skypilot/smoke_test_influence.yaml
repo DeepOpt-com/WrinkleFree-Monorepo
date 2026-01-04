@@ -28,8 +28,8 @@ resources:
 workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
 
 file_mounts:
-  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
-  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
   /tmp/global.env: ~/.config/.env.global
 
 envs:
@@ -61,6 +61,21 @@ run: |
   source /tmp/credentials.env
   source /tmp/global.env
   export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+  export WANDB_API_KEY="${WANDB_API_KEY}"
+  export HF_HUB_DOWNLOAD_TIMEOUT=300  # Increase timeout to 5 minutes
+  export HF_HUB_ENABLE_HF_TRANSFER=1  # Use faster/more reliable transfer library
+  export HF_DATASETS_OFFLINE=0
+  export DATASETS_TRUST_REMOTE_CODE=1
+  export REQUESTS_TIMEOUT=300
+
+  # Authenticate with HuggingFace (required for some datasets)
+  # Use huggingface_hub Python API to avoid git credential issues
+  echo "Authenticating with HuggingFace..."
+  uv run --package wrinklefree python -c "from huggingface_hub import login; login(token='${HF_TOKEN}')"
+  echo "HF authentication complete"
+
+  echo "WandB API key set: ${WANDB_API_KEY:0:8}..."
+  echo "HF timeout: $HF_HUB_DOWNLOAD_TIMEOUT"
 
   CHECKPOINT_DIR="/tmp/checkpoints"
   mkdir -p $CHECKPOINT_DIR
@@ -95,17 +110,21 @@ run: |
     training.max_steps=${MAX_STEPS} \
     training.batch_size=8 \
     training.gradient_accumulation_steps=4 \
-    training.optimizer.type=adamw \
+    training.optimizer.type=muon \
     training.influence.enabled=true \
+    training.influence.method=distillation \
     training.influence.update_interval=20 \
+    training.influence.warmup_steps=5 \
     training.influence.learning_rate=0.1 \
-    +training.influence.samples_per_dataset=8 \
+    training.influence.samples_per_dataset=8 \
     output_dir=$CHECKPOINT_DIR \
-    experiment_name=influence_smoke \
+    experiment_name=influence_smoke_$(date +%s) \
     training.checkpoint.save_interval=25 \
     training.logging.log_interval=1 \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
+    training.validation.enabled=false \
+    resume.skip_completed=false \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET} \
     2>&1 | tee training.log

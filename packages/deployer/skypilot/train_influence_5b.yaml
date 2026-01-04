@@ -1,0 +1,114 @@
+# WrinkleFree Influence-Based Training (5B tokens)
+#
+# Full training run with influence-based dataset rebalancing.
+# Uses InfluenceDistillation for landmark-based weight optimization.
+#
+# Usage:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/train_influence_5b.yaml -y --cluster influence-5b
+#
+# Monitor:
+#   sky logs influence-5b
+#   # WandB: https://wandb.ai/umd-leans-well/wrinklefree
+
+name: wrinklefree-influence-5b
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  use_spot: false
+  cloud: nebius
+
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  MAX_STEPS: 76300
+  WANDB_PROJECT: wrinklefree
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  uv sync --all-packages
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+  export WANDB_API_KEY="${WANDB_API_KEY}"
+  export HF_HUB_DOWNLOAD_TIMEOUT=300
+  export HF_HUB_ENABLE_HF_TRANSFER=1
+  export HF_DATASETS_OFFLINE=0
+  export DATASETS_TRUST_REMOTE_CODE=1
+
+  # Authenticate with HuggingFace
+  echo "Authenticating with HuggingFace..."
+  uv run --package wrinklefree python -c "from huggingface_hub import login; login(token='${HF_TOKEN}')"
+  echo "HF authentication complete"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================"
+  echo "WrinkleFree Influence-Based Training (5B tokens)"
+  echo "================================================"
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS (~5B tokens)"
+  echo "Data: mixed_pretrain (fineweb_edu 50%, github_code 20%, finemath 30%)"
+  echo "Influence: InfluenceDistillation (landmark-based KRR)"
+  echo "================================================"
+
+  export DATA_NUM_WORKERS=2
+  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=unified \
+    data.config_name=mixed_pretrain \
+    training.max_steps=${MAX_STEPS} \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=4 \
+    training.optimizer.type=muon \
+    training.influence.enabled=true \
+    training.influence.method=distillation \
+    training.influence.update_interval=1000 \
+    training.influence.warmup_steps=500 \
+    training.influence.learning_rate=0.1 \
+    training.influence.samples_per_dataset=32 \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=influence_5b_$(date +%Y%m%d) \
+    training.checkpoint.save_interval=5000 \
+    training.logging.log_interval=10 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.validation.enabled=true \
+    training.validation.config_name=fineweb_validation \
+    training.validation.val_check_interval=1000 \
+    resume.skip_completed=false \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    2>&1 | tee training.log
+
+  echo ""
+  echo "================================================"
+  echo "Training Complete!"
+  echo "================================================"
+  echo "Check WandB for metrics: https://wandb.ai/umd-leans-well/wrinklefree"

@@ -28,7 +28,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[cfg(feature = "native-inference")]
 use sgl_model_gateway::inference::{
@@ -215,6 +215,7 @@ struct ChatCompletionRequest {
     #[serde(default)]
     top_p: Option<f32>,
     #[serde(default)]
+    #[allow(dead_code)] // Reserved for future streaming support
     stream: bool,
 }
 

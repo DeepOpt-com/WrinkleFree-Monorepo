@@ -181,8 +181,11 @@ validation:
 # CheaperTraining influence-based data selection
 influence:
   enabled: true
+  method: datainf  # "datainf" or "distillation" (InfluenceDistillation for landmark KRR)
   update_interval: 1000
+  warmup_steps: 500
   learning_rate: 0.2
+  samples_per_dataset: 1000  # Samples per source for influence computation
   config:
     lambda_val: 0.1
     gamma_val: 0.1

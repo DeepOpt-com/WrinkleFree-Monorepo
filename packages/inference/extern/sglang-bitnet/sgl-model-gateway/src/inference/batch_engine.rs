@@ -120,6 +120,7 @@ pub struct SequenceInfo {
 /// A batch of tokens for inference
 pub struct Batch {
     batch: *mut CBatch,
+    #[allow(dead_code)] // Stored for potential future capacity checks
     capacity: i32,
 }
 

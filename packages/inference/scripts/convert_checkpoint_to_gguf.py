@@ -4,26 +4,23 @@ Unified GGUF conversion script for DLM/BitNet checkpoints.
 
 This script handles:
 - bf16 "online" quantization checkpoints (weights are continuous floats)
-- Packed 2-bit "offline" quantization checkpoints (4 values per byte)
 - Both sentencepiece and GPT2/BPE tokenizers
 - Architecture name variants (BitnetForCausalLM vs BitNetForCausalLM)
+- SubLN models (with attn_sub_norm/ffn_sub_norm layers)
 
 Supported output formats:
-- i2_s: 2-bit integer, multiply-add (default, works with vanilla llama.cpp)
-- tq2_0: Ternary quantization (works with vanilla llama.cpp)
-- tl1: LUT-based 1 (requires pre-generated kernel config)
-- tl2: LUT-based 2 (requires pre-generated kernel config)
-- f32/f16: Reference only (DO NOT USE for inference - 4x larger, slower)
+- f16: Float16 (default, universally compatible, works with all model sizes)
+- tq1_0: Ternary quantization v1 (~0.5x size, requires hidden_size % 256 == 0)
+- tq2_0: Ternary quantization v2 (AVOID for bf16 DLM - corrupts weights!)
+- bf16: BFloat16 (same size as f16)
+- f32: Float32 (2x size, for debugging only)
 
 Usage:
-    # Basic conversion (I2_S recommended for vanilla llama.cpp)
+    # Basic conversion (F16 recommended, works for all models)
     python convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf
 
-    # With validation
-    python convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf --validate
-
-    # TQ2_0 format (alternative to I2_S)
-    python convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf --outtype tq2_0
+    # TQ1_0 for 2B+ models (smaller, faster)
+    python convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf --outtype tq1_0
 
     # From GCS (auto-downloads, excludes optimizer state)
     python convert_checkpoint_to_gguf.py gs://bucket/checkpoint --outfile model.gguf
@@ -49,15 +46,14 @@ logger = logging.getLogger(__name__)
 # Get the repository root (where extern/ is located)
 SCRIPT_DIR = Path(__file__).parent.resolve()
 INFERENCE_PKG = SCRIPT_DIR.parent
-REPO_ROOT = INFERENCE_PKG.parent.parent
-BITNET_DIR = REPO_ROOT / "extern" / "BitNet"
-CONVERTER_SCRIPT = BITNET_DIR / "utils" / "convert-hf-to-gguf-bitnet.py"
+LLAMA_CPP_DIR = INFERENCE_PKG / "extern" / "sglang-bitnet" / "3rdparty" / "llama.cpp"
+CONVERTER_SCRIPT = LLAMA_CPP_DIR / "convert_hf_to_gguf.py"
 
 # Model size expectations (approximate, for validation)
 MODEL_SIZE_EXPECTATIONS = {
-    # (num_params, expected_i2s_size_bytes)
-    "2B": (2_000_000_000, 1_100_000_000),  # ~1.1GB
-    "135M": (135_000_000, 80_000_000),      # ~80MB
+    # (num_params, expected_f16_size_bytes)
+    "2B": (2_000_000_000, 4_500_000_000),  # ~4.5GB for f16
+    "135M": (135_000_000, 260_000_000),     # ~260MB for f16
 }
 
 
@@ -153,51 +149,23 @@ def estimate_model_params(config: dict) -> int:
     return embed_params + attn_params + ffn_params
 
 
-def generate_kernel_config(config: dict, quant_type: str, output_dir: Path) -> Path:
-    """Generate kernel_config.ini for TL1/TL2 weight preprocessing."""
-    if quant_type not in ("tl1", "tl2"):
-        return output_dir  # No config needed for i2_s
+def check_tq1_compatibility(config: dict) -> tuple[bool, str]:
+    """Check if TQ1_0 format is compatible with this model.
 
-    hidden_size = config.get("hidden_size", 2560)
-    intermediate_size = config.get("intermediate_size", 6912)
-    num_heads = config.get("num_attention_heads", 20)
-    num_kv_heads = config.get("num_key_value_heads", 5)
-    head_dim = config.get("head_dim", hidden_size // num_heads)
-    num_layers = config.get("num_hidden_layers", 30)
+    TQ1_0 requires tensor dimensions to be divisible by 256 (block size).
+    Small models like 135M (hidden_size=576) are NOT compatible.
 
-    # All unique weight dimensions
-    weight_dims = set()
-    # Attention projections
-    weight_dims.add((hidden_size, hidden_size))  # Q, O
-    weight_dims.add((hidden_size, num_kv_heads * head_dim))  # K, V
-    # FFN
-    weight_dims.add((intermediate_size, hidden_size))  # gate, up
-    weight_dims.add((hidden_size, intermediate_size))  # down
+    Returns: (is_compatible, reason)
+    """
+    hidden_size = config.get("hidden_size", 0)
+    intermediate_size = config.get("intermediate_size", 0)
 
-    include_dir = output_dir / "include"
-    include_dir.mkdir(parents=True, exist_ok=True)
+    if hidden_size % 256 != 0:
+        return False, f"hidden_size={hidden_size} not divisible by 256"
+    if intermediate_size % 256 != 0:
+        return False, f"intermediate_size={intermediate_size} not divisible by 256"
 
-    config_file = include_dir / "kernel_config.ini"
-    with open(config_file, "w") as f:
-        for i, (m, k) in enumerate(sorted(weight_dims)):
-            if quant_type == "tl2":
-                bm = 32 if m >= 2048 else 16
-                bk = 192 if k >= 2048 else 96
-            else:  # tl1
-                bm = 32 if m >= 2048 else 16
-                bk = 256 if k >= 2048 else 128
-            bmm = 32
-            by = 256 // bmm
-
-            f.write(f"[{m}_{k}]\n")
-            f.write(f"m = {m}\n")
-            f.write(f"k = {k}\n")
-            f.write(f"bm = {bm}\n")
-            f.write(f"bk = {bk}\n")
-            f.write(f"bmm = {bmm}\n\n")
-
-    logger.info(f"Generated kernel config: {config_file}")
-    return output_dir
+    return True, "compatible"
 
 
 def validate_gguf_output(
@@ -213,14 +181,19 @@ def validate_gguf_output(
     file_size = output_path.stat().st_size
     estimated_params = estimate_model_params(config)
 
-    # Expected sizes based on quantization type
-    if quant_type in ("i2_s", "tl1", "tl2", "tq2_0"):
-        # ~0.5-0.6 bytes per param for 2-bit quantization
+    # Expected sizes based on quantization type (bytes per param)
+    if quant_type in ("tq1_0", "tq2_0"):
+        # ~0.5-0.6 bytes per param for ternary quantization
         expected_min = estimated_params * 0.4
         expected_max = estimated_params * 0.8
-    else:  # f16
+    elif quant_type in ("f16", "bf16"):
+        # ~2 bytes per param
         expected_min = estimated_params * 1.5
         expected_max = estimated_params * 2.5
+    else:  # f32
+        # ~4 bytes per param
+        expected_min = estimated_params * 3.0
+        expected_max = estimated_params * 5.0
 
     if file_size < expected_min:
         logger.error(
@@ -242,7 +215,7 @@ def validate_gguf_output(
 def convert_checkpoint(
     checkpoint_path: Path,
     output_path: Path,
-    quant_type: str = "i2_s",
+    quant_type: str = "f16",
     validate: bool = False,
     verbose: bool = False,
 ) -> Path:
@@ -251,51 +224,54 @@ def convert_checkpoint(
     config = validate_checkpoint(checkpoint_path)
     logger.info(f"Converting {checkpoint_path.name} to GGUF ({quant_type})")
 
+    # Check TQ1_0 compatibility
+    if quant_type == "tq1_0":
+        compatible, reason = check_tq1_compatibility(config)
+        if not compatible:
+            logger.warning("=" * 60)
+            logger.warning(f"TQ1_0 incompatible: {reason}")
+            logger.warning("Falling back to F16 format")
+            logger.warning("=" * 60)
+            quant_type = "f16"
+
     # Fix architecture name if needed
     fix_architecture_name(checkpoint_path)
 
-    # Generate kernel config if needed
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        work_dir = generate_kernel_config(config, quant_type, tmpdir)
+    # Build conversion command
+    cmd = [
+        sys.executable,
+        str(CONVERTER_SCRIPT),
+        str(checkpoint_path),
+        "--outfile", str(output_path),
+        "--outtype", quant_type,
+    ]
 
-        # Build conversion command
-        cmd = [
-            sys.executable,
-            str(CONVERTER_SCRIPT),
-            str(checkpoint_path),
-            "--outfile", str(output_path),
-            "--outtype", quant_type,
-        ]
+    if verbose:
+        cmd.append("--verbose")
 
-        if verbose:
-            cmd.append("--verbose")
+    logger.info(f"Running: {' '.join(cmd)}")
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+    )
 
-        # Run conversion from work directory (for kernel config)
-        logger.info(f"Running: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            cwd=work_dir,
-            capture_output=True,
-            text=True,
-        )
+    if result.returncode != 0:
+        logger.error(f"Conversion failed:\n{result.stderr}")
+        if "sentencepiece" in result.stderr.lower():
+            logger.error(
+                "HINT: This may be a tokenizer issue. "
+                "The converter now supports GPT2/BPE tokenizers."
+            )
+        if "BitnetForCausalLM" in result.stderr:
+            logger.error(
+                "HINT: Try fixing the architecture name with:\n"
+                f"  sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' {checkpoint_path}/config.json"
+            )
+        raise RuntimeError("GGUF conversion failed")
 
-        if result.returncode != 0:
-            logger.error(f"Conversion failed:\n{result.stderr}")
-            if "sentencepiece" in result.stderr.lower():
-                logger.error(
-                    "HINT: This may be a tokenizer issue. "
-                    "The converter now supports GPT2/BPE tokenizers."
-                )
-            if "BitnetForCausalLM" in result.stderr:
-                logger.error(
-                    "HINT: Try fixing the architecture name with:\n"
-                    f"  sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' {checkpoint_path}/config.json"
-                )
-            raise RuntimeError("GGUF conversion failed")
-
-        if verbose:
-            print(result.stdout)
+    if verbose:
+        print(result.stdout)
 
     # Validate output if requested
     if validate:
@@ -313,31 +289,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Output Format Guide:
-  i2_s   - 2-bit integer, multiply-add (~1.1GB for 2B model) [DEFAULT, RECOMMENDED]
-           Works with vanilla llama.cpp, good balance of speed and compatibility
-  tq1_0  - Ternary quantization v1 (~680MB for 2B model)
-           Good for bf16 DLM checkpoints, faster than i2_s
-  tq2_0  - Ternary quantization v2 (~780MB for 2B model)
-           WARNING: Produces garbage for bf16 checkpoints! Use --force-tq2 to override
-  tl1    - LUT-based format 1 (~1.1GB)
-           Requires pre-generated kernel config, faster on some CPUs
-  tl2    - LUT-based format 2 (~1.1GB)
-           Requires pre-generated kernel config, optimized for AVX512
-  f16    - Float16 (~4.5GB for 2B model)
-           DO NOT USE for inference - for reference/debugging only
+  f16    - Float16 (~260MB for 135M, ~4.5GB for 2B) [DEFAULT]
+           Works with ALL model sizes, recommended for DLM inference
+  tq1_0  - Ternary quantization v1 (~0.5x size of f16)
+           ONLY for models with hidden_size % 256 == 0 (2B+, not 135M)
+           Will auto-fallback to f16 if incompatible
+  bf16   - BFloat16 (same size as f16)
+           Alternative to f16, same compatibility
+  f32    - Float32 (~2x size of f16)
+           For debugging only
+
+WARNING: NEVER use tq2_0 for bf16 DLM checkpoints - it corrupts weights!
 
 Examples:
-  # Basic conversion with I2_S (recommended)
+  # Basic conversion (F16 - works for all models)
   python convert_checkpoint_to_gguf.py ./checkpoint --outfile model.gguf
 
-  # With validation
-  python convert_checkpoint_to_gguf.py ./checkpoint --outfile model.gguf --validate
+  # TQ1_0 for 2B+ models (smaller, faster)
+  python convert_checkpoint_to_gguf.py ./checkpoint --outfile model.gguf --outtype tq1_0
 
   # From GCS (auto-downloads, excludes optimizer state)
   python convert_checkpoint_to_gguf.py gs://bucket/checkpoint --outfile model.gguf
-
-  # TQ2_0 format
-  python convert_checkpoint_to_gguf.py ./checkpoint --outfile model.gguf --outtype tq2_0
         """,
     )
 
@@ -355,9 +327,9 @@ Examples:
     parser.add_argument(
         "--outtype",
         type=str,
-        choices=["i2_s", "tq1_0", "tq2_0", "tl1", "tl2", "f16", "f32"],
-        default="i2_s",
-        help="Output quantization type (default: i2_s)",
+        choices=["f16", "tq1_0", "bf16", "f32"],
+        default="f16",
+        help="Output format (default: f16)",
     )
     parser.add_argument(
         "--validate",
@@ -369,33 +341,13 @@ Examples:
         action="store_true",
         help="Verbose output",
     )
-    parser.add_argument(
-        "--force-tq2",
-        action="store_true",
-        help="Force TQ2_0 output even for bf16 checkpoints (NOT RECOMMENDED)",
-    )
 
     args = parser.parse_args()
-
-    # TQ2_0 warning for bf16 DLM checkpoints
-    if args.outtype == "tq2_0" and not args.force_tq2:
-        logger.error("=" * 70)
-        logger.error("ERROR: TQ2_0 produces GARBAGE output for bf16 DLM checkpoints!")
-        logger.error("")
-        logger.error("TQ2_0 applies ternary quantization which corrupts already-ternary")
-        logger.error("weights stored in bf16 format. The resulting model will output")
-        logger.error("nonsense (e.g., 'GGGGGG...' or random tokens).")
-        logger.error("")
-        logger.error("RECOMMENDED: Use --outtype i2_s instead (default)")
-        logger.error("")
-        logger.error("If you REALLY want TQ2_0 (not bf16 checkpoint), use --force-tq2")
-        logger.error("=" * 70)
-        sys.exit(1)
 
     # Check converter exists
     if not CONVERTER_SCRIPT.exists():
         logger.error(f"Converter not found: {CONVERTER_SCRIPT}")
-        logger.error("Please run: git submodule update --init extern/BitNet")
+        logger.error("Please build llama.cpp first - see CLAUDE.md")
         sys.exit(1)
 
     # Handle GCS paths

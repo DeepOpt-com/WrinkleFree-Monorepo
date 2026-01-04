@@ -54,17 +54,18 @@ class MixedDataset(IterableDataset):
             world_size: Total number of processes for distributed training
             shuffle_buffer_size: Size of shuffle buffer for streaming datasets
         """
-        self.mixtures = mixtures
+        # Filter out mixtures with weight=0 (disabled datasets)
+        self.mixtures = [m for m in mixtures if m.weight > 0]
         self.seed = seed
         self.streaming = streaming
         self.rank = rank
         self.world_size = world_size
         self.shuffle_buffer_size = shuffle_buffer_size
 
-        # Normalize weights
-        total_weight = sum(m.weight for m in mixtures)
+        # Normalize weights (only among active mixtures)
+        total_weight = sum(m.weight for m in self.mixtures)
         self.normalized_weights = torch.tensor(
-            [m.weight / total_weight for m in mixtures]
+            [m.weight / total_weight for m in self.mixtures]
         )
 
         self._datasets = None
@@ -131,6 +132,46 @@ class MixedDataset(IterableDataset):
         self._sample_counts = {m.name: 0 for m in self.mixtures}
         self._exhausted_datasets = set()
 
+    def get_source_loaders(
+        self,
+        tokenizer: Any,
+        batch_size: int = 4,
+        max_length: int = 2048,
+        samples_per_source: int = 1000,
+    ) -> dict[str, DataLoader]:
+        """Create individual DataLoaders for each source for influence computation.
+
+        Used by InfluenceDistillation to compute per-source influence scores
+        and optimize mixture weights.
+
+        Args:
+            tokenizer: Tokenizer for encoding text
+            batch_size: Batch size for each loader
+            max_length: Maximum sequence length
+            samples_per_source: Number of samples per source dataset
+
+        Returns:
+            Dict mapping source names to DataLoaders
+        """
+        loaders = {}
+        for mixture in self.mixtures:
+            # Create a probe-style dataset for each source
+            probe_config = DomainProbeConfig(
+                domain=mixture.name,
+                path=mixture.path,
+                subset=mixture.subset,
+                split=mixture.split,
+                samples=samples_per_source,
+                text_column=mixture.text_column,
+            )
+            # Use streaming=False to avoid deadlock with main training DataLoader
+            # (multiple streaming datasets can conflict when using Ray)
+            probe_ds = DomainProbeDataset(probe_config, streaming=False)
+            packed_ds = PackedDataset(probe_ds, tokenizer, max_length)
+            loaders[mixture.name] = DataLoader(packed_ds, batch_size=batch_size)
+
+        return loaders
+
     def _load_datasets(self):
         """Lazy load datasets with distributed sharding support."""
         import os
@@ -145,8 +186,10 @@ class MixedDataset(IterableDataset):
         self._datasets = []
         self._iterators = []
 
-        total = len(self.mixtures)
-        for i, mixture in enumerate(self.mixtures):
+        # Filter out mixtures with weight=0
+        active_mixtures = [m for m in self.mixtures if m.weight > 0]
+        total = len(active_mixtures)
+        for i, mixture in enumerate(active_mixtures):
             logger.info(f"Loading dataset {i+1}/{total}: {mixture.name} ({mixture.path})")
             start = time.time()
             ds = load_dataset(

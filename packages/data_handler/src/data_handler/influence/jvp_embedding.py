@@ -265,6 +265,17 @@ class JVPEmbeddingExtractor:
         with torch.no_grad():
             hidden_states = self.embed_tokens(input_ids)
 
+        # Get position embeddings for LLaMA/Mistral models (RoPE)
+        position_embeddings = None
+        seq_len = input_ids.size(1)
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'rotary_emb'):
+            # LLaMA/Mistral models have rotary embeddings
+            rotary_emb = self.model.model.rotary_emb
+            # Create position IDs
+            position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(input_ids.size(0), -1)
+            # Get cos, sin embeddings
+            position_embeddings = rotary_emb(hidden_states, position_ids)
+
         # Forward through JVP layers
         # NOTE: We skip attention_mask for JVP layers because:
         # 1. Different models expect different mask formats
@@ -273,10 +284,13 @@ class JVPEmbeddingExtractor:
         with torch.no_grad():
             for layer in self.jvp_layers:
                 try:
-                    # Try passing without mask first (simpler, works for most models)
-                    layer_output = layer(hidden_states)
+                    # Try with position_embeddings first (required for LLaMA/Mistral)
+                    if position_embeddings is not None:
+                        layer_output = layer(hidden_states, position_embeddings=position_embeddings)
+                    else:
+                        layer_output = layer(hidden_states)
                 except TypeError:
-                    # Some layers require positional args
+                    # Some layers require positional args or different signature
                     try:
                         layer_output = layer(hidden_states, None)
                     except:

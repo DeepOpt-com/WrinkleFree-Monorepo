@@ -5,16 +5,12 @@
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 #[cfg(feature = "native-inference")]
 use crate::inference::{NativeEngine as CppEngine, SamplingParams as CppSamplingParams};
 
-use crate::protocols::{
-    chat::ChatCompletionRequest,
-    generate::GenerateRequest,
-    sampling_params::SamplingParams,
-};
+use crate::protocols::sampling_params::SamplingParams;
 
 /// Result type for native engine operations
 pub type NativeEngineResult<T> = Result<T, NativeEngineError>;
