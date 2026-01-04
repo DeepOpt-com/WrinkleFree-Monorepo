@@ -101,8 +101,8 @@ run: |
   # Note: Using AdamW instead of MuonClip due to muon_fsdp2 single-GPU bug
   # Using mixed_pretrain data config for multi-source with probes
   # Disabled auto_batch_size to avoid repeated dataloader iteration (OOM on 64GB)
-  # Set DATA_NUM_WORKERS=1 to reduce memory pressure (each worker loads all 6 datasets)
-  export DATA_NUM_WORKERS=1
+  # Set DATA_NUM_WORKERS=0 to rule out multiprocessing issues with JVP extractor
+  export DATA_NUM_WORKERS=0
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=unified \
