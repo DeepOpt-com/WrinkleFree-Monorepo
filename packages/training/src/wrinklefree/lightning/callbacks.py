@@ -504,8 +504,6 @@ class InfluenceTrackerCallback(Callback):
         self.config = config
         self._tracker = None
         self._enabled = False
-        # Saved for deferred source loader creation in on_train_start
-        self._deferred_source_loader_params = None
 
     def setup(
         self,
@@ -571,19 +569,8 @@ class InfluenceTrackerCallback(Callback):
         self._enabled = self._tracker.is_enabled
         if self._enabled:
             logger.info("InfluenceTrackerCallback: initialized and enabled")
-
-            # Save params for deferred source loader creation in on_train_start
-            # (creating streaming DataLoaders during setup() causes deadlock with Ray)
-            if self._tracker.method == "distillation" and mixed_dataset is not None:
-                influence_cfg = tracker_config.get("influence", {})
-                samples_per_dataset = influence_cfg.get("samples_per_dataset", 1000)
-                self._deferred_source_loader_params = {
-                    "mixed_dataset": mixed_dataset,
-                    "tokenizer": datamodule.tokenizer,
-                    "max_length": datamodule.max_length,
-                    "samples_per_dataset": samples_per_dataset,
-                }
-                logger.info("InfluenceTrackerCallback: source loader creation deferred to on_train_start")
+            # Note: Source loaders for InfluenceDistillation will be created in on_train_start
+            # to avoid Ray deadlock with streaming datasets
         else:
             logger.info(
                 f"InfluenceTrackerCallback: disabled "
@@ -596,25 +583,10 @@ class InfluenceTrackerCallback(Callback):
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
     ) -> None:
-        """Create source loaders and cache probe gradients at training start."""
+        """Cache probe gradients at training start."""
         if self._tracker and self._enabled:
-            # Create source loaders now (deferred from setup to avoid Ray deadlock)
-            if self._deferred_source_loader_params is not None:
-                params = self._deferred_source_loader_params
-                try:
-                    self._tracker._dataset_loaders = params["mixed_dataset"].get_source_loaders(
-                        tokenizer=params["tokenizer"],
-                        batch_size=4,
-                        max_length=params["max_length"],
-                        samples_per_source=params["samples_per_dataset"],
-                    )
-                    logger.info(
-                        f"InfluenceTrackerCallback: created source loaders for {len(self._tracker._dataset_loaders)} datasets"
-                    )
-                except Exception as e:
-                    logger.warning(f"InfluenceTrackerCallback: failed to create source loaders: {e}")
-                self._deferred_source_loader_params = None  # Clear after use
-
+            # TODO: Create source loaders for InfluenceDistillation weight computation
+            # For now, on_train_begin will fall back to probe_loader
             self._tracker.on_train_begin()
 
     def on_train_batch_end(
