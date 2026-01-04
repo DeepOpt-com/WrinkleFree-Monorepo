@@ -569,8 +569,6 @@ class InfluenceTrackerCallback(Callback):
         self._enabled = self._tracker.is_enabled
         if self._enabled:
             logger.info("InfluenceTrackerCallback: initialized and enabled")
-            # Note: Source loaders for InfluenceDistillation will be created in on_train_start
-            # to avoid Ray deadlock with streaming datasets
         else:
             logger.info(
                 f"InfluenceTrackerCallback: disabled "
@@ -585,8 +583,6 @@ class InfluenceTrackerCallback(Callback):
     ) -> None:
         """Cache probe gradients at training start."""
         if self._tracker and self._enabled:
-            # TODO: Create source loaders for InfluenceDistillation weight computation
-            # For now, on_train_begin will fall back to probe_loader
             self._tracker.on_train_begin()
 
     def on_train_batch_end(

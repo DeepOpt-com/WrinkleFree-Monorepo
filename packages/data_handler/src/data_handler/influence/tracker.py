@@ -221,45 +221,17 @@ class InfluenceTracker:
 
         try:
             if self.method == "distillation":
-                # InfluenceDistillation: full setup for landmark-based KRR
-                # 1. Cache probe gradients
-                logger.info("InfluenceTracker: step 1 - caching probe gradients...")
+                # InfluenceDistillation: cache probe gradients
                 self.distillation.cache_probe_gradients(self.probe_loader, show_progress=True)
-
-                # 2. Set up landmarks using a source loader
-                # Use first dataset loader if available, else use probe loader
-                source_loader = None
-                has_dataset_loaders = hasattr(self, '_dataset_loaders') and self._dataset_loaders
-                logger.info(f"InfluenceTracker: _dataset_loaders available: {has_dataset_loaders}")
-
-                if has_dataset_loaders:
-                    source_loader = next(iter(self._dataset_loaders.values()))
-                    loader_name = next(iter(self._dataset_loaders.keys()))
-                    logger.info(f"InfluenceTracker: using source loader '{loader_name}'")
-                else:
-                    # Fallback to probe loader - but warn that this reuses exhausted iterator
-                    logger.warning(
-                        "InfluenceTracker: no _dataset_loaders available, falling back to probe_loader. "
-                        "This may fail for streaming datasets."
-                    )
-                    source_loader = self.probe_loader
-
-                # Cache source embeddings and compute landmarks/KRR
-                logger.info("InfluenceTracker: step 2 - caching source embeddings...")
-                self.distillation.cache_source_embeddings(source_loader, show_progress=True)
-                logger.info("InfluenceTracker: step 3 - caching landmarks...")
-                self.distillation.cache_landmarks(source_loader, show_progress=True)
             elif self.multi_domain:
                 self.calculator.cache_all_domain_probes(show_progress=True)
             else:
                 self.calculator.cache_probe_gradients(show_progress=True)
 
             self._initialized = True
-            logger.info("InfluenceTracker: probe gradients cached successfully")
+            logger.info("InfluenceTracker: probe gradients cached")
         except Exception as e:
-            import traceback
             logger.error(f"InfluenceTracker: failed to cache probe gradients: {e}")
-            logger.error(f"InfluenceTracker: traceback:\n{traceback.format_exc()}")
             self.enabled = False
         finally:
             self.model.train()
@@ -322,10 +294,7 @@ class InfluenceTracker:
             logger.info(f"InfluenceTracker: final weights: {final_weights}")
 
     def _update_weights(self, step: int):
-        """Compute and apply weight update using InfluenceDistillation.
-
-        For distillation method, uses cached landmark-based KRR to compute
-        per-dataset influence scores and update mixture weights.
+        """Compute and apply weight update.
 
         Args:
             step: Current global step
@@ -335,25 +304,11 @@ class InfluenceTracker:
 
         try:
             current_weights = self.mixed_dataset.get_current_weights()
-            logger.info(f"InfluenceTracker: current weights: {current_weights}")
 
-            # Compute new weights using InfluenceDistillation if available
-            if self.method == "distillation" and hasattr(self, 'distillation'):
-                if hasattr(self, '_dataset_loaders') and self._dataset_loaders:
-                    # Use InfluenceDistillation's compute_mixture_weights
-                    new_weights = self.distillation.compute_mixture_weights(
-                        self._dataset_loaders, show_progress=False
-                    )
-                    # Apply with learning rate smoothing
-                    smoothed = {
-                        k: (1 - self.learning_rate) * current_weights.get(k, 0) + self.learning_rate * v
-                        for k, v in new_weights.items()
-                    }
-                    self.mixed_dataset.update_weights_from_influence(smoothed)
-                    current_weights = smoothed
-                    logger.info(f"InfluenceTracker: updated weights via distillation: {current_weights}")
-                else:
-                    logger.warning("InfluenceTracker: distillation mode but no _dataset_loaders set")
+            # Get weight update from calculator
+            # Note: This requires dataset loaders which we don't have direct access to
+            # For now, use a simplified approach - just log that we would update
+            logger.info(f"InfluenceTracker: current weights: {current_weights}")
 
             # Store in history
             self._weight_history.append({
@@ -420,30 +375,14 @@ class InfluenceTracker:
             self.model.train()
 
     def _log_weights_to_wandb(self, step: int, weights: dict[str, float]):
-        """Log weights and relative ratios to wandb if available.
-
-        Logs both absolute weights and relative ratios (each weight / max weight)
-        for easier visualization of dataset balance.
-        """
+        """Log weights to wandb if available."""
         try:
             import wandb
-            if wandb.run is None:
-                return
-
-            metrics = {}
-
-            # Absolute weights
-            for k, v in weights.items():
-                metrics[f"influence/weight_{k}"] = v
-
-            # Relative ratios - each dataset relative to max weight
-            if weights:
-                max_weight = max(weights.values())
-                if max_weight > 0:
-                    for name, weight in weights.items():
-                        metrics[f"influence/relative_{name}"] = weight / max_weight
-
-            wandb.log(metrics, step=step)
+            if wandb.run is not None:
+                wandb.log(
+                    {f"influence/weight_{k}": v for k, v in weights.items()},
+                    step=step,
+                )
         except ImportError:
             pass
         except Exception as e:
