@@ -363,8 +363,8 @@ def create_callbacks(cfg: DictConfig) -> list:
     # LR monitor
     callbacks.append(LearningRateMonitor(logging_interval="step"))
 
-    # Progress bar
-    callbacks.append(RichProgressBar())
+    # Progress bar - disabled for non-TTY environments to avoid potential hangs
+    # callbacks.append(RichProgressBar())
 
     return callbacks
 
