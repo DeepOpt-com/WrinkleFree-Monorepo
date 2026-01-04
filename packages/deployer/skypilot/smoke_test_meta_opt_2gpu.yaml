@@ -1,0 +1,161 @@
+# WrinkleFree Meta-Optimization Smoke Test (2x L40 with FSDP)
+#
+# Tests the meta-optimization outer loop with multi-GPU FSDP:
+# - Dataset mixture weight optimization (via influence)
+# - Objective weight optimization (CE, DLM)
+# - Pareto multi-objective optimization (MGDA)
+# - FSDP sharding across 2 GPUs
+# - Callback state sync across ranks
+#
+# References:
+# - LibMOON (NeurIPS 2024): https://arxiv.org/abs/2409.02969
+# - ScaleBiO (2024): https://arxiv.org/abs/2406.19976
+# - DataInf (ICLR 2024): Tractable influence without Hessian
+#
+# Launch:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/smoke_test_meta_opt_2gpu.yaml -y --cluster meta-2gpu
+#
+# Monitor:
+#   sky logs meta-2gpu
+#
+# Tear down:
+#   sky down meta-2gpu -y
+
+name: wrinklefree-meta-opt-2gpu
+
+resources:
+  accelerators: L40:2
+  memory: 64+
+  use_spot: false
+  cloud: runpod
+  disk_size: 100
+
+# Sync from InfluenceClean worktree
+workdir: /home/lev/code/WrinkleFreeDevWrapper/InfluenceClean
+
+# Upload credentials
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  MAX_STEPS: 50
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: meta-opt-2gpu-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Sync all packages
+  uv sync --all-packages
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Load credentials
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "=========================================================="
+  echo "WrinkleFree Meta-Optimization Smoke Test (2x L40 with FSDP)"
+  echo "=========================================================="
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS"
+  echo ""
+  echo "Test Configuration:"
+  echo "  - 50 training steps with meta-optimization"
+  echo "  - Meta-updates every 10 steps (after 5 step warmup)"
+  echo "  - Dataset + objective weight optimization"
+  echo "  - Pareto MGDA solver for multi-objective balancing"
+  echo "  - FSDP data parallelism across 2x L40"
+  echo ""
+  echo "Features:"
+  echo "  - Combined STE + DLM (multi-task learning)"
+  echo "  - Meta-optimization outer loop (LibMOON-style)"
+  echo "  - Influence-based gradient estimation (DataInf)"
+  echo "  - FSDP sharding with callback state sync"
+  echo "  - GCS checkpoint upload"
+  echo "  - WandB logging with hyperparameters/* metrics"
+  echo "=========================================================="
+
+  echo ""
+  echo "[Training] Running unified training with meta-optimization (2x L40)..."
+  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=unified \
+    data.config_name=mixed_pretrain \
+    distributed=fsdp_multi \
+    training.max_steps=${MAX_STEPS} \
+    training.auto_batch_size=true \
+    training.meta_optimization.enabled=true \
+    training.meta_optimization.update_interval=10 \
+    training.meta_optimization.warmup_steps=5 \
+    training.meta_optimization.parameters.dataset_weights=true \
+    training.meta_optimization.parameters.objective_weights=true \
+    training.meta_optimization.pareto.method=mgda \
+    training.meta_optimization.log_interval=5 \
+    training.meta_optimization.meta_lr=0.1 \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=meta_opt_smoke_2gpu \
+    training.checkpoint.save_interval=20 \
+    training.logging.log_interval=1 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET}
+
+  echo ""
+  echo "=========================================================="
+  echo "Meta-Optimization Smoke Test (2x L40) Complete!"
+  echo "=========================================================="
+
+  # Verify meta-optimization metrics were logged
+  echo ""
+  echo "Expected WandB metrics:"
+  echo "  - hyperparameters/data_mix/* (dataset mixture weights)"
+  echo "  - hyperparameters/task_weight/* (objective weights)"
+  echo "  - hyperparameters/lr/* (learning rates)"
+  echo "  - meta/dataset_weight_* (should update after step 15)"
+  echo "  - meta/objective_weight_* (should update after step 15)"
+  echo "  - train/loss (should decrease)"
+  echo ""
+  echo "WandB run: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
+
+  # Verify FSDP worked
+  echo ""
+  echo "FSDP verification:"
+  echo "  - Both ranks should show identical meta-parameter updates"
+  echo "  - No hangs at checkpointing (collective save)"
+  echo "  - Model sharded correctly across 2 GPUs"
+
+  # List checkpoints
+  echo ""
+  echo "Checkpoints saved:"
+  find $CHECKPOINT_DIR -type f -name "*.ckpt" 2>/dev/null | head -20 || echo "No checkpoints found"
+
+  # Verify GCS upload
+  echo ""
+  echo "GCS checkpoints:"
+  gcloud storage ls "gs://${GCS_BUCKET}/checkpoints/" 2>/dev/null | head -10 || echo "GCS listing failed"

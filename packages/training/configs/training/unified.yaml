@@ -190,3 +190,69 @@ influence:
     lambda_val: 0.1
     gamma_val: 0.1
     temperature: 1.0
+
+# === META-OPTIMIZATION (Bi-Level Outer Loop) ===
+# Generalizes influence-based data selection to optimize:
+# - Dataset mixture weights (via influence functions)
+# - Objective weights (CE, DLM, distillation, etc.)
+# - Learning rate scales (per parameter group)
+# Using multi-objective Pareto optimization for validation signals.
+#
+# References:
+# - LibMOON (NeurIPS 2024): https://arxiv.org/abs/2409.02969
+# - ScaleBiO (2024): https://arxiv.org/abs/2406.19976
+# - DataInf (ICLR 2024): Tractable influence without Hessian
+meta_optimization:
+  enabled: false  # Enable for full meta-optimization (replaces influence when true)
+
+  # Which meta-parameters to optimize (all configurable)
+  parameters:
+    dataset_weights: true   # Optimize dataset mixture (like influence)
+    objective_weights: true # Optimize objective weighting (CE, DLM, etc.)
+    learning_rates: false   # Experimental: optimize LR scales per param group
+
+  # Update schedule
+  update_interval: 1000    # Steps between meta-updates
+  warmup_steps: 500        # Skip early training
+
+  # Gradient estimation method
+  gradient:
+    method: datainf        # "datainf" or "finite_difference"
+    lambda_reg: 1e-4       # Regularization for DataInf
+    samples_per_source: 256  # Samples per dataset for influence
+
+  # Pareto multi-objective optimization
+  # Balances multiple validation objectives (e.g., C4 perplexity + code + math)
+  pareto:
+    method: mgda           # "mgda" (min-norm), "epo" (preference), or "linear"
+    max_iter: 10           # Solver iterations
+    normalize_gradients: true
+    preferences: null      # For EPO: [0.5, 0.3, 0.2] for 3 objectives
+
+  # Validation objectives for multi-objective Pareto optimization
+  # Each gets a probe dataloader from data_handler
+  validation_objectives:
+    - name: c4_perplexity
+      loader: c4_validation
+      weight: 1.0
+    # Uncomment to enable multi-objective:
+    # - name: code_perplexity
+    #   loader: code_probe
+    #   weight: 0.5
+    # - name: math_accuracy
+    #   loader: math_probe
+    #   weight: 0.3
+
+  # Meta-learning hyperparameters
+  meta_lr: 0.1
+  meta_momentum: 0.9
+
+  # Constraints on meta-parameters
+  constraints:
+    dataset_weight_range: [0.05, 0.60]    # No domain dominates
+    objective_weight_range: [0.01, 2.0]   # Keep objectives active
+    lr_scale_range: [0.5, 2.0]            # Don't change LR too drastically
+
+  # Logging
+  log_interval: 100
+  log_pareto_front: true

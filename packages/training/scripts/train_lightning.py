@@ -56,6 +56,7 @@ from wrinklefree.lightning import (
     WrinkleFreeLightningModule,
     ZClipCallback,
 )
+from wrinklefree.meta import MetaOptimizerCallback, MetaOptimizationConfig
 from wrinklefree.objectives import create_objective_manager
 from wrinklefree.teachers import HiddenStateTeacher
 
@@ -356,14 +357,48 @@ def create_callbacks(cfg: DictConfig) -> list:
             )
         )
 
-    # Influence-based data remixing
-    influence_cfg = cfg.training.get("influence", {})
-    if influence_cfg.get("enabled", False):
-        callbacks.append(InfluenceTrackerCallback(config=cfg))
-        logger.info(
-            f"Influence tracking enabled: update_interval={influence_cfg.get('update_interval', 1000)}, "
-            f"warmup={influence_cfg.get('warmup_steps', 500)}"
+    # Meta-optimization outer loop (supersedes influence when enabled)
+    meta_opt_cfg = cfg.training.get("meta_optimization", {})
+    if meta_opt_cfg.get("enabled", False):
+        # Build MetaOptimizationConfig from Hydra config
+        meta_config = MetaOptimizationConfig(
+            enabled=True,
+            optimize_dataset_weights=meta_opt_cfg.get("parameters", {}).get("dataset_weights", True),
+            optimize_objective_weights=meta_opt_cfg.get("parameters", {}).get("objective_weights", True),
+            optimize_learning_rates=meta_opt_cfg.get("parameters", {}).get("learning_rates", False),
+            update_interval=meta_opt_cfg.get("update_interval", 1000),
+            warmup_steps=meta_opt_cfg.get("warmup_steps", 500),
+            meta_lr=meta_opt_cfg.get("meta_lr", 0.1),
+            meta_momentum=meta_opt_cfg.get("meta_momentum", 0.9),
         )
+        # Configure Pareto solver
+        pareto_cfg = meta_opt_cfg.get("pareto", {})
+        meta_config.pareto.method = pareto_cfg.get("method", "mgda")
+        meta_config.pareto.max_iter = pareto_cfg.get("max_iter", 10)
+        meta_config.pareto.normalize_gradients = pareto_cfg.get("normalize_gradients", True)
+
+        # Configure gradient estimation
+        grad_cfg = meta_opt_cfg.get("gradient", {})
+        meta_config.gradient.method = grad_cfg.get("method", "datainf")
+        meta_config.gradient.lambda_reg = grad_cfg.get("lambda_reg", 1e-4)
+        meta_config.gradient.samples_per_source = grad_cfg.get("samples_per_source", 256)
+
+        callbacks.append(MetaOptimizerCallback(config=meta_config))
+        logger.info(
+            f"Meta-optimization enabled: "
+            f"dataset_weights={meta_config.optimize_dataset_weights}, "
+            f"objective_weights={meta_config.optimize_objective_weights}, "
+            f"pareto={meta_config.pareto.method}"
+        )
+    else:
+        # Fallback to influence-based data remixing only
+        influence_cfg = cfg.training.get("influence", {})
+        if influence_cfg.get("enabled", False):
+            callbacks.append(InfluenceTrackerCallback(config=cfg))
+            logger.info(
+                f"Influence tracking enabled: update_interval={influence_cfg.get('update_interval', 1000)}, "
+                f"warmup={influence_cfg.get('warmup_steps', 500)}"
+            )
 
     # LR monitor
     callbacks.append(LearningRateMonitor(logging_interval="step"))

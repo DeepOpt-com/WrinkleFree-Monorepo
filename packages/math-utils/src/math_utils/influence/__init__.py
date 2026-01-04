@@ -38,6 +38,9 @@ from math_utils.influence.distillation import (
     InfluenceDistillation as InfluenceDistillation,
     create_influence_distillation as create_influence_distillation,
 )
+from math_utils.influence.meta_gradient import (
+    MetaGradientCalculator as MetaGradientCalculator,
+)
 
 __all__ = [
     # Base
@@ -65,4 +68,6 @@ __all__ = [
     "select_landmarks",
     "InfluenceDistillation",
     "create_influence_distillation",
+    # Meta-gradient
+    "MetaGradientCalculator",
 ]

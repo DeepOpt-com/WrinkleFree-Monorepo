@@ -97,6 +97,8 @@ uv run --package wrinklefree-deployer sky jobs queue
 | `skypilot/service.yaml` | SkyServe inference template |
 | `skypilot/smoke_test_lightning.yaml` | **Smoke test: Lightning + auto batch (RECOMMENDED)** |
 | `skypilot/smoke_test_influence.yaml` | Smoke test: Influence-based data remixing |
+| `skypilot/smoke_test_meta_opt_1gpu.yaml` | Smoke test: Meta-optimization (1x L40) |
+| `skypilot/smoke_test_meta_opt_2gpu.yaml` | Smoke test: Meta-optimization (2x L40 FSDP) |
 | `skypilot/smoke_test_unified_1gpu.yaml` | Smoke test: 1x L40 unified training (legacy) |
 | `skypilot/smoke_test_unified_2gpu.yaml` | Smoke test: 2x L40 with FSDP |
 | `skypilot/smoke_test_bitdistill.yaml` | Smoke test: BitDistill distillation |
@@ -119,6 +121,10 @@ sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
 # Influence-based data remixing (tests InfluenceTrackerCallback)
 sky launch skypilot/smoke_test_influence.yaml -y --cluster influence-smoke
 
+# Meta-optimization (LibMOON-style Pareto + DataInf influence)
+sky launch skypilot/smoke_test_meta_opt_1gpu.yaml -y --cluster meta-1gpu  # 1x L40
+sky launch skypilot/smoke_test_meta_opt_2gpu.yaml -y --cluster meta-2gpu  # 2x L40 FSDP
+
 # 1x L40 unified training (legacy)
 sky launch skypilot/smoke_test_unified_1gpu.yaml -y --cluster unified-1gpu
 
@@ -135,7 +141,7 @@ sky logs influence-smoke
 sky logs unified-1gpu
 
 # Teardown
-sky down lightning-smoke influence-smoke unified-1gpu unified-2gpu wf-smoke-lrc -y
+sky down lightning-smoke influence-smoke meta-1gpu meta-2gpu unified-1gpu unified-2gpu wf-smoke-lrc -y
 ```
 
 **Test Configuration**:
