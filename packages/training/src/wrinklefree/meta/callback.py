@@ -131,7 +131,7 @@ class MetaOptimizerCallback(Callback):
 
             self.meta_gradient_calc = MetaGradientCalculator(
                 model=pl_module.model,
-                config=InfluenceConfig(lambda_val=self.config.gradient.lambda_reg),
+                config=InfluenceConfig(lambda_reg=self.config.gradient.lambda_reg),
             )
         except ImportError:
             logger.error("MetaOptimizerCallback: math_utils not available, disabling")
