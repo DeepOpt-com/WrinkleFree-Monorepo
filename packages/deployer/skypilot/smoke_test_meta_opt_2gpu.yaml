@@ -109,6 +109,7 @@ run: |
     training.batch_size=4 \
     training.gradient_accumulation_steps=8 \
     training.optimizer.type=adamw \
+    +training.optimizer.use_8bit=false \
     training.influence.enabled=false \
     training.meta_optimization.enabled=true \
     training.meta_optimization.ldc_mtl.enabled=true \
