@@ -559,14 +559,17 @@ class InfluenceTrackerCallback(Callback):
             tracker_config = self.config
 
         # Create the tracker (it will self-disable if not configured)
+        logger.info("InfluenceTrackerCallback: creating tracker...")
         self._tracker = InfluenceTracker(
             config=tracker_config,
             model=pl_module.model,
             mixed_dataset=mixed_dataset,
             probe_dataloaders=probe_dataloaders,
         )
+        logger.info("InfluenceTrackerCallback: tracker created, checking is_enabled...")
 
         self._enabled = self._tracker.is_enabled
+        logger.info(f"InfluenceTrackerCallback: is_enabled={self._enabled}")
         if self._enabled:
             logger.info("InfluenceTrackerCallback: initialized and enabled")
         else:
