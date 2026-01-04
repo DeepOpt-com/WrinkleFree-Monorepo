@@ -150,18 +150,29 @@ run: |
   export DATA_NUM_WORKERS=0
 
   echo "[Training] Starting Lightning training..."
+  # Using unified config which worked in smoke test (simpler than lrc_dlm_influence)
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=${TRAINING_CONFIG} \
-    training.total_tokens=${TOTAL_TOKENS} \
-    training.auto_batch_size=false \
+    training=unified \
+    data.config_name=mixed_pretrain \
+    training.max_steps=7630 \
     training.batch_size=8 \
-    training.gradient_accumulation_steps=8 \
+    training.gradient_accumulation_steps=4 \
+    training.optimizer.type=muon \
+    training.influence.enabled=true \
+    training.influence.method=distillation \
+    training.influence.update_interval=500 \
+    training.influence.warmup_steps=200 \
+    training.influence.learning_rate=0.1 \
+    training.influence.samples_per_dataset=32 \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
+    training.checkpoint.save_interval=500 \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
     training.logging.log_interval=10 \
+    training.validation.enabled=false \
+    resume.skip_completed=false \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET} \
     2>&1 | tee training.log
