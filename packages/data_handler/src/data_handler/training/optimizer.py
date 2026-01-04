@@ -32,8 +32,7 @@ except ImportError:
     MuonClip = None
     MuonConfig = None
 
-from data_handler.influence.datainf import DataInfCalculator
-from data_handler.influence.mixture_calculator import MixtureWeightCalculator
+from data_handler.influence import DataInfCalculator, MixtureWeightCalculator
 from data_handler.data.mixing import MixedDataset
 
 

@@ -19,11 +19,11 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from data_handler.influence.base import DataSelector, InfluenceCalculator
-from data_handler.influence.config import InfluenceDistillationConfig
-from data_handler.influence.gradient import DiscriminativeGradientExtractor
-from data_handler.influence.jvp_embedding import JVPEmbeddingExtractor
-from data_handler.influence.landmark import LandmarkSelector
+from math_utils.influence.base import DataSelector, InfluenceCalculator
+from math_utils.influence.config import InfluenceDistillationConfig
+from math_utils.influence.gradient import DiscriminativeGradientExtractor
+from math_utils.influence.jvp_embedding import JVPEmbeddingExtractor
+from math_utils.influence.landmark import LandmarkSelector
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +48,13 @@ def _warn_if_synthetic_data(dataloader: DataLoader, context: str) -> None:
         # Random data has ~95%+ unique tokens
         if unique_ratio > 0.85:
             print("\n" + "=" * 80)
-            print("⚠️  WARNING: DATA APPEARS TO BE SYNTHETIC/RANDOM! ⚠️")
+            print("WARNING: DATA APPEARS TO BE SYNTHETIC/RANDOM!")
             print("=" * 80)
             print(f"Context: {context}")
             print(f"Unique token ratio: {unique_ratio:.1%} (real text is typically <50%)")
             print()
             print("Influence-based rebalancing WILL NOT WORK with random data!")
-            print("All datasets look identical → influence scores are noise.")
+            print("All datasets look identical -> influence scores are noise.")
             print()
             print("Use REAL data from configs/data/mixed_pretrain.yaml")
             print("=" * 80 + "\n")

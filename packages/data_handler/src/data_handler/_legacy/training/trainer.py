@@ -254,7 +254,7 @@ class Trainer:
         if self.tokenizer is None:
             return None
 
-        from data_handler.influence.config import ProbeSetConfig
+        from math_utils.influence.config import ProbeSetConfig
         from data_handler._legacy.influence.probe_set import ProbeDataset
 
         # Create a simple probe set with synthetic quality scores

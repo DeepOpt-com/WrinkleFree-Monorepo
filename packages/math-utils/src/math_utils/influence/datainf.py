@@ -14,8 +14,8 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from data_handler.influence.config import InfluenceConfig
-from data_handler.influence.gradient import DiscriminativeGradientExtractor
+from math_utils.influence.config import InfluenceConfig
+from math_utils.influence.gradient import DiscriminativeGradientExtractor
 
 
 class DataInfCalculator:

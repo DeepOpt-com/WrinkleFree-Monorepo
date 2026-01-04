@@ -22,7 +22,11 @@ dependencies = [
     "sentencepiece>=0.2.0",
     "tiktoken>=0.7.0",
     "datasketch>=1.6.0",  # For MinHash deduplication in influence functions
+    "math-utils",  # Pure math utilities for influence functions
 ]
+
+[tool.uv.sources]
+math-utils = { workspace = true }
 
 [project.optional-dependencies]
 dev = [

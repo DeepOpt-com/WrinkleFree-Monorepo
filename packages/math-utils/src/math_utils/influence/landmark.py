@@ -13,7 +13,7 @@ import torch
 from torch import Tensor
 from tqdm import tqdm
 
-from data_handler.influence.config import LandmarkConfig
+from math_utils.influence.config import LandmarkConfig
 
 logger = logging.getLogger(__name__)
 

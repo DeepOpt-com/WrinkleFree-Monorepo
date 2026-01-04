@@ -13,70 +13,49 @@ Key components:
 - DiscriminativeGradientExtractor: Extract gradients from discriminative layers
 - JVPEmbeddingExtractor: Extract JVP embeddings from transformer layers
 
-Legacy components (moved to cheapertraining._legacy.influence):
-- ProbeSetCreator, ProbeDataset
-- SelfBoostingFilter, SelfBoostingDataset
+Note: Pure math components are now in math_utils package.
+This module re-exports them for backward compatibility.
 """
 
-# Base interfaces
-from data_handler.influence.base import (
-    EmbeddingExtractor,
-    InfluenceCalculator,
-    DataSelector,
+# Re-export from math_utils for backward compatibility (using explicit 'as X' for type checkers)
+from math_utils.influence import (
+    # Base interfaces
+    EmbeddingExtractor as EmbeddingExtractor,
+    InfluenceCalculator as InfluenceCalculator,
+    DataSelector as DataSelector,
+    # Configs
+    InfluenceConfig as InfluenceConfig,
+    InfluenceTarget as InfluenceTarget,
+    MixtureOptimizationConfig as MixtureOptimizationConfig,
+    ProbeSetConfig as ProbeSetConfig,
+    SelfBoostingConfig as SelfBoostingConfig,
+    JVPEmbeddingConfig as JVPEmbeddingConfig,
+    LandmarkConfig as LandmarkConfig,
+    KRRConfig as KRRConfig,
+    InfluenceDistillationConfig as InfluenceDistillationConfig,
+    # Gradient extraction
+    DiscriminativeGradientExtractor as DiscriminativeGradientExtractor,
+    # DataInf
+    DataInfCalculator as DataInfCalculator,
+    create_influence_calculator as create_influence_calculator,
+    # Influence Distillation
+    JVPEmbeddingExtractor as JVPEmbeddingExtractor,
+    RandomizedHadamardTransform as RandomizedHadamardTransform,
+    create_projection as create_projection,
+    LandmarkSelector as LandmarkSelector,
+    select_landmarks as select_landmarks,
+    InfluenceDistillation as InfluenceDistillation,
+    create_influence_distillation as create_influence_distillation,
 )
 
-# Config
-from data_handler.influence.config import (
-    InfluenceConfig,
-    InfluenceTarget,
-    MixtureOptimizationConfig,
-    ProbeSetConfig,
-    SelfBoostingConfig,
-    # New configs for InfluenceDistillation
-    JVPEmbeddingConfig,
-    LandmarkConfig,
-    KRRConfig,
-    InfluenceDistillationConfig,
-)
-
-# Gradient extraction
-from data_handler.influence.gradient import (
-    DiscriminativeGradientExtractor,
-)
-
-# DataInf
-from data_handler.influence.datainf import (
-    DataInfCalculator,
-    create_influence_calculator,
-)
-
-# Influence Distillation (new)
-from data_handler.influence.jvp_embedding import (
-    JVPEmbeddingExtractor,
-)
-from data_handler.influence.hadamard import (
-    RandomizedHadamardTransform,
-    create_projection,
-)
-from data_handler.influence.landmark import (
-    LandmarkSelector,
-    select_landmarks,
-)
-from data_handler.influence.distillation import (
-    InfluenceDistillation,
-    create_influence_distillation,
-)
-
-# Mixture calculation
+# Integration components (stay in data_handler)
 from data_handler.influence.mixture_calculator import (
-    MixtureWeightCalculator,
-    create_mixture_calculator,
+    MixtureWeightCalculator as MixtureWeightCalculator,
+    create_mixture_calculator as create_mixture_calculator,
 )
-
-# Training integration
 from data_handler.influence.tracker import (
-    InfluenceTracker,
-    create_influence_tracker,
+    InfluenceTracker as InfluenceTracker,
+    create_influence_tracker as create_influence_tracker,
 )
 
 __all__ = [
