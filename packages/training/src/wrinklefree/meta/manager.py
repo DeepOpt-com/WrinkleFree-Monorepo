@@ -259,6 +259,9 @@ class MetaParameterManager:
                         objective_manager.weights[name] = weight
 
         # Apply LR scales
+        # NOTE: LR scaling works WITH schedulers by tracking the meta_lr_scale separately.
+        # The scheduler updates pg["lr"], we then multiply by our scale.
+        # We track the previous scale to avoid cumulative scaling issues.
         if optimizer is not None and self._lr_scales is not None:
             scales = self.get_lr_scales()
 
@@ -271,11 +274,24 @@ class MetaParameterManager:
             for i, (name, scale) in enumerate(scales.items()):
                 if i < len(actual_optimizer.param_groups):
                     pg = actual_optimizer.param_groups[i]
-                    # Store original LR on first application
-                    if "_original_lr" not in pg:
-                        pg["_original_lr"] = pg["lr"]
-                    pg["lr"] = pg["_original_lr"] * scale
-                    logger.debug(f"Applied LR scale to group {i} ({name}): {scale}")
+
+                    # Track the previous scale we applied
+                    prev_scale = pg.get("_meta_lr_scale", 1.0)
+
+                    # Get the current LR (which may have been set by scheduler)
+                    current_lr = pg["lr"]
+
+                    # Undo previous meta-scale to get base scheduler LR
+                    if prev_scale != 0:
+                        base_lr = current_lr / prev_scale
+                    else:
+                        base_lr = current_lr
+
+                    # Apply new scale
+                    pg["lr"] = base_lr * scale
+                    pg["_meta_lr_scale"] = scale
+
+                    logger.debug(f"Applied LR scale to group {i} ({name}): {prev_scale} -> {scale}")
 
     def get_update_history(self) -> list[dict]:
         """Get history of meta-parameter updates."""

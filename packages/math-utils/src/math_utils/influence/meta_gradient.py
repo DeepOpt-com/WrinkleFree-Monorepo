@@ -69,6 +69,9 @@ class MetaGradientCalculator:
     ) -> Tensor:
         """Compute aggregated gradient from validation data.
 
+        Uses Welford's online algorithm for running mean to avoid OOM when
+        accumulating many validation batches.
+
         Args:
             dataloader: Validation dataloader
             max_samples: Maximum samples to use (None = all)
@@ -78,7 +81,10 @@ class MetaGradientCalculator:
             Aggregated gradient tensor [D]
         """
         device = next(self.model.parameters()).device
-        all_grads = []
+
+        # Use running mean (Welford's algorithm) to avoid OOM
+        running_mean: Optional[Tensor] = None
+        n_batches = 0
         n_samples = 0
 
         iterator = dataloader
@@ -94,17 +100,36 @@ class MetaGradientCalculator:
 
             # Compute gradient for batch (aggregated)
             grad = self.gradient_extractor.compute_aggregated_gradient(batch)
-            all_grads.append(grad.cpu())
+            grad_cpu = grad.cpu()
+
+            # Welford's online mean update
+            n_batches += 1
+            if running_mean is None:
+                running_mean = grad_cpu.clone()
+            else:
+                # mean_{n} = mean_{n-1} + (x_n - mean_{n-1}) / n
+                delta = grad_cpu - running_mean
+                running_mean = running_mean + delta / n_batches
 
             n_samples += batch["input_ids"].shape[0]
             if max_samples is not None and n_samples >= max_samples:
                 break
 
-        # Average across batches
-        if not all_grads:
-            raise ValueError("Empty dataloader")
+        if running_mean is None:
+            logger.warning("Empty dataloader, returning zero gradient")
+            # Return zero gradient of expected size
+            # This is better than crashing training
+            sample_batch = next(iter(dataloader), None)
+            if sample_batch is not None:
+                sample_batch = {
+                    k: v.to(device) if isinstance(v, Tensor) else v
+                    for k, v in sample_batch.items()
+                }
+                grad = self.gradient_extractor.compute_aggregated_gradient(sample_batch)
+                return torch.zeros_like(grad.cpu())
+            raise ValueError("Empty dataloader and cannot determine gradient shape")
 
-        return torch.stack(all_grads).mean(dim=0)
+        return running_mean
 
     def cache_validation_gradients(
         self,

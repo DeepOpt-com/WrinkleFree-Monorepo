@@ -258,6 +258,10 @@ class MetaOptimizerCallback(Callback):
         """Perform one meta-optimization step."""
         logger.info(f"Meta-optimization update at step {trainer.global_step}")
 
+        # CRITICAL: Recompute validation gradients with current model state
+        # Using stale gradients from step 0 would give incorrect meta-gradients
+        self._cache_validation_gradients(pl_module)
+
         # Get current components
         datamodule = trainer.datamodule
         objective_manager = getattr(pl_module, "objective_manager", None)
