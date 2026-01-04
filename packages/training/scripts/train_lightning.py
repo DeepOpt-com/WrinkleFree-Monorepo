@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from bitnet_arch.conversion import auto_convert_if_needed
 from wrinklefree.lightning import (
     GCSCheckpointCallback,
+    InfluenceAwareBatchSizeFinder,
     InfluenceTrackerCallback,
     LambdaWarmupCallback,
     MuonClipInitCallback,
@@ -257,16 +258,43 @@ def create_callbacks(cfg: DictConfig) -> list:
     )
     callbacks.append(run_manager_cb)
 
+    # Influence tracking callback - created early so InfluenceAwareBatchSizeFinder can reference it
+    influence_cfg = cfg.training.get("influence", {})
+    influence_callback = None
+    if influence_cfg.get("enabled", False):
+        influence_callback = InfluenceTrackerCallback(config=cfg)
+        callbacks.append(influence_callback)
+        logger.info(
+            f"Influence tracking enabled: update_interval={influence_cfg.get('update_interval', 1000)}, "
+            f"warmup={influence_cfg.get('warmup_steps', 500)}"
+        )
+
     # Auto batch size finder
     if cfg.training.get("auto_batch_size", False):
-        callbacks.append(
-            BatchSizeFinder(
-                mode="binsearch",
-                steps_per_trial=3,
-                init_val=cfg.training.get("batch_size", 32),
+        # Use InfluenceAwareBatchSizeFinder when influence is enabled
+        # This initializes influence cache BEFORE batch size search to account for memory
+        if influence_callback is not None:
+            callbacks.append(
+                InfluenceAwareBatchSizeFinder(
+                    influence_callback=influence_callback,
+                    mode="binsearch",
+                    steps_per_trial=3,
+                    init_val=cfg.training.get("batch_size", 32),
+                )
             )
-        )
-        logger.info("Auto batch size scaling enabled (BatchSizeFinder)")
+            logger.info(
+                "InfluenceAwareBatchSizeFinder enabled "
+                "(initializes influence cache before batch size search)"
+            )
+        else:
+            callbacks.append(
+                BatchSizeFinder(
+                    mode="binsearch",
+                    steps_per_trial=3,
+                    init_val=cfg.training.get("batch_size", 32),
+                )
+            )
+            logger.info("Auto batch size scaling enabled (BatchSizeFinder)")
 
         # MuonClipInitCallback: Required when using MuonClip with BatchSizeFinder
         # BatchSizeFinder cycles model.eval()/train() which breaks MuonClip's hooks
@@ -399,7 +427,6 @@ def create_callbacks(cfg: DictConfig) -> list:
                 f"Influence tracking enabled: update_interval={influence_cfg.get('update_interval', 1000)}, "
                 f"warmup={influence_cfg.get('warmup_steps', 500)}"
             )
-
     # LR monitor
     callbacks.append(LearningRateMonitor(logging_interval="step"))
 
@@ -471,6 +498,15 @@ def main(cfg: DictConfig) -> None:
     # Get rank for distributed
     rank = int(os.environ.get("RANK", 0))
     setup_logging(rank)
+
+    # Enable TF32 for Ampere+ GPUs (A100, H100, RTX 30xx/40xx)
+    # TF32 accelerates bf16 matmul by using reduced-precision accumulation internally.
+    # This gives 10-20% speedup with negligible accuracy impact for LLM training.
+    # See: https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    if rank == 0:
+        logger.info("TF32 enabled for CUDA matmul and cuDNN")
 
     # Log config
     if rank == 0:

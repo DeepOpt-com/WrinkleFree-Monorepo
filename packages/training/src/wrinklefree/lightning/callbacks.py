@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import Callback
+from pytorch_lightning.callbacks import BatchSizeFinder, Callback
 
 logger = logging.getLogger(__name__)
 
@@ -584,8 +584,18 @@ class InfluenceTrackerCallback(Callback):
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
     ) -> None:
-        """Cache probe gradients at training start."""
+        """Cache probe gradients at training start.
+
+        Skips initialization if already done (e.g., by InfluenceAwareBatchSizeFinder).
+        """
         if self._tracker and self._enabled:
+            # Skip if already initialized (by InfluenceAwareBatchSizeFinder)
+            if self._tracker.is_initialized:
+                logger.info(
+                    "InfluenceTrackerCallback: skipping on_train_begin "
+                    "(already initialized by InfluenceAwareBatchSizeFinder)"
+                )
+                return
             self._tracker.on_train_begin()
 
     def on_train_batch_end(
@@ -852,3 +862,59 @@ class RunManagerCallback(Callback):
     def should_skip(self) -> bool:
         """Check if training should be skipped (already completed)."""
         return self._should_skip
+
+
+class InfluenceAwareBatchSizeFinder(BatchSizeFinder):
+    """BatchSizeFinder that accounts for influence cache memory.
+
+    Standard BatchSizeFinder finds the max batch size that fits GPU memory,
+    but it runs BEFORE InfluenceTracker allocates its gradient cache. This
+    causes OOM when influence tracking starts.
+
+    This callback initializes the influence cache FIRST (in on_fit_start),
+    so BatchSizeFinder sees the actual remaining memory and finds a batch
+    size that leaves room for influence tracking.
+
+    Args:
+        influence_callback: The InfluenceTrackerCallback whose cache should
+            be initialized before batch size search.
+        **kwargs: Passed to BatchSizeFinder (mode, steps_per_trial, init_val, etc.)
+
+    Example:
+        influence_cb = InfluenceTrackerCallback(config=cfg)
+        bs_finder = InfluenceAwareBatchSizeFinder(
+            influence_callback=influence_cb,
+            mode="binsearch",
+            steps_per_trial=3,
+            init_val=32,
+        )
+        trainer = Trainer(callbacks=[influence_cb, bs_finder, ...])
+    """
+
+    def __init__(self, influence_callback: "InfluenceTrackerCallback", **kwargs):
+        super().__init__(**kwargs)
+        self.influence_callback = influence_callback
+
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """Initialize influence cache, then run batch size search.
+
+        Order matters:
+        1. Initialize influence cache (allocates GPU memory for gradients)
+        2. Run BatchSizeFinder (probes remaining memory for max batch size)
+
+        This ensures the found batch size accounts for influence memory.
+        """
+        # Initialize influence cache FIRST to reserve memory
+        if (
+            self.influence_callback._tracker is not None
+            and self.influence_callback._enabled
+        ):
+            if not self.influence_callback._tracker.is_initialized:
+                logger.info(
+                    "InfluenceAwareBatchSizeFinder: initializing influence cache "
+                    "to reserve memory before batch size search"
+                )
+                self.influence_callback._tracker.on_train_begin()
+
+        # Now run standard batch size search with remaining memory
+        super().on_fit_start(trainer, pl_module)

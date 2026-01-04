@@ -55,15 +55,16 @@ scheduler:
 # Training parameters
 total_tokens: 10_000_000_000  # 10B tokens
 max_steps: null
-max_seq_length: 512
+max_seq_length: 2048
 batch_size: 32
 gradient_accumulation_steps: 16
 gradient_clipping: 1.0
 auto_batch_size: false  # Enable for Lightning BatchSizeFinder
 
-# Lambda warmup for gradual quantization
+# Lambda warmup for gradual quantization (disabled by default)
+# When disabled, model trains with full quantization from step 0
 lambda_warmup:
-  enabled: true
+  enabled: false
   warmup_steps: 500
   schedule: linear
 

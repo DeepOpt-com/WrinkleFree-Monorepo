@@ -107,17 +107,18 @@ run: |
   echo "================================================"
   echo ""
   echo "Expected behavior:"
-  echo "1. InfluenceTrackerCallback initializes"
-  echo "2. Probe gradients cached at train start"
-  echo "3. Weight updates triggered every 20 steps"
-  echo "4. Weights logged to WandB (influence/weight_*)"
+  echo "1. InfluenceAwareBatchSizeFinder initializes influence cache"
+  echo "2. BatchSizeFinder finds max batch with remaining memory"
+  echo "3. Training starts with auto-discovered batch size"
+  echo "4. Weight updates triggered every 20 steps"
+  echo "5. Weights logged to WandB (influence/weight_*)"
   echo "================================================"
   echo ""
 
   echo "[Training] Running Lightning training with influence..."
-  # Note: Using AdamW instead of MuonClip due to muon_fsdp2 single-GPU bug
   # Using mixed_pretrain data config for multi-source with probes
-  # Disabled auto_batch_size to avoid repeated dataloader iteration (OOM on 64GB)
+  # auto_batch_size=true with influence uses InfluenceAwareBatchSizeFinder
+  # which initializes influence cache BEFORE batch size search
   # IMPORTANT: num_workers=0 is REQUIRED for influence tracking
   # The JVPEmbeddingExtractor's nn.ModuleList references cause deadlock with multiprocessing
   export DATA_NUM_WORKERS=0
@@ -126,6 +127,7 @@ run: |
     training=unified \
     data.config_name=mixed_pretrain \
     training.max_steps=${MAX_STEPS} \
+    training.auto_batch_size=true \
     training.batch_size=8 \
     training.gradient_accumulation_steps=4 \
     training.optimizer.type=muon \
@@ -155,6 +157,12 @@ run: |
   # Verify influence logs appeared
   echo ""
   echo "[Verify] Checking for influence-related log messages:"
+  if grep -q "InfluenceAwareBatchSizeFinder" training.log; then
+    echo "✓ InfluenceAwareBatchSizeFinder found in logs"
+  else
+    echo "✗ WARNING: InfluenceAwareBatchSizeFinder not found in logs"
+  fi
+
   if grep -q "InfluenceTrackerCallback" training.log; then
     echo "✓ InfluenceTrackerCallback found in logs"
   else
