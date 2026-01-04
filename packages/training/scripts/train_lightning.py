@@ -495,13 +495,8 @@ def main(cfg: DictConfig) -> None:
     trainer = create_trainer(cfg, callbacks)
 
     # Train!
-    import sys
-    print("[DEBUG] About to call trainer.fit()...", flush=True)
-    sys.stdout.flush()
     logger.info("Starting training...")
     trainer.fit(module, datamodule)
-    print("[DEBUG] trainer.fit() completed!", flush=True)
-    sys.stdout.flush()
 
     logger.info("Training complete!")
 

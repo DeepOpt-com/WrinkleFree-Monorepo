@@ -213,20 +213,11 @@ class InfluenceTracker:
 
         Caches probe gradients for influence calculation.
         """
-        import sys
-        print(f"[DEBUG] InfluenceTracker.on_train_begin() called, enabled={self.enabled}", flush=True)
-        sys.stdout.flush()
-
         if not self.enabled:
-            print(f"[DEBUG] InfluenceTracker disabled, returning", flush=True)
             return
 
         logger.info("InfluenceTracker: caching probe gradients...")
-        print(f"[DEBUG] Setting model to eval mode...", flush=True)
-        sys.stdout.flush()
         self.model.eval()
-        print(f"[DEBUG] Model set to eval mode", flush=True)
-        sys.stdout.flush()
 
         try:
             if self.method == "distillation":

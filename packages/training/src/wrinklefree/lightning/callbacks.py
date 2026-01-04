@@ -560,24 +560,15 @@ class InfluenceTrackerCallback(Callback):
             # Already a dict or simple config
             tracker_config = self.config
 
-        logger.info(f"InfluenceTrackerCallback: tracker_config influence section={tracker_config.get('influence', {})}")
-
         # Create the tracker (it will self-disable if not configured)
-        import sys
-        print(f"[DEBUG] Creating InfluenceTracker...", flush=True)
-        sys.stdout.flush()
         self._tracker = InfluenceTracker(
             config=tracker_config,
             model=pl_module.model,
             mixed_dataset=mixed_dataset,
             probe_dataloaders=probe_dataloaders,
         )
-        print(f"[DEBUG] InfluenceTracker created, is_enabled={self._tracker.is_enabled}", flush=True)
-        sys.stdout.flush()
 
         self._enabled = self._tracker.is_enabled
-        print(f"[DEBUG] _enabled={self._enabled}", flush=True)
-        sys.stdout.flush()
         if self._enabled:
             logger.info("InfluenceTrackerCallback: initialized and enabled")
 
@@ -592,8 +583,7 @@ class InfluenceTrackerCallback(Callback):
                     "max_length": datamodule.max_length,
                     "samples_per_dataset": samples_per_dataset,
                 }
-                print(f"[DEBUG] Deferred source loader creation to on_train_start", flush=True)
-                sys.stdout.flush()
+                logger.info("InfluenceTrackerCallback: source loader creation deferred to on_train_start")
         else:
             logger.info(
                 f"InfluenceTrackerCallback: disabled "
@@ -601,24 +591,16 @@ class InfluenceTrackerCallback(Callback):
                 f"influence.enabled={tracker_config.get('influence', {}).get('enabled', False)})"
             )
 
-        print(f"[DEBUG] InfluenceTrackerCallback.setup() COMPLETED", flush=True)
-        sys.stdout.flush()
-
     def on_train_start(
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
     ) -> None:
         """Create source loaders and cache probe gradients at training start."""
-        import sys
-        print(f"[DEBUG] InfluenceTrackerCallback.on_train_start called, tracker={self._tracker is not None}, enabled={self._enabled}", flush=True)
-        sys.stdout.flush()
         if self._tracker and self._enabled:
             # Create source loaders now (deferred from setup to avoid Ray deadlock)
             if self._deferred_source_loader_params is not None:
                 params = self._deferred_source_loader_params
-                print(f"[DEBUG] Creating source loaders (deferred from setup)...", flush=True)
-                sys.stdout.flush()
                 try:
                     self._tracker._dataset_loaders = params["mixed_dataset"].get_source_loaders(
                         tokenizer=params["tokenizer"],
@@ -626,22 +608,14 @@ class InfluenceTrackerCallback(Callback):
                         max_length=params["max_length"],
                         samples_per_source=params["samples_per_dataset"],
                     )
-                    print(f"[DEBUG] get_source_loaders returned {len(self._tracker._dataset_loaders)} loaders", flush=True)
-                    sys.stdout.flush()
                     logger.info(
                         f"InfluenceTrackerCallback: created source loaders for {len(self._tracker._dataset_loaders)} datasets"
                     )
                 except Exception as e:
-                    print(f"[DEBUG] get_source_loaders FAILED: {e}", flush=True)
-                    sys.stdout.flush()
                     logger.warning(f"InfluenceTrackerCallback: failed to create source loaders: {e}")
                 self._deferred_source_loader_params = None  # Clear after use
 
-            print(f"[DEBUG] Calling tracker.on_train_begin()...", flush=True)
-            sys.stdout.flush()
             self._tracker.on_train_begin()
-            print(f"[DEBUG] tracker.on_train_begin() completed", flush=True)
-            sys.stdout.flush()
 
     def on_train_batch_end(
         self,
