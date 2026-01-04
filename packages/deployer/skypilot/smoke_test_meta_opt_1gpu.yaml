@@ -99,17 +99,13 @@ run: |
 
   echo ""
   echo "[Training] Running unified training with meta-optimization..."
-  # Disable influence tracker (meta-optimization has its own influence computation)
-  # Reduce workers to avoid OOM from parallel dataset loading
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=unified \
     data.config_name=mixed_pretrain \
-    data.num_workers=0 \
     distributed=single_gpu \
     training.max_steps=${MAX_STEPS} \
     training.auto_batch_size=true \
-    training.influence.enabled=false \
     training.meta_optimization.enabled=true \
     training.meta_optimization.update_interval=10 \
     training.meta_optimization.warmup_steps=5 \
