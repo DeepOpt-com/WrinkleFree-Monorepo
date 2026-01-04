@@ -32,6 +32,7 @@ from pytorch_lightning.callbacks import (
     RichProgressBar,
 )
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies import FSDPStrategy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from omegaconf.base import ContainerMetadata
 from omegaconf._utils import ValueKind
@@ -388,35 +389,40 @@ def create_callbacks(cfg: DictConfig) -> list:
     # Meta-optimization outer loop (supersedes influence when enabled)
     meta_opt_cfg = cfg.training.get("meta_optimization", {})
     if meta_opt_cfg.get("enabled", False):
-        # Build MetaOptimizationConfig from Hydra config
+        # Build nested configs for LDC-MTL and ODM
+        ldc_mtl_cfg = meta_opt_cfg.get("ldc_mtl", {})
+        odm_cfg = meta_opt_cfg.get("odm", {})
+
+        from wrinklefree.meta.config import LDCMTLConfig, ODMConfig
+
+        ldc_mtl_config = LDCMTLConfig(
+            enabled=ldc_mtl_cfg.get("enabled", True),
+            lambda_penalty=ldc_mtl_cfg.get("lambda_penalty", 0.1),
+            hidden_dim=ldc_mtl_cfg.get("hidden_dim", 32),
+            router_lr=ldc_mtl_cfg.get("router_lr", 1e-3),
+        )
+
+        odm_config = ODMConfig(
+            enabled=odm_cfg.get("enabled", True),
+            reward_smoothing=odm_cfg.get("reward_smoothing", 0.9),
+            warmup_ratio=odm_cfg.get("warmup_ratio", 0.01),
+            min_weight=odm_cfg.get("min_weight", 0.05),
+            max_weight=odm_cfg.get("max_weight", 0.60),
+        )
+
         meta_config = MetaOptimizationConfig(
             enabled=True,
-            optimize_dataset_weights=meta_opt_cfg.get("parameters", {}).get("dataset_weights", True),
-            optimize_objective_weights=meta_opt_cfg.get("parameters", {}).get("objective_weights", True),
-            optimize_learning_rates=meta_opt_cfg.get("parameters", {}).get("learning_rates", False),
-            update_interval=meta_opt_cfg.get("update_interval", 1000),
-            warmup_steps=meta_opt_cfg.get("warmup_steps", 500),
-            meta_lr=meta_opt_cfg.get("meta_lr", 0.1),
-            meta_momentum=meta_opt_cfg.get("meta_momentum", 0.9),
+            ldc_mtl=ldc_mtl_config,
+            odm=odm_config,
+            log_interval=meta_opt_cfg.get("log_interval", 100),
         )
-        # Configure Pareto solver
-        pareto_cfg = meta_opt_cfg.get("pareto", {})
-        meta_config.pareto.method = pareto_cfg.get("method", "mgda")
-        meta_config.pareto.max_iter = pareto_cfg.get("max_iter", 10)
-        meta_config.pareto.normalize_gradients = pareto_cfg.get("normalize_gradients", True)
-
-        # Configure gradient estimation
-        grad_cfg = meta_opt_cfg.get("gradient", {})
-        meta_config.gradient.method = grad_cfg.get("method", "datainf")
-        meta_config.gradient.lambda_reg = grad_cfg.get("lambda_reg", 1e-4)
-        meta_config.gradient.samples_per_source = grad_cfg.get("samples_per_source", 256)
 
         callbacks.append(MetaOptimizerCallback(config=meta_config))
         logger.info(
             f"Meta-optimization enabled: "
-            f"dataset_weights={meta_config.optimize_dataset_weights}, "
-            f"objective_weights={meta_config.optimize_objective_weights}, "
-            f"pareto={meta_config.pareto.method}"
+            f"ldc_mtl={meta_config.ldc_mtl.enabled}, "
+            f"odm={meta_config.odm.enabled}, "
+            f"log_interval={meta_config.log_interval}"
         )
     else:
         # Fallback to influence-based data remixing only
@@ -441,7 +447,35 @@ def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
     # Determine strategy
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     if world_size > 1:
-        strategy = cfg.distributed.get("strategy", "ddp")
+        strategy_name = cfg.distributed.get("strategy", "ddp")
+        if strategy_name == "fsdp":
+            # Create proper FSDPStrategy with mixed precision for bfloat16 training
+            # Reference: https://lightning.ai/docs/pytorch/stable/api/lightning_fabric.strategies.FSDPStrategy.html
+            from torch.distributed.fsdp import ShardingStrategy, MixedPrecision
+
+            # FSDP mixed precision config (bfloat16 compute, fp32 reduce for stability)
+            mp_policy = MixedPrecision(
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.bfloat16,  # Reduce in bf16 to match params
+                buffer_dtype=torch.bfloat16,
+            )
+
+            # Get sharding strategy from config (default to FULL_SHARD = ZeRO-3)
+            fsdp_cfg = cfg.distributed.get("fsdp", {})
+            sharding_strategy_str = fsdp_cfg.get("sharding_strategy", "FULL_SHARD")
+            sharding_strategy = getattr(ShardingStrategy, sharding_strategy_str)
+
+            strategy = FSDPStrategy(
+                sharding_strategy=sharding_strategy,
+                mixed_precision=mp_policy,
+                activation_checkpointing_policy={torch.nn.TransformerEncoderLayer}
+                    if fsdp_cfg.get("activation_checkpointing", {}).get("enabled", False)
+                    else None,
+                limit_all_gathers=fsdp_cfg.get("limit_all_gathers", True),
+            )
+            logger.info(f"Using FSDPStrategy with {sharding_strategy_str} sharding and bf16 mixed precision")
+        else:
+            strategy = strategy_name
     else:
         strategy = "auto"
 

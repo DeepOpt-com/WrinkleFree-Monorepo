@@ -159,6 +159,7 @@ def convert_linear_to_bitlinear(
     Convert all nn.Linear layers in a module to BitLinear.
 
     This is used in Stage 1 of BitDistill to convert a pre-trained model.
+    Preserves the original layer's dtype and device for FSDP compatibility.
 
     Args:
         module: The module to convert
@@ -180,10 +181,11 @@ def convert_linear_to_bitlinear(
                 out_features=child.out_features,
                 bias=child.bias is not None,
             )
-            # Copy weights
-            new_linear.weight.data.copy_(child.weight.data)
+            # Copy weights AND preserve dtype/device for FSDP compatibility
+            # This is critical: FSDP requires uniform dtypes across all params
+            new_linear.weight.data = child.weight.data.clone()
             if child.bias is not None:
-                new_linear.bias.data.copy_(child.bias.data)
+                new_linear.bias.data = child.bias.data.clone()
 
             setattr(module, name, new_linear)
         else:
