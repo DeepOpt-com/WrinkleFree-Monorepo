@@ -1,16 +1,14 @@
 # WrinkleFree Meta-Optimization Smoke Test (2x L40 with FSDP)
 #
-# Tests the meta-optimization outer loop with multi-GPU FSDP:
-# - Dataset mixture weight optimization (via influence)
-# - Objective weight optimization (CE, DLM)
-# - Pareto multi-objective optimization (MGDA)
+# Tests efficient meta-optimization with multi-GPU FSDP:
+# - LDC-MTL: Objective weight optimization (CE vs DLM)
+# - ODM/EXP3: Dataset weight optimization (bandit-based)
 # - FSDP sharding across 2 GPUs
-# - Callback state sync across ranks
+# Both methods are O(1) complexity with no external dependencies.
 #
 # References:
-# - LibMOON (NeurIPS 2024): https://arxiv.org/abs/2409.02969
-# - ScaleBiO (2024): https://arxiv.org/abs/2406.19976
-# - DataInf (ICLR 2024): Tractable influence without Hessian
+# - LDC-MTL (2025): https://arxiv.org/abs/2502.08585
+# - ODM (2023): https://arxiv.org/abs/2312.02406
 #
 # Launch:
 #   cd packages/deployer
@@ -26,10 +24,10 @@
 name: wrinklefree-meta-opt-2gpu
 
 resources:
-  accelerators: L40:2
-  memory: 64+
+  accelerators: L40S:2
+  memory: 64+  # No more influence gradient caching!
   use_spot: false
-  cloud: runpod
+  cloud: nebius
   disk_size: 100
 
 # Sync from InfluenceClean worktree
@@ -84,39 +82,42 @@ run: |
   echo "Model: $MODEL"
   echo "Max Steps: $MAX_STEPS"
   echo ""
-  echo "Test Configuration:"
-  echo "  - 50 training steps with meta-optimization"
-  echo "  - Meta-updates every 10 steps (after 5 step warmup)"
-  echo "  - Dataset + objective weight optimization"
-  echo "  - Pareto MGDA solver for multi-objective balancing"
-  echo "  - FSDP data parallelism across 2x L40"
+  echo "Meta-Optimization Methods:"
+  echo "  - LDC-MTL: Objective weight optimization (O(1) complexity)"
+  echo "    Router network learns CE vs DLM weights via loss discrepancy"
+  echo "  - ODM/EXP3: Dataset weight optimization (~0% overhead)"
+  echo "    Multi-armed bandit learns optimal data mixing"
   echo ""
   echo "Features:"
   echo "  - Combined STE + DLM (multi-task learning)"
-  echo "  - Meta-optimization outer loop (LibMOON-style)"
-  echo "  - Influence-based gradient estimation (DataInf)"
-  echo "  - FSDP sharding with callback state sync"
+  echo "  - FSDP data parallelism across 2x L40"
+  echo "  - Auto batch size scaling"
   echo "  - GCS checkpoint upload"
-  echo "  - WandB logging with hyperparameters/* metrics"
+  echo "  - WandB logging with meta/ldc_mtl/* and meta/odm/* metrics"
   echo "=========================================================="
 
   echo ""
-  echo "[Training] Running unified training with meta-optimization (2x L40)..."
+  echo "[Training] Running unified training with meta-optimization (2x L40 FSDP)..."
+  export TOKENIZERS_PARALLELISM=false
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=unified \
     data.config_name=mixed_pretrain \
     distributed=fsdp_multi \
     training.max_steps=${MAX_STEPS} \
-    training.auto_batch_size=true \
+    training.auto_batch_size=false \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=8 \
+    training.optimizer.type=adamw \
+    training.influence.enabled=false \
     training.meta_optimization.enabled=true \
-    training.meta_optimization.update_interval=10 \
-    training.meta_optimization.warmup_steps=5 \
-    training.meta_optimization.parameters.dataset_weights=true \
-    training.meta_optimization.parameters.objective_weights=true \
-    training.meta_optimization.pareto.method=mgda \
+    training.meta_optimization.ldc_mtl.enabled=true \
+    training.meta_optimization.ldc_mtl.lambda_penalty=0.1 \
+    training.meta_optimization.ldc_mtl.router_lr=0.001 \
+    training.meta_optimization.odm.enabled=true \
+    training.meta_optimization.odm.reward_smoothing=0.9 \
+    training.meta_optimization.odm.warmup_ratio=0.1 \
     training.meta_optimization.log_interval=5 \
-    training.meta_optimization.meta_lr=0.1 \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=meta_opt_smoke_2gpu \
     training.checkpoint.save_interval=20 \
@@ -128,17 +129,16 @@ run: |
 
   echo ""
   echo "=========================================================="
-  echo "Meta-Optimization Smoke Test (2x L40) Complete!"
+  echo "Meta-Optimization Smoke Test (2x L40 FSDP) Complete!"
   echo "=========================================================="
 
   # Verify meta-optimization metrics were logged
   echo ""
   echo "Expected WandB metrics:"
-  echo "  - hyperparameters/data_mix/* (dataset mixture weights)"
-  echo "  - hyperparameters/task_weight/* (objective weights)"
-  echo "  - hyperparameters/lr/* (learning rates)"
-  echo "  - meta/dataset_weight_* (should update after step 15)"
-  echo "  - meta/objective_weight_* (should update after step 15)"
+  echo "  - meta/ldc_mtl/objective_weight_* (should adapt over time)"
+  echo "  - meta/odm/dataset_weight_* (should adapt based on loss)"
+  echo "  - meta/odm/exploration_rate (should decay from ~0.33)"
+  echo "  - meta/odm/avg_reward_* (higher for domains with more loss)"
   echo "  - train/loss (should decrease)"
   echo ""
   echo "WandB run: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
