@@ -18,6 +18,7 @@ __pycache__/
 outputs/
 training_logs/
 checkpoints/
+models/
 *.pt
 *.pth
 *.safetensors
