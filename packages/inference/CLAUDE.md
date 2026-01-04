@@ -45,13 +45,15 @@ python scripts/convert_checkpoint_to_gguf.py \
 | Format | Size (135M) | Size (2B) | Notes |
 |--------|-------------|-----------|-------|
 | **f16** | ~260MB | ~4.5GB | **Default, works for ALL models** |
-| **tq1_0** | N/A | ~2.2GB | Requires hidden_size % 256 == 0 (2B+, not 135M) |
+| **i2_s** | ~55MB | ~1.1GB | **Fastest - ternary quantized, AVX-512 optimized** |
+| tq1_0 | N/A | ~2.2GB | Requires hidden_size % 256 == 0 (2B+, not 135M) |
 | bf16 | ~260MB | ~4.5GB | Same as F16, alternative |
 | f32 | ~520MB | ~9GB | For debugging only |
 
 **CRITICAL**:
+- **Use I2_S for production** - it's the fastest and most memory efficient
 - Never use TQ2_0 for bf16 DLM checkpoints - it corrupts weights!
-- TQ1_0 auto-falls back to F16 for incompatible models (small models with hidden_size not divisible by 256)
+- After F16 conversion, quantize to I2_S: `llama-quantize model-f16.gguf model-i2s.gguf I2_S`
 
 ### Common Conversion Errors
 
@@ -132,7 +134,6 @@ SubLN adds normalization before output projections. WrinkleFree checkpoints use 
 packages/inference/
 ├── scripts/
 │   ├── convert_checkpoint_to_gguf.py  # PRIMARY converter (auto-fixes, validates)
-│   ├── convert_dlm_to_gguf.py         # TL1/TL2 specific conversion
 │   ├── convert_to_sglkernel.py        # For sgl-kernel packed format
 │   ├── launch_rust_gateway.sh         # Start Rust DLM server
 │   └── serve.sh                       # Full stack launcher
@@ -168,11 +169,13 @@ The **only** server for DLM models is `dlm_server`. It implements Fast-dLLM v2 b
 ```bash
 cd extern/sglang-bitnet/3rdparty/llama.cpp
 
-# Configure (with AVX512 if available)
+# Configure with native CPU optimizations (AVX-512 on supported CPUs)
 cmake -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SHARED_LIBS=ON \
-  -DLLAMA_NATIVE=ON
+  -DGGML_NATIVE=ON \
+  -DCMAKE_C_FLAGS="-march=native" \
+  -DCMAKE_CXX_FLAGS="-march=native"
 
 # Build (throttled to prevent system freeze)
 cmake --build build -j4

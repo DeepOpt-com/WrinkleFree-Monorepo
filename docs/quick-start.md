@@ -67,44 +67,26 @@ uv run --package wrinklefree python packages/training/scripts/train_lightning.py
   training.max_steps=100
 ```
 
-#### Legacy Trainer (Still Supported)
+### Running Distillation
 
-```bash
-# SmolLM2-135M (smallest, good for testing)
-uv run --package wrinklefree python packages/training/scripts/train.py \
-  model=smollm2_135m \
-  training=stage2_pretrain \
-  data=fineweb
-
-# With limited steps for smoke test
-uv run --package wrinklefree python packages/training/scripts/train.py \
-  model=smollm2_135m \
-  training=stage2_pretrain \
-  training.max_steps=100
-```
-
-### Running Distillation (Stage 3)
-
-Distillation is now integrated into the training package via the objectives system:
+Distillation is integrated into the training package via the objectives system:
 
 ```bash
 # BitDistill distillation (logits + attention)
-uv run --package wrinklefree python packages/training/scripts/train.py \
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
-  training=bitdistill_full \
-  data=mixed_pretrain
+  training=bitdistill_full
 
 # LRC Calibration (post-quantization low-rank correction)
-uv run --package wrinklefree python packages/training/scripts/train.py \
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
-  training=lrc_calibration \
-  data=fineweb
+  training=lrc_calibration
 ```
 
 ### Running Evaluation
 
 ```bash
-uv run --package wrinklefree_eval python packages/eval/scripts/evaluate.py \
+uv run --package wrinklefree-eval python packages/eval/scripts/evaluate.py \
   --model-path outputs/smollm2_135m/checkpoint \
   --benchmark glue
 ```
@@ -123,15 +105,14 @@ wf sky launch --config skypilot/train.yaml
 
 ### Converting Models to GGUF
 
-See the root `CLAUDE.md` for the correct DLM GGUF conversion workflow. Key point: use TQ1_0 format, not TQ2_0.
+See the root `CLAUDE.md` for the correct DLM GGUF conversion workflow. Key point: use I2_S format for bf16 DLM checkpoints (NOT TQ2_0).
 
 ```bash
-# Convert using Microsoft BitNet's converter
-cd extern/reference/BitNet.cpp
-python utils/convert-hf-to-gguf-bitnet.py \
+# Convert using the inference package converter
+python packages/inference/scripts/convert_checkpoint_to_gguf.py \
     path/to/checkpoint \
-    --outtype tq1_0 \
-    --outfile output.gguf
+    --outfile model.gguf \
+    --outtype i2_s
 ```
 
 ## Package Commands

@@ -21,7 +21,6 @@
 |------|---------|
 | **Training (Lightning)** | `uv run --package wrinklefree python scripts/train_lightning.py model=smollm2_135m training=unified` |
 | Training with auto batch | `... training.auto_batch_size=true` |
-| Training (legacy) | `uv run --package wrinklefree python scripts/train.py` |
 | BitDistill distillation | `... training=bitdistill_full` |
 | LRC calibration | `... training=lrc_calibration` |
 | Deploy to cloud | `cd packages/deployer && wf train -m smollm2_135m -s 2 --cloud nebius` |
@@ -52,9 +51,9 @@
 | `architecture` | BitLinear/BitLinearLRC/SubLN layers | `src/bitnet_arch/layers/` |
 | `data_handler` | Data loading + influence | `src/data_handler/data/` |
 | `deployer` | Cloud deployment (SkyPilot) | `skypilot/*.yaml` |
-| `inference` | Model serving | `src/wf_inference/` |
+| `inference` | Model serving | `src/wrinklefree_inference/` |
 | `mobile` | Android inference | `android/` |
-| `eval` | Model evaluation | `src/wf_eval/` |
+| `eval` | Model evaluation | `src/wrinklefree_eval/` |
 
 > **Legacy:** `packages/_legacy/` contains archived packages (distillation, converter, cheapertraining)
 

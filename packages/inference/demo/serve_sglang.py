@@ -1,27 +1,20 @@
 #!/usr/bin/env python3
-"""Streamlit chat interface for BitNet models.
+"""Streamlit chat interface for DLM-BitNet models.
 
-Supports three backends:
-- native: Native sgl-kernel server - ~29 tok/s (RECOMMENDED)
-- bitnet_cpp: Pure C++ backend (BitNet.cpp) - ~26 tok/s
-- sglang: Python-based backend (SGLang-BitNet) - ~16 tok/s
+Supports two backends:
+- native: DLM server (Rust) - RECOMMENDED
+- sglang: Python-based backend (SGLang-BitNet) - slower
 
 Environment variables:
-  BITNET_BACKEND - "native" (default), "bitnet_cpp", or "sglang"
-  NATIVE_URL - Native server URL (default: http://127.0.0.1:30000)
-  BITNET_URL - BitNet.cpp server URL (default: http://127.0.0.1:8080)
-  SGLANG_URL - SGLang server URL (default: http://127.0.0.1:30000)
+  BITNET_BACKEND - "native" (default) or "sglang"
+  NATIVE_URL - Server URL (default: http://127.0.0.1:30000)
 
 Run:
-  # Native backend (recommended - fastest)
-  1. Start server: ./scripts/serve_native.sh models/dlm-bitnet-2b
+  # Native backend (recommended)
+  1. Start server: ./scripts/serve_native.sh models/model.gguf
   2. Start Streamlit: uv run streamlit run demo/serve_sglang.py
 
-  # BitNet.cpp backend
-  1. Start server: ./scripts/launch_bitnet_cpp.sh
-  2. Start Streamlit: BITNET_BACKEND=bitnet_cpp uv run streamlit run demo/serve_sglang.py
-
-  # SGLang backend
+  # SGLang backend (slower)
   1. Start server: ./scripts/launch_sglang_bitnet.sh
   2. Start Streamlit: BITNET_BACKEND=sglang uv run streamlit run demo/serve_sglang.py
 """
@@ -36,15 +29,10 @@ import requests
 import streamlit as st
 
 # Backend selection
-BACKEND = os.environ.get("BITNET_BACKEND", "native")  # "native", "bitnet_cpp", or "sglang"
+BACKEND = os.environ.get("BITNET_BACKEND", "native")  # "native" or "sglang"
 
-# Server URLs based on backend
-if BACKEND == "native":
-    API_URL = os.environ.get("NATIVE_URL", "http://127.0.0.1:30000")
-elif BACKEND == "bitnet_cpp":
-    API_URL = os.environ.get("BITNET_URL", "http://127.0.0.1:8080")
-else:
-    API_URL = os.environ.get("SGLANG_URL", "http://127.0.0.1:30000")
+# Server URL (same port for both backends)
+API_URL = os.environ.get("NATIVE_URL", "http://127.0.0.1:30000")
 
 # Legacy compatibility
 SGLANG_URL = API_URL
