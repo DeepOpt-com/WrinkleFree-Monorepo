@@ -561,14 +561,21 @@ class InfluenceTrackerCallback(Callback):
         logger.info(f"InfluenceTrackerCallback: tracker_config influence section={tracker_config.get('influence', {})}")
 
         # Create the tracker (it will self-disable if not configured)
+        import sys
+        print(f"[DEBUG] Creating InfluenceTracker...", flush=True)
+        sys.stdout.flush()
         self._tracker = InfluenceTracker(
             config=tracker_config,
             model=pl_module.model,
             mixed_dataset=mixed_dataset,
             probe_dataloaders=probe_dataloaders,
         )
+        print(f"[DEBUG] InfluenceTracker created, is_enabled={self._tracker.is_enabled}", flush=True)
+        sys.stdout.flush()
 
         self._enabled = self._tracker.is_enabled
+        print(f"[DEBUG] _enabled={self._enabled}", flush=True)
+        sys.stdout.flush()
         if self._enabled:
             logger.info("InfluenceTrackerCallback: initialized and enabled")
 
@@ -576,6 +583,8 @@ class InfluenceTrackerCallback(Callback):
             if self._tracker.method == "distillation" and mixed_dataset is not None:
                 influence_cfg = tracker_config.get("influence", {})
                 samples_per_dataset = influence_cfg.get("samples_per_dataset", 1000)
+                print(f"[DEBUG] Calling get_source_loaders with samples_per_source={samples_per_dataset}...", flush=True)
+                sys.stdout.flush()
                 try:
                     self._tracker._dataset_loaders = mixed_dataset.get_source_loaders(
                         tokenizer=datamodule.tokenizer,
@@ -583,10 +592,14 @@ class InfluenceTrackerCallback(Callback):
                         max_length=datamodule.max_length,
                         samples_per_source=samples_per_dataset,
                     )
+                    print(f"[DEBUG] get_source_loaders returned {len(self._tracker._dataset_loaders)} loaders", flush=True)
+                    sys.stdout.flush()
                     logger.info(
                         f"InfluenceTrackerCallback: created source loaders for {len(self._tracker._dataset_loaders)} datasets"
                     )
                 except Exception as e:
+                    print(f"[DEBUG] get_source_loaders FAILED: {e}", flush=True)
+                    sys.stdout.flush()
                     logger.warning(f"InfluenceTrackerCallback: failed to create source loaders: {e}")
         else:
             logger.info(
@@ -594,6 +607,9 @@ class InfluenceTrackerCallback(Callback):
                 f"(mixed_dataset={mixed_dataset is not None}, "
                 f"influence.enabled={tracker_config.get('influence', {}).get('enabled', False)})"
             )
+
+        print(f"[DEBUG] InfluenceTrackerCallback.setup() COMPLETED", flush=True)
+        sys.stdout.flush()
 
     def on_train_start(
         self,
