@@ -215,27 +215,49 @@ class InfluenceTracker:
     def on_train_begin(self):
         """Called once at the beginning of training.
 
-        Caches probe gradients for influence calculation.
+        Caches probe gradients and landmarks for influence calculation.
         """
         if not self.enabled:
             return
 
-        logger.info("InfluenceTracker: caching probe gradients...")
+        logger.info("InfluenceTracker: initializing influence calculation...")
         self.model.eval()
 
         try:
             if self.method == "distillation":
-                # InfluenceDistillation: cache probe gradients
+                # InfluenceDistillation requires full initialization:
+                # 1. Cache source embeddings (JVP embeddings of source data)
+                # 2. Cache landmarks (select representative samples + compute KRR)
+                # 3. Cache probe gradients (target gradient for influence)
+
+                # Use probe_loader as source for embeddings (simpler, same distribution)
+                logger.info("InfluenceTracker: caching source embeddings...")
+                self.distillation.cache_source_embeddings(
+                    self.probe_loader,
+                    max_samples=self.samples_per_dataset * 4,  # More samples for better coverage
+                    show_progress=True
+                )
+
+                logger.info("InfluenceTracker: selecting landmarks and computing KRR...")
+                self.distillation.cache_landmarks(
+                    source_loader=self.probe_loader,
+                    show_progress=True
+                )
+
+                logger.info("InfluenceTracker: caching probe gradients...")
                 self.distillation.cache_probe_gradients(self.probe_loader, show_progress=True)
+
             elif self.multi_domain:
                 self.calculator.cache_all_domain_probes(show_progress=True)
             else:
                 self.calculator.cache_probe_gradients(show_progress=True)
 
             self._initialized = True
-            logger.info("InfluenceTracker: probe gradients cached")
+            logger.info("InfluenceTracker: initialization complete")
         except Exception as e:
-            logger.error(f"InfluenceTracker: failed to cache probe gradients: {e}")
+            logger.error(f"InfluenceTracker: initialization failed: {e}")
+            import traceback
+            traceback.print_exc()
             self.enabled = False
         finally:
             self.model.train()
@@ -357,9 +379,42 @@ class InfluenceTracker:
                 })
                 self._log_weights_to_wandb(step, new_weights)
 
+            elif self.calculator is not None:
+                # DataInf method using MixtureWeightCalculator
+                if self.tokenizer is None:
+                    logger.warning("InfluenceTracker: tokenizer not provided, skipping weight update")
+                    return
+
+                # Get source loaders from mixed dataset
+                source_loaders = self.mixed_dataset.get_source_loaders(
+                    tokenizer=self.tokenizer,
+                    batch_size=4,
+                    max_length=2048,
+                    samples_per_source=self.samples_per_dataset,
+                )
+
+                # Use MixtureWeightCalculator to compute and interpolate weights
+                new_weights = self.calculator.get_weight_update(
+                    current_weights=current_weights,
+                    dataset_loaders=source_loaders,
+                    learning_rate=self.learning_rate,
+                )
+                logger.info(f"InfluenceTracker: optimal weights from DataInf: {new_weights}")
+
+                # Apply to mixed dataset
+                self.mixed_dataset.update_weights_from_influence(new_weights)
+                logger.info(f"InfluenceTracker: updated weights: {new_weights}")
+
+                # Store in history
+                self._weight_history.append({
+                    "step": step,
+                    **new_weights,
+                })
+                self._log_weights_to_wandb(step, new_weights)
+
             else:
-                # DataInf method or fallback - just log current weights
-                logger.info("InfluenceTracker: datainf method not yet implemented for auto-update")
+                # Fallback - just log current weights
+                logger.warning("InfluenceTracker: no calculator available, skipping weight update")
                 self._weight_history.append({
                     "step": step,
                     **current_weights,

@@ -19,6 +19,17 @@ static inline int hsum_i32_8(const __m256i a) {
     const __m128i hi32  = _mm_shuffle_epi32(sum64, _MM_SHUFFLE(2, 3, 0, 1));
     return _mm_cvtsi128_si32(_mm_add_epi32(sum64, hi32));
 }
+
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+// horizontally add 16 int32_t (AVX-512)
+static inline int hsum_i32_16(const __m512i a) {
+    // Reduce 512-bit to 256-bit
+    __m256i lo = _mm512_castsi512_si256(a);
+    __m256i hi = _mm512_extracti64x4_epi64(a, 1);
+    __m256i sum256 = _mm256_add_epi32(lo, hi);
+    return hsum_i32_8(sum256);
+}
+#endif
 #elif defined(__loongarch_asx)
 // horizontally add 8 int32_t
 static inline int hsum_i32_8(const __m256i a) {
@@ -100,7 +111,173 @@ void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs, const void * vx, size_t b
     const int la_num = nb % 32;
     const int groupla_num = nb % 32 != 0 ? 1 : 0;
 
-#if defined(__AVX2__)
+    (void)bs; (void)bx; (void)by; (void)nrc;  // unused parameters
+
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+    // AVX-512 optimized path for AMD EPYC Genoa / Intel Sapphire Rapids
+    // Uses 4 independent 256-bit accumulators for ILP, then combines at the end
+    // This avoids the complexity of 512-bit operations on 256-bit data chunks
+
+    __m256i mask = _mm256_set1_epi8(0x03);
+
+    // 4 independent accumulators for latency hiding
+    __m256i accu0 = _mm256_setzero_si256();
+    __m256i accu1 = _mm256_setzero_si256();
+    __m256i accu2 = _mm256_setzero_si256();
+    __m256i accu3 = _mm256_setzero_si256();
+
+    // Hoist constant outside loop
+    const __m256i ones = _mm256_set1_epi16(1);
+
+    for (int i = 0; i < group32_num; i++) {
+        __m256i inner0 = _mm256_setzero_si256();
+        __m256i inner1 = _mm256_setzero_si256();
+        __m256i inner2 = _mm256_setzero_si256();
+        __m256i inner3 = _mm256_setzero_si256();
+
+        const int base_w = i * 32 * 32;
+        const int base_a = i * 128 * 32;
+
+        // Process 32 blocks with 4-way unrolling
+        for (int j = 0; j < 32; j += 4) {
+            // Software prefetch next iteration's data (improves memory latency)
+            if (j + 8 < 32) {
+                _mm_prefetch((const char*)(x + base_w + (j + 8) * 32), _MM_HINT_T0);
+                _mm_prefetch((const char*)(y + base_a + (j + 8) * 128), _MM_HINT_T0);
+                _mm_prefetch((const char*)(y + base_a + (j + 8) * 128 + 64), _MM_HINT_T0);
+            }
+
+            // Block j -> inner0
+            {
+                __m256i xq8_3 = _mm256_loadu_si256((const __m256i*)(x + base_w + j * 32));
+                __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 2), mask);
+                __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 4), mask);
+                __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 6), mask);
+                xq8_3 = _mm256_and_si256(xq8_3, mask);
+
+                __m256i yq8_0 = _mm256_loadu_si256((const __m256i*)(y + base_a + j * 128 + 0));
+                __m256i yq8_1 = _mm256_loadu_si256((const __m256i*)(y + base_a + j * 128 + 32));
+                __m256i yq8_2 = _mm256_loadu_si256((const __m256i*)(y + base_a + j * 128 + 64));
+                __m256i yq8_3 = _mm256_loadu_si256((const __m256i*)(y + base_a + j * 128 + 96));
+
+                xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
+                xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
+                xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
+                xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
+
+                inner0 = _mm256_add_epi16(inner0, _mm256_add_epi16(xq8_0, xq8_1));
+                inner0 = _mm256_add_epi16(inner0, _mm256_add_epi16(xq8_2, xq8_3));
+            }
+
+            // Block j+1 -> inner1
+            {
+                __m256i xq8_3 = _mm256_loadu_si256((const __m256i*)(x + base_w + (j + 1) * 32));
+                __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 2), mask);
+                __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 4), mask);
+                __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 6), mask);
+                xq8_3 = _mm256_and_si256(xq8_3, mask);
+
+                __m256i yq8_0 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 1) * 128 + 0));
+                __m256i yq8_1 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 1) * 128 + 32));
+                __m256i yq8_2 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 1) * 128 + 64));
+                __m256i yq8_3 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 1) * 128 + 96));
+
+                xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
+                xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
+                xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
+                xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
+
+                inner1 = _mm256_add_epi16(inner1, _mm256_add_epi16(xq8_0, xq8_1));
+                inner1 = _mm256_add_epi16(inner1, _mm256_add_epi16(xq8_2, xq8_3));
+            }
+
+            // Block j+2 -> inner2
+            {
+                __m256i xq8_3 = _mm256_loadu_si256((const __m256i*)(x + base_w + (j + 2) * 32));
+                __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 2), mask);
+                __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 4), mask);
+                __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 6), mask);
+                xq8_3 = _mm256_and_si256(xq8_3, mask);
+
+                __m256i yq8_0 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 2) * 128 + 0));
+                __m256i yq8_1 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 2) * 128 + 32));
+                __m256i yq8_2 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 2) * 128 + 64));
+                __m256i yq8_3 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 2) * 128 + 96));
+
+                xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
+                xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
+                xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
+                xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
+
+                inner2 = _mm256_add_epi16(inner2, _mm256_add_epi16(xq8_0, xq8_1));
+                inner2 = _mm256_add_epi16(inner2, _mm256_add_epi16(xq8_2, xq8_3));
+            }
+
+            // Block j+3 -> inner3
+            {
+                __m256i xq8_3 = _mm256_loadu_si256((const __m256i*)(x + base_w + (j + 3) * 32));
+                __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 2), mask);
+                __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 4), mask);
+                __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 6), mask);
+                xq8_3 = _mm256_and_si256(xq8_3, mask);
+
+                __m256i yq8_0 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 3) * 128 + 0));
+                __m256i yq8_1 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 3) * 128 + 32));
+                __m256i yq8_2 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 3) * 128 + 64));
+                __m256i yq8_3 = _mm256_loadu_si256((const __m256i*)(y + base_a + (j + 3) * 128 + 96));
+
+                xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
+                xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
+                xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
+                xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
+
+                inner3 = _mm256_add_epi16(inner3, _mm256_add_epi16(xq8_0, xq8_1));
+                inner3 = _mm256_add_epi16(inner3, _mm256_add_epi16(xq8_2, xq8_3));
+            }
+        }
+
+        // Widen to int32 and accumulate
+        accu0 = _mm256_add_epi32(accu0, _mm256_madd_epi16(inner0, ones));
+        accu1 = _mm256_add_epi32(accu1, _mm256_madd_epi16(inner1, ones));
+        accu2 = _mm256_add_epi32(accu2, _mm256_madd_epi16(inner2, ones));
+        accu3 = _mm256_add_epi32(accu3, _mm256_madd_epi16(inner3, ones));
+    }
+
+    // Handle remaining blocks
+    for (int i = 0; i < groupla_num; i++) {
+        __m256i accula = _mm256_setzero_si256();
+
+        for (int j = 0; j < la_num; j++) {
+            __m256i xq8_3 = _mm256_loadu_si256((const __m256i*)(x + group32_num * 32 * 32 + j * 32));
+            __m256i xq8_2 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 2), mask);
+            __m256i xq8_1 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 4), mask);
+            __m256i xq8_0 = _mm256_and_si256(_mm256_srli_epi16(xq8_3, 6), mask);
+            xq8_3 = _mm256_and_si256(xq8_3, mask);
+
+            __m256i yq8_0 = _mm256_loadu_si256((const __m256i*)(y + group32_num * 128 * 32 + j * 128 + 0));
+            __m256i yq8_1 = _mm256_loadu_si256((const __m256i*)(y + group32_num * 128 * 32 + j * 128 + 32));
+            __m256i yq8_2 = _mm256_loadu_si256((const __m256i*)(y + group32_num * 128 * 32 + j * 128 + 64));
+            __m256i yq8_3 = _mm256_loadu_si256((const __m256i*)(y + group32_num * 128 * 32 + j * 128 + 96));
+
+            xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
+            xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
+            xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
+            xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
+
+            accula = _mm256_add_epi16(accula, _mm256_add_epi16(xq8_0, xq8_1));
+            accula = _mm256_add_epi16(accula, _mm256_add_epi16(xq8_2, xq8_3));
+        }
+        accu0 = _mm256_add_epi32(accu0, _mm256_madd_epi16(accula, ones));
+    }
+
+    // Combine all 4 accumulators using AVX-512 for fast reduction
+    __m256i combined01 = _mm256_add_epi32(accu0, accu1);
+    __m256i combined23 = _mm256_add_epi32(accu2, accu3);
+    __m256i combined = _mm256_add_epi32(combined01, combined23);
+    int sumi = hsum_i32_8(combined);
+    *s = (float)sumi;
+
+#elif defined(__AVX2__)
 
     __m256i mask = _mm256_set1_epi8(0x03);
     __m256i accu = _mm256_setzero_si256();

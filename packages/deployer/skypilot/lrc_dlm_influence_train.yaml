@@ -160,7 +160,7 @@ run: |
     training.gradient_accumulation_steps=4 \
     training.optimizer.type=muon \
     training.influence.enabled=true \
-    training.influence.method=distillation \
+    training.influence.method=datainf \
     training.influence.update_interval=500 \
     training.influence.warmup_steps=200 \
     training.influence.learning_rate=0.1 \
