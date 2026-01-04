@@ -154,7 +154,9 @@ run: |
     model=${MODEL} \
     training=${TRAINING_CONFIG} \
     training.total_tokens=${TOTAL_TOKENS} \
-    training.auto_batch_size=true \
+    training.auto_batch_size=false \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=8 \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
     training.logging.wandb.enabled=true \
