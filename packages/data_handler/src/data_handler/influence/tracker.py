@@ -73,6 +73,7 @@ class InfluenceTracker:
         model: nn.Module,
         mixed_dataset: MixedDataset | None,
         probe_dataloaders: dict[str, DataLoader] | DataLoader | None = None,
+        tokenizer: Any = None,
     ):
         """Initialize influence tracker.
 
@@ -84,6 +85,7 @@ class InfluenceTracker:
                 - dict[str, DataLoader]: Multi-domain mode
                 - DataLoader: Single probe mode
                 - None: Disables tracking
+            tokenizer: Tokenizer for creating source dataloaders (required for weight updates)
         """
         # Convert config if needed
         if isinstance(config, DictConfig):
@@ -100,6 +102,7 @@ class InfluenceTracker:
         self.model = model
         self.mixed_dataset = mixed_dataset
         self.probe_dataloaders = probe_dataloaders
+        self.tokenizer = tokenizer
 
         # Configuration
         self.update_interval = influence_cfg.get("update_interval", 10000)
@@ -107,6 +110,7 @@ class InfluenceTracker:
         self.warmup_steps = influence_cfg.get("warmup_steps", 1000)
         self.method = influence_cfg.get("method", "datainf")
         self.refresh_probe_cache_on_epoch = influence_cfg.get("refresh_probe_cache", False)
+        self.samples_per_dataset = influence_cfg.get("samples_per_dataset", 32)
 
         # Initialize influence config
         influence_config = InfluenceConfig(
@@ -304,25 +308,70 @@ class InfluenceTracker:
 
         try:
             current_weights = self.mixed_dataset.get_current_weights()
-
-            # Get weight update from calculator
-            # Note: This requires dataset loaders which we don't have direct access to
-            # For now, use a simplified approach - just log that we would update
             logger.info(f"InfluenceTracker: current weights: {current_weights}")
 
-            # Store in history
-            self._weight_history.append({
-                "step": step,
-                **current_weights,
-            })
+            # Compute new optimal weights using distillation or datainf
+            if self.method == "distillation" and hasattr(self, "distillation"):
+                if self.tokenizer is None:
+                    logger.warning("InfluenceTracker: tokenizer not provided, skipping weight update")
+                    return
 
-            # Log to wandb if available
-            self._log_weights_to_wandb(step, current_weights)
+                # Get source loaders from mixed dataset
+                source_loaders = self.mixed_dataset.get_source_loaders(
+                    tokenizer=self.tokenizer,
+                    batch_size=4,
+                    max_length=2048,
+                    samples_per_source=self.samples_per_dataset,
+                )
+
+                # Compute optimal weights using influence distillation
+                optimal_weights = self.distillation.compute_mixture_weights(
+                    dataset_loaders=source_loaders,
+                    show_progress=False,
+                )
+                logger.info(f"InfluenceTracker: optimal weights: {optimal_weights}")
+
+                # Interpolate between current and optimal using learning rate
+                new_weights = {}
+                for k in current_weights:
+                    if k in optimal_weights:
+                        new_weights[k] = (
+                            (1 - self.learning_rate) * current_weights[k]
+                            + self.learning_rate * optimal_weights[k]
+                        )
+                    else:
+                        new_weights[k] = current_weights[k]
+
+                # Normalize
+                total = sum(new_weights.values())
+                new_weights = {k: v / total for k, v in new_weights.items()}
+
+                # Apply to mixed dataset
+                self.mixed_dataset.update_weights_from_influence(new_weights)
+                logger.info(f"InfluenceTracker: updated weights: {new_weights}")
+
+                # Store in history
+                self._weight_history.append({
+                    "step": step,
+                    **new_weights,
+                })
+                self._log_weights_to_wandb(step, new_weights)
+
+            else:
+                # DataInf method or fallback - just log current weights
+                logger.info("InfluenceTracker: datainf method not yet implemented for auto-update")
+                self._weight_history.append({
+                    "step": step,
+                    **current_weights,
+                })
+                self._log_weights_to_wandb(step, current_weights)
 
             self._last_update_step = step
 
         except Exception as e:
             logger.error(f"InfluenceTracker: weight update failed: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.model.train()
 
@@ -423,6 +472,7 @@ def create_influence_tracker(
     model: nn.Module,
     mixed_dataset: MixedDataset | None,
     probe_dataloaders: dict[str, DataLoader] | DataLoader | None = None,
+    tokenizer: Any = None,
 ) -> InfluenceTracker:
     """Factory function to create an InfluenceTracker.
 
@@ -431,6 +481,7 @@ def create_influence_tracker(
         model: Model for gradient computation
         mixed_dataset: MixedDataset to track
         probe_dataloaders: Probe DataLoaders
+        tokenizer: Tokenizer for creating source dataloaders
 
     Returns:
         Configured InfluenceTracker
@@ -440,4 +491,5 @@ def create_influence_tracker(
         model=model,
         mixed_dataset=mixed_dataset,
         probe_dataloaders=probe_dataloaders,
+        tokenizer=tokenizer,
     )

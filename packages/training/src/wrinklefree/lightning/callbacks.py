@@ -536,10 +536,12 @@ class InfluenceTrackerCallback(Callback):
 
         mixed_dataset = datamodule.get_mixed_dataset()
         probe_dataloaders = datamodule.get_probe_dataloaders()
+        tokenizer = getattr(datamodule, "tokenizer", None)
 
         # Debug logging
         logger.info(f"InfluenceTrackerCallback: mixed_dataset={mixed_dataset is not None}")
         logger.info(f"InfluenceTrackerCallback: probe_dataloaders={probe_dataloaders is not None}")
+        logger.info(f"InfluenceTrackerCallback: tokenizer={tokenizer is not None}")
 
         # InfluenceTracker expects config with 'influence' at root level,
         # but Hydra config has it under 'training.influence'.
@@ -564,6 +566,7 @@ class InfluenceTrackerCallback(Callback):
             model=pl_module.model,
             mixed_dataset=mixed_dataset,
             probe_dataloaders=probe_dataloaders,
+            tokenizer=tokenizer,
         )
 
         self._enabled = self._tracker.is_enabled
