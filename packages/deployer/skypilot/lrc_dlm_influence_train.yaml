@@ -145,15 +145,16 @@ run: |
   echo "================================================"
   echo ""
 
-  # Set num workers low to avoid memory issues
-  export DATA_NUM_WORKERS=2
+  # IMPORTANT: num_workers=0 is REQUIRED for influence tracking
+  # The JVPEmbeddingExtractor's nn.ModuleList references cause deadlock with multiprocessing
+  export DATA_NUM_WORKERS=0
 
   echo "[Training] Starting Lightning training..."
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=${TRAINING_CONFIG} \
     training.total_tokens=${TOTAL_TOKENS} \
-    training.auto_batch_size=false \
+    training.auto_batch_size=true \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
     training.logging.wandb.enabled=true \
