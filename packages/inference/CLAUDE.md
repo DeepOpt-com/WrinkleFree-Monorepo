@@ -13,6 +13,8 @@ WrinkleFree Inference Engine serves **DLM-BitNet** models (Diffusion Language Mo
 
 **Key Rule**: Use `dlm_server` for DLM checkpoints, `native_server` for regular BitNet.
 
+**Note**: All paths in this document are relative to `packages/inference/`.
+
 ## Quick Reference
 
 | Task | Command |
@@ -75,8 +77,8 @@ python extern/sglang-bitnet/3rdparty/llama.cpp/convert_hf_to_gguf.py \
 | Format | Size (2B) | Speed | Use Case |
 |--------|-----------|-------|----------|
 | **i2_s** | ~1.1GB | Fast | **Default, recommended for vanilla llama.cpp** |
-| **tq1_0** | ~1.1GB | Fast | Good for bf16 DLM checkpoints |
-| tq2_0 | ~1.2GB | Fast | **AVOID for bf16 checkpoints - produces garbage!** |
+| **tq1_0** | ~680MB | Faster | Good for bf16 DLM checkpoints |
+| tq2_0 | ~780MB | Fastest | **AVOID for bf16 checkpoints - produces garbage!** |
 | f16 | ~4.5GB | Slow | Reference/debugging only |
 | tl1/tl2 | ~1.1GB | Fastest | Requires kernel config, CPU-specific |
 

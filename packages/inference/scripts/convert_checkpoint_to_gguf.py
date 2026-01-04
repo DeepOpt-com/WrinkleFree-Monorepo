@@ -315,8 +315,10 @@ def main():
 Output Format Guide:
   i2_s   - 2-bit integer, multiply-add (~1.1GB for 2B model) [DEFAULT, RECOMMENDED]
            Works with vanilla llama.cpp, good balance of speed and compatibility
-  tq2_0  - Ternary quantization (~1.2GB for 2B model)
-           Alternative to i2_s, also works with vanilla llama.cpp
+  tq1_0  - Ternary quantization v1 (~680MB for 2B model)
+           Good for bf16 DLM checkpoints, faster than i2_s
+  tq2_0  - Ternary quantization v2 (~780MB for 2B model)
+           WARNING: Produces garbage for bf16 checkpoints! Use --force-tq2 to override
   tl1    - LUT-based format 1 (~1.1GB)
            Requires pre-generated kernel config, faster on some CPUs
   tl2    - LUT-based format 2 (~1.1GB)
@@ -353,7 +355,7 @@ Examples:
     parser.add_argument(
         "--outtype",
         type=str,
-        choices=["i2_s", "tq2_0", "tl1", "tl2", "f16", "f32"],
+        choices=["i2_s", "tq1_0", "tq2_0", "tl1", "tl2", "f16", "f32"],
         default="i2_s",
         help="Output quantization type (default: i2_s)",
     )
