@@ -178,13 +178,16 @@ influence:
     gamma_val: 0.1
     temperature: 1.0
 
-# === META-OPTIMIZATION (Bi-Level Outer Loop) ===
+# === META-OPTIMIZATION (Replaces DataInf influence) ===
 # Efficient meta-optimization using O(1) methods:
 # - LDC-MTL: Objective weight optimization (CE vs DLM vs distillation)
 # - ODM/EXP3: Dataset weight optimization (bandit-based data mixing)
 #
+# NOTE: ODM replaces the older DataInf-based influence tracking.
+# Use meta_optimization.odm for dataset weights, NOT training.influence.
+#
 # Both methods are efficient, principled, and require no external dependencies.
-# No Hessian computation, no influence functions, no Pareto solvers.
+# No Hessian computation, no gradient caching, no Pareto solvers.
 #
 # References:
 # - LDC-MTL (2025): https://arxiv.org/abs/2502.08585
@@ -199,9 +202,11 @@ meta_optimization:
     lambda_penalty: 0.1        # Discrepancy penalty (higher = more balanced)
     hidden_dim: 32             # Router MLP hidden size
     router_lr: 0.001           # Router learning rate
+    step_interval: 1           # Update router every N steps (set > grad_accum for large batches)
 
   # ODM: Dataset weight optimization via EXP3 bandit
   # Uses training loss as reward signal with ~0% overhead
+  # NOTE: This replaces training.influence.enabled (DataInf approach)
   odm:
     enabled: true              # Enable dataset weight optimization
     reward_smoothing: 0.9      # EMA coefficient (0-1, higher = more smoothing)

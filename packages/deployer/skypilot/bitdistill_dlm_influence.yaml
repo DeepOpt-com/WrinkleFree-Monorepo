@@ -1,14 +1,19 @@
-# BitNet + DLM + CE Training with Influence-Based Remixing (1x L40)
+# BitNet + DLM + CE Training with Meta-Optimization (1x L40)
 #
 # SmolLM2-135M training run with:
 # - BitNet 1.58-bit quantization (ternary weights {-1, 0, 1})
 # - Diffusion Language Model (DLM) objective
 # - Standard cross-entropy loss
-# - Influence-based dataset weight optimization
+# - Meta-optimization: LDC-MTL (objective weights) + ODM (dataset weights)
 #
-# Curriculum:
-# - First 20%: fineweb-edu warmup (CE only)
-# - Remaining 80%: mixed_pretrain with influence (CE + DLM)
+# Meta-Optimization (replaces DataInf influence):
+# - LDC-MTL: Learns optimal CE vs DLM weights via router network
+# - ODM/EXP3: Learns optimal data mixing via multi-armed bandit
+# - Both are O(1) complexity with ~0% overhead
+#
+# References:
+# - LDC-MTL: https://arxiv.org/abs/2502.08585
+# - ODM: https://arxiv.org/abs/2312.02406
 #
 # Usage:
 #   cd packages/deployer
@@ -21,7 +26,7 @@
 # Teardown:
 #   sky down bitdistill-dlm -y
 
-name: wrinklefree-bitdistill-dlm-influence
+name: wrinklefree-bitdistill-dlm-meta
 
 resources:
   accelerators: L40S:1
@@ -30,11 +35,11 @@ resources:
   use_spot: false
   cloud: nebius
 
-workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+workdir: /home/lev/code/WrinkleFreeDevWrapper/InfluenceClean
 
 file_mounts:
-  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
-  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
   /tmp/global.env: ~/.config/.env.global
 
 envs:
@@ -142,26 +147,21 @@ run: |
   echo "================================================"
   echo ""
   echo "Training Schedule:"
-  echo "- First 20%: warmup (CE only)"
-  echo "- Remaining 80%: mixed_pretrain with influence (CE + DLM)"
+  echo "- First 5%: warmup (CE only)"
+  echo "- Remaining 95%: mixed_pretrain with meta-opt (CE + DLM)"
   echo ""
   echo "Objectives:"
-  echo "- continue_pretrain (CE): weight=1.0"
-  echo "- dlm: weight=0.5 (after warmup)"
+  echo "- continue_pretrain (CE): adaptive weight via LDC-MTL"
+  echo "- dlm: adaptive weight via LDC-MTL"
   echo ""
-  echo "Influence Settings:"
-  echo "- warmup_steps: 200"
-  echo "- update_interval: 500"
-  echo "- learning_rate: 0.1"
+  echo "Meta-Optimization Settings:"
+  echo "- LDC-MTL: router_lr=0.001, step_interval=32"
+  echo "- ODM: reward_smoothing=0.9, warmup_ratio=0.01"
   echo "================================================"
   echo ""
 
-  # IMPORTANT: num_workers=0 is REQUIRED for influence tracking
-  # The JVPEmbeddingExtractor's nn.ModuleList references cause deadlock with multiprocessing
-  export DATA_NUM_WORKERS=0
-
-  echo "[Training] Starting Lightning training..."
-  # Using unified config with Muon+AdamW optimizer and auto batch sizing
+  echo "[Training] Starting Lightning training with meta-optimization..."
+  # Using unified config with Muon+AdamW optimizer and meta-optimization
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=unified \
@@ -175,12 +175,16 @@ run: |
     training.optimizer.lr_adam=${ADAM_LR} \
     training.optimizer.weight_decay=0.01 \
     training.lambda_warmup.enabled=false \
-    training.influence.enabled=true \
-    training.influence.method=datainf \
-    training.influence.update_interval=500 \
-    training.influence.warmup_steps=200 \
-    training.influence.learning_rate=0.1 \
-    training.influence.samples_per_dataset=32 \
+    training.influence.enabled=false \
+    training.meta_optimization.enabled=true \
+    training.meta_optimization.ldc_mtl.enabled=true \
+    training.meta_optimization.ldc_mtl.lambda_penalty=0.1 \
+    training.meta_optimization.ldc_mtl.router_lr=0.001 \
+    training.meta_optimization.ldc_mtl.step_interval=32 \
+    training.meta_optimization.odm.enabled=true \
+    training.meta_optimization.odm.reward_smoothing=0.9 \
+    training.meta_optimization.odm.warmup_ratio=0.01 \
+    training.meta_optimization.log_interval=50 \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
     training.checkpoint.save_interval=500 \
@@ -207,14 +211,14 @@ run: |
     grep -E "train/loss|train/continue_pretrain|train/dlm|train/lrc" training.log | tail -20
   fi
 
-  # Check influence weight updates
+  # Check meta-optimization weight updates
   echo ""
-  echo "[Verify] Influence weight updates:"
-  if grep -q "influence" training.log; then
-    echo "Influence logging found"
-    grep -E "influence|weight_update" training.log | tail -10
+  echo "[Verify] Meta-optimization updates:"
+  if grep -q "ldc_mtl\|odm" training.log; then
+    echo "Meta-optimization logging found"
+    grep -E "ldc_mtl|odm|objective_weight|dataset_weight" training.log | tail -10
   else
-    echo "WARNING: No influence messages found"
+    echo "WARNING: No meta-optimization messages found"
   fi
 
   # List checkpoints
@@ -231,6 +235,7 @@ run: |
   echo ""
   echo "Check WandB for:"
   echo "- train/loss, train/continue_pretrain_loss, train/dlm_loss"
-  echo "- influence/weight_* (dataset mixture weights)"
-  echo "- schedule/* (curriculum phase weights)"
+  echo "- meta/ldc_mtl/objective_weight_* (learned objective weights)"
+  echo "- meta/odm/dataset_weight_* (learned dataset weights)"
+  echo "- meta/odm/exploration_rate (EXP3 exploration decay)"
   echo "================================================"

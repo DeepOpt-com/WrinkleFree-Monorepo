@@ -43,6 +43,10 @@ class LDCMTLConfig:
     lambda_penalty: float = 0.1
     hidden_dim: int = 32
     router_lr: float = 1e-3
+    step_interval: int = 1
+    """How often to update router weights. Set >1 when using large gradient
+    accumulation steps so the router sees more diverse gradients before updating.
+    For single-batch training, set equal to gradient_accumulation_steps."""
 
 
 @dataclass

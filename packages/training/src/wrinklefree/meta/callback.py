@@ -205,9 +205,10 @@ class MetaOptimizerCallback(Callback):
             self._update_odm(trainer, outputs, step)
 
         # LDC-MTL updates happen during forward pass (gradients flow through router)
-        # We just need to step the optimizer periodically
+        # We step the optimizer based on step_interval config
         if self.ldc_mtl is not None:
-            self.ldc_mtl.step()
+            if step % self.config.ldc_mtl.step_interval == 0:
+                self.ldc_mtl.step()
 
         # Log periodically
         if step % self.config.log_interval == 0:
