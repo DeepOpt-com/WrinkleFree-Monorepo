@@ -328,19 +328,157 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     return model, tokenizer
 
 
+def _get_distill_status(cfg: DictConfig) -> tuple[bool, bool, float]:
+    """Check distillation configuration status.
+
+    Returns:
+        Tuple of (needs_teacher, needs_lazy_load, initial_weight):
+        - needs_teacher: True if distill is configured and will be used at some point
+        - needs_lazy_load: True if distill weight starts at 0 but becomes non-zero later
+        - initial_weight: The initial distill weight (0 if curriculum starts with 0)
+    """
+    distill_cfg = cfg.training.get("objectives", {}).get("distill", {})
+
+    # Check if distill objective is enabled
+    if not distill_cfg.get("enabled", False):
+        return False, False, 0.0
+
+    # Check if any sub-component is enabled
+    components = ["hidden", "logits", "attention", "lrc"]
+    any_component_enabled = any(
+        distill_cfg.get(comp, {}).get("enabled", False) for comp in components
+    )
+    if not any_component_enabled:
+        return False, False, 0.0
+
+    # Check base weight
+    base_weight = distill_cfg.get("weight", 1.0)
+
+    # Check curriculum phases for distill weights
+    curriculum_cfg = cfg.training.get("curriculum", {})
+    if curriculum_cfg.get("enabled", False):
+        phases = curriculum_cfg.get("phases", [])
+        if phases:
+            # Get initial weight from first phase
+            first_phase = phases[0]
+            initial_weight = first_phase.get("objectives", {}).get("distill", base_weight)
+
+            # Get max weight across all phases
+            max_curriculum_weight = 0.0
+            phase_with_max = None
+            for phase in phases:
+                phase_objectives = phase.get("objectives", {})
+                phase_weight = phase_objectives.get("distill", base_weight)
+                if phase_weight > max_curriculum_weight:
+                    max_curriculum_weight = phase_weight
+                    phase_with_max = phase.get("name", "unknown")
+
+            if max_curriculum_weight <= 0:
+                logger.info("Distill weight is 0 in all curriculum phases - no teacher needed")
+                return False, False, 0.0
+
+            # Check if we need lazy loading (starts at 0, becomes non-zero later)
+            if initial_weight <= 0 and max_curriculum_weight > 0:
+                logger.info(
+                    f"Distill weight starts at 0 but reaches {max_curriculum_weight} "
+                    f"in phase '{phase_with_max}' - will lazy load teacher when needed"
+                )
+                return True, True, initial_weight
+
+            return True, False, initial_weight
+
+    # No curriculum - use base weight
+    if base_weight <= 0:
+        logger.info("Distill objective weight is 0 - no teacher needed")
+        return False, False, 0.0
+
+    return True, False, base_weight
+
+
+def prepare_teacher_config(cfg: DictConfig) -> dict | None:
+    """Prepare teacher configuration for lazy loading.
+
+    Returns a config dict that can be passed to WrinkleFreeLightningModule
+    for lazy teacher loading, or None if teacher is not needed.
+
+    Args:
+        cfg: Hydra config
+
+    Returns:
+        Teacher config dict or None
+    """
+    needs_teacher, _, _ = _get_distill_status(cfg)
+    if not needs_teacher:
+        return None
+
+    teacher_cfg = cfg.training.get("teacher", {})
+    distill_cfg = cfg.training.get("objectives", {}).get("distill", {})
+
+    # Determine teacher model name
+    teacher_model_name = teacher_cfg.get("model_name")
+    if not teacher_model_name:
+        # Fall back to student model name (distill from original fp16 weights)
+        teacher_model_name = cfg.model.get("pretrained_name") or cfg.model.get("name")
+
+    if not teacher_model_name:
+        logger.warning("No teacher model name specified and no student model name found")
+        return None
+
+    # Determine if attention distillation needs eager attention
+    attention_enabled = distill_cfg.get("attention", {}).get("enabled", False)
+
+    return {
+        "model_name": teacher_model_name,
+        "fp16": teacher_cfg.get("fp16", True),
+        "offload_to_cpu": teacher_cfg.get("offload_to_cpu", False),
+        "load_in_4bit": teacher_cfg.get("load_in_4bit", False),
+        "use_flash_attention": teacher_cfg.get("use_flash_attention", not attention_enabled),
+        "use_eager_attention": teacher_cfg.get("use_eager_attention", attention_enabled),
+        "distill_cfg": dict(distill_cfg) if distill_cfg else {},
+    }
+
+
 def load_teacher_model(cfg: DictConfig) -> HiddenStateTeacher | None:
-    """Load teacher model if distillation is enabled."""
-    if not cfg.training.get("distillation", {}).get("enabled", False):
+    """Load teacher model immediately if distillation needs it from the start.
+
+    Skips loading if:
+    - distill objective is disabled or weight is 0
+    - all distill sub-components are disabled
+    - curriculum has distill weight 0 in the initial phase (will lazy load later)
+
+    Args:
+        cfg: Hydra config
+
+    Returns:
+        HiddenStateTeacher or None if not needed immediately
+    """
+    needs_teacher, needs_lazy_load, initial_weight = _get_distill_status(cfg)
+
+    if not needs_teacher:
         return None
 
-    teacher_path = cfg.training.distillation.get("teacher_path")
-    if not teacher_path:
+    if needs_lazy_load:
+        logger.info(
+            "Teacher will be lazy loaded when distill weight becomes non-zero "
+            "(saving memory during initial training phases)"
+        )
         return None
 
-    logger.info(f"Loading teacher model: {teacher_path}")
-    teacher = HiddenStateTeacher.from_pretrained(
-        teacher_path,
-        torch_dtype=torch.bfloat16,
+    # Load teacher immediately
+    teacher_config = prepare_teacher_config(cfg)
+    if teacher_config is None:
+        return None
+
+    logger.info(f"Loading teacher model: {teacher_config['model_name']}")
+
+    teacher = HiddenStateTeacher(
+        model_name_or_path=teacher_config["model_name"],
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        load_in_fp16=teacher_config["fp16"],
+        offload_to_cpu=teacher_config["offload_to_cpu"],
+        load_in_4bit=teacher_config["load_in_4bit"],
+        use_flash_attention=teacher_config["use_flash_attention"],
+        use_eager_attention=teacher_config["use_eager_attention"],
     )
     return teacher
 
@@ -625,8 +763,17 @@ def main(cfg: DictConfig) -> None:
     # Load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(cfg)
 
-    # Load teacher if needed
+    # Load teacher if needed immediately, or prepare config for lazy loading
     teacher = load_teacher_model(cfg)
+    teacher_cfg = prepare_teacher_config(cfg) if teacher is None else None
+
+    # Add batch size reduction factor to teacher config for lazy loading
+    if teacher_cfg is not None:
+        # When teacher is lazy loaded, reduce batch size by this factor
+        # Default 0.5 means batch size is halved (teacher ~doubles memory usage)
+        teacher_cfg["batch_size_factor"] = cfg.training.get("teacher", {}).get(
+            "batch_size_factor", 0.5
+        )
 
     # Create objective manager
     objective_manager = create_objective_manager(
@@ -669,11 +816,15 @@ def main(cfg: DictConfig) -> None:
         model=model,
         objective_manager=objective_manager,
         teacher_model=teacher.model if teacher else None,
+        teacher_cfg=teacher_cfg,  # For lazy loading
         optimizer_cfg=cfg.training.get("optimizer", {}),
         scheduler_cfg=cfg.training.get("scheduler", {}),
         gradient_clipping=gradient_clipping,
         resume_cfg=cfg.training.get("resume", {}),
     )
+
+    # Store datamodule reference for batch size adjustment during lazy teacher loading
+    module._datamodule = datamodule
 
     # Create callbacks
     callbacks = create_callbacks(cfg)

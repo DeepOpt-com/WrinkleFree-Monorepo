@@ -84,6 +84,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         model: The model to train (BitNet or standard transformer)
         objective_manager: ObjectiveManager with configured objectives
         teacher_model: Optional teacher model for distillation objectives
+        teacher_cfg: Optional config for lazy teacher loading (if teacher_model is None)
         optimizer_cfg: Optimizer configuration dict
         scheduler_cfg: Scheduler configuration dict
         gradient_clipping: Max gradient norm (0 to disable)
@@ -95,6 +96,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         model: nn.Module,
         objective_manager: ObjectiveManager,
         teacher_model: Optional[nn.Module] = None,
+        teacher_cfg: Optional[dict] = None,
         optimizer_cfg: Optional[DictConfig] = None,
         scheduler_cfg: Optional[DictConfig] = None,
         gradient_clipping: float = 1.0,
@@ -104,6 +106,8 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         self.model = model
         self.objective_manager = objective_manager
         self.teacher_model = teacher_model
+        self.teacher_cfg = teacher_cfg  # For lazy loading
+        self._teacher_load_attempted = False  # Track if we've tried to load
         self.optimizer_cfg = optimizer_cfg or {}
         self.scheduler_cfg = scheduler_cfg or {}
         self.gradient_clipping = gradient_clipping
@@ -141,18 +145,149 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             "attentions": getattr(outputs, "attentions", None),
         }
 
+    def _lazy_load_teacher(self) -> bool:
+        """Lazily load teacher model when first needed.
+
+        Returns True if teacher was loaded successfully, False otherwise.
+        Only attempts to load once - subsequent calls return cached result.
+
+        When teacher is loaded, batch size is automatically reduced by the
+        configured batch_size_factor (default 0.5) to prevent OOM errors.
+        """
+        if self._teacher_load_attempted:
+            return self.teacher_model is not None
+
+        self._teacher_load_attempted = True
+
+        if self.teacher_cfg is None:
+            logger.warning("Teacher needed but no teacher_cfg provided for lazy loading")
+            return False
+
+        logger.info(
+            f"Lazy loading teacher model at step {self.global_step} "
+            f"(distill weight became non-zero)"
+        )
+
+        # Reduce batch size BEFORE loading teacher to prevent OOM
+        batch_size_factor = self.teacher_cfg.get("batch_size_factor", 0.5)
+        self._reduce_batch_size(batch_size_factor)
+
+        try:
+            from wf_train.teachers import HiddenStateTeacher
+
+            teacher_model_name = self.teacher_cfg.get("model_name")
+            if not teacher_model_name:
+                logger.warning("No teacher model name in teacher_cfg")
+                return False
+
+            # Get distill config for attention settings
+            distill_cfg = self.teacher_cfg.get("distill_cfg", {})
+            attention_enabled = distill_cfg.get("attention", {}).get("enabled", False)
+            use_eager_attention = self.teacher_cfg.get("use_eager_attention", attention_enabled)
+
+            self.teacher_model = HiddenStateTeacher(
+                model_name_or_path=teacher_model_name,
+                device=self.device,
+                load_in_fp16=self.teacher_cfg.get("fp16", True),
+                offload_to_cpu=self.teacher_cfg.get("offload_to_cpu", False),
+                load_in_4bit=self.teacher_cfg.get("load_in_4bit", False),
+                use_flash_attention=self.teacher_cfg.get("use_flash_attention", not attention_enabled),
+                use_eager_attention=use_eager_attention,
+            )
+
+            # Freeze teacher
+            self.teacher_model.eval()
+            for param in self.teacher_model.parameters():
+                param.requires_grad = False
+
+            logger.info(f"Teacher model loaded successfully: {teacher_model_name}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to lazy load teacher model: {e}")
+            return False
+
+    def _reduce_batch_size(self, factor: float) -> None:
+        """Reduce batch size by the given factor when teacher is loaded.
+
+        This prevents OOM errors when the teacher model increases memory usage.
+        The dataloader is recreated with the new batch size.
+
+        Args:
+            factor: Multiply current batch size by this factor (e.g., 0.5 = halve)
+        """
+        datamodule = getattr(self, "_datamodule", None)
+        if datamodule is None:
+            logger.warning(
+                "Cannot reduce batch size: no datamodule reference. "
+                "If you encounter OOM, restart with smaller batch_size."
+            )
+            return
+
+        old_batch_size = datamodule.batch_size
+        new_batch_size = max(1, int(old_batch_size * factor))
+
+        if new_batch_size == old_batch_size:
+            return
+
+        logger.info(
+            f"Reducing batch size for teacher loading: {old_batch_size} -> {new_batch_size} "
+            f"(factor={factor})"
+        )
+
+        # Update datamodule batch size
+        datamodule.batch_size = new_batch_size
+
+        # Tell trainer to reload dataloaders with new batch size
+        if self.trainer is not None:
+            try:
+                self.trainer.reset_train_dataloader()
+                logger.info(f"Dataloader recreated with batch_size={new_batch_size}")
+            except Exception as e:
+                logger.warning(f"Could not reset dataloader: {e}. New batch size will apply on next epoch.")
+
     def _get_teacher_outputs(self, batch: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Get teacher model outputs if teacher is configured and needed.
 
         Extracts logits, hidden_states, and attentions from teacher model.
         Returns None if no teacher or objectives don't require it.
 
+        Supports lazy loading: if teacher_model is None but teacher_cfg is provided
+        and distill weight is non-zero, will load the teacher on-demand.
+
         IMPORTANT: Uses _original_input_ids (unmasked) for teacher forward when DLM
         preprocessing has been applied. AR teachers were never trained on masked
         inputs and would produce garbage predictions on [MASK] tokens.
         """
-        if self.teacher_model is None or not self.objective_manager.requires_teacher:
+        if not self.objective_manager.requires_teacher:
             return None
+
+        # Check if distill weight is currently non-zero
+        current_weights = self.objective_manager.get_current_weights()
+        distill_weight = current_weights.get("distill", 0.0)
+
+        if distill_weight <= 0:
+            # Distill not active in current curriculum phase
+            return None
+
+        # Lazy load teacher if needed
+        if self.teacher_model is None:
+            if self.teacher_cfg is not None and not self._teacher_load_attempted:
+                if self._lazy_load_teacher():
+                    # CRITICAL: Skip distillation for THIS step. The current batch
+                    # was loaded with the old (larger) batch size. Running teacher
+                    # forward on it would likely OOM. Distillation resumes next step
+                    # with the reduced batch size.
+                    logger.info(
+                        "Skipping distillation for current step to apply batch size reduction. "
+                        "Distillation will resume on next step."
+                    )
+                    return None
+                else:
+                    return None
+            else:
+                return None
 
         # Use original unmasked input_ids for AR teacher (not masked input from DLM)
         # Falls back to batch["input_ids"] if DLM preprocessing wasn't applied
