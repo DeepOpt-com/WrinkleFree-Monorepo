@@ -51,7 +51,7 @@ envs:
   MAX_STEPS: 19073  # 5B tokens / (4*32*2048) tokens per step (batch=4, grad_accum=32)
   MUON_LR: 0.02  # Muon LR for 2D weights (recommended default)
   ADAM_LR: 3e-4  # AdamW LR for embeddings/biases (recommended default)
-  EXPERIMENT_NAME: smollm2_135m_5b_influence
+  EXPERIMENT_NAME: smollm2_135m_5b_meta_opt
   WANDB_PROJECT: wrinklefree
   WANDB_RUN_ID: bitdistill-dlm-${SKYPILOT_TASK_ID}
   HF_HUB_ENABLE_HF_TRANSFER: "1"
