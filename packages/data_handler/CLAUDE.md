@@ -6,8 +6,9 @@ This file provides guidance to Claude Code when working with this repository.
 
 data_handler is a shared library in the WrinkleFree monorepo providing:
 - **Data Loading**: Streaming datasets, sequence packing, data mixing
-- **Influence Functions**: Data influence computation for optimizing training data
 - **Mixture Optimization**: Dynamic dataset weight optimization
+
+> **Note**: DataInf-based influence functions are now in `_legacy/`. Use `training.meta_optimization.odm` instead (O(1) complexity via EXP3 bandit). See [arxiv:2312.02406](https://arxiv.org/abs/2312.02406).
 
 ## Monorepo Integration
 
@@ -56,8 +57,8 @@ from data_handler.influence import InfluenceAwareOptimizer
 | Module | Purpose |
 |--------|---------|
 | `data_handler.data` | Data loading, streaming, packing |
-| `data_handler.influence` | Influence function computation |
-| `data_handler.mixing` | Dataset mixing and weight optimization |
+| `data_handler.data.mixing` | MixedDataset with dynamic weights |
+| `data_handler._legacy.influence_datainf` | DEPRECATED: DataInf influence (use ODM) |
 
 ## Architecture
 
@@ -70,13 +71,10 @@ src/data_handler/
 │       ├── pretrain.py         # PretrainDataset with packing
 │       └── sft.py              # SFTDataset with chat templates
 │
-├── influence/               # Influence-based optimization
-│   ├── calculator.py           # DataInfCalculator
-│   └── optimizer.py            # InfluenceAwareOptimizer
-│
-├── distillation/            # Knowledge distillation
-│   ├── teacher.py              # TeacherWrapper, CachedTeacher
-│   └── losses.py               # KL divergence losses
+├── _legacy/                 # Deprecated code
+│   └── influence_datainf/      # DataInf influence (replaced by ODM)
+│       ├── tracker.py          # InfluenceTracker callback
+│       └── mixture_calculator.py
 │
 └── distributed/             # Distributed training
     ├── fsdp2.py                # FSDP2 wrapping & checkpointing
