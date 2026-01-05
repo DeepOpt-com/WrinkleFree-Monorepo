@@ -207,6 +207,12 @@ class LDCMTLManager:
         if loss_device != self.device:
             self.router = self.router.to(loss_device)
             self.device = loss_device
+            # Must recreate optimizer - old one has references to CPU params
+            self.optimizer = torch.optim.Adam(
+                self.router.parameters(),
+                lr=self.config.router_lr,
+            )
+            logger.info(f"LDC-MTL router moved to {loss_device}, optimizer recreated")
 
         # Get weights from router (detach losses to avoid double backprop)
         weights = self.router(loss_vec.detach())
