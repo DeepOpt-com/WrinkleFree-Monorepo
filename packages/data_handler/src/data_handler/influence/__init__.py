@@ -19,5 +19,68 @@ warnings.warn(
     stacklevel=2,
 )
 
-# Re-export from _legacy for backwards compatibility
-from data_handler._legacy.influence_datainf import *  # noqa: F401, F403
+# Re-export from _legacy for backwards compatibility (direct import to avoid _legacy/__init__.py)
+from data_handler._legacy.influence_datainf import (
+    # Base interfaces
+    EmbeddingExtractor,
+    InfluenceCalculator,
+    DataSelector,
+    # Configs
+    InfluenceConfig,
+    InfluenceTarget,
+    MixtureOptimizationConfig,
+    ProbeSetConfig,
+    SelfBoostingConfig,
+    JVPEmbeddingConfig,
+    LandmarkConfig,
+    KRRConfig,
+    InfluenceDistillationConfig,
+    # Gradient extraction
+    DiscriminativeGradientExtractor,
+    # DataInf
+    DataInfCalculator,
+    create_influence_calculator,
+    # Influence Distillation
+    JVPEmbeddingExtractor,
+    RandomizedHadamardTransform,
+    create_projection,
+    LandmarkSelector,
+    select_landmarks,
+    InfluenceDistillation,
+    create_influence_distillation,
+    # Mixture calculation
+    MixtureWeightCalculator,
+    create_mixture_calculator,
+    # Tracker
+    InfluenceTracker,
+    create_influence_tracker,
+)
+
+__all__ = [
+    "EmbeddingExtractor",
+    "InfluenceCalculator",
+    "DataSelector",
+    "InfluenceConfig",
+    "InfluenceTarget",
+    "MixtureOptimizationConfig",
+    "ProbeSetConfig",
+    "SelfBoostingConfig",
+    "JVPEmbeddingConfig",
+    "LandmarkConfig",
+    "KRRConfig",
+    "InfluenceDistillationConfig",
+    "DiscriminativeGradientExtractor",
+    "DataInfCalculator",
+    "create_influence_calculator",
+    "JVPEmbeddingExtractor",
+    "RandomizedHadamardTransform",
+    "create_projection",
+    "LandmarkSelector",
+    "select_landmarks",
+    "InfluenceDistillation",
+    "create_influence_distillation",
+    "MixtureWeightCalculator",
+    "create_mixture_calculator",
+    "InfluenceTracker",
+    "create_influence_tracker",
+]
