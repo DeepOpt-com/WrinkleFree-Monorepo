@@ -120,6 +120,28 @@ class LayerLRManager:
             self.config.max_multiplier,
         )
 
+    def _ensure_device(self, target_device: torch.device) -> None:
+        """Ensure all tensors are on the target device.
+
+        Called when model moves from CPU to GPU (e.g., during BatchSizeFinder).
+        Must recreate optimizer after moving log_multipliers.
+        """
+        if target_device == self.device:
+            return
+
+        logger.info(f"LayerLR moving from {self.device} to {target_device}")
+
+        # Move EMA tensor
+        self._ema_grad_norms = self._ema_grad_norms.to(target_device)
+
+        # Move log_multipliers parameter
+        self.log_multipliers.data = self.log_multipliers.data.to(target_device)
+
+        # Must recreate optimizer - old one has references to old device params
+        self.optimizer = torch.optim.Adam([self.log_multipliers], lr=self.config.lr)
+
+        self.device = target_device
+
     def collect_grad_norms(self, model: nn.Module) -> None:
         """Compute and store gradient norms per layer.
 
@@ -128,6 +150,11 @@ class LayerLRManager:
         """
         layer_norms: dict[int, float] = {}
         param_dict = dict(model.named_parameters())
+
+        # Check if we need to move to a different device
+        first_param = next(iter(param_dict.values()), None)
+        if first_param is not None and first_param.device != self.device:
+            self._ensure_device(first_param.device)
 
         for layer_idx, param_names in self._layer_param_mapping.items():
             grad_squared_sum = 0.0

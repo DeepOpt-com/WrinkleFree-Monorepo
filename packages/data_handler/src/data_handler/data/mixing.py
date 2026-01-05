@@ -75,6 +75,7 @@ class MixedDataset(IterableDataset):
 
         self._datasets = None
         self._iterators = None
+        self._epoch = 0  # Track epoch for proper iterator reset
 
         # Sampling statistics tracking
         self._sample_counts: dict[str, int] = {m.name: 0 for m in mixtures}
@@ -136,6 +137,19 @@ class MixedDataset(IterableDataset):
         """Reset sampling statistics. Call at start of new epoch."""
         self._sample_counts = {m.name: 0 for m in self.mixtures}
         self._exhausted_datasets = set()
+
+    def set_epoch(self, epoch: int) -> None:
+        """Set epoch for proper shuffling with streaming datasets.
+
+        This must be called at the start of each epoch to ensure different
+        samples are seen. Without this, the same shuffle buffer order is used.
+
+        Args:
+            epoch: Current epoch number (0-indexed)
+        """
+        self._epoch = epoch
+        # Force iterator recreation on next __iter__ call
+        self._iterators = None
 
     def get_source_loaders(
         self,
@@ -213,9 +227,11 @@ class MixedDataset(IterableDataset):
                 )
 
             # Apply shuffle buffer for streaming datasets
+            # Include epoch in seed to ensure different samples each epoch
             if self.streaming and self.shuffle_buffer_size > 0:
                 ds = ds.shuffle(
-                    seed=self.seed + self.rank, buffer_size=self.shuffle_buffer_size
+                    seed=self.seed + self.rank + self._epoch * 1000,
+                    buffer_size=self.shuffle_buffer_size,
                 )
 
             self._datasets.append(ds)
@@ -296,13 +312,19 @@ class MixedDataset(IterableDataset):
         If homogeneous_batch_size > 0, yields consecutive samples from the
         same domain before sampling a new domain (ODM paper style).
         """
-        if self._datasets is None:
-            self._load_datasets()
+        # Always reload datasets/iterators to ensure fresh iteration
+        # This fixes the bug where iterators were exhausted but not reset
+        # Also ensures epoch-varying shuffle seeds take effect
+        self._load_datasets()
 
         # Reset stats for new epoch
         self.reset_stats()
 
-        rng = torch.Generator().manual_seed(self.seed)
+        # Use epoch-varying seed for sampling order reproducibility
+        rng = torch.Generator().manual_seed(self.seed + self._epoch * 1000)
+
+        # Increment epoch for next iteration
+        self._epoch += 1
 
         # Track which datasets are still active (not exhausted)
         active_mask = torch.ones(len(self.mixtures), dtype=torch.bool)
