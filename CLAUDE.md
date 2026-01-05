@@ -4,8 +4,12 @@
 
 ## CRITICAL Rules (MUST FOLLOW)
 
-1. **SYNC BEFORE REMOTE:** Before ANY ssh/remote command:
-   `uv run gcd sync-ssh <host> --smart`
+1. **CHECK SYNC BEFORE REMOTE:** Before ANY ssh/remote command, check if live sync is running:
+   ```bash
+   ./sync.sh --status --preset <preset>  # Returns JSON with running status
+   ```
+   - If `"running": true` → Files are auto-syncing, proceed with remote commands
+   - If `"running": false` → Start sync first: `./sync.sh --preset <preset>`
 
 2. **NO GCP GPU:** Use Nebius or RunPod only (GCP is expensive)
 
@@ -25,8 +29,10 @@
 | BitDistill distillation | `... training=bitdistill_full` |
 | LRC calibration | `... training=lrc_calibration` |
 | Deploy to cloud | `cd packages/deployer && wf train -m smollm2_135m -s 2 --cloud nebius` |
-| Sync to Desktop | `uv run gcd sync-ssh desktop --smart` |
-| Watch mode sync | `uv run gcd sync-ssh desktop --watch` |
+| **Check sync status** | `./sync.sh --status --preset <preset>` |
+| **Start live sync** | `./sync.sh --preset <preset>` (runs in foreground with inotify) |
+| One-time sync | `./sync.sh --preset <preset> --no-watch` |
+| Setup creds only | `./sync.sh --setup-creds --preset <preset>` |
 | Run tests | `uv run pytest packages/<pkg>/tests/` |
 | Type check | `uv run mypy packages/<pkg>/src/` |
 

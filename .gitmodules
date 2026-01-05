@@ -1,4 +1,0 @@
-[submodule "extern/gpucloud-dev"]
-	path = extern/gpucloud-dev
-	url = git@github.com:DeepOpt-com/runpod-dev.git
-	branch = master
