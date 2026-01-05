@@ -261,6 +261,19 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         For multi-optimizer setups (Muon), returns [muon_opt, adam_opt] with
         corresponding schedulers for each.
         """
+        # Debug: log optimizer_cfg contents
+        # Convert DictConfig to dict for reliable access
+        from omegaconf import OmegaConf
+        if hasattr(self.optimizer_cfg, '_content'):
+            opt_dict = OmegaConf.to_container(self.optimizer_cfg, resolve=True)
+            logger.info(f"[DEBUG] optimizer_cfg (converted): {opt_dict}")
+        else:
+            opt_dict = self.optimizer_cfg
+            logger.info(f"[DEBUG] optimizer_cfg (already dict): {opt_dict}")
+
+        lr_muon_val = opt_dict.get('lr_muon', 0.02) if isinstance(opt_dict, dict) else self.optimizer_cfg.get('lr_muon', 0.02)
+        logger.info(f"[DEBUG] lr_muon to use: {lr_muon_val}")
+
         optimizer_type = self.optimizer_cfg.get("type", "muon")  # New default
         learning_rate = self.optimizer_cfg.get("learning_rate", 1e-4)
         weight_decay = self.optimizer_cfg.get("weight_decay", 0.1)
@@ -268,12 +281,18 @@ class WrinkleFreeLightningModule(pl.LightningModule):
 
         if optimizer_type.lower() == "muon":
             # Official PyTorch Muon (2.9+) with combined wrapper
+            lr_muon = self.optimizer_cfg.get("lr_muon", 0.02)
+            lr_adam = self.optimizer_cfg.get("lr_adam", 3e-4)
+            logger.info(f"[LR DEBUG] Creating Muon optimizer with lr_muon={lr_muon}, lr_adam={lr_adam}")
             optimizer = self._create_pytorch_muon_optimizer(
-                lr_muon=self.optimizer_cfg.get("lr_muon", 0.02),
-                lr_adam=self.optimizer_cfg.get("lr_adam", 3e-4),
+                lr_muon=lr_muon,
+                lr_adam=lr_adam,
                 weight_decay=self.optimizer_cfg.get("weight_decay", 0.01),
                 momentum=self.optimizer_cfg.get("momentum", 0.95),
             )
+            # Verify the LR in param_groups
+            for i, pg in enumerate(optimizer.param_groups):
+                logger.info(f"[LR DEBUG] param_groups[{i}]: lr={pg.get('lr', 'NO_LR')}, num_params={len(pg['params'])}")
         elif optimizer_type.lower() == "muonclip":
             # Legacy muon-clip (keep for backward compatibility)
             optimizer = self._create_muon_optimizer(learning_rate, weight_decay)

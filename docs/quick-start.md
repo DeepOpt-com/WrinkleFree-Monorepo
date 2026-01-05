@@ -54,7 +54,7 @@ uv run --package wrinklefree python packages/training/scripts/train_lightning.py
   model=smollm2_135m \
   training=base
 
-# With auto batch size scaling (finds max batch that fits GPU)
+# With auto batch size scaling (single GPU only - not supported with DDP/FSDP!)
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
   training=base \
