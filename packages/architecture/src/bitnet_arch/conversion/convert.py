@@ -132,16 +132,18 @@ def convert_attention_layer(
     insert_subln: bool = True,
 ) -> None:
     """
-    Convert attention layer to BitNet, optionally with SubLN.
+    Convert attention layer to BitNet, with SubLN before EVERY projection.
+
+    Per BitNet 1.58b paper: "we add LN immediately before the quantization function"
+    This means SubLN before ALL BitLinear layers, not just output projections.
 
     Args:
         attention_module: The attention module to convert
         hidden_size: Model hidden size
         exclude_layers: Layer names to exclude from conversion
-        insert_subln: Whether to insert SubLN before o_proj. Default True for
-            BitDistill compatibility, but set False to preserve pretrained weights.
+        insert_subln: Whether to insert SubLN before each projection.
     """
-    # Convert Q, K, V projections to BitLinear
+    # Convert Q, K, V projections to BitLinear WITH SubLN
     for proj_name in ["q_proj", "k_proj", "v_proj"]:
         if hasattr(attention_module, proj_name) and proj_name not in exclude_layers:
             proj = getattr(attention_module, proj_name)
@@ -154,10 +156,16 @@ def convert_attention_layer(
                 # Preserve dtype/device for FSDP compatibility
                 new_proj.weight.data = proj.weight.data.clone()
                 if proj.bias is not None:
-                    new_proj.bias.data = proj.bias.data.clone()
-                setattr(attention_module, proj_name, new_proj)
+                    new_proj.bias.data.copy_(proj.bias.data)
 
-    # Convert o_proj to BitLinear
+                if insert_subln:
+                    # SubLN before quantization (per BitNet paper)
+                    subln = SubLN(proj.in_features)
+                    setattr(attention_module, proj_name, nn.Sequential(subln, new_proj))
+                else:
+                    setattr(attention_module, proj_name, new_proj)
+
+    # Convert o_proj to BitLinear WITH SubLN
     if hasattr(attention_module, "o_proj") and "o_proj" not in exclude_layers:
         o_proj = attention_module.o_proj
 
@@ -175,12 +183,11 @@ def convert_attention_layer(
             new_o_proj = o_proj
 
         if insert_subln:
-            # Wrap SubLN + projection in Sequential (BitDistill-style)
+            # SubLN before quantization (per BitNet paper)
             o_proj_in = o_proj.in_features if isinstance(o_proj, nn.Linear) else hidden_size
             subln = SubLN(o_proj_in)
             attention_module.o_proj = nn.Sequential(subln, new_o_proj)
         else:
-            # Direct BitLinear replacement (preserves pretrained weights)
             attention_module.o_proj = new_o_proj
 
 
@@ -191,16 +198,18 @@ def convert_mlp_layer(
     insert_subln: bool = True,
 ) -> None:
     """
-    Convert MLP/FFN layer to BitNet, optionally with SubLN.
+    Convert MLP/FFN layer to BitNet, with SubLN before EVERY projection.
+
+    Per BitNet 1.58b paper: "we add LN immediately before the quantization function"
+    This means SubLN before ALL BitLinear layers, not just output projections.
 
     Args:
         mlp_module: The MLP module to convert
         hidden_size: Model hidden size
         exclude_layers: Layer names to exclude from conversion
-        insert_subln: Whether to insert SubLN before down_proj. Default True for
-            BitDistill compatibility, but set False to preserve pretrained weights.
+        insert_subln: Whether to insert SubLN before each projection.
     """
-    # Convert gate and up projections
+    # Convert gate and up projections WITH SubLN
     for proj_name in ["gate_proj", "up_proj"]:
         if hasattr(mlp_module, proj_name) and proj_name not in exclude_layers:
             proj = getattr(mlp_module, proj_name)
@@ -213,10 +222,16 @@ def convert_mlp_layer(
                 # Preserve dtype/device for FSDP compatibility
                 new_proj.weight.data = proj.weight.data.clone()
                 if proj.bias is not None:
-                    new_proj.bias.data = proj.bias.data.clone()
-                setattr(mlp_module, proj_name, new_proj)
+                    new_proj.bias.data.copy_(proj.bias.data)
 
-    # Convert down_proj to BitLinear
+                if insert_subln:
+                    # SubLN before quantization (per BitNet paper)
+                    subln = SubLN(proj.in_features)
+                    setattr(mlp_module, proj_name, nn.Sequential(subln, new_proj))
+                else:
+                    setattr(mlp_module, proj_name, new_proj)
+
+    # Convert down_proj to BitLinear WITH SubLN
     if hasattr(mlp_module, "down_proj") and "down_proj" not in exclude_layers:
         down_proj = mlp_module.down_proj
 
@@ -234,12 +249,11 @@ def convert_mlp_layer(
             new_down_proj = down_proj
 
         if insert_subln:
-            # Wrap SubLN + projection in Sequential (BitDistill-style)
+            # SubLN before quantization (per BitNet paper)
             down_proj_in = down_proj.in_features if isinstance(down_proj, nn.Linear) else hidden_size
             subln = SubLN(down_proj_in)
             mlp_module.down_proj = nn.Sequential(subln, new_down_proj)
         else:
-            # Direct BitLinear replacement (preserves pretrained weights)
             mlp_module.down_proj = new_down_proj
 
 

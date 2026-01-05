@@ -126,26 +126,34 @@ class TestAutoConvertIfNeeded:
 class TestConvertAttentionLayer:
     """Test attention layer conversion."""
 
-    def test_converts_projections_to_bitlinear(self):
-        """Test that Q, K, V, O projections become BitLinear."""
+    def test_inserts_subln_before_all_projections(self):
+        """Test that SubLN is inserted before ALL projections (q/k/v/o).
+
+        Per BitNet 1.58b paper: "we add LN immediately before the quantization function"
+        This means SubLN before EVERY BitLinear, not just output projections.
+        """
         attn = SimpleLlamaAttention(hidden_size=128)
 
         convert_attention_layer(attn, hidden_size=128, exclude_layers=[])
 
-        assert isinstance(attn.q_proj, BitLinear)
-        assert isinstance(attn.k_proj, BitLinear)
-        assert isinstance(attn.v_proj, BitLinear)
+        # ALL projections should now be Sequential(SubLN, BitLinear)
+        for proj_name in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+            proj = getattr(attn, proj_name)
+            assert isinstance(proj, nn.Sequential), f"{proj_name} should be Sequential"
+            assert isinstance(proj[0], SubLN), f"{proj_name} should have SubLN first"
+            assert isinstance(proj[1], BitLinear), f"{proj_name} should have BitLinear second"
 
-    def test_inserts_subln_before_o_proj(self):
-        """Test that SubLN is inserted before o_proj."""
+    def test_subln_has_correct_dimensions(self):
+        """Test that SubLN has correct input dimensions for each projection."""
         attn = SimpleLlamaAttention(hidden_size=128)
 
         convert_attention_layer(attn, hidden_size=128, exclude_layers=[])
 
-        # o_proj should now be Sequential(SubLN, BitLinear)
-        assert isinstance(attn.o_proj, nn.Sequential)
-        assert isinstance(attn.o_proj[0], SubLN)
-        assert isinstance(attn.o_proj[1], BitLinear)
+        # q/k/v/o all take hidden_size as input
+        for proj_name in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+            proj = getattr(attn, proj_name)
+            subln = proj[0]
+            assert subln.hidden_size == 128, f"{proj_name} SubLN should have hidden_size=128"
 
     def test_respects_exclude_layers(self):
         """Test that excluded layers are not converted."""
@@ -156,7 +164,9 @@ class TestConvertAttentionLayer:
 
         # q_proj should remain unchanged
         assert attn.q_proj is original_q_proj
-        assert isinstance(attn.k_proj, BitLinear)
+        # k_proj should still be converted with SubLN
+        assert isinstance(attn.k_proj, nn.Sequential)
+        assert isinstance(attn.k_proj[0], SubLN)
 
     def test_preserves_weights(self):
         """Test that weight values are preserved during conversion."""
@@ -165,38 +175,72 @@ class TestConvertAttentionLayer:
 
         convert_attention_layer(attn, hidden_size=64, exclude_layers=[])
 
-        assert torch.allclose(attn.q_proj.weight.data, original_weight)
+        # Weight is now in q_proj[1] (the BitLinear inside Sequential)
+        assert torch.allclose(attn.q_proj[1].weight.data, original_weight)
+
+    def test_no_subln_when_disabled(self):
+        """Test that SubLN is not inserted when insert_subln=False."""
+        attn = SimpleLlamaAttention(hidden_size=128)
+
+        convert_attention_layer(attn, hidden_size=128, exclude_layers=[], insert_subln=False)
+
+        # All projections should be plain BitLinear (no Sequential wrapper)
+        for proj_name in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+            proj = getattr(attn, proj_name)
+            assert isinstance(proj, BitLinear), f"{proj_name} should be BitLinear directly"
+            assert not isinstance(proj, nn.Sequential), f"{proj_name} should not be Sequential"
 
 
 class TestConvertMLPLayer:
     """Test MLP layer conversion."""
 
-    def test_converts_projections_to_bitlinear(self):
-        """Test that gate and up projections become BitLinear."""
+    def test_inserts_subln_before_all_projections(self):
+        """Test that SubLN is inserted before ALL projections (gate/up/down).
+
+        Per BitNet 1.58b paper: "we add LN immediately before the quantization function"
+        This means SubLN before EVERY BitLinear, not just output projections.
+        """
         mlp = SimpleLlamaMLP(hidden_size=128, intermediate_size=256)
 
         convert_mlp_layer(mlp, hidden_size=256, exclude_layers=[])
 
-        assert isinstance(mlp.gate_proj, BitLinear)
-        assert isinstance(mlp.up_proj, BitLinear)
+        # ALL projections should now be Sequential(SubLN, BitLinear)
+        for proj_name in ["gate_proj", "up_proj", "down_proj"]:
+            proj = getattr(mlp, proj_name)
+            assert isinstance(proj, nn.Sequential), f"{proj_name} should be Sequential"
+            assert isinstance(proj[0], SubLN), f"{proj_name} should have SubLN first"
+            assert isinstance(proj[1], BitLinear), f"{proj_name} should have BitLinear second"
 
-    def test_inserts_subln_before_down_proj(self):
-        """Test that SubLN is inserted before down_proj."""
+    def test_subln_has_correct_dimensions(self):
+        """Test that SubLN has correct input dimensions for each projection."""
         mlp = SimpleLlamaMLP(hidden_size=128, intermediate_size=256)
 
         convert_mlp_layer(mlp, hidden_size=256, exclude_layers=[])
 
-        # down_proj should now be Sequential(SubLN, BitLinear)
-        assert isinstance(mlp.down_proj, nn.Sequential)
-        assert isinstance(mlp.down_proj[0], SubLN)
-        assert isinstance(mlp.down_proj[1], BitLinear)
+        # gate_proj and up_proj take hidden_size (128) as input
+        assert mlp.gate_proj[0].hidden_size == 128
+        assert mlp.up_proj[0].hidden_size == 128
+        # down_proj takes intermediate_size (256) as input
+        assert mlp.down_proj[0].hidden_size == 256
+
+    def test_no_subln_when_disabled(self):
+        """Test that SubLN is not inserted when insert_subln=False."""
+        mlp = SimpleLlamaMLP(hidden_size=128, intermediate_size=256)
+
+        convert_mlp_layer(mlp, hidden_size=256, exclude_layers=[], insert_subln=False)
+
+        # All projections should be plain BitLinear (no Sequential wrapper)
+        for proj_name in ["gate_proj", "up_proj", "down_proj"]:
+            proj = getattr(mlp, proj_name)
+            assert isinstance(proj, BitLinear), f"{proj_name} should be BitLinear directly"
+            assert not isinstance(proj, nn.Sequential), f"{proj_name} should not be Sequential"
 
 
 class TestConvertModelToBitnet:
     """Test full model conversion."""
 
-    def test_converts_full_model(self):
-        """Test conversion of full LLaMA-style model."""
+    def test_converts_full_model_with_subln_everywhere(self):
+        """Test conversion of full LLaMA-style model with SubLN before ALL BitLinear."""
         model = SimpleLlamaModel(
             hidden_size=128,
             intermediate_size=256,
@@ -212,14 +256,20 @@ class TestConvertModelToBitnet:
         # Check that model is now BitNet
         assert is_bitnet_model(converted)
 
-        # Check attention layers
+        # Check ALL attention projections have SubLN
         for layer in converted.layers:
-            assert isinstance(layer.self_attn.q_proj, BitLinear)
-            assert isinstance(layer.self_attn.o_proj, nn.Sequential)
+            for proj_name in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+                proj = getattr(layer.self_attn, proj_name)
+                assert isinstance(proj, nn.Sequential), f"{proj_name} should be Sequential"
+                assert isinstance(proj[0], SubLN), f"{proj_name} should have SubLN"
+                assert isinstance(proj[1], BitLinear), f"{proj_name} should have BitLinear"
 
-            # Check MLP layers
-            assert isinstance(layer.mlp.gate_proj, BitLinear)
-            assert isinstance(layer.mlp.down_proj, nn.Sequential)
+            # Check ALL MLP projections have SubLN
+            for proj_name in ["gate_proj", "up_proj", "down_proj"]:
+                proj = getattr(layer.mlp, proj_name)
+                assert isinstance(proj, nn.Sequential), f"{proj_name} should be Sequential"
+                assert isinstance(proj[0], SubLN), f"{proj_name} should have SubLN"
+                assert isinstance(proj[1], BitLinear), f"{proj_name} should have BitLinear"
 
     def test_preserves_embeddings(self):
         """Test that embeddings are not converted."""
@@ -233,28 +283,42 @@ class TestConvertModelToBitnet:
         assert model.embed_tokens is original_embed
         assert model.lm_head is original_lm_head
 
-    def test_subln_placement_in_attention(self):
-        """Test SubLN is correctly placed before o_proj."""
-        model = SimpleLlamaModel(hidden_size=128, intermediate_size=256)
+    def test_subln_count_matches_bitlinear_count(self):
+        """Test that every BitLinear has a corresponding SubLN."""
+        model = SimpleLlamaModel(hidden_size=128, intermediate_size=256, num_layers=2)
 
         convert_model_to_bitnet(model, hidden_size=128, intermediate_size=256)
 
-        # Verify SubLN comes before the projection in o_proj Sequential
-        o_proj = model.layers[0].self_attn.o_proj
-        assert isinstance(o_proj, nn.Sequential)
-        assert len(o_proj) == 2
-        assert isinstance(o_proj[0], SubLN)
-        assert isinstance(o_proj[1], BitLinear)
+        # Count SubLN and BitLinear modules
+        subln_count = sum(1 for m in model.modules() if isinstance(m, SubLN))
+        bitlinear_count = sum(1 for m in model.modules() if isinstance(m, BitLinear))
 
-    def test_subln_placement_in_mlp(self):
-        """Test SubLN is correctly placed before down_proj."""
-        model = SimpleLlamaModel(hidden_size=128, intermediate_size=256)
+        # Each layer has 7 projections (q, k, v, o, gate, up, down) = 7 * 2 layers = 14
+        assert subln_count == 14, f"Expected 14 SubLN, got {subln_count}"
+        assert bitlinear_count == 14, f"Expected 14 BitLinear, got {bitlinear_count}"
+        assert subln_count == bitlinear_count, "SubLN count should equal BitLinear count"
+
+    def test_forward_pass_works_after_conversion(self):
+        """Test that the converted model can do a forward pass."""
+        model = SimpleLlamaModel(hidden_size=128, intermediate_size=256, num_layers=1)
 
         convert_model_to_bitnet(model, hidden_size=128, intermediate_size=256)
 
-        # Verify SubLN comes before the projection in down_proj Sequential
-        down_proj = model.layers[0].mlp.down_proj
-        assert isinstance(down_proj, nn.Sequential)
-        assert len(down_proj) == 2
-        assert isinstance(down_proj[0], SubLN)
-        assert isinstance(down_proj[1], BitLinear)
+        # Create dummy input
+        batch_size, seq_len = 2, 16
+        input_ids = torch.randint(0, 1000, (batch_size, seq_len))
+
+        # Get embeddings and pass through layers
+        x = model.embed_tokens(input_ids)
+        for layer in model.layers:
+            # Simplified forward - just check it doesn't crash
+            attn_out = layer.self_attn.o_proj(
+                layer.self_attn.v_proj(x)  # Simplified
+            )
+            mlp_out = layer.mlp.down_proj(
+                layer.mlp.gate_proj(x) * layer.mlp.up_proj(x)
+            )
+            x = x + attn_out + mlp_out
+
+        logits = model.lm_head(x)
+        assert logits.shape == (batch_size, seq_len, 1000)
