@@ -64,14 +64,14 @@ class CurriculumScheduler:
     Args:
         phases: List of CurriculumPhase defining the curriculum
         total_steps: Total training steps
-        interpolation: "linear" or "cosine" between phases
+        interpolation: "linear", "cosine", or "step" (immediate jump, no ramp)
     """
 
     def __init__(
         self,
         phases: list[CurriculumPhase],
         total_steps: int,
-        interpolation: Literal["linear", "cosine"] = "linear",
+        interpolation: Literal["linear", "cosine", "step"] = "step",
     ):
         self.phases = sorted(phases, key=lambda p: p.end_ratio)
         self.total_steps = total_steps
@@ -129,6 +129,10 @@ class CurriculumScheduler:
 
         # If no previous phase, use current weights directly
         if prev_phase is None:
+            return current_phase.objective_weights
+
+        # Step mode: immediate jump to current phase weights (no interpolation)
+        if self.interpolation == "step":
             return current_phase.objective_weights
 
         # Calculate interpolation factor within current phase

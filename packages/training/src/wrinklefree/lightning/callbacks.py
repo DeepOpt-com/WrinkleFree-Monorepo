@@ -606,9 +606,19 @@ class InfluenceTrackerCallback(Callback):
         batch: dict[str, Any],
         batch_idx: int,
     ) -> None:
-        """Check for weight update after each batch."""
+        """Check for weight update on optimizer steps only.
+
+        CRITICAL: With gradient accumulation, on_train_batch_end fires for
+        every micro-batch. We only want to call on_step_end on actual optimizer
+        steps (when grad accum completes) to avoid triggering influence updates
+        32x per step with grad_accum=32.
+        """
         if self._tracker and self._enabled:
-            self._tracker.on_step_end(trainer.global_step)
+            # Only call on_step_end on optimizer steps (when gradient accumulation completes)
+            accum_steps = trainer.accumulate_grad_batches
+            is_optimizer_step = (batch_idx + 1) % accum_steps == 0
+            if is_optimizer_step:
+                self._tracker.on_step_end(trainer.global_step)
 
     def on_train_epoch_end(
         self,

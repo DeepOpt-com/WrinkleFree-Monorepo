@@ -69,29 +69,22 @@ def resolve_checkpoint_path(
     cfg: DictConfig,
     stage: str = "stage2",
 ) -> Path | str | None:
-    """Resolve checkpoint path from local, GCS, or HuggingFace.
+    """Resolve MODEL checkpoint path from local or HuggingFace.
+
+    NOTE: This is for MODEL loading only. For Lightning training resume,
+    use find_lightning_resume_checkpoint() instead.
 
     Priority:
-    1. Explicit checkpoint path in config (training.checkpoint.path or model.path)
-    2. Local checkpoint directory
-    3. GCS bucket download
-    4. HuggingFace Hub (model.pretrained_name or model.name)
+    1. Explicit model.path in config (local safetensors)
+    2. HuggingFace Hub (model.pretrained_name or model.name)
 
     Args:
         cfg: Hydra config
-        stage: Training stage for GCS lookup (e.g., "stage1_9", "stage2")
+        stage: Training stage (unused, kept for compatibility)
 
     Returns:
-        Path to checkpoint, HF model name, or None if not found
+        Path to model checkpoint or HF model name
     """
-    # Check for explicit checkpoint path
-    ckpt_path = cfg.training.get("checkpoint", {}).get("path")
-    if ckpt_path:
-        ckpt_path = Path(ckpt_path)
-        if ckpt_path.exists():
-            logger.info(f"Using explicit checkpoint: {ckpt_path}")
-            return ckpt_path
-
     # Check for model.path (local safetensors)
     model_path = cfg.model.get("path")
     if model_path:
@@ -100,37 +93,135 @@ def resolve_checkpoint_path(
             logger.info(f"Using local model path: {model_path}")
             return model_path
 
-    # Try GCS bucket
-    gcs_config = cfg.get("gcs", {})
-    if gcs_config.get("enabled", False):
-        bucket = gcs_config.get("bucket", "wrinklefree-checkpoints")
-        experiment_name = cfg.get("experiment_name", "default")
-        gcs_prefix = f"checkpoints/{experiment_name}"
-
-        try:
-            from wrinklefree.training import download_checkpoint_from_gcs
-
-            cache_dir = Path(cfg.output_dir) / ".checkpoint_cache"
-            gcs_path = download_checkpoint_from_gcs(
-                bucket_name=bucket,
-                stage=f"{stage}_checkpoint",
-                local_dir=cache_dir / stage,
-                prefix=gcs_prefix,
-            )
-            if gcs_path:
-                logger.info(f"Downloaded checkpoint from GCS: {gcs_path}")
-                return gcs_path
-        except ImportError:
-            logger.debug("GCS download not available (google-cloud-storage not installed)")
-        except Exception as e:
-            logger.warning(f"GCS checkpoint download failed: {e}")
-
     # Fall back to HuggingFace Hub
     hf_name = cfg.model.get("pretrained_name") or cfg.model.get("name")
     if hf_name:
         logger.info(f"Using HuggingFace model: {hf_name}")
         return hf_name
 
+    return None
+
+
+def find_lightning_resume_checkpoint(cfg: DictConfig) -> str | None:
+    """Find Lightning checkpoint for resuming training.
+
+    Searches for .ckpt files in:
+    1. Explicit resume.ckpt_path in config
+    2. GCS bucket (lightning_checkpoint/) - downloads locally
+    3. Local output directory
+
+    Args:
+        cfg: Hydra config
+
+    Returns:
+        Path to LOCAL .ckpt file, or None if not found
+        (GCS checkpoints are downloaded to local cache)
+    """
+    import subprocess
+
+    def download_gcs_checkpoint(gcs_path: str, local_dir: Path) -> str | None:
+        """Download GCS checkpoint to local directory."""
+        local_dir.mkdir(parents=True, exist_ok=True)
+        local_path = local_dir / "resume.ckpt"
+
+        logger.info(f"Downloading GCS checkpoint: {gcs_path} -> {local_path}")
+        try:
+            result = subprocess.run(
+                ["gsutil", "-m", "cp", gcs_path, str(local_path)],
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout for large checkpoints
+            )
+            if result.returncode == 0 and local_path.exists():
+                logger.info(f"Successfully downloaded checkpoint ({local_path.stat().st_size / 1e6:.1f} MB)")
+                return str(local_path)
+            else:
+                logger.warning(f"gsutil download failed: {result.stderr}")
+                return None
+        except subprocess.TimeoutExpired:
+            logger.warning("GCS checkpoint download timed out")
+            return None
+        except Exception as e:
+            logger.warning(f"GCS checkpoint download failed: {e}")
+            return None
+
+    # Check for explicit resume path
+    resume_cfg = cfg.get("resume", {})
+    explicit_path = resume_cfg.get("ckpt_path")
+    if explicit_path:
+        explicit_path_str = str(explicit_path)
+        if explicit_path_str.startswith("gs://"):
+            # Download GCS checkpoint to local cache
+            cache_dir = Path(cfg.output_dir) / ".resume_cache"
+            local_path = download_gcs_checkpoint(explicit_path_str, cache_dir)
+            if local_path:
+                return local_path
+            logger.warning(f"Failed to download explicit GCS checkpoint: {explicit_path}")
+        elif Path(explicit_path).exists():
+            logger.info(f"Resume from explicit local checkpoint: {explicit_path}")
+            return str(explicit_path)
+        else:
+            logger.warning(f"Explicit resume checkpoint not found: {explicit_path}")
+
+    # Try GCS bucket for lightning checkpoints
+    gcs_config = cfg.get("gcs", {})
+    if gcs_config.get("enabled", False):
+        bucket = gcs_config.get("bucket", "wrinklefree-checkpoints")
+        experiment_name = cfg.get("experiment_name", "default")
+        gcs_prefix = f"gs://{bucket}/checkpoints/{experiment_name}/lightning_checkpoint/checkpoints"
+
+        try:
+            # List checkpoints in GCS, find the latest step
+            result = subprocess.run(
+                ["gsutil", "ls", gcs_prefix],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                # Parse step directories (e.g., step_000500/)
+                dirs = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+                step_dirs = [d for d in dirs if "/step_" in d]
+                if step_dirs:
+                    # Sort by step number (extract from step_XXXXXX)
+                    step_dirs.sort(key=lambda x: int(x.split("/step_")[-1].rstrip("/")))
+                    latest_step_dir = step_dirs[-1].rstrip("/")
+                    # Look for last.ckpt in the step directory
+                    gcs_ckpt_path = f"{latest_step_dir}/last.ckpt"
+                    # Verify file exists
+                    check_result = subprocess.run(
+                        ["gsutil", "ls", gcs_ckpt_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if check_result.returncode == 0:
+                        # Download to local cache
+                        cache_dir = Path(cfg.output_dir) / ".resume_cache"
+                        local_path = download_gcs_checkpoint(gcs_ckpt_path, cache_dir)
+                        if local_path:
+                            return local_path
+        except subprocess.TimeoutExpired:
+            logger.warning("GCS checkpoint search timed out")
+        except Exception as e:
+            logger.debug(f"GCS checkpoint search failed: {e}")
+
+    # Try local checkpoint directory
+    local_ckpt_dir = Path(cfg.output_dir) / "checkpoints"
+    if local_ckpt_dir.exists():
+        # Find latest step checkpoint
+        ckpt_files = list(local_ckpt_dir.glob("step_*/last.ckpt"))
+        if ckpt_files:
+            latest = max(ckpt_files, key=lambda p: int(p.parent.name.split("_")[-1]))
+            logger.info(f"Found local resume checkpoint: {latest}")
+            return str(latest)
+        # Also check for last.ckpt directly
+        last_ckpt = local_ckpt_dir / "last.ckpt"
+        if last_ckpt.exists():
+            logger.info(f"Found local resume checkpoint: {last_ckpt}")
+            return str(last_ckpt)
+
+    logger.info("No resume checkpoint found - starting fresh")
     return None
 
 
@@ -614,9 +705,14 @@ def main(cfg: DictConfig) -> None:
     # Create trainer
     trainer = create_trainer(cfg, callbacks)
 
+    # Check for resume checkpoint (Lightning .ckpt file)
+    resume_ckpt_path = find_lightning_resume_checkpoint(cfg)
+    if resume_ckpt_path:
+        logger.info(f"Resuming training from: {resume_ckpt_path}")
+
     # Train!
     logger.info("Starting training...")
-    trainer.fit(module, datamodule)
+    trainer.fit(module, datamodule, ckpt_path=resume_ckpt_path)
 
     logger.info("Training complete!")
 

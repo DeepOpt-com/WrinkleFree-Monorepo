@@ -103,10 +103,10 @@ objectives:
 
 # === CURRICULUM SCHEDULE ===
 # Phase-based training with objective weight transitions
-# Fast DLM ramp: 5% warmup, then full CE+DLM for the rest
+# No DLM ramp: warmup then immediate full CE+DLM
 curriculum:
   enabled: true
-  interpolation: linear  # or "cosine"
+  interpolation: step  # "step" (immediate jump), "linear", or "cosine"
   phases:
     # Phase 1: Brief warmup - CE only (first 5%)
     - name: warmup
@@ -116,16 +116,8 @@ curriculum:
         continue_pretrain: 1.0
         dlm: 0.0
 
-    # Phase 2: Quick DLM ramp (5% - 10%)
-    - name: dlm_ramp
-      end_ratio: 0.10
-      data_config: mixed_pretrain
-      objectives:
-        continue_pretrain: 1.0
-        dlm: 0.5
-
-    # Phase 3: Full combined training (10% - 100%)
-    # Equal weight for CE and DLM
+    # Phase 2: Full combined training (5% - 100%)
+    # Immediate full DLM weight after warmup (no ramp)
     - name: main
       end_ratio: 1.0
       data_config: mixed_pretrain

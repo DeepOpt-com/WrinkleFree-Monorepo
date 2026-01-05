@@ -324,6 +324,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
                 lr_muon=lr_muon,
                 lr_adam=lr_adam,
                 momentum=momentum,
+                weight_decay=weight_decay,  # CRITICAL: Pass weight_decay!
                 enable_clipping=enable_clipping,
                 clipping_threshold=clipping_threshold,
                 clipping_alpha=clipping_alpha,
@@ -338,6 +339,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         lr_muon: float,
         lr_adam: float,
         momentum: float = 0.95,
+        weight_decay: float = 0.01,
         enable_clipping: bool = True,
         clipping_threshold: float = 50.0,
         clipping_alpha: float = 0.5,
@@ -356,14 +358,16 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             clipping_layers_mapping = {"q_proj": "q_proj", "k_proj": "k_proj"}
 
         # Build MuonConfig with configurable clipping_layers_mapping
+        # CRITICAL: weight_decay is essential for Muon to prevent weights from growing too large
+        # See: https://arxiv.org/abs/2502.16982 "Muon is Scalable for LLM Training"
         muon_config = MuonConfig(
             unified_lr=False,
             lr_muon=lr_muon,
             lr_adam=lr_adam,
             muon_beta=momentum,
-            muon_decay=0.0,
+            muon_decay=weight_decay,  # CRITICAL: Apply weight decay to Muon params
             adam_betas=(0.9, 0.999),
-            adam_decay=0.0,
+            adam_decay=weight_decay,  # CRITICAL: Apply weight decay to Adam params
             adam_eps=1e-8,
             ns_steps=5,  # Newton-Schulz iterations
             enable_clipping=enable_clipping,
@@ -372,6 +376,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             clipping_alpha=clipping_alpha,
             log_max_logits=False,  # Disabled: requires TensorBoard writer (we use WandB)
         )
+        logger.info(f"MuonClip weight_decay: muon_decay={weight_decay}, adam_decay={weight_decay}")
 
         # MuonClip needs HuggingFace model config for architecture info
         model_config = getattr(self.model, "config", None)
@@ -420,7 +425,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
 
         logger.info(
             f"Created MuonClip optimizer (single GPU): "
-            f"lr_muon={lr_muon:.2e}, lr_adam={lr_adam:.2e}, "
+            f"lr_muon={lr_muon:.2e}, lr_adam={lr_adam:.2e}, weight_decay={weight_decay}, "
             f"clipping={enable_clipping} (threshold={clipping_threshold}, alpha={clipping_alpha})"
         )
         return optimizer
@@ -553,10 +558,17 @@ class WrinkleFreeLightningModule(pl.LightningModule):
                 end_factor=1.0,
                 total_iters=warmup_steps,
             )
+            # Get peak LR - handle both standard optimizers and MuonClip
+            if hasattr(optimizer, "defaults") and "lr" in optimizer.defaults:
+                peak_lr = optimizer.defaults["lr"]
+            elif hasattr(optimizer, "param_groups") and optimizer.param_groups:
+                peak_lr = optimizer.param_groups[0].get("lr", 0.02)
+            else:
+                peak_lr = 0.02  # Fallback to Muon default
             cosine_scheduler = CosineAnnealingLR(
                 optimizer,
                 T_max=max_steps - warmup_steps,
-                eta_min=optimizer.defaults["lr"] * min_lr_ratio,
+                eta_min=peak_lr * min_lr_ratio,
             )
             scheduler = SequentialLR(
                 optimizer,
@@ -566,6 +578,65 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             logger.info(
                 f"Created cosine warmup scheduler: warmup={warmup_steps}, "
                 f"max_steps={max_steps}, min_lr_ratio={min_lr_ratio}"
+            )
+            return scheduler
+
+        elif scheduler_type == "wsd":
+            # Warmup-Stable-Decay (WSD) scheduler
+            # Used by DeepSeek-V3, maintains high LR during stable phase
+            from torch.optim.lr_scheduler import SequentialLR, LinearLR, LambdaLR, CosineAnnealingLR
+
+            decay_ratio = self.scheduler_cfg.get("decay_ratio", 0.2)
+            decay_type = self.scheduler_cfg.get("decay_type", "linear")
+            num_decay_steps = int(max_steps * decay_ratio)
+            num_stable_steps = max(1, max_steps - warmup_steps - num_decay_steps)
+
+            logger.info(
+                f"WSD schedule: {warmup_steps} warmup + {num_stable_steps} stable + "
+                f"{num_decay_steps} decay = {max_steps} steps"
+            )
+
+            # Phase 1: Warmup (linear ramp to peak LR)
+            warmup_scheduler = LinearLR(
+                optimizer,
+                start_factor=0.01,
+                end_factor=1.0,
+                total_iters=max(1, warmup_steps),
+            )
+
+            # Phase 2: Stable (constant peak LR)
+            stable_scheduler = LambdaLR(optimizer, lambda _: 1.0)
+
+            # Phase 3: Decay (linear or cosine decay to min_lr)
+            # Get peak LR - handle both standard optimizers and MuonClip
+            if hasattr(optimizer, "defaults") and "lr" in optimizer.defaults:
+                peak_lr = optimizer.defaults["lr"]
+            elif hasattr(optimizer, "param_groups") and optimizer.param_groups:
+                peak_lr = optimizer.param_groups[0].get("lr", 0.02)
+            else:
+                peak_lr = 0.02  # Fallback to Muon default
+            if decay_type == "cosine":
+                decay_scheduler = CosineAnnealingLR(
+                    optimizer,
+                    T_max=max(1, num_decay_steps),
+                    eta_min=peak_lr * min_lr_ratio,
+                )
+            else:  # linear
+                decay_scheduler = LinearLR(
+                    optimizer,
+                    start_factor=1.0,
+                    end_factor=max(min_lr_ratio, 1e-8),
+                    total_iters=max(1, num_decay_steps),
+                )
+
+            scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, stable_scheduler, decay_scheduler],
+                milestones=[warmup_steps, warmup_steps + num_stable_steps],
+            )
+            logger.info(
+                f"Created WSD scheduler: warmup={warmup_steps}, stable={num_stable_steps}, "
+                f"decay={num_decay_steps} ({decay_type}), min_lr_ratio={min_lr_ratio}"
             )
             return scheduler
 
