@@ -1,0 +1,198 @@
+# TODO: make this the only one
+# DLM + Quantization -> Distillation Configuration
+# Combines DLM (for fast inference) with TCS distillation (for quality)
+#
+# Key insight: AR teachers produce causal (left-to-right) predictions, while DLM
+# students need bidirectional masked token predictions. This config uses:
+# - TCS (Target Concrete Score) distillation: no token shifting, designed for DLM
+# - Teacher receives unmasked input (via _original_input_ids) for meaningful predictions
+# - Student receives masked input for DLM training
+#
+# Reference: "Distilled Diffusion Language Models" (OpenReview)
+
+stage: unified_full_run
+
+# Auto-convert: Converts model to BitNet on-the-fly if not already converted
+auto_convert:
+  enabled: true
+  exclude_layers:
+    - embed_tokens
+    - lm_head
+    - embed_positions
+
+# torch.compile for training speedup
+torch_compile:
+  enabled: true
+  mode: default
+
+# Sequence packing
+packing:
+  enabled: true
+
+# Optimization (MuonClip for BitNet stability)
+# NOTE: lr_muon=0.02 causes NaN for 0.6B+ models. Use 0.005-0.01 for stability.
+optimizer:
+  type: muonclip
+  lr_muon: 0.005  # Reduced from 0.02 - prevents NaN on larger models
+  lr_adam: 1e-4   # Reduced from 3e-4 for stability
+  weight_decay: 0.01
+  momentum: 0.95
+  enable_clipping: true
+  clipping_threshold: 10.0  # Reduced from 50 - catches gradient explosions earlier
+  clipping_alpha: 0.5
+
+scheduler:
+  type: wsd
+  warmup_steps: 1000  # Increased from 550 - longer warmup for stability
+  decay_ratio: 0.2
+  decay_type: linear
+  min_lr_ratio: 0.0
+
+# Training parameters
+total_tokens: 10_000_000_000  # 10B tokens
+max_steps: null
+max_seq_length: 512
+batch_size: 32
+gradient_accumulation_steps: 16
+gradient_clipping: 1.0
+auto_batch_size: true
+auto_batch_size_margin: 0.15  # Safety buffer (15%) - reduces found batch size to avoid OOM
+
+# Lambda warmup for gradual quantization
+# Gradually increases quantization strength to prevent early instability
+lambda_warmup:
+  enabled: true  # Enabled for stability - prevents NaN from sudden quantization
+  warmup_steps: 1000  # Match scheduler warmup
+  schedule: linear
+
+# Resume configuration
+resume:
+  checkpoint_path: null
+  load_optimizer_state: true
+  load_scheduler_state: true
+  load_training_state: true
+  strict_model_load: true
+
+# === OBJECTIVES SYSTEM ===
+# DLM + TCS distillation for fast inference with quality transfer
+objectives:
+  # Standard language modeling loss
+  continue_pretrain:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+  # DLM: Diffusion Language Model for fast parallel inference
+  # Uses masked token prediction with complementary masks (Fast-dLLM v2)
+  dlm:
+    enabled: true
+    weight: 0.5
+    mask_prob: 0.15
+    mask_token_id: 0  # Use unk_token as mask token
+    use_complementary_masks: true
+
+  # Unified distillation with TCS (sparse logits) for DLM
+  distill:
+    enabled: true
+    weight: 1.0
+    hidden:
+      enabled: false  # Enable for hidden state alignment
+      weight: 0.5
+      loss_type: mse_normalized
+      layer_weights: progressive
+      normalize: true
+    logits:
+      enabled: true
+      weight: 5.0
+      temperature: 5.0  # Higher temp for softer targets
+      mode: sparse  # TCS-style top-K sparse matching
+      top_k: 100  # Sparse TCS estimation for efficiency
+      shift_labels: false  # NO shifting for DLM
+      ignore_index: -100
+    attention:
+      enabled: false
+    lrc:
+      enabled: false
+
+# === CURRICULUM SCHEDULE ===
+# Phase-based training: CE first, then DLM+distill
+curriculum:
+  enabled: true
+  interpolation: linear
+  phases:
+    # Phase 1: Warmup - CE only, no distillation yet (first 10%)
+    - name: only_fineweb
+      end_ratio: 0.1
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 0.5
+        dlm: 0.5
+        distill: 0.0
+
+    # Phase 2: Ramp up DLM + distillation (10% - 30%)
+    - name: dlm_ramp
+      end_ratio: 0.9
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 1.0
+        dlm: 0.5
+        distill: 0.0  # Scaled from tcs_distill: 3.0 / 5.0 = 0.6
+
+    # Phase 3: Full DLM + distillation (30% - 80%)
+    - name: main
+      end_ratio: 1.0
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 0.5
+        dlm: 0.5
+        distill: 1.0
+
+# Teacher model configuration
+# Teacher is the fp16 AR model to distill from
+teacher:
+  fp16: true
+  offload_to_cpu: false
+  load_in_4bit: false
+  use_flash_attention: false
+
+# Checkpointing
+checkpoint:
+  save_interval: 200
+  keep_last_n: 5
+  save_optimizer: true
+
+# Logging
+logging:
+  log_interval: 10
+  wandb:
+    enabled: true
+    project: wrinklefree_v2
+    entity: null
+    name: null
+    tags: [dlm_distill, bitnet, tcs]
+
+# Early stopping
+early_stopping:
+  enabled: false
+  patience: 5
+  min_delta: 0.01
+  min_evals: 10
+
+# Validation (C4 perplexity)
+validation:
+  enabled: true
+  config_name: c4_validation
+  val_check_interval: 500
+  limit_val_batches: 50
+  batch_size: 8
+
+# Influence-based data selection
+influence:
+  enabled: true
+  update_interval: 1000
+  learning_rate: 0.2
+  config:
+    lambda_val: 0.1
+    gamma_val: 0.1
+    temperature: 1.0

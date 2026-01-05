@@ -239,7 +239,8 @@ class AuditLogger:
                 "error": error,
                 "fingerprint": fingerprint or "unknown",
                 "message": f"{service} credentials not found or invalid",
-                "action": "TRAINING ABORTED - Set up credentials before running",
+                "action": f"{service} DISABLED - training continues without checkpoint sync. "
+                          f"To fix: set up credentials or use gcs.enabled=false",
             },
             also_raise=False,  # Caller raises appropriate exception
         )

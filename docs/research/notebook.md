@@ -1,3 +1,55 @@
+## 01-05-2026
+
+### Feature: Lazy Teacher Loading for Distillation
+
+**Problem**: Teacher model was loaded at startup even when distillation weight started at 0 in curriculum phases, wasting GPU memory during early training.
+
+**Solution**: Implemented lazy loading that defers teacher model loading until distillation weight first becomes non-zero.
+
+**Key Changes**:
+1. `_get_distill_status()` - Analyzes curriculum to determine if/when teacher is needed
+2. `_lazy_load_teacher()` - Loads teacher on-demand when distill weight > 0
+3. `_reduce_batch_size()` - Automatically reduces batch size when teacher loads (default 0.5x)
+4. Skip distillation on transition step to let reduced batch size take effect
+
+**Files Modified**:
+- `packages/training/scripts/train_lightning.py` - Lazy loading logic
+- `packages/training/src/wf_train/lightning/module.py` - On-demand teacher loading
+
+**Config Option**:
+```yaml
+teacher:
+  batch_size_factor: 0.5  # Reduce batch by 50% when teacher loads
+```
+
+### Fix: max_steps Computation from total_tokens
+
+**Problem**: `training=full_run` config uses `total_tokens: 10_000_000_000` with `max_steps: null`, causing Lightning Trainer to crash with `TypeError: '<' not supported between instances of 'NoneType' and 'int'`.
+
+**Fix**: Added computation of `max_steps` from `total_tokens`:
+```python
+max_steps = total_tokens / (batch_size * seq_length * grad_accum)
+```
+
+### Fix: Misleading GCS Error Message
+
+**Problem**: Audit logger printed "TRAINING ABORTED" when GCS credentials were missing, but training actually continued without checkpoint sync.
+
+**Fix**: Changed message to "GCS DISABLED - training continues without checkpoint sync".
+
+### Investigation: NaN Loss with MuonClip + Qwen3-0.6B
+
+**Problem**: Training with `model=qwen3_0.6b training=full_run` produces `loss: nan` after ~776 steps.
+
+**Suspected Causes**:
+1. `lr_muon: 0.02` may be too high for 0.6B model
+2. `lambda_warmup.enabled: false` - no gradual quantization warmup
+3. WSD scheduler warmup (550 steps) may not sync with MuonClip initialization
+
+**Next Steps**: Ask Gemini for MuonClip stability best practices.
+
+---
+
 ## 01-02-2026
 
 ### Bug Fix: DLM Preprocessing Applied When Weight=0 (Catastrophic Loss Issue)
