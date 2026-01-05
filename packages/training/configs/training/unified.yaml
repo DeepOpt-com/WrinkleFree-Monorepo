@@ -108,16 +108,17 @@ curriculum:
   enabled: true
   interpolation: step  # "step" (immediate jump), "linear", or "cosine"
   phases:
-    # Phase 1: Brief warmup - CE only (first 5%)
+    # Phase 1: Warmup - CE only (first 20%)
+    # Longer warmup helps stabilize training before adding DLM
     - name: warmup
-      end_ratio: 0.05
+      end_ratio: 0.20
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
         dlm: 0.0
 
-    # Phase 2: Full combined training (5% - 100%)
-    # Immediate full DLM weight after warmup (no ramp)
+    # Phase 2: Full combined training (20% - 100%)
+    # CE + DLM after warmup
     - name: main
       end_ratio: 1.0
       data_config: mixed_pretrain

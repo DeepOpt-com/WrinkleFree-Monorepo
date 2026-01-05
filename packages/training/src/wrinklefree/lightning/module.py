@@ -87,6 +87,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         optimizer_cfg: Optimizer configuration dict
         scheduler_cfg: Scheduler configuration dict
         gradient_clipping: Max gradient norm (0 to disable)
+        resume_cfg: Resume configuration dict (controls what state to load)
     """
 
     def __init__(
@@ -97,6 +98,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         optimizer_cfg: Optional[DictConfig] = None,
         scheduler_cfg: Optional[DictConfig] = None,
         gradient_clipping: float = 1.0,
+        resume_cfg: Optional[DictConfig] = None,
     ):
         super().__init__()
         self.model = model
@@ -105,6 +107,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         self.optimizer_cfg = optimizer_cfg or {}
         self.scheduler_cfg = scheduler_cfg or {}
         self.gradient_clipping = gradient_clipping
+        self.resume_cfg = resume_cfg or {}
 
         # Freeze teacher if present
         if self.teacher_model is not None:
@@ -200,8 +203,15 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         self.tokens_processed += batch_tokens
         self.log("train/tokens", self.tokens_processed, on_step=True, sync_dist=True)
 
-        # Advance curriculum scheduler if present
-        self.objective_manager.step_curriculum()
+        # Advance curriculum scheduler once per GLOBAL step (optimizer step)
+        # NOT per batch - curriculum phases are based on max_steps (global steps)
+        # Use _last_curriculum_step to track when we last advanced the curriculum
+        current_global_step = self.trainer.global_step
+        if not hasattr(self, "_last_curriculum_step"):
+            self._last_curriculum_step = -1
+        if current_global_step > self._last_curriculum_step:
+            self.objective_manager.step_curriculum()
+            self._last_curriculum_step = current_global_step
 
         return manager_output.loss
 
@@ -669,7 +679,35 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             checkpoint["curriculum_state"] = self.objective_manager.curriculum.state_dict()
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        """Restore extra state from checkpoint."""
-        self.tokens_processed = checkpoint.get("tokens_processed", 0)
+        """Restore extra state from checkpoint.
+
+        Respects resume_cfg flags:
+        - load_scheduler_state: If False, skip loading curriculum state too
+          (curriculum is like a scheduler - it controls training phases)
+        - load_training_state: If False, reset tokens_processed
+        """
+        # Check resume config flags (default to True for backwards compatibility)
+        load_scheduler_state = self.resume_cfg.get("load_scheduler_state", True)
+        load_training_state = self.resume_cfg.get("load_training_state", True)
+
+        # Restore tokens processed (unless doing fresh training state)
+        if load_training_state:
+            self.tokens_processed = checkpoint.get("tokens_processed", 0)
+        else:
+            self.tokens_processed = 0
+            logger.info("Reset tokens_processed to 0 (load_training_state=false)")
+
+        # Restore curriculum state (unless doing fresh scheduler state)
+        # Curriculum is treated like a scheduler since it controls training phases
         if self.objective_manager.curriculum is not None and "curriculum_state" in checkpoint:
-            self.objective_manager.curriculum.load_state_dict(checkpoint["curriculum_state"])
+            if load_scheduler_state:
+                self.objective_manager.curriculum.load_state_dict(checkpoint["curriculum_state"])
+                logger.info(
+                    f"Loaded curriculum state: step={checkpoint['curriculum_state'].get('current_step', 0)}"
+                )
+            else:
+                # Reset curriculum to step 0 for fresh start
+                logger.info(
+                    "Skipping curriculum state load (load_scheduler_state=false) - "
+                    "curriculum will start from step 0"
+                )
