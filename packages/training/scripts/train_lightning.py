@@ -126,11 +126,18 @@ def find_lightning_resume_checkpoint(cfg: DictConfig) -> str | None:
 
         logger.info(f"Downloading GCS checkpoint: {gcs_path} -> {local_path}")
         try:
+            # Ensure gsutil is in PATH (may be installed in ~/google-cloud-sdk/bin)
+            env = os.environ.copy()
+            gcloud_bin = Path.home() / "google-cloud-sdk" / "bin"
+            if gcloud_bin.exists():
+                env["PATH"] = f"{gcloud_bin}:{env.get('PATH', '')}"
+
             result = subprocess.run(
                 ["gsutil", "-m", "cp", gcs_path, str(local_path)],
                 capture_output=True,
                 text=True,
                 timeout=300,  # 5 minute timeout for large checkpoints
+                env=env,
             )
             if result.returncode == 0 and local_path.exists():
                 logger.info(f"Successfully downloaded checkpoint ({local_path.stat().st_size / 1e6:.1f} MB)")
@@ -146,8 +153,10 @@ def find_lightning_resume_checkpoint(cfg: DictConfig) -> str | None:
             return None
 
     # Check for explicit resume path
-    resume_cfg = cfg.get("resume", {})
-    explicit_path = resume_cfg.get("ckpt_path")
+    # First check training.resume.checkpoint_path (from unified.yaml)
+    # Then fall back to top-level resume.ckpt_path (legacy)
+    resume_cfg = cfg.training.get("resume", {}) if hasattr(cfg, "training") else cfg.get("resume", {})
+    explicit_path = resume_cfg.get("checkpoint_path") or resume_cfg.get("ckpt_path")
     if explicit_path:
         explicit_path_str = str(explicit_path)
         if explicit_path_str.startswith("gs://"):
@@ -697,6 +706,7 @@ def main(cfg: DictConfig) -> None:
         optimizer_cfg=cfg.training.get("optimizer", {}),
         scheduler_cfg=cfg.training.get("scheduler", {}),
         gradient_clipping=gradient_clipping,
+        resume_cfg=cfg.training.get("resume", {}),
     )
 
     # Create callbacks

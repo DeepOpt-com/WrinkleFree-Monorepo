@@ -52,18 +52,18 @@ uv run pytest packages/data_handler/tests/ -v --tb=short
 # SmolLM2-135M with Lightning trainer
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
-  training=unified
+  training=base
 
 # With auto batch size scaling (finds max batch that fits GPU)
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
-  training=unified \
+  training=base \
   training.auto_batch_size=true
 
 # With limited steps for smoke test
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
-  training=unified \
+  training=base \
   training.max_steps=100
 ```
 

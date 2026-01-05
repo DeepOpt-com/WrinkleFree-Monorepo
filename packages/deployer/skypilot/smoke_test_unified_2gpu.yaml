@@ -106,7 +106,7 @@ run: |
     --master_port=29500 \
     packages/training/scripts/train.py \
     model=${MODEL} \
-    training=unified \
+    training=base \
     data=default \
     data.config_name=mixed_pretrain \
     distributed=fsdp_multi \

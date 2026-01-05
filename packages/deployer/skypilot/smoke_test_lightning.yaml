@@ -119,7 +119,7 @@ run: |
   echo "Optimizer: $OPTIMIZER_TYPE"
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=unified \
+    training=base \
     data=default \
     training.max_steps=${MAX_STEPS} \
     training.auto_batch_size=${AUTO_BATCH_SIZE} \

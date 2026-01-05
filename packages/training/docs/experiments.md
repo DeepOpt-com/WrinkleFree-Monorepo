@@ -18,7 +18,7 @@ The recommended training approach combining CE + DLM objectives.
 ```bash
 uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=unified \
+    training=base \
     training.max_steps=100
 ```
 
@@ -29,7 +29,7 @@ uv run python scripts/train_lightning.py \
 ```bash
 uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=unified \
+    training=base \
     training.auto_batch_size=true \
     gcs.enabled=true \
     gcs.bucket=wrinklefree-checkpoints
@@ -44,7 +44,7 @@ Verify the impact of dynamic dataset weight optimization.
 ```bash
 uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=unified \
+    training=base \
     data.config_name=mixed_pretrain \
     training.influence.enabled=true \
     training.influence.warmup_steps=1000 \
@@ -56,7 +56,7 @@ uv run python scripts/train_lightning.py \
 ```bash
 uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=unified \
+    training=base \
     data.config_name=mixed_pretrain \
     training.influence.enabled=false
 ```

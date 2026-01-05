@@ -7,7 +7,7 @@ Extended documentation for AI assistants. See main `CLAUDE.md` for rules.
 ```bash
 # 1. Lightning training with auto batch size (RECOMMENDED)
 cd packages/training
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
   training.auto_batch_size=true training.optimizer.type=adamw
 
 # 2. Cloud smoke test
@@ -37,10 +37,10 @@ The new Lightning-based trainer provides a cleaner, more maintainable training l
 
 ```bash
 # Basic Lightning training
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
 
 # With auto batch size scaling (finds max batch that fits GPU)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
   training.auto_batch_size=true
 ```
 

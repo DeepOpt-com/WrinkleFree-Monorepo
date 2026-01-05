@@ -19,7 +19,7 @@ Train using `unified.yaml` config which enables DLM:
 
 ```bash
 uv run --package wrinklefree python scripts/train_lightning.py \
-    model=smollm2_135m training=unified
+    model=smollm2_135m training=base
 ```
 
 Key training config parameters:

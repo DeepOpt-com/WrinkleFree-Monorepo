@@ -25,11 +25,11 @@ uv run pytest
 
 # Run training with Lightning (recommended)
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
-  model=smollm2_135m training=unified
+  model=smollm2_135m training=base
 
 # With auto batch size scaling
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
-  model=smollm2_135m training=unified training.auto_batch_size=true
+  model=smollm2_135m training=base training.auto_batch_size=true
 ```
 
 ## Structure

@@ -12,7 +12,7 @@ WrinkleFree Inference Engine serves **BitNet** models (1.58-bit quantized LLMs):
   - **llama-cli**: Standard autoregressive decoding (works for all models)
   - **dlm_server**: Fast-dLLM v2 block diffusion (speed optimization for DLM-trained models)
 
-**Note**: Models trained with `training=unified` support BOTH autoregressive and block diffusion inference. The unified config trains with CE loss (autoregressive) + DLM loss (diffusion), so llama-cli works correctly. Use dlm_server for potential speed gains via parallel token prediction.
+**Note**: Models trained with `training=base` support BOTH autoregressive and block diffusion inference. The unified config trains with CE loss (autoregressive) + DLM loss (diffusion), so llama-cli works correctly. Use dlm_server for potential speed gains via parallel token prediction.
 
 **Note**: All paths in this document are relative to `packages/inference/`.
 

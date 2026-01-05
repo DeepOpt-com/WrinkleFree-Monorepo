@@ -7,7 +7,7 @@ This guide helps you navigate the configuration system. WrinkleFree uses [Hydra]
 Configurations are located in `configs/`:
 
 - **`model/`**: Model architectures (e.g., `smollm2_135m`, `qwen3_4b`)
-- **`training/`**: Training configs (e.g., `unified`, `bitdistill_full`, `lrc_calibration`)
+- **`training/`**: Training configs (e.g., `base`, `bitdistill_full`, `lrc_calibration`)
 - **`distributed/`**: Hardware strategies (e.g., `single_gpu`, `fsdp_multi`)
 - **`data/`**: Dataset configs (points to data_handler package)
 
@@ -23,7 +23,7 @@ Configurations are located in `configs/`:
 
 | Config | Purpose | When to Use |
 |--------|---------|-------------|
-| **`unified`** | Combined STE + DLM training | **Recommended** - production training |
+| **`base`** | Combined STE + DLM training | **Recommended** - production training |
 | `bitdistill_full` | Knowledge distillation | Teacher-student distillation |
 | `lrc_calibration` | Low-rank correction | Post-quantization recovery |
 | `stage2_pretrain` | Continue pretraining | Legacy stage-based training |
@@ -35,7 +35,7 @@ Configurations are located in `configs/`:
 Combines STE quantization with DLM objectives in a single pass:
 
 ```bash
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
 ```
 
 **Features**:
@@ -72,7 +72,7 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=lrc_calibra
 ```bash
 uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=unified \
+    training=base \
     training.max_steps=100
 ```
 
@@ -81,7 +81,7 @@ uv run python scripts/train_lightning.py \
 ```bash
 uv run python scripts/train_lightning.py \
     model=qwen3_4b \
-    training=unified \
+    training=base \
     distributed=fsdp_multi \
     training.auto_batch_size=true
 ```
@@ -91,7 +91,7 @@ uv run python scripts/train_lightning.py \
 ```bash
 uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=unified \
+    training=base \
     data.config_name=mixed_pretrain \
     training.influence.enabled=true \
     training.influence.warmup_steps=1000
@@ -101,7 +101,7 @@ uv run python scripts/train_lightning.py \
 
 ```bash
 uv run python scripts/train_lightning.py \
-    training=unified \
+    training=base \
     training.resume.checkpoint_path=gs://bucket/checkpoint.pt \
     training.resume.load_optimizer_state=false
 ```
@@ -120,7 +120,7 @@ uv run python scripts/train_lightning.py \
 # Enable GCS checkpointing
 uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=unified \
+    training=base \
     gcs.enabled=true \
     gcs.bucket=wrinklefree-checkpoints
 

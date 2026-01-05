@@ -92,7 +92,7 @@ run: |
   echo "[Training] Running unified training with STE+DLM..."
   uv run --package wrinklefree python packages/training/scripts/train.py \
     model=${MODEL} \
-    training=unified \
+    training=base \
     data=default \
     distributed=single_gpu \
     training.max_steps=${MAX_STEPS} \

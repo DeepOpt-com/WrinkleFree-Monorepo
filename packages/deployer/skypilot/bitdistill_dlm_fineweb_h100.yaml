@@ -1,60 +1,57 @@
-# BitNet + DLM + CE Training with Meta-Optimization (1x L40)
+# BitNet + DLM + CE Training with FineWeb-Edu Only (1x H100)
 #
 # SmolLM2-135M training run with:
 # - BitNet 1.58-bit quantization (ternary weights {-1, 0, 1})
 # - Diffusion Language Model (DLM) objective
 # - Standard cross-entropy loss
-# - Meta-optimization: LDC-MTL (objective weights) + ODM (dataset weights)
-#
-# Meta-Optimization (replaces DataInf influence):
-# - LDC-MTL: Learns optimal CE vs DLM weights via router network
-# - ODM/EXP3: Learns optimal data mixing via multi-armed bandit
-# - Both are O(1) complexity with ~0% overhead
-#
-# References:
-# - LDC-MTL: https://arxiv.org/abs/2502.08585
-# - ODM: https://arxiv.org/abs/2312.02406
+# - FineWeb-Edu only (no mixed data, no influence)
+# - Higher Muon LR (0.05), restored AdamW LR (3e-4)
+# - SubLN additions disabled
+# - Auto batch size for GPU utilization
 #
 # Usage:
 #   cd packages/deployer
 #   source credentials/.env
-#   sky launch skypilot/bitdistill_dlm_influence.yaml -y --cluster bitdistill-dlm
+#   sky launch skypilot/bitdistill_dlm_fineweb_h100.yaml -y --cluster bitdistill-h100
 #
 # Monitor:
-#   sky logs bitdistill-dlm
+#   sky logs bitdistill-h100
 #
 # Teardown:
-#   sky down bitdistill-dlm -y
+#   sky down bitdistill-h100 -y
 
-name: wrinklefree-bitdistill-dlm-meta
+name: wrinklefree-bitdistill-dlm-fineweb-h100
 
 resources:
-  accelerators: L40S:1
+  accelerators: H100:1
   memory: 64+
   disk_size: 100
   use_spot: false
   cloud: nebius
 
-workdir: /home/lev/code/WrinkleFreeDevWrapper/InfluenceClean
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
 
 file_mounts:
-  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
-  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
   /tmp/global.env: ~/.config/.env.global
 
 envs:
   GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
   GCS_BUCKET: wrinklefree-checkpoints
   MODEL: smollm2_135m
-  TRAINING_CONFIG: bitdistill_dlm_influence
   TOTAL_TOKENS: 5000000000  # 5B tokens
   MAX_STEPS: 19073  # 5B tokens / (4*32*2048) tokens per step (batch=4, grad_accum=32)
-  MUON_LR: 0.02  # Muon LR for 2D weights
-  ADAM_LR: 3e-4  # AdamW LR for embeddings/biases
-  EXPERIMENT_NAME: smollm2_135m_5b_meta_opt_subln_fix
+  # Higher Muon LR, restored AdamW LR
+  MUON_LR: "0.05"   # Muon LR for 2D weights (5x higher than half-lr run)
+  ADAM_LR: "3e-4"   # AdamW LR for embeddings/biases (restored to original)
+  EXPERIMENT_NAME: smollm2_135m_5b_fineweb_muon_0.05_no_subln
   WANDB_PROJECT: wrinklefree
-  WANDB_RUN_ID: bitdistill-dlm-${SKYPILOT_TASK_ID}
+  WANDB_RUN_ID: bitdistill-h100-${SKYPILOT_TASK_ID}
   HF_HUB_ENABLE_HF_TRANSFER: "1"
+  PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+  # Resume from checkpoint
+  RESUME_CHECKPOINT: gs://wrinklefree-checkpoints/checkpoints/smollm2_135m_5b_meta_opt_subln_fix/lightning_checkpoint/checkpoints/step_000500/last.ckpt
 
 setup: |
   set -e
@@ -76,7 +73,7 @@ setup: |
   fi
   echo "gcloud version: $(gcloud version 2>/dev/null | head -1)"
 
-  # Install dependencies (including muon-clip for single GPU training)
+  # Install dependencies
   uv sync --all-packages
   # Install muon-clip from GitHub (required for MuonClip optimizer on single GPU)
   uv pip install git+https://github.com/GAD-cell/muon-clip.git
@@ -129,67 +126,55 @@ run: |
   echo "WANDB_API_KEY length: ${#WANDB_API_KEY}"
 
   echo "================================================"
-  echo "WrinkleFree BitNet + DLM + Influence Training"
+  echo "WrinkleFree BitNet + DLM Training (FineWeb-Edu)"
   echo "================================================"
   echo "Model: $MODEL"
-  echo "Training Config: $TRAINING_CONFIG"
+  echo "Data: fineweb (FineWeb-Edu only)"
   echo "Total Tokens: $TOTAL_TOKENS (5B)"
   echo "Max Steps: $MAX_STEPS"
   echo "Optimizer: PyTorch Muon + AdamW"
-  echo "Muon LR: $MUON_LR (2D weights)"
-  echo "AdamW LR: $ADAM_LR (embeddings/biases)"
+  echo "Muon LR: $MUON_LR (2D weights) - HIGHER (5x)"
+  echo "AdamW LR: $ADAM_LR (embeddings/biases) - RESTORED"
   echo "Weight Decay: 0.01 (CRITICAL for Muon stability)"
-  echo "Batch Size: 4 (fixed for influence compatibility)"
-  echo "Grad Accum: 32"
+  echo "Auto Batch Size: ENABLED (starting from 8)"
+  echo "SubLN Additions: DISABLED"
   echo "Experiment: $EXPERIMENT_NAME"
   echo "WandB Project: $WANDB_PROJECT"
   echo "GCS Bucket: $GCS_BUCKET"
+  echo "Resume From: $RESUME_CHECKPOINT"
   echo "================================================"
   echo ""
   echo "Training Schedule:"
-  echo "- First 5%: warmup (CE only)"
-  echo "- Remaining 95%: mixed_pretrain with meta-opt (CE + DLM)"
+  echo "- First 20%: warmup (CE only)"
+  echo "- Remaining 80%: CE + DLM"
   echo ""
   echo "Objectives:"
-  echo "- continue_pretrain (CE): adaptive weight via LDC-MTL"
-  echo "- dlm: adaptive weight via LDC-MTL"
-  echo ""
-  echo "Meta-Optimization Settings:"
-  echo "- LDC-MTL: router_lr=0.001, step_interval=32"
-  echo "- ODM: reward_smoothing=0.9, warmup_ratio=0.01"
+  echo "- continue_pretrain (CE): weight=1.0"
+  echo "- dlm: weight=0.5 (after warmup)"
   echo "================================================"
   echo ""
 
-  # IMPORTANT: num_workers=0 avoids streaming dataset deadlocks with multiprocessing
-  export DATA_NUM_WORKERS=0
-
-  echo "[Training] Starting Lightning training with meta-optimization..."
-  # Using unified config with Muon+AdamW optimizer + meta-optimization (SubLN fix applied)
+  echo "[Training] Starting Lightning training..."
+  # Using unified config with Muon+AdamW optimizer, FineWeb-Edu only
+  # Auto batch size enabled, SubLN additions disabled
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=base \
-    data.config_name=mixed_pretrain \
-    +data.shuffle_buffer_size=5000 \
-    +data.homogeneous_batch_size=128 \
+    data.config_name=fineweb \
     training.max_steps=${MAX_STEPS} \
-    training.auto_batch_size=false \
-    training.batch_size=4 \
-    training.gradient_accumulation_steps=32 \
+    training.auto_batch_size=true \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=16 \
     training.optimizer.type=muon \
     training.optimizer.lr_muon=${MUON_LR} \
     training.optimizer.lr_adam=${ADAM_LR} \
     training.optimizer.weight_decay=0.01 \
+    +training.auto_convert.insert_subln=false \
     training.lambda_warmup.enabled=false \
     training.influence.enabled=false \
-    training.meta_optimization.enabled=true \
-    training.meta_optimization.ldc_mtl.enabled=true \
-    training.meta_optimization.ldc_mtl.lambda_penalty=0.1 \
-    training.meta_optimization.ldc_mtl.router_lr=0.001 \
-    training.meta_optimization.ldc_mtl.step_interval=32 \
-    training.meta_optimization.odm.enabled=true \
-    training.meta_optimization.odm.reward_smoothing=0.9 \
-    training.meta_optimization.odm.warmup_ratio=0.01 \
-    training.meta_optimization.log_interval=50 \
+    training.resume.checkpoint_path=${RESUME_CHECKPOINT} \
+    training.resume.load_optimizer_state=false \
+    training.resume.load_scheduler_state=false \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
     training.checkpoint.save_interval=500 \
@@ -214,17 +199,7 @@ run: |
   # Check for key metrics in logs
   if grep -q "loss" training.log; then
     echo "Loss metrics found in logs"
-    grep -E "train/loss|train/continue_pretrain|train/dlm|train/lrc" training.log | tail -20
-  fi
-
-  # Check meta-optimization weight updates
-  echo ""
-  echo "[Verify] Meta-optimization updates:"
-  if grep -q "ldc_mtl\|odm" training.log; then
-    echo "Meta-optimization logging found"
-    grep -E "ldc_mtl|odm|objective_weight|dataset_weight" training.log | tail -10
-  else
-    echo "WARNING: No meta-optimization messages found"
+    grep -E "train/loss|train/continue_pretrain|train/dlm" training.log | tail -20
   fi
 
   # List checkpoints
@@ -237,11 +212,4 @@ run: |
   echo "================================================"
   echo "WandB: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
   echo "GCS: gs://${GCS_BUCKET}/checkpoints/${EXPERIMENT_NAME}/"
-  echo "================================================"
-  echo ""
-  echo "Check WandB for:"
-  echo "- train/loss, train/continue_pretrain_loss, train/dlm_loss"
-  echo "- meta/ldc_mtl/objective_weight_* (learned objective weights)"
-  echo "- meta/odm/dataset_weight_* (learned dataset weights)"
-  echo "- meta/odm/exploration_rate (EXP3 exploration decay)"
   echo "================================================"

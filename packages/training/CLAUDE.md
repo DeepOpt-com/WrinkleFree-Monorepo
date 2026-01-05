@@ -62,7 +62,7 @@ The old `distillation` package has been moved to `_legacy/distillation/`.
 
 **Running from monorepo root**:
 ```bash
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py model=smollm2_135m training=unified
+uv run --package wrinklefree python packages/training/scripts/train_lightning.py model=smollm2_135m training=base
 ```
 
 ## Quick Start
@@ -72,25 +72,25 @@ uv run --package wrinklefree python packages/training/scripts/train_lightning.py
 uv sync
 
 # Run SmolLM2-135M training (smallest model, good for testing)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
 
 # With auto batch size scaling
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
     training.auto_batch_size=true
 
 # Run larger models
-uv run python scripts/train_lightning.py model=qwen3_4b training=unified
+uv run python scripts/train_lightning.py model=qwen3_4b training=base
 ```
 
 ## Training Pipeline
 
 ### Unified Training (Recommended)
 
-The `unified` config combines STE quantization training with DLM (Diffusion Language Model) objectives in a single pass:
+The `base` config combines STE quantization training with DLM (Diffusion Language Model) objectives in a single pass:
 
 ```bash
 # Combined STE + DLM training (GitHub Issue #2)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
 
 # Key features:
 # - Auto-converts model to BitNet if needed
@@ -128,7 +128,7 @@ curriculum:
 **Configurable Resume**:
 ```bash
 # Resume with fresh optimizer (new LR schedule)
-uv run python scripts/train_lightning.py training=unified \
+uv run python scripts/train_lightning.py training=base \
   training.resume.checkpoint_path=gs://bucket/checkpoint.pt \
   training.resume.load_optimizer_state=false \
   training.resume.load_scheduler_state=false
@@ -142,7 +142,7 @@ uv run python scripts/train_lightning.py training=unified \
 
 ### Inference Compatibility
 
-Models trained with `training=unified` support **BOTH** inference modes:
+Models trained with `training=base` support **BOTH** inference modes:
 - **Autoregressive** (llama-cli): Works because we train with CE loss throughout
 - **Block diffusion** (dlm_server): Works because we train with DLM loss; may be faster
 
@@ -168,14 +168,14 @@ The Lightning-based trainer provides a cleaner, more maintainable training loop 
 
 ```bash
 # Basic Lightning training
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
 
 # With auto batch size scaling (finds max batch that fits GPU)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
   training.auto_batch_size=true
 
 # All objectives work unchanged (DLM, LRC, distillation)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
   training.objectives.dlm.enabled=true \
   training.objectives.dlm.weight=0.5
 ```
@@ -213,7 +213,7 @@ Dynamic dataset weight optimization during training (MobileLLM-R1 methodology).
 
 ```bash
 # Enable influence remixing with mixed_pretrain data (Lightning trainer)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
   data.config_name=mixed_pretrain \
   training.influence.enabled=true \
   training.influence.warmup_steps=1000 \
@@ -709,7 +709,7 @@ All configs in `configs/` using Hydra:
 **Key Config Files**:
 | Config | Purpose |
 |--------|---------|
-| `training/unified.yaml` | Combined STE+DLM with curriculum |
+| `training/base.yaml` | Combined STE+DLM with curriculum |
 | `training/stage2_pretrain.yaml` | Legacy Stage 2 |
 | `data/default.yaml` | Points to data_handler |
 

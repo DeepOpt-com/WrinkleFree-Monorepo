@@ -64,7 +64,7 @@ A batch dominated by code will have lower loss than one dominated by web text.
 # Recommended: MuonClip optimizer
 uv run python packages/training/scripts/train_lightning.py \
   model=qwen3_4b \
-  training=unified \
+  training=base \
   training.optimizer.name=muonclip \
   training.batch_size=8 \
   training.gradient_accumulation_steps=64  # effective 512
@@ -72,7 +72,7 @@ uv run python packages/training/scripts/train_lightning.py \
 # If using Adam: lower LR
 uv run python packages/training/scripts/train_lightning.py \
   model=qwen3_4b \
-  training=unified \
+  training=base \
   training.optimizer.lr=1e-4 \
   training.batch_size=8 \
   training.gradient_accumulation_steps=64
