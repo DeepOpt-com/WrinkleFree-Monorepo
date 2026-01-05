@@ -646,7 +646,7 @@ def create_callbacks(cfg: DictConfig) -> list:
     return callbacks
 
 
-def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
+def create_trainer(cfg: DictConfig, callbacks: list, max_steps: int) -> pl.Trainer:
     """Create Lightning Trainer from config."""
     # Determine strategy based on number of available GPUs
     # NOTE: WORLD_SIZE isn't set yet (Lightning sets it later), so use cuda.device_count()
@@ -713,7 +713,7 @@ def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
     val_enabled = val_cfg.get("enabled", False)
 
     trainer = pl.Trainer(
-        max_steps=cfg.training.max_steps,
+        max_steps=max_steps,
         accumulate_grad_batches=cfg.training.gradient_accumulation_steps,
         precision="bf16-mixed",
         strategy=strategy,
@@ -760,6 +760,24 @@ def main(cfg: DictConfig) -> None:
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Compute max_steps from total_tokens if not specified
+    max_steps = cfg.training.get("max_steps")
+    if max_steps is None:
+        total_tokens = cfg.training.get("total_tokens")
+        if total_tokens:
+            batch_size = cfg.training.get("batch_size", 32)
+            seq_length = cfg.training.get("max_seq_length", 512)
+            grad_accum = cfg.training.get("gradient_accumulation_steps", 1)
+            tokens_per_step = batch_size * seq_length * grad_accum
+            max_steps = int(total_tokens / tokens_per_step)
+            logger.info(
+                f"Computed max_steps={max_steps:,} from total_tokens={total_tokens:,} "
+                f"(batch={batch_size}, seq_len={seq_length}, grad_accum={grad_accum})"
+            )
+        else:
+            max_steps = 10000  # Default fallback
+            logger.warning("Neither max_steps nor total_tokens specified, using default max_steps=10000")
+
     # Load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(cfg)
 
@@ -778,7 +796,7 @@ def main(cfg: DictConfig) -> None:
     # Create objective manager
     objective_manager = create_objective_manager(
         config=cfg.training,
-        total_steps=cfg.training.max_steps,
+        total_steps=max_steps,
     )
 
     # Create data module with validation support
@@ -830,7 +848,7 @@ def main(cfg: DictConfig) -> None:
     callbacks = create_callbacks(cfg)
 
     # Create trainer
-    trainer = create_trainer(cfg, callbacks)
+    trainer = create_trainer(cfg, callbacks, max_steps)
 
     # Check for resume checkpoint (Lightning .ckpt file)
     resume_ckpt_path = find_lightning_resume_checkpoint(cfg)
