@@ -438,7 +438,10 @@ class PackedDataset(IterableDataset):
         token_buffer: collections.deque = collections.deque()
         text_buffer: List[str] = []
         source_buffer: List[str] = []  # Track sources for each text
-        current_chunk_source: Optional[str] = None  # Source for current packed chunk
+        # Track source for current packed chunk - "unknown" if no source info available
+        current_chunk_source: str = "unknown"
+        # Track source for the NEXT chunk (set when yielding overflow)
+        next_chunk_source: Optional[str] = None
 
         for sample in self.dataset:
             text_buffer.append(sample["text"])
@@ -448,13 +451,21 @@ class PackedDataset(IterableDataset):
             if len(text_buffer) >= self.tokenize_batch_size:
                 token_batches = self._batch_tokenize(text_buffer)
                 for i, tokens in enumerate(token_batches):
-                    # Track source of first document in buffer for each chunk
-                    if current_chunk_source is None and i < len(source_buffer):
+                    # Track source: use pending source from previous yield, or first doc's source
+                    if next_chunk_source is not None:
+                        current_chunk_source = next_chunk_source
+                        next_chunk_source = None
+                    elif i < len(source_buffer):
+                        # For homogeneous batches, all docs have same source
+                        # For mixed batches, use first doc's source
                         current_chunk_source = source_buffer[i]
                     # Add separator between documents
                     if token_buffer:
                         token_buffer.append(self.separator_token_id)
                     token_buffer.extend(tokens)
+                    # Track last source added for overflow handling
+                    if i < len(source_buffer):
+                        next_chunk_source = source_buffer[i]
                 text_buffer = []
                 source_buffer = []
 
@@ -468,19 +479,27 @@ class PackedDataset(IterableDataset):
                         "attention_mask": torch.ones(self.max_length, dtype=torch.long),
                         "position_ids": position_ids,
                         "labels": input_ids.clone(),  # For causal LM training
-                        "domain": current_chunk_source,  # For ODM
+                        "domain": current_chunk_source,  # For ODM - never None
                     }
-                    current_chunk_source = None  # Reset for next chunk
+                    # Next chunk inherits source from overflow tokens
+                    current_chunk_source = next_chunk_source if next_chunk_source else current_chunk_source
 
         # Process remaining texts in buffer
         if text_buffer:
             token_batches = self._batch_tokenize(text_buffer)
             for i, tokens in enumerate(token_batches):
-                if current_chunk_source is None and i < len(source_buffer):
+                # Track source: use pending source from previous yield, or first doc's source
+                if next_chunk_source is not None:
+                    current_chunk_source = next_chunk_source
+                    next_chunk_source = None
+                elif i < len(source_buffer):
                     current_chunk_source = source_buffer[i]
                 if token_buffer:
                     token_buffer.append(self.separator_token_id)
                 token_buffer.extend(tokens)
+                # Track last source added for overflow handling
+                if i < len(source_buffer):
+                    next_chunk_source = source_buffer[i]
 
             # Yield remaining complete chunks
             while len(token_buffer) >= self.max_length:
@@ -492,9 +511,10 @@ class PackedDataset(IterableDataset):
                     "attention_mask": torch.ones(self.max_length, dtype=torch.long),
                     "position_ids": position_ids,
                     "labels": input_ids.clone(),  # For causal LM training
-                    "domain": current_chunk_source,  # For ODM
+                    "domain": current_chunk_source,  # For ODM - never None
                 }
-                current_chunk_source = None
+                # Next chunk inherits source from overflow tokens
+                current_chunk_source = next_chunk_source if next_chunk_source else current_chunk_source
 
 
 def create_mixed_dataset(
