@@ -22,8 +22,8 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from math_utils.influence.config import InfluenceConfig
-from math_utils.influence.gradient import DiscriminativeGradientExtractor
+from .config import InfluenceConfig
+from .gradient import DiscriminativeGradientExtractor
 
 logger = logging.getLogger(__name__)
 

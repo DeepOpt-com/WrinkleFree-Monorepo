@@ -19,11 +19,11 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from math_utils.influence.base import DataSelector, InfluenceCalculator
-from math_utils.influence.config import InfluenceDistillationConfig
-from math_utils.influence.gradient import DiscriminativeGradientExtractor
-from math_utils.influence.jvp_embedding import JVPEmbeddingExtractor
-from math_utils.influence.landmark import LandmarkSelector
+from .base import DataSelector, InfluenceCalculator
+from .config import InfluenceDistillationConfig
+from .gradient import DiscriminativeGradientExtractor
+from .jvp_embedding import JVPEmbeddingExtractor
+from .landmark import LandmarkSelector
 
 logger = logging.getLogger(__name__)
 

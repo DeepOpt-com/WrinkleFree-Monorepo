@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from math_utils.influence.config import InfluenceConfig, InfluenceTarget
+from .config import InfluenceConfig, InfluenceTarget
 
 
 class DiscriminativeGradientExtractor:

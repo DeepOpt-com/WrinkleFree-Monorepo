@@ -17,8 +17,8 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from math_utils.influence.config import JVPEmbeddingConfig
-from math_utils.influence.hadamard import RandomizedHadamardTransform
+from .config import JVPEmbeddingConfig
+from .hadamard import RandomizedHadamardTransform
 
 logger = logging.getLogger(__name__)
 

@@ -1,73 +1,23 @@
-"""Influence function algorithms for data valuation and selection."""
+"""DEPRECATED: DataInf influence computation utilities.
 
-from math_utils.influence.base import (
-    EmbeddingExtractor as EmbeddingExtractor,
-    InfluenceCalculator as InfluenceCalculator,
-    DataSelector as DataSelector,
-)
-from math_utils.influence.config import (
-    InfluenceConfig as InfluenceConfig,
-    InfluenceTarget as InfluenceTarget,
-    JVPEmbeddingConfig as JVPEmbeddingConfig,
-    LandmarkConfig as LandmarkConfig,
-    KRRConfig as KRRConfig,
-    InfluenceDistillationConfig as InfluenceDistillationConfig,
-    MixtureOptimizationConfig as MixtureOptimizationConfig,
-    ProbeSetConfig as ProbeSetConfig,
-    SelfBoostingConfig as SelfBoostingConfig,
-)
-from math_utils.influence.gradient import (
-    DiscriminativeGradientExtractor as DiscriminativeGradientExtractor,
-)
-from math_utils.influence.datainf import (
-    DataInfCalculator as DataInfCalculator,
-    create_influence_calculator as create_influence_calculator,
-)
-from math_utils.influence.jvp_embedding import (
-    JVPEmbeddingExtractor as JVPEmbeddingExtractor,
-)
-from math_utils.influence.hadamard import (
-    RandomizedHadamardTransform as RandomizedHadamardTransform,
-    create_projection as create_projection,
-)
-from math_utils.influence.landmark import (
-    LandmarkSelector as LandmarkSelector,
-    select_landmarks as select_landmarks,
-)
-from math_utils.influence.distillation import (
-    InfluenceDistillation as InfluenceDistillation,
-    create_influence_distillation as create_influence_distillation,
-)
-from math_utils.influence.meta_gradient import (
-    MetaGradientCalculator as MetaGradientCalculator,
+This module has been replaced by ODM (Online Data Mixing) in the meta-optimization system.
+ODM uses EXP3 multi-armed bandit with O(1) complexity instead of O(K) gradient computation.
+
+Use `training.meta_optimization.odm` instead of DataInf-based influence.
+
+Reference: https://arxiv.org/abs/2312.02406 (ODM)
+
+For legacy code that still needs DataInf, imports are redirected to _legacy.
+"""
+
+import warnings
+
+warnings.warn(
+    "math_utils.influence is deprecated. Use training.meta_optimization.odm instead. "
+    "See https://arxiv.org/abs/2312.02406 for the ODM paper.",
+    DeprecationWarning,
+    stacklevel=2,
 )
 
-__all__ = [
-    # Base
-    "EmbeddingExtractor",
-    "InfluenceCalculator",
-    "DataSelector",
-    # Configs
-    "InfluenceConfig",
-    "InfluenceTarget",
-    "JVPEmbeddingConfig",
-    "LandmarkConfig",
-    "KRRConfig",
-    "InfluenceDistillationConfig",
-    "MixtureOptimizationConfig",
-    "ProbeSetConfig",
-    "SelfBoostingConfig",
-    # Core
-    "DiscriminativeGradientExtractor",
-    "DataInfCalculator",
-    "create_influence_calculator",
-    "JVPEmbeddingExtractor",
-    "RandomizedHadamardTransform",
-    "create_projection",
-    "LandmarkSelector",
-    "select_landmarks",
-    "InfluenceDistillation",
-    "create_influence_distillation",
-    # Meta-gradient
-    "MetaGradientCalculator",
-]
+# Re-export from _legacy for backwards compatibility
+from math_utils._legacy.influence import *  # noqa: F401, F403
