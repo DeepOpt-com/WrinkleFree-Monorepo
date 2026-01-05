@@ -166,7 +166,7 @@ run: |
     model=${MODEL} \
     training=unified \
     data.config_name=mixed_pretrain \
-    data.shuffle_buffer_size=5000 \
+    +data.shuffle_buffer_size=5000 \
     training.max_steps=${MAX_STEPS} \
     training.auto_batch_size=false \
     training.batch_size=4 \
