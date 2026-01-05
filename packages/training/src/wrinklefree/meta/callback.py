@@ -83,6 +83,9 @@ class MetaOptimizerCallback(Callback):
         self._total_steps: int | None = None
         self._warmup_steps: int = 0
 
+        # LayerLR deferred init - stored for on_train_start
+        self._layer_lr_pending_init = False
+
     def setup(
         self,
         trainer: pl.Trainer,
@@ -141,30 +144,27 @@ class MetaOptimizerCallback(Callback):
                     "MetaOptimizerCallback: ODM disabled (need >1 dataset)"
                 )
 
-        # Initialize LayerLR for per-layer learning rate optimization
+        # LayerLR initialization is DEFERRED to on_train_start
+        # This is critical for compatibility with BatchSizeFinder, which runs
+        # trial training steps in on_fit_start. If LayerLR is initialized in
+        # setup(), its hooks (on_after_backward, on_train_batch_end, etc.) will
+        # run during BatchSizeFinder trials, causing hangs due to:
+        # 1. penalty.backward() creating computation graphs during memory probing
+        # 2. LR modifications interfering with trial step comparisons
+        #
+        # Similar to MuonClipInitCallback, we defer to on_train_start which runs
+        # AFTER BatchSizeFinder completes.
         if self.config.layer_lr.enabled:
-            try:
-                self.layer_lr = LayerLRManager(
-                    pl_module.model,
-                    self.config.layer_lr,
-                    device,
-                )
-                # Compute warmup steps for LayerLR
-                self._warmup_steps = int(
-                    self._total_steps * self.config.layer_lr.warmup_ratio
-                )
-                logger.info(
-                    f"MetaOptimizerCallback: LayerLR enabled for "
-                    f"{self.layer_lr.num_layers} layers, "
-                    f"warmup={self._warmup_steps} steps"
-                )
-            except ValueError as e:
-                logger.info(f"MetaOptimizerCallback: LayerLR disabled ({e})")
+            self._layer_lr_pending_init = True
+            logger.info(
+                "MetaOptimizerCallback: LayerLR init deferred to on_train_start "
+                "(for BatchSizeFinder compatibility)"
+            )
 
         self._is_enabled = (
             self.ldc_mtl is not None
             or self.odm is not None
-            or self.layer_lr is not None
+            or self._layer_lr_pending_init  # Will be initialized in on_train_start
         )
 
         if self._is_enabled:
@@ -191,6 +191,44 @@ class MetaOptimizerCallback(Callback):
             if hasattr(manager, "get_objective_names"):
                 return manager.get_objective_names()
         return []
+
+    def on_train_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Initialize LayerLR after BatchSizeFinder completes.
+
+        LayerLR init is deferred to on_train_start (from setup) to avoid
+        interfering with BatchSizeFinder's trial training steps. This is
+        the same pattern used by MuonClipInitCallback.
+        """
+        if not self._layer_lr_pending_init:
+            return
+
+        # Get device from model (now on GPU after BatchSizeFinder)
+        device = next(pl_module.model.parameters()).device
+
+        try:
+            self.layer_lr = LayerLRManager(
+                pl_module.model,
+                self.config.layer_lr,
+                device,
+            )
+            # Compute warmup steps for LayerLR
+            self._warmup_steps = int(
+                self._total_steps * self.config.layer_lr.warmup_ratio
+            )
+            logger.info(
+                f"MetaOptimizerCallback: LayerLR initialized for "
+                f"{self.layer_lr.num_layers} layers, "
+                f"warmup={self._warmup_steps} steps "
+                "(deferred init after BatchSizeFinder)"
+            )
+        except ValueError as e:
+            logger.info(f"MetaOptimizerCallback: LayerLR disabled ({e})")
+
+        self._layer_lr_pending_init = False
 
     def on_after_backward(
         self,
