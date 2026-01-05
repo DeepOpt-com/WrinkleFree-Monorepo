@@ -37,16 +37,27 @@ max_steps = total_tokens / (batch_size * seq_length * grad_accum)
 
 **Fix**: Changed message to "GCS DISABLED - training continues without checkpoint sync".
 
-### Investigation: NaN Loss with MuonClip + Qwen3-0.6B
+### Fix: NaN Loss with MuonClip + Qwen3-0.6B
 
 **Problem**: Training with `model=qwen3_0.6b training=full_run` produces `loss: nan` after ~776 steps.
 
-**Suspected Causes**:
-1. `lr_muon: 0.02` may be too high for 0.6B model
-2. `lambda_warmup.enabled: false` - no gradual quantization warmup
-3. WSD scheduler warmup (550 steps) may not sync with MuonClip initialization
+**Root Cause**: MuonClip hyperparameters were tuned for smaller models. The high learning rate (0.02) combined with sudden quantization caused gradient explosions.
 
-**Next Steps**: Ask Gemini for MuonClip stability best practices.
+**Fix** (in `full_run.yaml`):
+| Parameter | Before | After | Reason |
+|-----------|--------|-------|--------|
+| `lr_muon` | 0.02 | 0.005 | 4x reduction for larger models |
+| `lr_adam` | 3e-4 | 1e-4 | 3x reduction for stability |
+| `clipping_threshold` | 50.0 | 10.0 | Catch gradient explosions earlier |
+| `warmup_steps` | 550 | 1000 | Longer warmup for stability |
+| `lambda_warmup.enabled` | false | true | Gradual quantization prevents sudden instability |
+
+**MuonClip Best Practices for BitNet**:
+1. Scale `lr_muon` inversely with model size: 0.02 for 135M, 0.01 for 350M, 0.005 for 0.6B+
+2. Always enable lambda warmup for gradual quantization transition
+3. Keep `clipping_threshold` low (10-20) to catch explosions early
+4. Match `warmup_steps` between scheduler and lambda_warmup
+5. Use `clipping_alpha=0.5` for balanced clipping
 
 ---
 
