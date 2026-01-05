@@ -46,13 +46,13 @@ WrinkleFree is a repository for training and serving 1.58-bit (ternary) LLM mode
 ## Monorepo Integration
 
 This package is part of the WrinkleFree monorepo and depends on:
-- **data_handler**: Shared data loading and influence functions
-- **bitnet_arch**: BitNet layers (BitLinear, SubLN) and model conversion
+- **wf_data**: Shared data loading and influence functions
+- **wf_arch**: BitNet layers (BitLinear, SubLN) and model conversion
 
 **Related packages**:
 | Package | Relationship |
 |---------|--------------|
-| `data_handler` | Data loading, influence optimization |
+| `wf_data` | Data loading, influence optimization |
 | `architecture` | BitNet layers and model conversion |
 | `deployer` | Cloud deployment (launches training jobs) |
 | `inference` | Serves trained models |
@@ -63,7 +63,7 @@ The old `distillation` package has been moved to `_legacy/distillation/`.
 
 **Running from monorepo root**:
 ```bash
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py model=smollm2_135m training=base
+uv run --package wf-train python packages/training/scripts/train_lightning.py model=smollm2_135m training=base
 ```
 
 ## Quick Start
@@ -210,7 +210,7 @@ sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
 
 Dynamic dataset weight optimization during training (MobileLLM-R1 methodology).
 
-**Lightning Integration**: Uses `InfluenceTrackerCallback` which wraps `data_handler.influence.InfluenceTracker`.
+**Lightning Integration**: Uses `InfluenceTrackerCallback` which wraps `wf_data.influence.InfluenceTracker`.
 
 ```bash
 # Enable influence remixing with mixed_pretrain data (Lightning trainer)
@@ -667,7 +667,7 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 - `auto_setup.py` - Auto-magic checkpoint resolution + BitNet conversion (ACTIVE)
 - `_legacy/trainer.py` - Legacy base Trainer (DEPRECATED - use Lightning)
 - `_legacy/continued_pretraining.py` - Legacy ContinuedPretrainingTrainer (DEPRECATED)
-- `_legacy/stage1.py` - Stage 1 SubLN insertion (DEPRECATED - use bitnet_arch.auto_convert_if_needed)
+- `_legacy/stage1.py` - Stage 1 SubLN insertion (DEPRECATED - use wf_arch.auto_convert_if_needed)
 
 **Experimental** (`src/wrinklefree/_experimental/`):
 - `moe/` - Mixture of Experts (benchmark-only, not production-ready)
@@ -678,7 +678,7 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 - `subln.py` - SubLN normalization (key BitDistill component)
 
 **Data** (`src/wrinklefree/data/`):
-- Imports from `data_handler` package
+- Imports from `wf_data` package
 - `InfluenceTracker` - Training callback for weight updates
 - `MixedDataset` - Runtime dataset with dynamic weights
 
@@ -702,7 +702,7 @@ output = manager(model_outputs, batch)
 
 **Auto-Setup Pattern**:
 ```python
-from wrinklefree.training.auto_setup import auto_setup_model
+from wf_train.training.auto_setup import auto_setup_model
 
 # Resolves checkpoint (local/GCS/HuggingFace)
 # Auto-converts to BitNet if needed
@@ -716,7 +716,7 @@ model, tokenizer = auto_setup_model(config, device)
 All configs in `configs/` using Hydra:
 - `model/` - Model architecture configs (smollm2_135m, qwen3_4b)
 - `training/` - Stage-specific training configs (unified, stage2_pretrain)
-- `data/` - Dataset configs (default points to data_handler)
+- `data/` - Dataset configs (default points to wf_data)
 - `distributed/` - FSDP/DDP settings (single_gpu, fsdp_multi)
 
 **Key Config Files**:
@@ -724,7 +724,7 @@ All configs in `configs/` using Hydra:
 |--------|---------|
 | `training/base.yaml` | Combined STE+DLM with curriculum |
 | `training/stage2_pretrain.yaml` | Legacy Stage 2 |
-| `data/default.yaml` | Points to data_handler |
+| `data/default.yaml` | Points to wf_data |
 
 ## Development
 
@@ -750,7 +750,7 @@ The repo includes MoE infrastructure for testing and training MoE variants of Bi
 
 ### Fake MoE Testing
 ```python
-from wrinklefree._experimental.moe import create_fake_moe_from_dense, verify_moe_matches_dense
+from wf_train._experimental.moe import create_fake_moe_from_dense, verify_moe_matches_dense
 
 # Convert dense model to MoE (all experts share weights, IdentityRouter)
 moe_model = create_fake_moe_from_dense(model, num_experts=8, top_k=2)
@@ -765,7 +765,7 @@ Convert trained models to GGUF format for BitNet.cpp inference.
 
 ### Conversion Functions
 ```python
-from wrinklefree.serving.converter import (
+from wf_train.serving.converter import (
     convert_to_gguf,           # Dense model to GGUF
     convert_moe_to_gguf,       # MoE model to GGUF
     convert_dense_to_fake_moe_gguf,  # Dense -> Fake MoE -> GGUF
@@ -792,7 +792,7 @@ Intelligent run naming for training and benchmarks.
 
 ### Training Runs
 ```python
-from wrinklefree.training.run_naming import generate_run_name
+from wf_train.training.run_naming import generate_run_name
 
 # Auto-generates: qwen3_4b-s2-muon-lr2.4e3-bs64-a3f
 name = generate_run_name(hydra_config)
@@ -800,7 +800,7 @@ name = generate_run_name(hydra_config)
 
 ### Benchmark Runs
 ```python
-from wrinklefree.training.run_naming import generate_benchmark_name, generate_moe_benchmark_name
+from wf_train.training.run_naming import generate_benchmark_name, generate_moe_benchmark_name
 
 # Dense: bn2b-i2s-ctx4096-t16-a3f
 name = generate_benchmark_name("bitnet-2b", "i2_s", 4096, 16)
@@ -837,7 +837,7 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=stage2_pret
   training.activation_sparsity.enabled=true
 
 # Or via Modal
-modal run src/wf_deployer/modal_deployer.py --model smollm2_135m --stage 2 \
+modal run src/wf_deploy/modal_deployer.py --model smollm2_135m --stage 2 \
   --hydra-overrides "training.activation_sparsity.enabled=true"
 ```
 
@@ -922,12 +922,12 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
 - BitNet submodule (at meta-repo root ../extern/BitNet) is for inference only
 - MoE support uses llama.cpp's Mixtral-style tensor packing
 
-## Training Data (from data_handler)
+## Training Data (from wf_data)
 
-**Data configs are managed by data_handler, NOT this package.**
+**Data configs are managed by wf_data, NOT this package.**
 
 This package's `configs/data/default.yaml` just specifies `config_name: mixed_pretrain`, which loads
-the actual data config from `data_handler/configs/data/mixed_pretrain.yaml`.
+the actual data config from `wf_data/configs/data/mixed_pretrain.yaml`.
 
 The `mixed_pretrain` config includes:
 - 6 data sources (DCLM, FineWeb-Edu, GitHub Code 2025, FineMath, SlimPajama, SYNTH)
@@ -937,10 +937,10 @@ The `mixed_pretrain` config includes:
 **To use a different data config**, override `data.config_name`:
 ```bash
 uv run python scripts/train_lightning.py model=smollm2_135m training=stage2_pretrain \
-  data.config_name=fineweb  # Use data_handler's fineweb.yaml
+  data.config_name=fineweb  # Use wf_data's fineweb.yaml
 ```
 
-**Available configs** (in `packages/data_handler/configs/data/`):
+**Available configs** (in `packages/wf_data/configs/data/`):
 - `mixed_pretrain` - Multi-source with influence (default, recommended)
 - `fineweb` - Single-source FineWeb-Edu (no influence)
 - `downstream` - SFT/finetuning tasks (Stage 3)

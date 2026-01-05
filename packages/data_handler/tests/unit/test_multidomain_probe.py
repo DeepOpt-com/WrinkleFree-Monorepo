@@ -8,14 +8,14 @@ import torch
 import torch.nn as nn
 from unittest.mock import MagicMock, patch
 
-from data_handler.data.mixing import (
+from wf_data.data.mixing import (
     DomainProbeConfig,
     DomainProbeDataset,
     create_domain_probe_loaders,
     get_domain_weights,
 )
-from data_handler.influence.config import MixtureOptimizationConfig
-from data_handler.influence.mixture_calculator import (
+from wf_data.influence.config import MixtureOptimizationConfig
+from wf_data.influence.mixture_calculator import (
     MixtureWeightCalculator,
     DEFAULT_DOMAIN_WEIGHTS,
 )

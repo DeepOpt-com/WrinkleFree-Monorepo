@@ -7,9 +7,9 @@ when running multi-task training on the same data.
 import pytest
 import torch
 
-from wrinklefree.objectives.continue_pretrain import ContinuePretrainObjective
-from wrinklefree.objectives.dlm import DLMObjective
-from wrinklefree.objectives.manager import ObjectiveManager
+from wf_train.objectives.continue_pretrain import ContinuePretrainObjective
+from wf_train.objectives.dlm import DLMObjective
+from wf_train.objectives.manager import ObjectiveManager
 
 
 class TestDLMStoresOriginals:
@@ -255,7 +255,7 @@ class TestFactoryWithDLM:
 
     def test_create_manager_with_dlm_enabled(self):
         """Test creating manager with both CE and DLM enabled."""
-        from wrinklefree.objectives.factory import create_objective_manager
+        from wf_train.objectives.factory import create_objective_manager
 
         config = {
             "objectives": {
@@ -274,7 +274,7 @@ class TestFactoryWithDLM:
 
     def test_dlm_requires_mask_token_id(self):
         """Test that DLM requires mask_token_id when enabled."""
-        from wrinklefree.objectives.factory import create_objective_manager
+        from wf_train.objectives.factory import create_objective_manager
 
         config = {
             "objectives": {

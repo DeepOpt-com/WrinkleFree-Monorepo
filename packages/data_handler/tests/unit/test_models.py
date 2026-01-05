@@ -6,20 +6,20 @@ Tests attention, transformer blocks, and full model.
 import pytest
 import torch
 
-from data_handler._legacy.models.config import (
+from wf_data._legacy.models.config import (
     MobileLLMConfig,
     MobileLLM140MConfig,
     MobileLLM950MConfig,
 )
-from data_handler._legacy.models.attention import (
+from wf_data._legacy.models.attention import (
     MultiHeadAttention,
     FeedForward,
     RMSNorm,
     precompute_rope_frequencies,
     apply_rope,
 )
-from data_handler._legacy.models.transformer import TransformerBlock, TransformerDecoder
-from data_handler._legacy.models.mobilellm import MobileLLM
+from wf_data._legacy.models.transformer import TransformerBlock, TransformerDecoder
+from wf_data._legacy.models.mobilellm import MobileLLM
 
 
 class TestRMSNorm:

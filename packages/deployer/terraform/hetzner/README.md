@@ -46,7 +46,7 @@ provider "hcloud" {
 # main.tf
 resource "hcloud_server" "inference" {
   count       = var.node_count
-  name        = "wrinklefree-inference-${count.index}"
+  name        = "wf-infer-${count.index}"
   server_type = var.server_type  # ax102, ax162, etc.
   image       = "ubuntu-22.04"
   location    = var.location     # fsn1, nbg1, hel1
@@ -165,7 +165,7 @@ For optimal performance, configure vSwitch:
 
 ```hcl
 resource "hcloud_network" "inference" {
-  name     = "wrinklefree-inference"
+  name     = "wf-infer"
   ip_range = "10.0.0.0/16"
 }
 

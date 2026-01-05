@@ -153,7 +153,7 @@ early_stopping:
 # License: ODC-BY (commercially friendly)
 validation:
   enabled: true
-  config_name: c4_validation    # References data_handler config
+  config_name: c4_validation    # References wf_data config
   val_check_interval: 500       # Evaluate every N steps
   limit_val_batches: 50         # Number of validation batches (streaming)
   batch_size: 8                 # Smaller batch for eval (no gradients)

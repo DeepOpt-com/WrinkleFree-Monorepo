@@ -4,9 +4,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from bitnet_arch.layers.bitlinear import BitLinear
-from bitnet_arch.layers.subln import SubLN
-from bitnet_arch.conversion import (
+from wf_arch.layers.bitlinear import BitLinear
+from wf_arch.layers.subln import SubLN
+from wf_arch.conversion import (
     is_bitnet_model,
     auto_convert_if_needed,
     convert_model_to_bitnet,

@@ -4,11 +4,11 @@ import pytest
 from unittest.mock import MagicMock, patch
 from torch.utils.data import DataLoader
 
-from wrinklefree.lightning import WrinkleFreeDataModule
+from wf_train.lightning import WrinkleFreeDataModule
 
-# The import happens inside setup() as: from wrinklefree.data import create_pretraining_dataloader
+# The import happens inside setup() as: from wf_train.data import create_pretraining_dataloader
 # So we patch where it's defined (wrinklefree.data) not where it's used
-MOCK_PATH = "wrinklefree.data.create_pretraining_dataloader"
+MOCK_PATH = "wf_train.data.create_pretraining_dataloader"
 
 
 @pytest.fixture

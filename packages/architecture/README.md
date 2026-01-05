@@ -15,7 +15,7 @@ Core building blocks for 1.58-bit (ternary) quantized LLM models.
 
 ```bash
 # From monorepo root
-uv sync --package bitnet-arch
+uv sync --package wf-arch
 
 # Or install all packages
 uv sync --all-packages
@@ -26,7 +26,7 @@ uv sync --all-packages
 ### BitLinear Layer
 
 ```python
-from bitnet_arch import BitLinear
+from wf_arch import BitLinear
 
 # Create a quantized linear layer
 layer = BitLinear(in_features=768, out_features=768)
@@ -38,7 +38,7 @@ output = layer(input_tensor)
 ### Model Conversion
 
 ```python
-from bitnet_arch import convert_model_to_bitnet, auto_convert_if_needed
+from wf_arch import convert_model_to_bitnet, auto_convert_if_needed
 from transformers import AutoModelForCausalLM
 
 # Load any HuggingFace model
@@ -51,7 +51,7 @@ bitnet_model = convert_model_to_bitnet(model)
 ### Lambda Warmup (Gradual Quantization)
 
 ```python
-from bitnet_arch import LambdaWarmup, set_global_lambda_warmup, get_current_lambda
+from wf_arch import LambdaWarmup, set_global_lambda_warmup, get_current_lambda
 
 # Gradually introduce quantization over 1000 steps
 warmup = LambdaWarmup(warmup_steps=1000)
@@ -111,7 +111,7 @@ SubLN adds RMSNorm before output projections in attention and FFN blocks. This p
 The training package uses this library for BitNet model creation:
 
 ```python
-from bitnet_arch import convert_model_to_bitnet, LambdaWarmup
+from wf_arch import convert_model_to_bitnet, LambdaWarmup
 
 # Stage 1: Convert model
 model = convert_model_to_bitnet(base_model)
@@ -124,10 +124,10 @@ warmup = LambdaWarmup(warmup_steps=1000)
 
 ```bash
 # Run all tests
-uv run --package bitnet-arch pytest packages/architecture/tests/
+uv run --package wf-arch pytest packages/architecture/tests/
 
 # With coverage
-uv run --package bitnet-arch pytest --cov=bitnet_arch
+uv run --package wf-arch pytest --cov=wf_arch
 ```
 
 ## References

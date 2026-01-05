@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from wf_deployer import core
-from wf_deployer.cli import cli
+from wf_deploy import core
+from wf_deploy.cli import cli
 
 
 class TestBuildImageFunction:
@@ -113,7 +113,7 @@ class TestBuildCLICommand:
         result = runner.invoke(cli, ["build", "--help"])
         assert "--tag" in result.output or "-t" in result.output
 
-    @patch("wf_deployer.core.build_image")
+    @patch("wf_deploy.core.build_image")
     def test_build_calls_core_function(self, mock_build):
         """CLI should call core.build_image with correct args."""
         mock_build.return_value = "gcr.io/wrinklefree-481904/wf-train:test"
@@ -123,7 +123,7 @@ class TestBuildCLICommand:
 
         mock_build.assert_called_once_with(push=False, tag="test")
 
-    @patch("wf_deployer.core.build_image")
+    @patch("wf_deploy.core.build_image")
     def test_build_default_push(self, mock_build):
         """CLI should push by default."""
         mock_build.return_value = "gcr.io/wrinklefree-481904/wf-train:test"

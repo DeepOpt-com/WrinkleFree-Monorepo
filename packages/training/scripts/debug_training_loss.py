@@ -21,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from bitnet_arch.conversion import auto_convert_if_needed
-from bitnet_arch.quantization import LambdaWarmup, set_global_lambda_warmup, get_current_lambda
+from wf_arch.conversion import auto_convert_if_needed
+from wf_arch.quantization import LambdaWarmup, set_global_lambda_warmup, get_current_lambda
 
 
 def test_step_by_step():
@@ -146,7 +146,7 @@ def test_step_by_step():
     print("\n=== Step 5: Test with DLM preprocessing ===")
     set_global_lambda_warmup(None)  # Reset to lambda=1.0
 
-    from wrinklefree.objectives.dlm import DLMObjective
+    from wf_train.objectives.dlm import DLMObjective
 
     dlm = DLMObjective(
         mask_token_id=0,  # unk token
@@ -234,8 +234,8 @@ def test_step_by_step():
 
     # Step 8: Test ObjectiveManager with curriculum (simulates training)
     print("\n=== Step 8: Test ObjectiveManager with curriculum (weight=0 should skip DLM) ===")
-    from wrinklefree.objectives import create_objective_manager
-    from wrinklefree.objectives.manager import CurriculumScheduler, CurriculumPhase
+    from wf_train.objectives import create_objective_manager
+    from wf_train.objectives.manager import CurriculumScheduler, CurriculumPhase
     from omegaconf import DictConfig, OmegaConf
 
     # Simulate warmup phase where DLM weight is 0

@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from wf_deployer.config import TrainingConfig
+from wf_deploy.config import TrainingConfig
 
 
 @pytest.fixture
@@ -76,8 +76,8 @@ class TestTrainerBackendSelection:
 
     def test_modal_backend_initialization(self, modal_training_config):
         """Test that Modal backend is initialized correctly."""
-        with patch("wf_deployer.modal_deployer.ModalTrainer") as mock_modal:
-            from wf_deployer.trainer import Trainer
+        with patch("wf_deploy.modal_deployer.ModalTrainer") as mock_modal:
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer(modal_training_config)
             # Modal backend should be initialized
@@ -87,7 +87,7 @@ class TestTrainerBackendSelection:
         """Test that SkyPilot backend is initialized correctly."""
         monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
 
-        from wf_deployer.trainer import Trainer
+        from wf_deploy.trainer import Trainer
 
         trainer = Trainer(skypilot_training_config)
         assert trainer.config.backend == "skypilot"
@@ -98,8 +98,8 @@ class TestTrainerFromJson:
 
     def test_from_json_basic(self):
         """Test creating Trainer from JSON config."""
-        with patch("wf_deployer.modal_deployer.ModalTrainer"):
-            from wf_deployer.trainer import Trainer
+        with patch("wf_deploy.modal_deployer.ModalTrainer"):
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer.from_json({
                 "model": "qwen3_4b",
@@ -112,8 +112,8 @@ class TestTrainerFromJson:
 
     def test_from_json_with_all_fields(self):
         """Test creating Trainer from JSON with all fields."""
-        with patch("wf_deployer.modal_deployer.ModalTrainer"):
-            from wf_deployer.trainer import Trainer
+        with patch("wf_deploy.modal_deployer.ModalTrainer"):
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer.from_json({
                 "model": "smollm2_135m",
@@ -131,8 +131,8 @@ class TestTrainerFromJson:
 
     def test_from_json_auto_generates_name(self):
         """Test that name is auto-generated if not provided."""
-        with patch("wf_deployer.modal_deployer.ModalTrainer"):
-            from wf_deployer.trainer import Trainer
+        with patch("wf_deploy.modal_deployer.ModalTrainer"):
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer.from_json({
                 "model": "qwen3_4b",
@@ -147,12 +147,12 @@ class TestQuickLaunch:
 
     def test_quick_launch_basic(self):
         """Test basic quick_launch call."""
-        with patch("wf_deployer.trainer.Trainer") as mock_trainer_class:
+        with patch("wf_deploy.trainer.Trainer") as mock_trainer_class:
             mock_instance = MagicMock()
             mock_instance.launch.return_value = "run-123"
             mock_trainer_class.return_value = mock_instance
 
-            from wf_deployer.trainer import quick_launch
+            from wf_deploy.trainer import quick_launch
 
             run_id = quick_launch("qwen3_4b", stage=2)
 
@@ -161,12 +161,12 @@ class TestQuickLaunch:
 
     def test_quick_launch_with_max_steps(self):
         """Test quick_launch with max_steps."""
-        with patch("wf_deployer.trainer.Trainer") as mock_trainer_class:
+        with patch("wf_deploy.trainer.Trainer") as mock_trainer_class:
             mock_instance = MagicMock()
             mock_instance.launch.return_value = "run-456"
             mock_trainer_class.return_value = mock_instance
 
-            from wf_deployer.trainer import quick_launch
+            from wf_deploy.trainer import quick_launch
 
             run_id = quick_launch("smollm2_135m", stage=1.9, max_steps=100)
 
@@ -184,7 +184,7 @@ class TestModalTrainingConfig:
 
     def test_to_dict(self):
         """Test serialization to dict."""
-        from wf_deployer.modal_deployer import ModalTrainingConfig
+        from wf_deploy.modal_deployer import ModalTrainingConfig
 
         config = ModalTrainingConfig(
             model="qwen3_4b",
@@ -199,7 +199,7 @@ class TestModalTrainingConfig:
 
     def test_from_dict(self):
         """Test deserialization from dict."""
-        from wf_deployer.modal_deployer import ModalTrainingConfig
+        from wf_deploy.modal_deployer import ModalTrainingConfig
 
         data = {
             "model": "smollm2_135m",
@@ -218,7 +218,7 @@ class TestCLI:
 
     def test_cli_import(self):
         """Test that CLI module can be imported."""
-        from wf_deployer.cli import cli, train, runs, logs, smoke
+        from wf_deploy.cli import cli, train, runs, logs, smoke
 
         assert cli is not None
         assert train is not None
@@ -227,7 +227,7 @@ class TestCLI:
     def test_cli_train_help(self):
         """Test that train command has proper help text."""
         from click.testing import CliRunner
-        from wf_deployer.cli import cli
+        from wf_deploy.cli import cli
 
         runner = CliRunner()
         result = runner.invoke(cli, ["train", "--help"])

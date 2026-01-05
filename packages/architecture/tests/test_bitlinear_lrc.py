@@ -4,8 +4,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from bitnet_arch.layers.bitlinear import BitLinear
-from bitnet_arch.layers.bitlinear_lrc import (
+from wf_arch.layers.bitlinear import BitLinear
+from wf_arch.layers.bitlinear_lrc import (
     BitLinearLRC,
     convert_bitlinear_to_lrc,
     freeze_model_except_lrc,

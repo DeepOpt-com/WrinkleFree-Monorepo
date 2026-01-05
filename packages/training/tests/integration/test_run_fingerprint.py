@@ -16,7 +16,7 @@ from unittest import mock
 import pytest
 from omegaconf import OmegaConf
 
-from wrinklefree.utils.run_fingerprint import (
+from wf_train.utils.run_fingerprint import (
     IGNORE_KEYS,
     clean_config_for_hashing,
     fingerprint_matches,
@@ -248,7 +248,7 @@ class TestGenerateFingerprint:
         config = OmegaConf.create({"model": {"lr": 1e-3}})
 
         # Mock different git commits
-        with mock.patch("wrinklefree.utils.run_fingerprint.get_git_info") as mock_git:
+        with mock.patch("wf_train.utils.run_fingerprint.get_git_info") as mock_git:
             mock_git.return_value = ("abc123", False)
             fp1, _ = generate_fingerprint(config)
 
@@ -262,7 +262,7 @@ class TestGenerateFingerprint:
         """Test that dirty flag doesn't change fingerprint (allows dev resume)."""
         config = OmegaConf.create({"model": {"lr": 1e-3}})
 
-        with mock.patch("wrinklefree.utils.run_fingerprint.get_git_info") as mock_git:
+        with mock.patch("wf_train.utils.run_fingerprint.get_git_info") as mock_git:
             mock_git.return_value = ("abc123", False)  # Clean
             fp1, meta1 = generate_fingerprint(config)
 

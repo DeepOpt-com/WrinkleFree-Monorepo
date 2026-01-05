@@ -322,7 +322,7 @@ Created `src/wrinklefree/distillation/vllm_teacher.py`:
 
 ```python
 # Usage example
-from wrinklefree.distillation.vllm_teacher import VLLMTeacherWrapper
+from wf_train.distillation.vllm_teacher import VLLMTeacherWrapper
 
 teacher = VLLMTeacherWrapper(
     model_name="HuggingFaceTB/SmolLM2-135M",

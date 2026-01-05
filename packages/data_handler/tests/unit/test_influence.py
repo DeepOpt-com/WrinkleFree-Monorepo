@@ -8,10 +8,10 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from data_handler.influence.config import InfluenceConfig, InfluenceTarget
-from data_handler.influence.gradient import DiscriminativeGradientExtractor
-from data_handler.influence.datainf import DataInfCalculator, create_influence_calculator
-from data_handler.influence.mixture_calculator import MixtureWeightCalculator
+from wf_data.influence.config import InfluenceConfig, InfluenceTarget
+from wf_data.influence.gradient import DiscriminativeGradientExtractor
+from wf_data.influence.datainf import DataInfCalculator, create_influence_calculator
+from wf_data.influence.mixture_calculator import MixtureWeightCalculator
 
 
 class SimpleLanguageModel(nn.Module):

@@ -4,15 +4,15 @@ import pytest
 import torch
 import torch.nn as nn
 
-from wrinklefree.objectives.base import Objective, ObjectiveOutput
-from wrinklefree.objectives.continue_pretrain import ContinuePretrainObjective
-from wrinklefree.objectives.layerwise import LayerwiseDistillationObjective, LayerwiseLossType
-from wrinklefree.objectives.manager import (
+from wf_train.objectives.base import Objective, ObjectiveOutput
+from wf_train.objectives.continue_pretrain import ContinuePretrainObjective
+from wf_train.objectives.layerwise import LayerwiseDistillationObjective, LayerwiseLossType
+from wf_train.objectives.manager import (
     CurriculumPhase,
     CurriculumScheduler,
     ObjectiveManager,
 )
-from wrinklefree.objectives.factory import create_objective_manager
+from wf_train.objectives.factory import create_objective_manager
 
 
 class TestObjectiveOutput:

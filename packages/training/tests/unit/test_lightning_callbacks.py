@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 import torch
 
-from wrinklefree.lightning.callbacks import (
+from wf_train.lightning.callbacks import (
     GCSCheckpointCallback,
     InfluenceTrackerCallback,
     ZClipCallback,
@@ -169,7 +169,7 @@ class TestZClipCallback:
         assert cb.ema_decay == 0.95
         assert cb.enabled is False
 
-    @patch("data_handler.training.ZClip")
+    @patch("wf_data.training.ZClip")
     def test_setup_creates_zclip(self, mock_zclip_class):
         """Test that setup creates ZClip instance."""
         mock_zclip = MagicMock()
@@ -429,7 +429,7 @@ class TestQKClipCallback:
         assert cb.alpha == 0.95
         assert cb.enabled is False
 
-    @patch("data_handler.training.qk_clip.apply_qk_clip")
+    @patch("wf_data.training.qk_clip.apply_qk_clip")
     def test_on_after_backward_skips_when_disabled(self, mock_clip):
         """Test that clipping is skipped when disabled."""
         cb = QKClipCallback(enabled=False)
@@ -440,7 +440,7 @@ class TestQKClipCallback:
         cb.on_after_backward(mock_trainer, mock_module)
         mock_clip.assert_not_called()
 
-    @patch("data_handler.training.qk_clip.apply_qk_clip")
+    @patch("wf_data.training.qk_clip.apply_qk_clip")
     def test_on_after_backward_clips_and_logs(self, mock_apply_qk_clip):
         """Test that QK clipping is applied and stats are logged."""
         mock_stats = MagicMock()
@@ -495,8 +495,8 @@ class TestLambdaWarmupCallback:
         assert cb.schedule == "cosine"
         assert cb.enabled is False
 
-    @patch("bitnet_arch.quantization.set_global_lambda_warmup")
-    @patch("bitnet_arch.quantization.LambdaWarmup")
+    @patch("wf_arch.quantization.set_global_lambda_warmup")
+    @patch("wf_arch.quantization.LambdaWarmup")
     def test_setup_creates_lambda_warmup(self, mock_lambda_class, mock_set_global):
         """Test that setup creates LambdaWarmup and sets global."""
         mock_lambda = MagicMock()
@@ -594,7 +594,7 @@ class TestInfluenceTrackerCallback:
         cb = InfluenceTrackerCallback(config={})
         assert cb.get_weight_history() == []
 
-    @patch("data_handler.influence.InfluenceTracker")
+    @patch("wf_data.influence.InfluenceTracker")
     def test_setup_creates_tracker(self, mock_tracker_class):
         """Test that setup creates InfluenceTracker with correct args."""
         mock_tracker = MagicMock()
@@ -658,7 +658,7 @@ class TestInfluenceTrackerCallback:
         assert cb._tracker is None
 
     def test_setup_handles_import_error(self):
-        """Test graceful handling when data_handler not available."""
+        """Test graceful handling when wf_data not available."""
         cb = InfluenceTrackerCallback(config={})
 
         mock_trainer = MagicMock()
@@ -666,7 +666,7 @@ class TestInfluenceTrackerCallback:
         mock_module = MagicMock()
 
         # Simulate import error by patching the import inside setup()
-        with patch.dict("sys.modules", {"data_handler": None, "data_handler.influence": None}):
+        with patch.dict("sys.modules", {"wf_data": None, "wf_data.influence": None}):
             # Should not raise - the callback handles ImportError gracefully
             # This test verifies the error handling path exists
             pass

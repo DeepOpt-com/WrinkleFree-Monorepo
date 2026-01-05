@@ -33,7 +33,7 @@ workdir: ../training
 # Mount dependencies and credentials
 file_mounts:
   # CheaperTraining library for influence-based training
-  ~/data_handler: ../data_handler
+  ~/wf_data: ../wf_data
   # GCP credentials for GCS checkpointing
   ~/.config/gcloud/application_default_credentials.json: ~/.config/gcloud/application_default_credentials.json
 
@@ -69,11 +69,11 @@ setup: |
   source .venv/bin/activate
 
   # Remove workspace source (only works in monorepo context)
-  # This allows pip install to work with the mounted data_handler package
+  # This allows pip install to work with the mounted wf_data package
   sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
 
   # Install CheaperTraining first (dependency of wrinklefree)
-  uv pip install -e ~/data_handler
+  uv pip install -e ~/wf_data
 
   # Install muon-clip from git (removed from pyproject.toml sources by sed above)
   uv pip install "muon-clip @ git+https://github.com/GAD-cell/muon-clip"

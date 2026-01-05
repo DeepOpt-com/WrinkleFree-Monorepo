@@ -44,8 +44,8 @@ torch.serialization.add_safe_globals([DictConfig, ListConfig, ContainerMetadata,
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from bitnet_arch.conversion import auto_convert_if_needed
-from wrinklefree.lightning import (
+from wf_arch.conversion import auto_convert_if_needed
+from wf_train.lightning import (
     GCSCheckpointCallback,
     InfluenceTrackerCallback,
     LambdaWarmupCallback,
@@ -57,9 +57,9 @@ from wrinklefree.lightning import (
     WrinkleFreeLightningModule,
     ZClipCallback,
 )
-from wrinklefree.meta import MetaOptimizerCallback, MetaOptimizationConfig
-from wrinklefree.objectives import create_objective_manager
-from wrinklefree.teachers import HiddenStateTeacher
+from wf_train.meta import MetaOptimizerCallback, MetaOptimizationConfig
+from wf_train.objectives import create_objective_manager
+from wf_train.teachers import HiddenStateTeacher
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +292,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     # Handle LRC calibration stage
     if stage == "lrc_calibration":
         try:
-            from bitnet_arch import convert_bitlinear_to_lrc, freeze_model_except_lrc
+            from wf_arch import convert_bitlinear_to_lrc, freeze_model_except_lrc
 
             lrc_cfg = cfg.training.get("lrc", {})
             rank_percentage = lrc_cfg.get("rank_percentage", 0.1)
@@ -322,7 +322,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             )
 
         except ImportError as e:
-            logger.error(f"LRC calibration requires bitnet_arch package: {e}")
+            logger.error(f"LRC calibration requires wf_arch package: {e}")
             raise
 
     return model, tokenizer
@@ -459,7 +459,7 @@ def create_callbacks(cfg: DictConfig) -> list:
         ldc_mtl_cfg = meta_opt_cfg.get("ldc_mtl", {})
         odm_cfg = meta_opt_cfg.get("odm", {})
 
-        from wrinklefree.meta.config import LDCMTLConfig, ODMConfig
+        from wf_train.meta.config import LDCMTLConfig, ODMConfig
 
         ldc_mtl_config = LDCMTLConfig(
             enabled=ldc_mtl_cfg.get("enabled", True),

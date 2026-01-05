@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from wrinklefree._experimental.moe.router import (
+from wf_train._experimental.moe.router import (
     TopKRouter,
     IdentityRouter,
     compute_load_balancing_loss,

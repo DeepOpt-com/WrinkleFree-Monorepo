@@ -80,7 +80,7 @@ Note: Nebius only has 1 or 8 GPU configs.
 ### Python
 
 ```python
-from wf_deployer import train
+from wf_deploy import train
 
 run_id = train("qwen3_4b", stage=1)      # Stage 1: conversion
 run_id = train("qwen3_4b", stage=1.9)    # Stage 1.9: distillation

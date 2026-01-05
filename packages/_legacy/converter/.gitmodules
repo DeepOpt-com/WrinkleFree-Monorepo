@@ -1,3 +1,0 @@
-[submodule "extern/Fast-dLLM"]
-	path = extern/Fast-dLLM
-	url = https://github.com/NVlabs/Fast-dLLM.git

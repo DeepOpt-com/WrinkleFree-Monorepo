@@ -18,7 +18,7 @@ DLM models use Fast-dLLM v2 block diffusion to generate multiple tokens in paral
 Train using `unified.yaml` config which enables DLM:
 
 ```bash
-uv run --package wrinklefree python scripts/train_lightning.py \
+uv run --package wf-train python scripts/train_lightning.py \
     model=smollm2_135m training=base
 ```
 
@@ -132,7 +132,7 @@ Parameters that can differ:
 ## Using the Python Client
 
 ```python
-from wrinklefree_inference.client import BitNetClient
+from wf_infer.client import BitNetClient
 
 client = BitNetClient.from_url("http://localhost:30000")
 

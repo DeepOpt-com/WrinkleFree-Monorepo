@@ -49,7 +49,7 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 # (train.yaml uses relative paths that require this)
 cd packages/deployer
 source credentials/.env
-uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2
+uv run --package wf-train-deployer wf train -m qwen3_4b -s 2
 ```
 
 ## Quick Reference
@@ -62,37 +62,37 @@ cd packages/deployer
 source credentials/.env
 
 # Launch training
-uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --cloud nebius
+uv run --package wf-train-deployer wf train -m qwen3_4b -s 2 --cloud nebius
 
 # With specific scale (4x H100)
-uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --scale large
+uv run --package wf-train-deployer wf train -m qwen3_4b -s 2 --scale large
 
 # BitDistill distillation (via training objectives)
-uv run --package wrinklefree-deployer wf train -m qwen3_4b \
+uv run --package wf-train-deployer wf train -m qwen3_4b \
   --training bitdistill_full --cloud nebius
 
 # LRC calibration (post-quantization recovery)
-uv run --package wrinklefree-deployer wf train -m qwen3_4b \
+uv run --package wf-train-deployer wf train -m qwen3_4b \
   --training lrc_calibration --cloud nebius
 
 # Check logs
-uv run --package wrinklefree-deployer wf logs <run_id>
+uv run --package wf-train-deployer wf logs <run_id>
 
 # List recent runs
-uv run --package wrinklefree-deployer wf runs
+uv run --package wf-train-deployer wf runs
 
 # Direct SkyPilot commands
-uv run --package wrinklefree-deployer sky check
-uv run --package wrinklefree-deployer sky jobs queue
+uv run --package wf-train-deployer sky check
+uv run --package wf-train-deployer sky jobs queue
 ```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `src/wf_deployer/constants.py` | All magic strings, defaults, scales, GAR config |
-| `src/wf_deployer/core.py` | Main API: train(), logs() |
-| `src/wf_deployer/cli.py` | CLI commands |
+| `src/wf_deploy/constants.py` | All magic strings, defaults, scales, GAR config |
+| `src/wf_deploy/core.py` | Main API: train(), logs() |
+| `src/wf_deploy/cli.py` | CLI commands |
 | `skypilot/train.yaml` | SkyPilot training job template |
 | `skypilot/service.yaml` | SkyServe inference template |
 | `skypilot/smoke_test_lightning.yaml` | **Smoke test: Lightning + auto batch (RECOMMENDED)** |
@@ -284,10 +284,10 @@ wf train -m qwen3_4b -s 2 --secret WANDB_API_KEY=$WANDB_API_KEY
 
 ```bash
 # Run tests
-uv run --package wrinklefree-deployer pytest packages/deployer/tests/
+uv run --package wf-train-deployer pytest packages/deployer/tests/
 
 # Dry run (don't launch)
-uv run --package wrinklefree-deployer wf train -m smollm2_135m -s 2 --dry-run
+uv run --package wf-train-deployer wf train -m smollm2_135m -s 2 --dry-run
 
 # Lint
 uv run ruff check packages/deployer/

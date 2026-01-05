@@ -1,4 +1,4 @@
-# Contributing to Eval (wrinklefree-eval)
+# Contributing to Eval (wf-eval)
 
 > Contributor guide for navigating and understanding the eval package codebase.
 
@@ -32,7 +32,7 @@ packages/eval/
 ├── scripts/
 │   └── run_eval.py          # CLI entry point
 │
-├── src/wrinklefree_eval/
+├── src/wf_eval/
 │   ├── __init__.py          # Package exports
 │   ├── api.py               # Simple evaluate() API
 │   ├── cli.py               # CLI implementation
@@ -147,7 +147,7 @@ class HFModel(lm_eval.api.model.LM):
 ```python
 results = evaluate(
     model_path="path/to/model",
-    wandb_project="wrinklefree-eval",
+    wandb_project="wf-eval",
     wandb_run_name="my-eval",
 )
 # Automatically logs metrics to WandB
@@ -161,20 +161,20 @@ results = evaluate(
 
 ```bash
 # All tests
-uv run --package wrinklefree-eval pytest packages/eval/tests/ -v
+uv run --package wf-eval pytest packages/eval/tests/ -v
 
 # Smoke test
-uv run --package wrinklefree-eval pytest packages/eval/tests/test_smoke.py -v
+uv run --package wf-eval pytest packages/eval/tests/test_smoke.py -v
 ```
 
 ### Manual Testing
 
 ```bash
 # Quick smoke test (10 samples)
-uv run --package wrinklefree-eval python packages/eval/scripts/run_eval.py --smoke-test
+uv run --package wf-eval python packages/eval/scripts/run_eval.py --smoke-test
 
 # Full evaluation
-uv run --package wrinklefree-eval python packages/eval/scripts/run_eval.py \
+uv run --package wf-eval python packages/eval/scripts/run_eval.py \
   --model-path HuggingFaceTB/SmolLM2-135M --benchmark bitdistill
 ```
 
@@ -207,7 +207,7 @@ cd packages/inference
 
 # Run eval with BitNet backend
 INFERENCE_URL=http://localhost:30000 \
-  uv run --package wrinklefree-eval python packages/eval/scripts/run_eval.py --use-bitnet
+  uv run --package wf-eval python packages/eval/scripts/run_eval.py --use-bitnet
 ```
 
 ---

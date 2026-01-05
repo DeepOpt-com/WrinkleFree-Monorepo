@@ -9,7 +9,7 @@ This script demonstrates that:
 Run with: uv run --package cheapertraining python scripts/test_mixing_fix.py
 """
 
-from data_handler.data.mixing import DatasetMixture, MixedDataset
+from wf_data.data.mixing import DatasetMixture, MixedDataset
 
 
 def test_no_oversampling():

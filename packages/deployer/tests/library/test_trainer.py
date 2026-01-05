@@ -1,4 +1,4 @@
-"""Tests for wf_deployer.trainer module (SkyPilot backend)."""
+"""Tests for wf_deploy.trainer module (SkyPilot backend)."""
 
 import os
 import sys
@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from wf_deployer.config import TrainingConfig
-from wf_deployer.credentials import Credentials
+from wf_deploy.config import TrainingConfig
+from wf_deploy.credentials import Credentials
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ class TestTrainerSkyPilot:
 
     def test_init(self, skypilot_training_config, mock_credentials, monkeypatch):
         """Test Trainer initialization with SkyPilot."""
-        from wf_deployer.trainer import Trainer
+        from wf_deploy.trainer import Trainer
 
         for key in ["AWS_ACCESS_KEY_ID", "RUNPOD_API_KEY"]:
             monkeypatch.delenv(key, raising=False)
@@ -74,7 +74,7 @@ class TestTrainerSkyPilot:
 
     def test_init_without_credentials(self, skypilot_training_config, monkeypatch):
         """Test Trainer initialization without explicit credentials."""
-        from wf_deployer.trainer import Trainer
+        from wf_deploy.trainer import Trainer
 
         monkeypatch.setenv("RUNPOD_API_KEY", "from-env")
 
@@ -84,7 +84,7 @@ class TestTrainerSkyPilot:
 
     def test_get_envs(self, skypilot_training_config, mock_credentials):
         """Test environment variables generation."""
-        from wf_deployer.trainer import Trainer
+        from wf_deploy.trainer import Trainer
 
         trainer = Trainer(skypilot_training_config, mock_credentials)
         envs = trainer._get_envs()
@@ -97,7 +97,7 @@ class TestTrainerSkyPilot:
 
     def test_get_job_name(self, skypilot_training_config, mock_credentials):
         """Test job name generation."""
-        from wf_deployer.trainer import Trainer
+        from wf_deploy.trainer import Trainer
 
         trainer = Trainer(skypilot_training_config, mock_credentials)
         name = trainer._get_job_name()
@@ -107,7 +107,7 @@ class TestTrainerSkyPilot:
     def test_launch_detached(self, skypilot_training_config, mock_credentials, mock_sky):
         """Test launching training job in detached mode."""
         with patch.dict(sys.modules, {"sky": mock_sky}):
-            from wf_deployer.trainer import Trainer
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer(skypilot_training_config, mock_credentials)
             result = trainer.launch(detach=True)
@@ -117,7 +117,7 @@ class TestTrainerSkyPilot:
     def test_launch_blocking(self, skypilot_training_config, mock_credentials, mock_sky):
         """Test launching training job in blocking mode."""
         with patch.dict(sys.modules, {"sky": mock_sky}):
-            from wf_deployer.trainer import Trainer
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer(skypilot_training_config, mock_credentials)
             result = trainer.launch(detach=False)
@@ -132,7 +132,7 @@ class TestTrainerSkyPilot:
         ]
 
         with patch.dict(sys.modules, {"sky": mock_sky}):
-            from wf_deployer.trainer import Trainer
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer(skypilot_training_config, mock_credentials)
             trainer._current_run_id = "some-id"  # Set a run ID
@@ -146,7 +146,7 @@ class TestTrainerSkyPilot:
         mock_sky.get.return_value = [{"name": "other-job", "status": "RUNNING"}]
 
         with patch.dict(sys.modules, {"sky": mock_sky}):
-            from wf_deployer.trainer import Trainer
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer(skypilot_training_config, mock_credentials)
             trainer._current_run_id = "some-id"
@@ -159,7 +159,7 @@ class TestTrainerSkyPilot:
         mock_sky.get.return_value = "Training epoch 1/10..."
 
         with patch.dict(sys.modules, {"sky": mock_sky}):
-            from wf_deployer.trainer import Trainer
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer(skypilot_training_config, mock_credentials)
             trainer._current_run_id = "some-id"
@@ -170,7 +170,7 @@ class TestTrainerSkyPilot:
     def test_logs_follow(self, skypilot_training_config, mock_credentials, mock_sky):
         """Test streaming job logs."""
         with patch.dict(sys.modules, {"sky": mock_sky}):
-            from wf_deployer.trainer import Trainer
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer(skypilot_training_config, mock_credentials)
             trainer._current_run_id = "some-id"
@@ -182,7 +182,7 @@ class TestTrainerSkyPilot:
     def test_cancel(self, skypilot_training_config, mock_credentials, mock_sky):
         """Test canceling training job."""
         with patch.dict(sys.modules, {"sky": mock_sky}):
-            from wf_deployer.trainer import Trainer
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer(skypilot_training_config, mock_credentials)
             trainer._current_run_id = "some-id"
@@ -200,7 +200,7 @@ class TestTrainerSkyPilot:
         ]
 
         with patch.dict(sys.modules, {"sky": mock_sky}):
-            from wf_deployer.trainer import Trainer
+            from wf_deploy.trainer import Trainer
 
             trainer = Trainer(skypilot_training_config, mock_credentials)
             jobs = trainer._list_skypilot()

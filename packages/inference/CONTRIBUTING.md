@@ -1,4 +1,4 @@
-# Contributing to Inference (wrinklefree-inference)
+# Contributing to Inference (wf-infer)
 
 > Contributor guide for navigating and understanding the inference package codebase.
 
@@ -35,7 +35,7 @@ packages/inference/
 │   ├── launch_rust_gateway.sh         # Start dlm_server
 │   └── serve.sh                       # Full stack launcher
 │
-├── src/wrinklefree_inference/
+├── src/wf_infer/
 │   ├── client/
 │   │   └── bitnet_client.py           # Python client for inference API
 │   ├── cache/
@@ -70,7 +70,7 @@ packages/inference/
 |-----------|----------|---------|
 | GGUF Converter | `scripts/convert_checkpoint_to_gguf.py` | Training checkpoint → GGUF |
 | dlm_server | `extern/sglang-bitnet/sgl-model-gateway/` | Rust HTTP server for DLM inference |
-| BitNetClient | `src/wrinklefree_inference/client/bitnet_client.py` | Python API client |
+| BitNetClient | `src/wf_infer/client/bitnet_client.py` | Python API client |
 | llama.cpp | `extern/sglang-bitnet/3rdparty/llama.cpp/` | GGUF loading, tensor ops |
 
 ---
@@ -131,7 +131,7 @@ HTTP Request
 |------|------------|
 | Modify GGUF conversion | `scripts/convert_checkpoint_to_gguf.py` |
 | Change server behavior | `extern/sglang-bitnet/sgl-model-gateway/src/bin/dlm_server.rs` |
-| Add Python API features | `src/wrinklefree_inference/client/bitnet_client.py` |
+| Add Python API features | `src/wf_infer/client/bitnet_client.py` |
 | Modify llama.cpp | `extern/sglang-bitnet/3rdparty/llama.cpp/` (submodule) |
 | Change demo UI | `demo/serve_sglang.py` |
 
@@ -189,11 +189,11 @@ export LD_LIBRARY_PATH="extern/sglang-bitnet/3rdparty/llama.cpp/build/src:extern
 
 ```bash
 # Unit tests
-uv run --package wrinklefree-inference pytest packages/inference/tests/ -v
+uv run --package wf-infer pytest packages/inference/tests/ -v
 
 # Integration tests (requires running dlm_server)
 INFERENCE_URL=http://localhost:30000 \
-  uv run --package wrinklefree-inference pytest packages/inference/tests/ -v -m integration
+  uv run --package wf-infer pytest packages/inference/tests/ -v -m integration
 ```
 
 ### Manual Testing

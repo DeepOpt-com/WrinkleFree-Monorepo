@@ -13,13 +13,13 @@ import torch.nn as nn
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, TensorDataset
 
-from wrinklefree.objectives import (
+from wf_train.objectives import (
     ObjectiveManager,
     ContinuePretrainObjective,
     LayerwiseDistillationObjective,
     create_objective_manager,
 )
-from wrinklefree.training._legacy.continued_pretraining import ContinuedPretrainingTrainer
+from wf_train.training._legacy.continued_pretraining import ContinuedPretrainingTrainer
 
 
 class SimpleLMHead(nn.Module):
@@ -205,7 +205,7 @@ class TestUnifiedTrainerCurriculum:
 
     def test_curriculum_weights_update(self):
         """Test that curriculum weights are updated during training."""
-        from wrinklefree.objectives.manager import CurriculumPhase, CurriculumScheduler
+        from wf_train.objectives.manager import CurriculumPhase, CurriculumScheduler
 
         # Create curriculum
         phases = [

@@ -29,7 +29,7 @@ Cloud training job orchestration using SkyPilot for managed GPU jobs across Nebi
 
 ```
 packages/deployer/
-├── src/wf_deployer/
+├── src/wf_deploy/
 │   ├── cli.py              # CLI entry point (`wf` command)
 │   ├── core.py             # Main API: train(), logs(), serve()
 │   ├── constants.py        # SCALES, GAR config, defaults
@@ -204,10 +204,10 @@ sky down lightning-smoke -y
 
 ```bash
 # Dry run (shows what would be launched)
-uv run --package wrinklefree-deployer wf train -m smollm2_135m -s 2 --dry-run
+uv run --package wf-train-deployer wf train -m smollm2_135m -s 2 --dry-run
 
 # Check CLI works
-uv run --package wrinklefree-deployer wf --help
+uv run --package wf-train-deployer wf --help
 ```
 
 ---

@@ -117,7 +117,7 @@ run: |
   echo ""
   echo "[Training] Running Lightning training..."
   echo "Optimizer: $OPTIMIZER_TYPE"
-  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=base \
     data=default \

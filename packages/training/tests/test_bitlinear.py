@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from wrinklefree.models import BitLinear
+from wf_train.models import BitLinear
 
 
 class TestBitLinear:

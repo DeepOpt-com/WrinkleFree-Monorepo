@@ -27,16 +27,16 @@ git submodule update --init --recursive
 uv sync --all-packages
 
 # Or install a specific package
-uv sync --package wrinklefree
+uv sync --package wf-train
 ```
 
 ## Verify Installation
 
 ```bash
 # Check imports work
-uv run --package wrinklefree python -c "import wrinklefree; print('training: ok')"
-uv run --package data-handler python -c "import data_handler; print('data_handler: ok')"
-uv run --package bitnet-arch python -c "import bitnet_arch; print('bitnet_arch: ok')"
+uv run --package wf-train python -c "import wf_train; print('training: ok')"
+uv run --package wf-data python -c "import wf_data; print('data: ok')"
+uv run --package wf-arch python -c "import wf_arch; print('arch: ok')"
 
 # Run tests
 uv run pytest packages/data_handler/tests/ -v --tb=short
@@ -50,18 +50,18 @@ uv run pytest packages/data_handler/tests/ -v --tb=short
 
 ```bash
 # SmolLM2-135M with Lightning trainer
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
   training=base
 
 # With auto batch size scaling (single GPU only - not supported with DDP/FSDP!)
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
   training=base \
   training.auto_batch_size=true
 
 # With limited steps for smoke test
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
   training=base \
   training.max_steps=100
@@ -73,12 +73,12 @@ Distillation is integrated into the training package via the objectives system:
 
 ```bash
 # BitDistill distillation (logits + attention)
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
   training=bitdistill_full
 
 # LRC Calibration (post-quantization low-rank correction)
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
   training=lrc_calibration
 ```
@@ -86,7 +86,7 @@ uv run --package wrinklefree python packages/training/scripts/train_lightning.py
 ### Running Evaluation
 
 ```bash
-uv run --package wrinklefree-eval python packages/eval/scripts/evaluate.py \
+uv run --package wf-eval python packages/eval/scripts/run_eval.py \
   --model-path outputs/smollm2_135m/checkpoint \
   --benchmark glue
 ```
@@ -120,8 +120,8 @@ python packages/inference/scripts/convert_checkpoint_to_gguf.py \
 | Task | Command |
 |------|---------|
 | Install all | `uv sync --all-packages` |
-| Install one | `uv sync --package wrinklefree` |
-| Run in context | `uv run --package wrinklefree python ...` |
+| Install one | `uv sync --package wf-train` |
+| Run in context | `uv run --package wf-train python ...` |
 | Add dependency | `cd packages/training && uv add torch` |
 | Run tests | `uv run pytest packages/training/tests/` |
 | Type check | `uv run mypy packages/training/src/` |
@@ -150,8 +150,8 @@ Ensure workspace dependencies are configured:
 ```toml
 # In packages/training/pyproject.toml
 [tool.uv.sources]
-data-handler = { workspace = true }
-bitnet-arch = { workspace = true }
+wf-data = { workspace = true }
+wf-arch = { workspace = true }
 ```
 
 ## Next Steps

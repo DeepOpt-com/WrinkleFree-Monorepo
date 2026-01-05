@@ -1,6 +1,6 @@
 # WrinkleFree-Deployer Examples
 
-This directory contains Python scripts demonstrating how to use the `wf_deployer` library to programmatically manage training and inference.
+This directory contains Python scripts demonstrating how to use the `wf_deploy` library to programmatically manage training and inference.
 
 ## Prerequisites
 

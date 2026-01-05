@@ -5,9 +5,9 @@ import torch
 import torch.nn as nn
 from unittest.mock import MagicMock, patch
 
-from wrinklefree.lightning.module import WrinkleFreeLightningModule
-from wrinklefree.objectives.base import Objective, ObjectiveOutput
-from wrinklefree.objectives.manager import ObjectiveManager
+from wf_train.lightning.module import WrinkleFreeLightningModule
+from wf_train.objectives.base import Objective, ObjectiveOutput
+from wf_train.objectives.manager import ObjectiveManager
 
 
 class DummyModel(nn.Module):
@@ -225,7 +225,7 @@ class TestObjectiveManagerIntegration:
 
     def test_curriculum_stepped(self):
         """Test that curriculum is stepped after each training step."""
-        from wrinklefree.objectives.manager import CurriculumPhase, CurriculumScheduler
+        from wf_train.objectives.manager import CurriculumPhase, CurriculumScheduler
 
         model = DummyModel()
         objective = DummyObjective()

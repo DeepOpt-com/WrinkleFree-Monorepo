@@ -345,8 +345,8 @@ class TestRealDataAblation:
         device = data["device"]
 
         # Import influence components
-        from data_handler.influence.distillation import InfluenceDistillation
-        from data_handler.influence.config import (
+        from wf_data.influence.distillation import InfluenceDistillation
+        from wf_data.influence.config import (
             InfluenceDistillationConfig,
             JVPEmbeddingConfig,
             LandmarkConfig,
@@ -493,8 +493,8 @@ def run_ablation_standalone():
         print(f"  {name}: unique_ratio={unique_ratio:.2%} {status}")
 
     # Import influence components
-    from data_handler.influence.distillation import InfluenceDistillation
-    from data_handler.influence.config import (
+    from wf_data.influence.distillation import InfluenceDistillation
+    from wf_data.influence.config import (
         InfluenceDistillationConfig,
         JVPEmbeddingConfig,
         LandmarkConfig,

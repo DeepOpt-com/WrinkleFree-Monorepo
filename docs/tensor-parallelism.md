@@ -42,7 +42,7 @@ With TP=2, DP=4:
 
 ```bash
 # Multi-GPU with Lightning (handles distributed automatically)
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
   training=base \
   distributed=fsdp_multi
@@ -231,7 +231,7 @@ envs:
   CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
 ```
 
-### SkyPilot: "No module named 'wrinklefree'"
+### SkyPilot: "No module named 'wf_train'"
 
 Ensure you use `uv run torchrun` (not bare `torchrun`) in your run script:
 
@@ -248,7 +248,7 @@ run: |
 Main entry point for 2D parallelism.
 
 ```python
-from wrinklefree.training.tensor_parallel import setup_2d_parallel
+from wf_train.training.tensor_parallel import setup_2d_parallel
 
 model, device_mesh = setup_2d_parallel(
     model,

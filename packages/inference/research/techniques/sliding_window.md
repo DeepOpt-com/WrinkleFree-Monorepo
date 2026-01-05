@@ -40,7 +40,7 @@ Token 512: attends to [256, 257, ..., 767]
 We already have sliding window in `sparse_attention.py`:
 
 ```python
-# packages/inference/src/wrinklefree_inference/sglang_backend/sparse_attention.py
+# packages/inference/src/wf_infer/sglang_backend/sparse_attention.py
 
 def create_window_mask(
     seq_len: int,
@@ -73,7 +73,7 @@ def create_window_mask(
 ### Usage
 
 ```python
-from wrinklefree_inference.sglang_backend.sparse_attention import (
+from wf_infer.sglang_backend.sparse_attention import (
     get_window_attention_config,
     apply_attention_sparsity,
 )

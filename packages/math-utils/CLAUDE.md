@@ -36,6 +36,6 @@ uv run mypy packages/math-utils/src/
 
 ## Notes
 
-- This package has NO dependencies on data_handler or training
+- This package has NO dependencies on wf_data or training
 - All algorithms are pure PyTorch operations
 - Legacy influence code emits deprecation warnings when imported

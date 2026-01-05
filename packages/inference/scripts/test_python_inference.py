@@ -3,7 +3,7 @@
 
 This script:
 1. Loads model as standard LlamaForCausalLM (no quantization)
-2. Converts to BitLinear using bitnet_arch (applies on-the-fly quantization)
+2. Converts to BitLinear using wf_arch (applies on-the-fly quantization)
 3. Tests inference with both to compare outputs
 
 The pre-quantized checkpoint should produce identical results to
@@ -18,9 +18,9 @@ import torch
 from safetensors import safe_open
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# Add bitnet_arch to path
+# Add wf_arch to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "architecture/src"))
-from bitnet_arch import convert_model_to_bitnet, set_global_lambda_warmup, LambdaWarmup
+from wf_arch import convert_model_to_bitnet, set_global_lambda_warmup, LambdaWarmup
 
 
 def test_inference(model, tokenizer, prompt: str, max_tokens: int = 30):
@@ -91,7 +91,7 @@ def main():
     model_bitlinear.eval()
 
     # Verify conversion
-    from bitnet_arch.layers import BitLinear
+    from wf_arch.layers import BitLinear
     first_layer = model_bitlinear.model.layers[0].self_attn.q_proj
     print(f"First layer type: {type(first_layer).__name__}")
 

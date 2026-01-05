@@ -82,42 +82,42 @@ Serve: Inference with BitNet.cpp (packages/inference)
 |---------|------|---------|-----------------|
 | `packages/training` | App | 1.58-bit training (all stages) + distillation + LRC | `scripts/train_lightning.py` |
 | `packages/architecture` | Lib | BitNet layers (BitLinear, BitLinearLRC, SubLN) & conversion | Import as library |
-| `packages/data_handler` | Lib | Data loading & influence functions | Import as library |
+| `packages/data_handler` | Lib | Data loading & mixing (wf_data) | Import as library |
 | `packages/inference` | App | Model serving (sglang-bitnet) | `demo/serve_sglang.py` |
 | `packages/eval` | App | Model evaluation (lm-eval) | `scripts/evaluate.py` |
 | `packages/deployer` | App | Cloud deployment (SkyPilot) | `wf` CLI |
 | `packages/mobile` | App | Android inference | Android app |
 
-> **Note**: Legacy packages (`distillation`, `converter`, `cheapertraining`) are archived in `packages/_legacy/`.
+> **Note**: Legacy packages have been removed. Distillation objectives are integrated into the training package.
 
 ## Shared Dependencies
 
-`data_handler` is the shared data library, `architecture` provides BitNet components:
+`wf_data` is the shared data library, `architecture` provides BitNet components:
 
 ```
-data_handler (library)
+wf_data (library)
     │
-    └──► training (wrinklefree)
-            Uses: data_handler.data, data_handler.influence
+    └──► training (wf_train)
+            Uses: wf_data.data, wf_data.mixing
 
 architecture (library)
     │
-    └──► training (wrinklefree)
-            Uses: bitnet_arch.layers (BitLinear, BitLinearLRC), bitnet_arch.conversion
+    └──► training (wf_train)
+            Uses: wf_arch.layers (BitLinear, BitLinearLRC), wf_arch.conversion
 ```
 
 **Adding workspace dependencies**:
 ```toml
 # In pyproject.toml
 [project]
-dependencies = ["data-handler", "bitnet-arch"]
+dependencies = ["wf-data", "wf-arch"]
 
 [tool.uv.sources]
-data-handler = { workspace = true }
-bitnet-arch = { workspace = true }
+wf-data = { workspace = true }
+wf-arch = { workspace = true }
 ```
 
-**Important**: Changes to data_handler or architecture affect training - test both after modifications.
+**Important**: Changes to wf_data or architecture affect training - test both after modifications.
 
 ## GCP Configuration
 
@@ -218,8 +218,8 @@ uv sync --all-packages --reinstall
 Ensure workspace sources are configured:
 ```toml
 [tool.uv.sources]
-data-handler = { workspace = true }
-bitnet-arch = { workspace = true }
+wf-data = { workspace = true }
+wf-arch = { workspace = true }
 ```
 
 ### Submodule issues

@@ -18,9 +18,9 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from wrinklefree.utils.audit_logger import AuditLogger
-from wrinklefree.utils.run_fingerprint import generate_fingerprint
-from wrinklefree.utils.run_manager import (
+from wf_train.utils.audit_logger import AuditLogger
+from wf_train.utils.run_fingerprint import generate_fingerprint
+from wf_train.utils.run_manager import (
     CredentialsError,
     RunManager,
     RunStatus,
@@ -381,7 +381,7 @@ class TestConfigWithGCSSettings:
 
     def test_gcs_config_parsing(self, temp_dir, audit_logger):
         """Test that GCS config is parsed correctly."""
-        from wrinklefree.utils.run_manager import create_run_manager
+        from wf_train.utils.run_manager import create_run_manager
 
         config = OmegaConf.create({
             "gcs": {
@@ -403,7 +403,7 @@ class TestConfigWithGCSSettings:
 
     def test_skip_gcs_flag(self, temp_dir, audit_logger):
         """Test that skip_gcs flag works."""
-        from wrinklefree.utils.run_manager import create_run_manager
+        from wf_train.utils.run_manager import create_run_manager
 
         config = OmegaConf.create({
             "gcs": {

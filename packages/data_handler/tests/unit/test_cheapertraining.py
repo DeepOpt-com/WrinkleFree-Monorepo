@@ -13,14 +13,14 @@ class TestDataMixing:
 
     def test_import_mixing(self):
         """Test that mixing module can be imported."""
-        from data_handler.data.mixing import DatasetMixture, MixedDataset
+        from wf_data.data.mixing import DatasetMixture, MixedDataset
 
         assert DatasetMixture is not None
         assert MixedDataset is not None
 
     def test_dataset_mixture_creation(self):
         """Test DatasetMixture dataclass creation."""
-        from data_handler.data.mixing import DatasetMixture
+        from wf_data.data.mixing import DatasetMixture
 
         mixture = DatasetMixture(
             name="fineweb",
@@ -36,7 +36,7 @@ class TestDataMixing:
 
     def test_dataset_mixture_with_subset(self):
         """Test DatasetMixture with subset."""
-        from data_handler.data.mixing import DatasetMixture
+        from wf_data.data.mixing import DatasetMixture
 
         mixture = DatasetMixture(
             name="fineweb-10bt",
@@ -49,7 +49,7 @@ class TestDataMixing:
 
     def test_mixed_dataset_init(self):
         """Test MixedDataset initialization."""
-        from data_handler.data.mixing import DatasetMixture, MixedDataset
+        from wf_data.data.mixing import DatasetMixture, MixedDataset
 
         mixtures = [
             DatasetMixture(name="a", weight=0.3, path="path/a"),
@@ -66,7 +66,7 @@ class TestDataMixing:
 
     def test_mixed_dataset_weight_normalization(self):
         """Test that MixedDataset normalizes weights."""
-        from data_handler.data.mixing import DatasetMixture, MixedDataset
+        from wf_data.data.mixing import DatasetMixture, MixedDataset
 
         mixtures = [
             DatasetMixture(name="a", weight=1.0, path="path/a"),
@@ -85,7 +85,7 @@ class TestDataMixing:
 
     def test_mixed_dataset_update_weights(self):
         """Test update_weights_from_influence method."""
-        from data_handler.data.mixing import DatasetMixture, MixedDataset
+        from wf_data.data.mixing import DatasetMixture, MixedDataset
 
         mixtures = [
             DatasetMixture(name="a", weight=0.5, path="path/a"),
@@ -104,7 +104,7 @@ class TestDataMixing:
 
     def test_mixed_dataset_get_current_weights(self):
         """Test get_current_weights method."""
-        from data_handler.data.mixing import DatasetMixture, MixedDataset
+        from wf_data.data.mixing import DatasetMixture, MixedDataset
 
         mixtures = [
             DatasetMixture(name="code", weight=0.3, path="path/code"),
@@ -125,7 +125,7 @@ class TestInfluenceConfig:
 
     def test_import_influence_config(self):
         """Test that influence config module can be imported."""
-        from data_handler.influence.config import (
+        from wf_data.influence.config import (
             InfluenceConfig,
             InfluenceTarget,
             ProbeSetConfig,
@@ -141,7 +141,7 @@ class TestInfluenceConfig:
 
     def test_influence_target_enum(self):
         """Test InfluenceTarget enum values."""
-        from data_handler.influence.config import InfluenceTarget
+        from wf_data.influence.config import InfluenceTarget
 
         assert InfluenceTarget.EMBEDDING_ONLY.value == "embedding"
         assert InfluenceTarget.OUTPUT_ONLY.value == "output"
@@ -149,7 +149,7 @@ class TestInfluenceConfig:
 
     def test_influence_config_defaults(self):
         """Test InfluenceConfig default values."""
-        from data_handler.influence.config import (
+        from wf_data.influence.config import (
             InfluenceConfig,
             InfluenceTarget,
         )
@@ -165,7 +165,7 @@ class TestInfluenceConfig:
 
     def test_probe_set_config_defaults(self):
         """Test ProbeSetConfig default values."""
-        from data_handler.influence.config import ProbeSetConfig
+        from wf_data.influence.config import ProbeSetConfig
 
         config = ProbeSetConfig()
 
@@ -178,7 +178,7 @@ class TestInfluenceConfig:
 
     def test_mixture_optimization_config_defaults(self):
         """Test MixtureOptimizationConfig defaults."""
-        from data_handler.influence.config import MixtureOptimizationConfig
+        from wf_data.influence.config import MixtureOptimizationConfig
 
         config = MixtureOptimizationConfig()
 
@@ -190,7 +190,7 @@ class TestInfluenceConfig:
 
     def test_self_boosting_config_defaults(self):
         """Test SelfBoostingConfig defaults."""
-        from data_handler.influence.config import SelfBoostingConfig
+        from wf_data.influence.config import SelfBoostingConfig
 
         config = SelfBoostingConfig()
 
@@ -206,7 +206,7 @@ class TestInfluenceGradient:
 
     def test_import_gradient(self):
         """Test that gradient module can be imported."""
-        from data_handler.influence import gradient
+        from wf_data.influence import gradient
 
         assert gradient is not None
 
@@ -216,7 +216,7 @@ class TestInfluenceDataInf:
 
     def test_import_datainf(self):
         """Test that datainf module can be imported."""
-        from data_handler.influence import datainf
+        from wf_data.influence import datainf
 
         assert datainf is not None
 
@@ -226,7 +226,7 @@ class TestInfluenceMixtureCalculator:
 
     def test_import_mixture_calculator(self):
         """Test that mixture_calculator module can be imported."""
-        from data_handler.influence import mixture_calculator
+        from wf_data.influence import mixture_calculator
 
         assert mixture_calculator is not None
 
@@ -236,7 +236,7 @@ class TestInit:
 
     def test_package_import(self):
         """Test that cheapertraining package can be imported."""
-        import data_handler
+        import wf_data
 
         assert cheapertraining is not None
 
@@ -246,7 +246,7 @@ class TestPrecision:
 
     def test_import_precision(self):
         """Test that precision module can be imported."""
-        from data_handler import precision
+        from wf_data import precision
 
         assert precision is not None
 
@@ -256,7 +256,7 @@ class TestTraining:
 
     def test_import_training(self):
         """Test that training module can be imported."""
-        from data_handler import training
+        from wf_data import training
 
         assert training is not None
 
@@ -266,7 +266,7 @@ class TestUtils:
 
     def test_import_utils(self):
         """Test that utils module can be imported."""
-        from data_handler import utils
+        from wf_data import utils
 
         assert utils is not None
 

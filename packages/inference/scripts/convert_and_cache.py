@@ -9,7 +9,7 @@ Usage:
 import argparse
 import logging
 
-from wrinklefree_inference.cache import GCSModelCache, compute_cache_key, get_cached_or_convert
+from wf_infer.cache import GCSModelCache, compute_cache_key, get_cached_or_convert
 
 logging.basicConfig(
     level=logging.INFO,

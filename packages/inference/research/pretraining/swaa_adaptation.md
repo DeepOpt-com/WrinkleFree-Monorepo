@@ -162,7 +162,7 @@ swaa_config = SWAAConfig(
 ### Step 1: Add SWAA Config
 
 ```python
-# packages/inference/src/wrinklefree_inference/swaa/config.py
+# packages/inference/src/wf_infer/swaa/config.py
 
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -221,7 +221,7 @@ class SWAAConfig:
 ### Step 2: Create Attention Mask Generator
 
 ```python
-# packages/inference/src/wrinklefree_inference/swaa/masks.py
+# packages/inference/src/wf_infer/swaa/masks.py
 
 import torch
 
@@ -265,7 +265,7 @@ def create_causal_swaa_mask(
 ### Step 3: Integrate into Attention
 
 ```python
-# packages/inference/src/wrinklefree_inference/swaa/attention.py
+# packages/inference/src/wf_infer/swaa/attention.py
 
 def swaa_attention(
     Q: torch.Tensor,
@@ -328,7 +328,7 @@ def filter_long_docs(dataset, min_length=4096):
 
 import torch
 from transformers import Trainer, TrainingArguments
-from wrinklefree_inference.swaa import SWAAConfig, patch_model_with_swaa
+from wf_infer.swaa import SWAAConfig, patch_model_with_swaa
 
 def finetune_swaa(
     model_path: str,

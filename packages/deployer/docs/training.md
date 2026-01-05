@@ -106,7 +106,7 @@ uv run wf smoke
 
 **Python API:**
 ```python
-from wf_deployer import train
+from wf_deploy import train
 
 # Basic usage
 run_id = train("qwen3_4b", stage=1.9)

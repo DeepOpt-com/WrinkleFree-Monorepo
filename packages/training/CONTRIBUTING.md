@@ -11,8 +11,8 @@ PyTorch Lightning-based training pipeline for 1.58-bit (ternary) LLMs with multi
 
 | Depends On | What For |
 |------------|----------|
-| `bitnet-arch` | BitLinear, SubLN, model conversion |
-| `data-handler` | MixedDataset, InfluenceTracker |
+| `wf-arch` | BitLinear, SubLN, model conversion |
+| `wf-data` | MixedDataset, InfluenceTracker |
 | pytorch-lightning | Training loop, callbacks, distributed |
 | hydra | Configuration management |
 
@@ -72,7 +72,7 @@ scripts/
 configs/
 ├── training/                # Training configs (unified, stage2_pretrain, etc.)
 ├── model/                   # Model configs (smollm2_135m, qwen3_4b)
-├── data/                    # Data config pointer (uses data_handler)
+├── data/                    # Data config pointer (uses wf_data)
 └── distributed/             # FSDP/single_gpu configs
 ```
 
@@ -172,7 +172,7 @@ Runtime:
 | Add new objective | `objectives/base.py`, then `objectives/my_obj.py` |
 | Change checkpoint loading | `training/auto_setup.py:auto_setup_model()` |
 | Add training callback | `lightning/callbacks.py` |
-| Modify data loading | `lightning/datamodule.py` (wraps data_handler) |
+| Modify data loading | `lightning/datamodule.py` (wraps wf_data) |
 | Change optimizer | `lightning/module.py:configure_optimizers()` |
 | Add curriculum phase | `configs/training/base.yaml:curriculum.phases` |
 
@@ -224,7 +224,7 @@ result = manager(outputs, batch, teacher_outputs)
 ### Auto-Setup Pattern
 
 ```python
-from wrinklefree.training.auto_setup import auto_setup_model
+from wf_train.training.auto_setup import auto_setup_model
 
 # Handles: GCS download, BitNet conversion, checkpoint loading
 model, tokenizer = auto_setup_model(config, device)
@@ -239,13 +239,13 @@ model, tokenizer = auto_setup_model(config, device)
 
 ```bash
 # All tests
-uv run --package wrinklefree pytest packages/training/tests/ -v
+uv run --package wf-train pytest packages/training/tests/ -v
 
 # Unit tests only
-uv run --package wrinklefree pytest packages/training/tests/unit/ -v
+uv run --package wf-train pytest packages/training/tests/unit/ -v
 
 # Integration tests (require GPU)
-uv run --package wrinklefree pytest packages/training/tests/integration/ -v
+uv run --package wf-train pytest packages/training/tests/integration/ -v
 ```
 
 ### Smoke Tests (Cloud)
@@ -332,7 +332,7 @@ sky logs lightning-smoke
 
 - **Test Integration**: Changes affect deployer, eval, inference. Run smoke tests after significant changes:
   ```bash
-  uv run --package wrinklefree python scripts/train_lightning.py \
+  uv run --package wf-train python scripts/train_lightning.py \
     model=smollm2_135m training=base training.max_steps=10
   ```
 

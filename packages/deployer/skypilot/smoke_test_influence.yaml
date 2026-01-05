@@ -88,7 +88,7 @@ run: |
   # Authenticate with HuggingFace (required for some datasets)
   # Use huggingface_hub Python API to avoid git credential issues
   echo "Authenticating with HuggingFace..."
-  uv run --package wrinklefree python -c "from huggingface_hub import login; login(token='${HF_TOKEN}')"
+  uv run --package wf-train python -c "from huggingface_hub import login; login(token='${HF_TOKEN}')"
   echo "HF authentication complete"
 
   echo "WandB API key set: ${WANDB_API_KEY:0:8}..."
@@ -122,7 +122,7 @@ run: |
   # IMPORTANT: num_workers=0 is REQUIRED for influence tracking
   # The JVPEmbeddingExtractor's nn.ModuleList references cause deadlock with multiprocessing
   export DATA_NUM_WORKERS=0
-  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=base \
     data.config_name=mixed_pretrain \

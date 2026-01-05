@@ -20,7 +20,7 @@ from safetensors import safe_open
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "architecture/src"))
-from bitnet_arch import set_global_lambda_warmup, LambdaWarmup, convert_model_to_bitnet
+from wf_arch import set_global_lambda_warmup, LambdaWarmup, convert_model_to_bitnet
 
 
 def main():

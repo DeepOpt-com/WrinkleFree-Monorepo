@@ -32,15 +32,15 @@ cd WrinkleFree-Monorepo
 uv sync --all-packages
 
 # Or install just this package
-uv sync --package data-handler
+uv sync --package wf-data
 ```
 
 ## Quick Start
 
 ```python
 # Import data handler utilities
-from data_handler.data import create_dataloader, MixedDataset
-from data_handler.influence import InfluenceAwareOptimizer
+from wf_data.data import create_dataloader, MixedDataset
+from wf_data.influence import InfluenceAwareOptimizer
 
 # Create a mixed dataset
 dataset = MixedDataset(sources=["fineweb", "code"], weights=[0.7, 0.3])
@@ -65,8 +65,8 @@ optimizer = InfluenceAwareOptimizer(base_optimizer, update_interval=1000)
 ## Project Structure
 
 ```
-packages/data_handler/
-├── src/data_handler/             # Main source code
+packages/wf_data/
+├── src/wf_data/             # Main source code
 │   ├── models/                   # Model architecture
 │   │   ├── config.py                # MobileLLM configs (140M-671B)
 │   │   ├── mobilellm.py             # Main MobileLLM model class
@@ -149,7 +149,7 @@ This library is used by the training and distillation packages for:
 Workspace dependency configuration:
 ```toml
 [tool.uv.sources]
-data-handler = { workspace = true }
+wf-data = { workspace = true }
 ```
 
 ## References

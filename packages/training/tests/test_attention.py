@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from wrinklefree.models.attention import (
+from wf_train.models.attention import (
     BitNetAttention,
     BitNetFlashAttention,
     precompute_freqs_cis,

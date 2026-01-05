@@ -138,7 +138,7 @@ run: |
 
   echo "[Training] Starting Lightning training..."
   # Use unbuffered output for real-time progress
-  PYTHONUNBUFFERED=1 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  PYTHONUNBUFFERED=1 uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=${TRAINING_CONFIG} \
     training.max_steps=${MAX_STEPS} \

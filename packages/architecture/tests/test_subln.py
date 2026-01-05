@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from bitnet_arch.layers.subln import SubLN, RMSNorm
+from wf_arch.layers.subln import SubLN, RMSNorm
 
 
 class TestSubLN:

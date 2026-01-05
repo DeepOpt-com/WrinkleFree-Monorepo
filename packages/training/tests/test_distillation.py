@@ -11,7 +11,7 @@ This file tests:
 import pytest
 import torch
 
-from wrinklefree.distillation import (
+from wf_train.distillation import (
     ContinuePretrainLoss,
     LayerwiseDistillationLoss,
     LayerwiseLossType,

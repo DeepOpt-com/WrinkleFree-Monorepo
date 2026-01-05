@@ -4,7 +4,7 @@
 
 ```
                     ┌─────────────────┐
-                    │   data_handler   │  (Shared Library)
+                    │   wf_data   │  (Shared Library)
                     │  - Data loading  │
                     │  - Influence     │
                     │  - Mixture opt   │
@@ -43,7 +43,7 @@
 
 | Package | Type | Description |
 |---------|------|-------------|
-| `data_handler` | **Library** | Shared data loading, influence functions |
+| `wf_data` | **Library** | Shared data loading, influence functions |
 | `architecture` | **Library** | BitNet layers (BitLinear, BitLinearLRC, SubLN) & model conversion |
 | `training` | Application | 1.58-bit training pipeline (Stages 1-3) + distillation objectives |
 | `inference` | Application | Model serving application |
@@ -51,7 +51,7 @@
 | `deployer` | Application | CLI tool for cloud deployment |
 | `mobile` | Application | Android inference with BitNet.cpp |
 
-> **Note**: Legacy packages (`distillation`, `converter`, `cheapertraining`) are archived in `packages/_legacy/`.
+> **Note**: Legacy packages have been removed. Distillation objectives are integrated into the training package.
 
 ## Data Flow
 
@@ -130,13 +130,12 @@ All packages use Hydra for configuration:
 ```
 packages/{name}/configs/
 ├── model/          # Model architecture configs
-├── training/       # Training hyperparameters
+├── training/       # Training hyperparameters (includes distillation objectives)
 ├── data/           # Dataset configs
-├── distillation/   # Distillation settings (distillation package)
 └── distributed/    # FSDP/DDP settings
 ```
 
-Shared data configs are in the `data_handler` package.
+Shared data configs are in the `wf_data` package.
 
 ## Build & Test
 
@@ -148,9 +147,9 @@ uv sync --all-packages
 uv run pytest
 
 # Run package-specific tests
-uv run --package wrinklefree pytest packages/training/tests/
-uv run --package data-handler pytest packages/data_handler/tests/
-uv run --package bitnet-arch pytest packages/architecture/tests/
+uv run --package wf-train pytest packages/training/tests/
+uv run --package wf-data pytest packages/data_handler/tests/
+uv run --package wf-arch pytest packages/architecture/tests/
 
 # Type checking
 uv run mypy packages/training/src/

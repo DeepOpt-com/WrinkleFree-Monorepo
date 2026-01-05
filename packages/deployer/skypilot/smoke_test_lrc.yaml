@@ -50,7 +50,7 @@ setup: |
 
   # Verify LRC imports
   echo "Verifying LRC imports..."
-  uv run python -c "from bitnet_arch import BitLinearLRC, convert_bitlinear_to_lrc, freeze_model_except_lrc; from wrinklefree.objectives import LRCReconstructionObjective; print('LRC imports OK!')"
+  uv run python -c "from wf_arch import BitLinearLRC, convert_bitlinear_to_lrc, freeze_model_except_lrc; from wf_train.objectives import LRCReconstructionObjective; print('LRC imports OK!')"
 
   echo "Setup complete!"
 
@@ -82,7 +82,7 @@ run: |
   echo "  5. Train 100 steps with MuonClip + AdamW"
   echo "=============================================="
 
-  uv run --package wrinklefree python packages/training/scripts/train.py \
+  uv run --package wf-train python packages/training/scripts/train.py \
     model=${MODEL} \
     training=lrc_calibration \
     training.max_steps=100 \

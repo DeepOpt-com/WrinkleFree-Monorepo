@@ -1,6 +1,6 @@
 # Contributing to Data Handler
 
-> Contributor guide for navigating and understanding the data-handler codebase.
+> Contributor guide for navigating and understanding the wf-data codebase.
 
 ## Quick Orientation
 
@@ -27,7 +27,7 @@ Shared library providing data loading (streaming, packing, mixing) and influence
 ### Directory Structure
 
 ```
-src/data_handler/
+src/wf_data/
 ├── __init__.py              # Public API exports
 ├── data/
 │   ├── factory.py           # get_loader(), dataloader creation
@@ -174,13 +174,13 @@ influence:
 
 ```bash
 # All tests
-uv run --package data-handler pytest packages/data_handler/tests/ -v
+uv run --package wf-data pytest packages/wf_data/tests/ -v
 
 # Specific module
-uv run --package data-handler pytest packages/data_handler/tests/test_mixing.py -v
+uv run --package wf-data pytest packages/wf_data/tests/test_mixing.py -v
 
 # With coverage
-uv run --package data-handler pytest packages/data_handler/tests/ --cov=data_handler
+uv run --package wf-data pytest packages/wf_data/tests/ --cov=wf_data
 ```
 
 ### Test Organization
@@ -235,7 +235,7 @@ uv run --package data-handler pytest packages/data_handler/tests/ --cov=data_han
 
 - **Test Both Packages**: Changes affect `training` package. Always run training smoke test:
   ```bash
-  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=smollm2_135m training=base training.max_steps=10
   ```
 

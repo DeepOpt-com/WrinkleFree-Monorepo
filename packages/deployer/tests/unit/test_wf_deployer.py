@@ -1,6 +1,6 @@
-"""Tests for wf_deployer source modules.
+"""Tests for wf_deploy source modules.
 
-These tests import and validate the wf_deployer package to ensure coverage.
+These tests import and validate the wf_deploy package to ensure coverage.
 """
 
 import os
@@ -9,11 +9,11 @@ from unittest.mock import MagicMock, patch
 
 
 class TestConstants:
-    """Tests for wf_deployer.constants module."""
+    """Tests for wf_deploy.constants module."""
 
     def test_import_constants(self):
         """Test that constants module can be imported."""
-        from wf_deployer.constants import (
+        from wf_deploy.constants import (
             RunIdPrefix,
             STAGE_CONFIG_MAP,
             SUPPORTED_GPU_TYPES,
@@ -35,7 +35,7 @@ class TestConstants:
 
     def test_run_id_prefix_enum(self):
         """Test RunIdPrefix enum values."""
-        from wf_deployer.constants import RunIdPrefix
+        from wf_deploy.constants import RunIdPrefix
 
         assert RunIdPrefix.SKYPILOT.value == "sky-"
         # Test enum is usable as string
@@ -44,7 +44,7 @@ class TestConstants:
 
     def test_stage_config_map(self):
         """Test STAGE_CONFIG_MAP has all stages."""
-        from wf_deployer.constants import STAGE_CONFIG_MAP
+        from wf_deploy.constants import STAGE_CONFIG_MAP
 
         # All valid stages should be mapped
         assert 1 in STAGE_CONFIG_MAP
@@ -59,7 +59,7 @@ class TestConstants:
 
     def test_supported_gpu_types(self):
         """Test SUPPORTED_GPU_TYPES contains expected GPUs."""
-        from wf_deployer.constants import SUPPORTED_GPU_TYPES
+        from wf_deploy.constants import SUPPORTED_GPU_TYPES
 
         assert "H100" in SUPPORTED_GPU_TYPES
         assert "A100" in SUPPORTED_GPU_TYPES
@@ -67,7 +67,7 @@ class TestConstants:
 
     def test_gpu_profiles_mapping(self):
         """Test GPU_PROFILES maps GPU types to config names."""
-        from wf_deployer.constants import GPU_PROFILES, SUPPORTED_GPU_TYPES
+        from wf_deploy.constants import GPU_PROFILES, SUPPORTED_GPU_TYPES
 
         for gpu_type in GPU_PROFILES:
             assert gpu_type in SUPPORTED_GPU_TYPES
@@ -75,7 +75,7 @@ class TestConstants:
 
     def test_timeouts_reasonable(self):
         """Test timeout values are reasonable."""
-        from wf_deployer.constants import (
+        from wf_deploy.constants import (
             TRAINING_TIMEOUT,
             SMOKE_TEST_TIMEOUT,
             DEBUG_TIMEOUT,
@@ -88,7 +88,7 @@ class TestConstants:
 
     def test_env_vars_class(self):
         """Test EnvVars class has required attributes."""
-        from wf_deployer.constants import EnvVars
+        from wf_deploy.constants import EnvVars
 
         assert EnvVars.GH_TOKEN == "GH_TOKEN"
         assert EnvVars.WANDB_API_KEY == "WANDB_API_KEY"
@@ -97,25 +97,25 @@ class TestConstants:
 
     def test_get_wandb_entity_not_set(self):
         """Test get_wandb_entity returns None when not set."""
-        from wf_deployer.constants import get_wandb_entity
+        from wf_deploy.constants import get_wandb_entity
 
         with patch.dict(os.environ, {}, clear=True):
             assert get_wandb_entity() is None
 
     def test_get_wandb_entity_set(self):
         """Test get_wandb_entity returns value when set."""
-        from wf_deployer.constants import get_wandb_entity
+        from wf_deploy.constants import get_wandb_entity
 
         with patch.dict(os.environ, {"WANDB_ENTITY": "my-team"}):
             assert get_wandb_entity() == "my-team"
 
 
 class TestConfig:
-    """Tests for wf_deployer.config module."""
+    """Tests for wf_deploy.config module."""
 
     def test_import_config(self):
         """Test that config module can be imported."""
-        from wf_deployer.config import (
+        from wf_deploy.config import (
             ResourcesConfig,
             ServiceConfig,
             TrainingConfig,
@@ -129,7 +129,7 @@ class TestConfig:
 
     def test_resources_config_defaults(self):
         """Test ResourcesConfig has sensible defaults."""
-        from wf_deployer.config import ResourcesConfig
+        from wf_deploy.config import ResourcesConfig
 
         config = ResourcesConfig()
         assert config.cpus == "16+"
@@ -139,7 +139,7 @@ class TestConfig:
 
     def test_service_config_validation(self):
         """Test ServiceConfig validates required fields."""
-        from wf_deployer.config import ServiceConfig
+        from wf_deploy.config import ServiceConfig
         from pydantic import ValidationError
 
         # Should fail without required fields
@@ -154,7 +154,7 @@ class TestConfig:
 
     def test_training_config_validation(self):
         """Test TrainingConfig validates required fields."""
-        from wf_deployer.config import TrainingConfig
+        from wf_deploy.config import TrainingConfig
         from pydantic import ValidationError
 
         # Should fail without required fields
@@ -171,7 +171,7 @@ class TestConfig:
 
     def test_training_config_hydra_overrides(self):
         """Test TrainingConfig accepts Hydra overrides."""
-        from wf_deployer.config import TrainingConfig
+        from wf_deploy.config import TrainingConfig
 
         config = TrainingConfig(
             name="test",
@@ -185,7 +185,7 @@ class TestConfig:
 
     def test_infra_config_provider_validation(self):
         """Test InfraConfig validates provider field."""
-        from wf_deployer.config import InfraConfig
+        from wf_deploy.config import InfraConfig
         from pydantic import ValidationError
 
         # Valid providers
@@ -199,18 +199,18 @@ class TestConfig:
 
 
 class TestCore:
-    """Tests for wf_deployer.core module."""
+    """Tests for wf_deploy.core module."""
 
     def test_import_core(self):
         """Test that core module can be imported."""
-        from wf_deployer.core import train, Scale
+        from wf_deploy.core import train, Scale
 
         assert callable(train)
         assert Scale is not None
 
     def test_train_without_skypilot(self):
         """Test train raises ImportError when SkyPilot not installed."""
-        from wf_deployer.core import train
+        from wf_deploy.core import train
 
         # Mock sky module to simulate not being installed
         with patch.dict("sys.modules", {"sky": None}):
@@ -221,7 +221,7 @@ class TestCore:
 
     def test_train_requires_skypilot(self):
         """Test train function signature and import."""
-        from wf_deployer.core import train
+        from wf_deploy.core import train
         import inspect
 
         # Verify signature
@@ -232,57 +232,57 @@ class TestCore:
 
 
 class TestCredentials:
-    """Tests for wf_deployer.credentials module."""
+    """Tests for wf_deploy.credentials module."""
 
     def test_import_credentials(self):
         """Test that credentials module can be imported."""
-        from wf_deployer import credentials
+        from wf_deploy import credentials
 
         assert credentials is not None
 
 
 class TestInit:
-    """Tests for wf_deployer package init."""
+    """Tests for wf_deploy package init."""
 
     def test_package_import(self):
-        """Test that wf_deployer package can be imported."""
-        import wf_deployer
+        """Test that wf_deploy package can be imported."""
+        import wf_deploy
 
-        assert wf_deployer is not None
+        assert wf_deploy is not None
 
     def test_package_exports(self):
         """Test that main exports are available."""
-        from wf_deployer import train
+        from wf_deploy import train
 
         assert callable(train)
 
 
 class TestDeployer:
-    """Tests for wf_deployer.deployer module."""
+    """Tests for wf_deploy.deployer module."""
 
     def test_import_deployer(self):
         """Test that deployer module can be imported."""
-        from wf_deployer import deployer
+        from wf_deploy import deployer
 
         assert deployer is not None
 
 
 class TestInfra:
-    """Tests for wf_deployer.infra module."""
+    """Tests for wf_deploy.infra module."""
 
     def test_import_infra(self):
         """Test that infra module can be imported."""
-        from wf_deployer import infra
+        from wf_deploy import infra
 
         assert infra is not None
 
 
 class TestTrainer:
-    """Tests for wf_deployer.trainer module."""
+    """Tests for wf_deploy.trainer module."""
 
     def test_import_trainer(self):
         """Test that trainer module can be imported."""
-        from wf_deployer import trainer
+        from wf_deploy import trainer
 
         assert trainer is not None
 

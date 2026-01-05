@@ -1,6 +1,6 @@
 # Contributing to BitNet Architecture
 
-> Contributor guide for navigating and understanding the bitnet-arch codebase.
+> Contributor guide for navigating and understanding the wf-arch codebase.
 
 ## Quick Orientation
 
@@ -26,7 +26,7 @@ Core library providing 1.58-bit quantized components: BitLinear layers, SubLN no
 ### Directory Structure
 
 ```
-src/bitnet_arch/
+src/wf_arch/
 ├── __init__.py              # Public API - exports all public symbols
 ├── layers/
 │   ├── __init__.py          # Layer exports
@@ -128,7 +128,7 @@ w_quant = (w * scale).round().clamp(-1, 1) / scale
 
 Lambda warmup is global state accessed via functions:
 ```python
-from bitnet_arch import set_global_lambda_warmup, get_current_lambda
+from wf_arch import set_global_lambda_warmup, get_current_lambda
 
 # Set once at training start
 set_global_lambda_warmup(LambdaWarmup(warmup_steps=1000))
@@ -142,11 +142,11 @@ lambda_val = get_current_lambda()  # 0.0 to 1.0
 All public API goes through `__init__.py`:
 ```python
 # In layers/__init__.py
-from bitnet_arch.layers.bitlinear import BitLinear
+from wf_arch.layers.bitlinear import BitLinear
 __all__ = ["BitLinear", ...]
 
 # In root __init__.py
-from bitnet_arch.layers import BitLinear
+from wf_arch.layers import BitLinear
 __all__ = ["BitLinear", ...]
 ```
 
@@ -158,13 +158,13 @@ __all__ = ["BitLinear", ...]
 
 ```bash
 # All tests
-uv run --package bitnet-arch pytest packages/architecture/tests/ -v
+uv run --package wf-arch pytest packages/architecture/tests/ -v
 
 # Specific test
-uv run --package bitnet-arch pytest packages/architecture/tests/test_bitlinear.py -v
+uv run --package wf-arch pytest packages/architecture/tests/test_bitlinear.py -v
 
 # With coverage
-uv run --package bitnet-arch pytest packages/architecture/tests/ --cov=bitnet_arch
+uv run --package wf-arch pytest packages/architecture/tests/ --cov=wf_arch
 ```
 
 ### Test Organization
@@ -212,7 +212,7 @@ uv run --package bitnet-arch pytest packages/architecture/tests/ --cov=bitnet_ar
 
 - **Test Both Packages**: Changes here affect `training` package. Always run training smoke test after modifications:
   ```bash
-  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=smollm2_135m training=base training.max_steps=10
   ```
 

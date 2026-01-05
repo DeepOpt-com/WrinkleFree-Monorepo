@@ -4,7 +4,7 @@ Content-based sparse attention reduces computation by attending only to importan
 
 ## Current Implementation
 
-We have comprehensive sparse attention in `packages/inference/src/wrinklefree_inference/sglang_backend/sparse_attention.py`:
+We have comprehensive sparse attention in `packages/inference/src/wf_infer/sglang_backend/sparse_attention.py`:
 
 ### Supported Modes
 
@@ -191,7 +191,7 @@ The sparse attention module is ready but needs to be integrated into the inferen
 
 ```python
 # In attention computation
-from wrinklefree_inference.sglang_backend.sparse_attention import (
+from wf_infer.sglang_backend.sparse_attention import (
     apply_attention_sparsity,
     get_dynamic_attention_config,
 )
@@ -239,7 +239,7 @@ class InferenceConfig:
 
 import torch
 import time
-from wrinklefree_inference.sglang_backend.sparse_attention import *
+from wf_infer.sglang_backend.sparse_attention import *
 
 def benchmark_sparsity_modes(seq_lengths=[1024, 4096, 8192, 16384]):
     configs = {

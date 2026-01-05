@@ -99,7 +99,7 @@ run: |
   echo ""
   echo "[Training] Running unified training with meta-optimization (2x L40 FSDP)..."
   export TOKENIZERS_PARALLELISM=false
-  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=unified \
     data.config_name=mixed_pretrain \

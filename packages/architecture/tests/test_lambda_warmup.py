@@ -3,7 +3,7 @@
 import pytest
 import math
 
-from bitnet_arch.quantization.lambda_warmup import (
+from wf_arch.quantization.lambda_warmup import (
     LambdaWarmup,
     get_global_lambda_warmup,
     set_global_lambda_warmup,

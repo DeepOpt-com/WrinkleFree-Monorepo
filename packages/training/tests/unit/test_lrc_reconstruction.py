@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from wrinklefree.objectives.lrc_reconstruction import (
+from wf_train.objectives.lrc_reconstruction import (
     LRCReconstructionObjective,
     LRCLossType,
 )

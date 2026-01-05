@@ -29,7 +29,7 @@ Total for different contexts:
 
 ## Current Implementation
 
-We have `KVCache` in `packages/inference/src/wrinklefree_inference/kv_cache/kv_cache.py`:
+We have `KVCache` in `packages/inference/src/wf_infer/kv_cache/kv_cache.py`:
 
 ```python
 class KVCacheDtype(Enum):

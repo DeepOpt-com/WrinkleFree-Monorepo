@@ -27,7 +27,7 @@ uv sync --all-packages
 ### Python API (Recommended)
 
 ```python
-from wrinklefree_eval import evaluate
+from wf_eval import evaluate
 
 # Full BitDistill benchmarks
 results = evaluate("path/to/model", benchmark="bitdistill")
@@ -56,12 +56,12 @@ print(results["mnli"]["acc"])  # 0.85
 
 ```bash
 # Full BitDistill benchmarks
-uv run python -m wrinklefree_eval \
+uv run python -m wf_eval \
     model_path=HuggingFaceTB/SmolLM2-135M \
     benchmark=bitdistill
 
 # Smoke test (quick validation)
-uv run python -m wrinklefree_eval \
+uv run python -m wf_eval \
     model_path=path/to/checkpoint \
     benchmark=smoke_test
 
@@ -73,7 +73,7 @@ uv run python scripts/run_eval.py \
     --mc-iterations 128
 
 # GLUE only with custom settings
-uv run python -m wrinklefree_eval \
+uv run python -m wf_eval \
     model_path=path/to/model \
     benchmark=glue \
     batch_size=16 \
@@ -107,7 +107,7 @@ output_dir: ./eval_results
 
 Override via CLI:
 ```bash
-uv run python -m wrinklefree_eval \
+uv run python -m wf_eval \
     model_path=/path/to/model \
     benchmark=smoke_test \
     dtype=float16 \
@@ -119,7 +119,7 @@ uv run python -m wrinklefree_eval \
 For models trained with WrinkleFree-1.58Quant:
 
 ```python
-from wrinklefree_eval import evaluate
+from wf_eval import evaluate
 
 # Stage 2 checkpoint
 results = evaluate(

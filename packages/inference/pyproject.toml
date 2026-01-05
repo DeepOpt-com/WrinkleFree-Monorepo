@@ -1,5 +1,5 @@
 [project]
-name = "wrinklefree-inference"
+name = "wf-infer"
 version = "0.1.0"
 description = "BitNet model inference engine with KV caching optimization"
 authors = [{ name = "WrinkleFree Team" }]
@@ -65,16 +65,12 @@ convert = [
     "accelerate>=0.27.0",
 ]
 
-# CLI entry point removed - cli.py moved to legacy/
-# [project.scripts]
-# wrinklefree-inference = "wrinklefree_inference.cli:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/wrinklefree_inference"]
+packages = ["src/wf_infer"]
 
 [tool.ruff]
 target-version = "py310"
@@ -102,7 +98,7 @@ strict = true
 ignore_missing_imports = true
 
 [tool.coverage.run]
-source = ["src/wrinklefree_inference"]
+source = ["src/wf_infer"]
 branch = true
 omit = ["*/tests/*", "*/__pycache__/*"]
 

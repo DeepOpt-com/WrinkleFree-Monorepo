@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from wrinklefree.objectives.dlm import DLMObjective
+from wf_train.objectives.dlm import DLMObjective
 
 
 class TestDLMPreprocessing:
@@ -240,7 +240,7 @@ class TestDLMIntegration:
 
     def test_factory_creates_dlm(self):
         """Test that factory can create DLM objective."""
-        from wrinklefree.objectives.factory import create_objective
+        from wf_train.objectives.factory import create_objective
 
         obj = create_objective("dlm", {"mask_token_id": 999, "mask_prob": 0.2})
 
@@ -251,7 +251,7 @@ class TestDLMIntegration:
 
     def test_factory_creates_dlm_without_complementary_masks(self):
         """Test that factory can disable complementary masks."""
-        from wrinklefree.objectives.factory import create_objective
+        from wf_train.objectives.factory import create_objective
 
         obj = create_objective(
             "dlm",
@@ -263,7 +263,7 @@ class TestDLMIntegration:
 
     def test_dlm_in_objective_manager(self):
         """Test DLM works with ObjectiveManager."""
-        from wrinklefree.objectives.manager import ObjectiveManager
+        from wf_train.objectives.manager import ObjectiveManager
 
         dlm = DLMObjective(
             mask_token_id=999, mask_prob=0.15, use_complementary_masks=False
@@ -364,7 +364,7 @@ class TestDLMConfigSaving:
 
     def test_objective_manager_dlm_access(self):
         """Test that ObjectiveManager provides access to DLM objective for config extraction."""
-        from wrinklefree.objectives.manager import ObjectiveManager
+        from wf_train.objectives.manager import ObjectiveManager
 
         dlm = DLMObjective(mask_token_id=42, mask_prob=0.3, use_complementary_masks=False)
         manager = ObjectiveManager(

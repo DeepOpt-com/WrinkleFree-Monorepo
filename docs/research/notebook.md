@@ -23,7 +23,7 @@ The `ObjectiveManager.preprocess_batch()` method was applying DLM preprocessing 
 **Fix**: Modified `ObjectiveManager.preprocess_batch()` to check if objective weight > 0 before applying preprocessing:
 
 ```python
-# packages/training/src/wrinklefree/objectives/manager.py
+# packages/training/src/wf_train/objectives/manager.py
 def preprocess_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
     # Get current weights to check which objectives are active
     weights = self.get_current_weights()
@@ -38,8 +38,8 @@ def preprocess_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
 ```
 
 **Files Modified**:
-- `packages/training/src/wrinklefree/objectives/manager.py` - Skip preprocessing when weight=0
-- `packages/architecture/src/bitnet_arch/conversion/convert.py` - Added `insert_subln` flag (v12 fix)
+- `packages/training/src/wf_train/objectives/manager.py` - Skip preprocessing when weight=0
+- `packages/architecture/src/wf_arch/conversion/convert.py` - Added `insert_subln` flag (v12 fix)
 - `packages/training/configs/training/lrc_dlm_influence.yaml` - Set `insert_subln: false`
 
 **Verification**:
@@ -125,11 +125,11 @@ Where:
 
 ### Bug Fix: Missing haar.py in WrinkleFree-1.58Quant
 
-**Problem**: The `wrinklefree.quantization.haar` module was missing, causing all tests to fail with `ModuleNotFoundError`.
+**Problem**: The `wf_train.quantization.haar` module was missing, causing all tests to fail with `ModuleNotFoundError`.
 
-**Root Cause**: The `__init__.py` and `haar_triton.py` files were importing from `wrinklefree.quantization.haar` but the file was never created.
+**Root Cause**: The `__init__.py` and `haar_triton.py` files were importing from `wf_train.quantization.haar` but the file was never created.
 
-**Fix**: Created `/src/wrinklefree/quantization/haar.py` with pure PyTorch implementations of:
+**Fix**: Created `/src/wf_train/quantization/haar.py` with pure PyTorch implementations of:
 - `haar_transform_1d_row` - Forward Haar transform
 - `inverse_haar_transform_1d_row` - Inverse Haar transform
 - `haar_weight_quantization` - Full Haar wavelet quantization

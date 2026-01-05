@@ -74,7 +74,7 @@ class RunnerConfig:
 class BenchmarkRunner:
     """Runs benchmark trials using real Stage2 training.
 
-    Uses existing Trainer infrastructure from wrinklefree.training.
+    Uses existing Trainer infrastructure from wf_train.training.
     """
 
     def __init__(
@@ -214,7 +214,7 @@ class BenchmarkRunner:
 
             # Create trainer using existing infrastructure
             # Use loss_fn=None so model computes loss internally
-            from wrinklefree.training._legacy.trainer import Trainer
+            from wf_train.training._legacy.trainer import Trainer
 
             trainer = Trainer(
                 model=model,
@@ -283,7 +283,7 @@ class BenchmarkRunner:
     def _build_model(self) -> nn.Module:
         """Build BitNet model from Stage 1 checkpoint."""
         from transformers import AutoModelForCausalLM
-        from wrinklefree.training._legacy.stage1 import convert_model_to_bitnet
+        from wf_train.training._legacy.stage1 import convert_model_to_bitnet
 
         if self.stage1_checkpoint and self.stage1_checkpoint.exists():
             # Load from Stage 1 checkpoint
@@ -322,7 +322,7 @@ class BenchmarkRunner:
             logger.info(f"No Stage 1 checkpoint, converting {self.model_name} to BitNet on-the-fly")
             from transformers import AutoConfig
 
-            from wrinklefree.training._legacy.stage1 import run_stage1
+            from wf_train.training._legacy.stage1 import run_stage1
 
             # Get model dimensions from HuggingFace config
             hf_config = AutoConfig.from_pretrained(self.model_name)
@@ -362,7 +362,7 @@ class BenchmarkRunner:
 
         if influence_enabled:
             # Use MixedDataset with influence-based data selection
-            from wrinklefree.data import create_mixed_dataloader
+            from wf_train.data import create_mixed_dataloader
 
             dataloader, _ = create_mixed_dataloader(
                 sources=[
@@ -377,7 +377,7 @@ class BenchmarkRunner:
             return dataloader
         else:
             # Simple pretrain dataloader without influence
-            from wrinklefree.data.pretrain_dataset import create_pretrain_dataloader
+            from wf_train.data.pretrain_dataset import create_pretrain_dataloader
 
             return create_pretrain_dataloader(
                 dataset_path="HuggingFaceFW/fineweb-edu",

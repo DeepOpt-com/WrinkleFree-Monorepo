@@ -4,9 +4,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from wrinklefree_inference.moe.router import TopKRouter, IdentityRouter, compute_load_balancing_loss
-from wrinklefree_inference.moe.expert import BitLinear, BitNetExpertFFN, BitNetMoEFFN
-from wrinklefree_inference.moe.fake_moe import (
+from wf_infer.moe.router import TopKRouter, IdentityRouter, compute_load_balancing_loss
+from wf_infer.moe.expert import BitLinear, BitNetExpertFFN, BitNetMoEFFN
+from wf_infer.moe.fake_moe import (
     FakeMoEConfig,
     FakeMoEConverter,
     create_fake_moe_from_dense,
@@ -337,7 +337,7 @@ class TestMoEIntegration:
 
     def test_moe_layer_forward(self):
         """Test full MoE transformer layer."""
-        from wrinklefree_inference.moe.expert import BitNetMoELayer
+        from wf_infer.moe.expert import BitNetMoELayer
 
         layer = BitNetMoELayer(
             hidden_size=64,

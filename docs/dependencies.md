@@ -3,16 +3,16 @@
 ## Package Dependencies
 
 ```
-data_handler (library)
+wf_data (library)
     │
-    └──► training (wrinklefree)
+    └──► training (wf_train)
             Dependencies: torch, transformers, hydra-core, datasets, wandb
-            Uses: data_handler.data, data_handler.influence
+            Uses: wf_data.data, wf_data.mixing
 
 architecture (library)
     │
-    └──► training (wrinklefree)
-            Uses: bitnet_arch.layers (BitLinear, BitLinearLRC), bitnet_arch.conversion
+    └──► training (wf_train)
+            Uses: wf_arch.layers (BitLinear, BitLinearLRC), wf_arch.conversion
 
 inference
     │   Dependencies: sglang, torch, transformers
@@ -41,18 +41,18 @@ Packages that import other packages must declare workspace sources:
 # packages/training/pyproject.toml
 [project]
 dependencies = [
-    "data-handler",  # Shared data library
-    "bitnet-arch",   # BitNet layers & conversion
+    "wf-data",  # Shared data library
+    "wf-arch",   # BitNet layers & conversion
     # ... other deps
 ]
 
 [tool.uv.sources]
-data-handler = { workspace = true }
-bitnet-arch = { workspace = true }
+wf-data = { workspace = true }
+wf-arch = { workspace = true }
 ```
 
 > **Note**: The legacy `distillation` package has been integrated into `training`.
-> Distillation objectives are now in `packages/training/src/wrinklefree/objectives/`.
+> Distillation objectives are now in `packages/training/src/wf_train/objectives/`.
 
 ## External Submodules
 

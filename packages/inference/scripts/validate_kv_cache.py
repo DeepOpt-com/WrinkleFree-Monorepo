@@ -8,7 +8,7 @@ from pathlib import Path
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from wrinklefree_inference.kv_cache.validator import run_kv_cache_validation
+from wf_infer.kv_cache.validator import run_kv_cache_validation
 
 
 def main():

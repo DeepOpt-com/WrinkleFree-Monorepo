@@ -90,7 +90,7 @@ run: |
   # Run bitdistill training
   echo ""
   echo "[Training] Running BitDistill training..."
-  uv run --package wrinklefree python packages/training/scripts/train.py \
+  uv run --package wf-train python packages/training/scripts/train.py \
     model=${MODEL} \
     training=bitdistill_full \
     data=default \

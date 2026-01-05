@@ -24,7 +24,7 @@ This package is part of the WrinkleFree monorepo.
 
 **Running from monorepo root**:
 ```bash
-uv run --package wrinklefree_eval python packages/eval/scripts/run_eval.py model_path=path/to/model benchmark=bitdistill
+uv run --package wf_eval python packages/eval/scripts/run_eval.py model_path=path/to/model benchmark=bitdistill
 ```
 
 ## Quick Start
@@ -50,7 +50,7 @@ uv run python scripts/run_eval.py --model-path path/to/dlm-checkpoint --use-dlm 
 
 ### Simple Python API
 ```python
-from wrinklefree_eval import evaluate
+from wf_eval import evaluate
 
 # Basic evaluation
 results = evaluate("path/to/model", benchmark="bitdistill")
@@ -59,7 +59,7 @@ results = evaluate("path/to/model", benchmark="bitdistill")
 results = evaluate(
     "microsoft/BitNet-b1.58-2B-4T",
     benchmark="bitdistill",
-    wandb_project="wrinklefree-eval"
+    wandb_project="wf-eval"
 )
 
 # Smoke test
@@ -91,7 +91,7 @@ For optimized inference, use WrinkleFree-Inference-Engine:
 cd ../inference
 
 # Serve model
-uv run wrinklefree-inference serve -m model.gguf -c 4096 --port 8080
+uv run wf-infer serve -m model.gguf -c 4096 --port 8080
 ```
 
 ### Use with Eval
@@ -139,7 +139,7 @@ sky jobs logs <job_id>
 ## Architecture
 
 ```
-src/wrinklefree_eval/
+src/wf_eval/
 ├── api.py           # Simple evaluate() API
 ├── cli.py           # CLI entry point
 ├── models/
@@ -170,12 +170,12 @@ uv run python scripts/run_eval.py wandb.enabled=true wandb.project=my-project
 ## W&B Integration
 
 ```python
-from wrinklefree_eval import evaluate
+from wf_eval import evaluate
 
 # Auto-logging to W&B
 results = evaluate(
     model_path="path/to/model",
-    wandb_project="wrinklefree-eval",
+    wandb_project="wf-eval",
     wandb_run_name="my-eval-run",
 )
 ```

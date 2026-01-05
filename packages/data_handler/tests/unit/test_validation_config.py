@@ -6,7 +6,7 @@ Tests for loading and using the C4 validation config.
 import pytest
 from pathlib import Path
 
-from data_handler.data.config_loader import (
+from wf_data.data.config_loader import (
     load_data_config,
     list_available_configs,
     get_config_path,
@@ -69,7 +69,7 @@ class TestValidationConfigIntegration:
 
     def test_validation_config_compatible_with_factory(self):
         """Test that c4_validation config is compatible with create_dataloader."""
-        from data_handler.data.config_loader import load_data_config
+        from wf_data.data.config_loader import load_data_config
 
         config = load_data_config("c4_validation")
 

@@ -6,8 +6,8 @@ import torch.nn.functional as F
 import pytest
 
 # Import from our src - no rewriting functionality
-from wrinklefree.models.bitlinear import BitLinear
-from wrinklefree.models.subln import SubLN
+from wf_train.models.bitlinear import BitLinear
+from wf_train.models.subln import SubLN
 
 
 class TestBitLinearQuantization:
@@ -90,7 +90,7 @@ class TestStage1Conversion:
     def test_conversion_creates_sequential_wrappers(self):
         """Verify Stage 1 wraps o_proj and down_proj in Sequential(SubLN, BitLinear)."""
         from transformers import AutoModelForCausalLM
-        from wrinklefree.training._legacy.stage1 import convert_model_to_bitnet
+        from wf_train.training._legacy.stage1 import convert_model_to_bitnet
 
         # Load small model
         model = AutoModelForCausalLM.from_pretrained(

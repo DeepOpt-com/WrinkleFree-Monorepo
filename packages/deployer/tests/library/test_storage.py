@@ -1,9 +1,9 @@
-"""Tests for wf_deployer.utils.storage module."""
+"""Tests for wf_deploy.utils.storage module."""
 
 import pytest
 from pathlib import Path
 
-from wf_deployer.utils.storage import (
+from wf_deploy.utils.storage import (
     StorageType,
     StoragePath,
     parse_storage_path,

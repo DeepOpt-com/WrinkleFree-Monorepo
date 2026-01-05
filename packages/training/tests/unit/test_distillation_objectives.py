@@ -9,9 +9,9 @@ Tests:
 import pytest
 import torch
 
-from wrinklefree.objectives.logits_distill import LogitsDistillationObjective
-from wrinklefree.objectives.attention_distill import AttentionRelationDistillationObjective
-from wrinklefree.objectives.tcs_distill import TCSDistillationObjective
+from wf_train.objectives.logits_distill import LogitsDistillationObjective
+from wf_train.objectives.attention_distill import AttentionRelationDistillationObjective
+from wf_train.objectives.tcs_distill import TCSDistillationObjective
 
 
 class TestLogitsDistillationObjective:

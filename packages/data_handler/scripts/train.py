@@ -18,14 +18,14 @@ from omegaconf import DictConfig, OmegaConf
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from data_handler.models import MobileLLM, MobileLLMConfig
-from data_handler.training import Trainer
-from data_handler.training.stages.base import StageConfig
-from data_handler.training.optimizer import create_optimizer
-from data_handler.training.scheduler import create_scheduler
-from data_handler.data.tokenization import TokenizerWrapper
-from data_handler.data.mixing import create_mixed_dataset
-from data_handler.data.datasets.pretrain import create_pretrain_dataloader
+from wf_data.models import MobileLLM, MobileLLMConfig
+from wf_data.training import Trainer
+from wf_data.training.stages.base import StageConfig
+from wf_data.training.optimizer import create_optimizer
+from wf_data.training.scheduler import create_scheduler
+from wf_data.data.tokenization import TokenizerWrapper
+from wf_data.data.mixing import create_mixed_dataset
+from wf_data.data.datasets.pretrain import create_pretrain_dataloader
 
 
 def setup_distributed():
@@ -198,7 +198,7 @@ def main(config: DictConfig):
     )
 
     # Create training stage
-    from data_handler.training.stages.pretrain import PretrainStage
+    from wf_data.training.stages.pretrain import PretrainStage
 
     stage = PretrainStage(
         config=stage_config,

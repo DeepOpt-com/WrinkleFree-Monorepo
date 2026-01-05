@@ -28,7 +28,7 @@ workdir: ../training
 # Mount GCS credentials + CheaperTraining for influence
 file_mounts:
   /gcs-creds/gcp-service-account.json: credentials/gcp-service-account.json
-  /data_handler: ../data_handler
+  /wf_data: ../wf_data
 
 envs:
   # Model config
@@ -60,7 +60,7 @@ setup: |
   pip install -e . --no-deps
 
   # Install CheaperTraining for influence-based training
-  pip install -e /data_handler --no-deps
+  pip install -e /wf_data --no-deps
 
   # Verify GPU setup
   python -c "import torch; print(f'GPUs: {torch.cuda.device_count()}'); [print(f'  {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"

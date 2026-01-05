@@ -19,7 +19,7 @@
 
 | Task | Command |
 |------|---------|
-| **Training (Lightning)** | `uv run --package wrinklefree python scripts/train_lightning.py model=smollm2_135m training=base` |
+| **Training (Lightning)** | `uv run --package wf-train python scripts/train_lightning.py model=smollm2_135m training=base` |
 | Training with auto batch | `... training.auto_batch_size=true` (single GPU only!) |
 | Meta-optimization | `... training.meta_optimization.enabled=true` |
 | BitDistill distillation | `... training=bitdistill_full` |
@@ -46,17 +46,16 @@
 
 ## Package Navigation
 
-| Package | Purpose | Key Files |
-|---------|---------|-----------|
-| `training` | Training pipeline + Lightning | `scripts/train_lightning.py`, `src/wrinklefree/lightning/` |
-| `architecture` | BitLinear/BitLinearLRC/SubLN layers | `src/bitnet_arch/layers/` |
-| `data_handler` | Data loading + influence | `src/data_handler/data/` |
-| `deployer` | Cloud deployment (SkyPilot) | `skypilot/*.yaml` |
-| `inference` | Model serving | `src/wrinklefree_inference/` |
-| `mobile` | Android inference | `android/` |
-| `eval` | Model evaluation | `src/wrinklefree_eval/` |
-
-> **Legacy:** `packages/_legacy/` contains archived packages (distillation, converter, cheapertraining)
+| Package | Namespace | Purpose | Key Files |
+|---------|-----------|---------|-----------|
+| `training` | `wf_train` | Training pipeline + Lightning | `scripts/train_lightning.py`, `src/wf_train/lightning/` |
+| `architecture` | `wf_arch` | BitLinear/BitLinearLRC/SubLN layers | `src/wf_arch/layers/` |
+| `data_handler` | `wf_data` | Data loading + mixing | `src/wf_data/data/` |
+| `deployer` | `wf_deploy` | Cloud deployment (SkyPilot) | `skypilot/*.yaml` |
+| `inference` | `wf_infer` | Model serving | `src/wf_infer/` |
+| `mobile` | N/A | Android inference (C++/JNI) | `android/` |
+| `eval` | `wf_eval` | Model evaluation | `src/wf_eval/` |
+| `math-utils` | `wf_math` | Pure math utilities | `src/wf_math/` |
 
 ## Training Pipeline Overview
 

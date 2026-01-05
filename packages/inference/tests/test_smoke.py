@@ -2,7 +2,7 @@
 
 import pytest
 
-from wrinklefree_inference.client.bitnet_client import BitNetClient
+from wf_infer.client.bitnet_client import BitNetClient
 
 
 class TestSmoke:

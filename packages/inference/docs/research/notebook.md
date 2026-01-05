@@ -318,7 +318,7 @@ def _dequant_numba(packed, scale):
 
 ### Files Modified
 
-- `src/wrinklefree_inference/sglang_backend/bitnet_quantization.py` - Core optimizations
+- `src/wf_infer/sglang_backend/bitnet_quantization.py` - Core optimizations
 - `tests/test_sglang_bitnet.py` - Test suite
 - `extern/sglang-bitnet/` - SGLang fork with BitNet integration
 
@@ -510,9 +510,9 @@ Implement native C++ kernel with fused dequant+matmul to reduce memory bandwidth
 ### Implementation Details
 
 **Files created:**
-- `src/wrinklefree_inference/native/bitnet_kernel.cpp` - AVX512 optimized GEMV
-- `src/wrinklefree_inference/native/setup.py` - PyTorch extension build
-- `src/wrinklefree_inference/native/__init__.py` - Python bindings
+- `src/wf_infer/native/bitnet_kernel.cpp` - AVX512 optimized GEMV
+- `src/wf_infer/native/setup.py` - PyTorch extension build
+- `src/wf_infer/native/__init__.py` - Python bindings
 - `benchmark/native_kernel_bench.py` - Benchmarking harness
 
 **Key optimizations:**
@@ -678,7 +678,7 @@ Optimize KV cache memory and performance for long context windows (8K+ tokens).
 ### Implementation
 
 **Files created:**
-- `src/wrinklefree_inference/kv_cache/kv_cache.py` - KV cache with quantization
+- `src/wf_infer/kv_cache/kv_cache.py` - KV cache with quantization
 - `benchmark/kv_cache_bench.py` - Long context benchmark
 
 **Supported formats:**
@@ -732,7 +732,7 @@ Optimize KV cache memory and performance for long context windows (8K+ tokens).
 ### Code Example
 
 ```python
-from wrinklefree_inference.kv_cache import KVCache, KVCacheConfig, KVCacheDtype
+from wf_infer.kv_cache import KVCache, KVCacheConfig, KVCacheDtype
 
 # Configure KV cache for 8K context with INT8 quantization
 config = KVCacheConfig(
@@ -772,8 +772,8 @@ Implement Q-Sparse-style activation sparsity for BitNet inference optimization.
 ### Implementation
 
 **Files created:**
-- `src/wrinklefree_inference/sglang_backend/activation_sparsity.py` - Core sparsity implementations
-- `src/wrinklefree_inference/sglang_backend/sparse_attention.py` - Attention sparsity
+- `src/wf_infer/sglang_backend/activation_sparsity.py` - Core sparsity implementations
+- `src/wf_infer/sglang_backend/sparse_attention.py` - Attention sparsity
 - `configs/sparsity/` - Hydra configs for different sparsity levels
 - `configs/attention/` - Attention sparsity configs
 - `benchmark/sparsity_benchmark.py` - Benchmark harness

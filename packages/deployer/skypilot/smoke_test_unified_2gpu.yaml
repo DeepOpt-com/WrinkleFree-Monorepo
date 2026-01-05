@@ -101,7 +101,7 @@ run: |
   echo "[Training] Running unified training with 2x L40 data parallelism..."
 
   # Use torchrun for multi-GPU training
-  uv run --package wrinklefree torchrun \
+  uv run --package wf-train torchrun \
     --nproc_per_node=2 \
     --master_port=29500 \
     packages/training/scripts/train.py \

@@ -151,7 +151,7 @@ packages/inference/
 │       │   ├── examples/main/         # llama-cli
 │       │   └── examples/quantize/     # llama-quantize
 │       └── sgl-model-gateway/         # Rust HTTP server
-└── src/wrinklefree_inference/         # Python utilities
+└── src/wf_infer/         # Python utilities
 ```
 
 **llama.cpp is stripped** to BitNet/DLM essentials only:

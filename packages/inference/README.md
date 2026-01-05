@@ -50,7 +50,7 @@ extern/
 │   └── sgl-kernel/          # Native SIMD kernels
 └── BitNet/                  # Microsoft BitNet.cpp (reference)
 
-src/wrinklefree_inference/
+src/wf_infer/
 ├── sglang_backend/          # SGLang integration utilities
 ├── kernels/                 # Kernel wrappers
 ├── kv_cache/                # KV cache utilities

@@ -3,39 +3,36 @@
 Generated: 2025-12-26 (Updated)
 
 > **Note**: Package renames since this baseline:
-> - `WrinkleFree-1.58Quant` → `packages/training` (wrinklefree)
-> - `WrinkleFree-CheaperTraining` → `packages/data_handler` (data-handler)
-> - `WrinkleFree-Fairy2` → `packages/distillation` (wrinklefree-distillation)
+> - `WrinkleFree-1.58Quant` → `packages/training` (wf_train)
+> - `WrinkleFree-CheaperTraining` → `packages/data_handler` (wf_data)
+> - `WrinkleFree-Fairy2` → removed (distillation objectives now in training)
 
 ## Summary
 
 | Sub-Repo | Tests | Passing | Coverage | Status |
 |----------|-------|---------|----------|--------|
-| **training** (was 1.58Quant) | 324 | 315 | **36%** | MoE router at 95%, 9 equivalence failures |
-| **data_handler** (was CheaperTraining) | 37 | 37 | **~15%** | Data/influence tests added |
-| **deployer** | 260 | 236 | **47%** | Source tests added, constants/config 100% |
-| **inference** | TBD | TBD | TBD | Submodule conflicts |
-| **eval** | TBD | TBD | TBD | Submodule conflicts |
-| **converter** | 28 | 28 | **25%** | Source tests added, constants 100% |
+| **training** (wf_train) | 324 | 315 | **36%** | MoE router at 95%, 9 equivalence failures |
+| **data_handler** (wf_data) | 37 | 37 | **~15%** | Data/mixing tests added |
+| **deployer** (wf_deploy) | 260 | 236 | **47%** | Source tests added, constants/config 100% |
+| **inference** (wf_infer) | TBD | TBD | TBD | Submodule conflicts |
+| **eval** (wf_eval) | TBD | TBD | TBD | Submodule conflicts |
 
 **Target**: 70% coverage across all repos
 
 ## Key Improvements (2025-12-26)
 
 ### Tests Added
-- **1.58Quant**: `tests/test_moe.py` - 23 comprehensive MoE router tests
-- **Deployer**: `tests/unit/test_wf_deployer.py` - 24 source-importing tests
-- **DLM-Converter**: `tests/test_wf_dlm_converter.py` - 19 source-importing tests
-- **CheaperTraining**: `tests/unit/test_cheapertraining.py` - 20 data/influence tests
+- **training**: `tests/test_moe.py` - 23 comprehensive MoE router tests
+- **deployer**: `tests/unit/test_wf_deployer.py` - 24 source-importing tests
+- **data_handler**: `tests/unit/test_data_handler.py` - 20 data/mixing tests
 
 ### Coverage Gains
-- **Deployer**: 0% → 47% (constants 100%, config 100%)
-- **DLM-Converter**: 0% → 25% (constants 100%, __init__ 100%)
-- **1.58Quant MoE router**: 0% → 95%
+- **deployer**: 0% → 47% (constants 100%, config 100%)
+- **training MoE router**: 0% → 95%
 
 ## Detailed Analysis
 
-### WrinkleFree-1.58Quant (37% coverage)
+### training/wf_train (37% coverage)
 
 **Well Covered (>80%):**
 - `distillation/attention_loss.py` - 93%
@@ -56,38 +53,25 @@ Generated: 2025-12-26 (Updated)
 
 **16 Test Failures:** Mostly dataset config tests that reference outdated configs (MegaMath, etc.)
 
-### WrinkleFree-CheaperTraining (8% coverage)
+### data_handler/wf_data (8% coverage)
 
 **Issues:**
-- Most code in `_legacy/` directory (0% coverage)
 - Active code has minimal tests
 - Only `test_sequence_packing.py` provides coverage
 
 **Priority areas:**
 - `data/mixing.py` - 27% (needs more tests)
-- `influence/` modules - 11-22%
 - `training/optimizer.py` - 18%
 
-### WrinkleFree-Deployer (0% coverage)
+### deployer/wf_deploy (0% coverage)
 
 **Issues:**
-- 83 tests pass but don't import `src/wf_deployer`
+- 83 tests pass but don't import `src/wf_deploy`
 - Tests in `tests/unit/` test `scripts/` instead of source
 
 **Needs:**
-- Tests that import and test `wf_deployer.core`, `wf_deployer.deployer`, etc.
+- Tests that import and test `wf_deploy.core`, `wf_deploy.deployer`, etc.
 - Mock SkyPilot/Modal for unit testing
-
-### WrinkleFree-DLM-Converter (0% coverage)
-
-**Issues:**
-- 9 tests pass but don't import `src/wf_dlm_converter`
-- Tests likely testing external functionality
-
-**Needs:**
-- Unit tests for `core.py`, `cli.py`
-- Mock transformers/model loading
-- Test conversion logic
 
 ## Infrastructure Added
 
@@ -126,26 +110,20 @@ Added `.github/workflows/test.yml` to all repos with:
 ### Phase 2: Add Critical Tests
 Priority modules to test:
 
-**1.58Quant:**
+**training (wf_train):**
 - [ ] `moe/` - Router, expert, fake_moe tests
 - [ ] `serving/converter.py` - GGUF conversion tests
 - [ ] `training/stage1_9.py` - Layer-wise distillation tests
 - [ ] `training/stage2.py` - Continue pretraining tests
 
-**CheaperTraining:**
+**data_handler (wf_data):**
 - [ ] `data/mixing.py` - Dataset mixing tests
-- [ ] `influence/` - Influence function tests
 - [ ] `training/optimizer.py` - Optimizer tests
 
-**Deployer:**
+**deployer (wf_deploy):**
 - [ ] `core.py` - train(), logs(), cancel() tests
 - [ ] `deployer.py` - Deployment logic tests
 - [ ] `modal_deployer.py` - Modal integration tests (mocked)
-
-**DLM-Converter:**
-- [ ] `core.py` - convert(), validate() tests
-- [ ] `conversion/training.py` - SFT training tests
-- [ ] `models/adapter.py` - Model adapter tests
 
 ### Phase 3: CI/CD Activation
 1. Set up Codecov tokens for each repo

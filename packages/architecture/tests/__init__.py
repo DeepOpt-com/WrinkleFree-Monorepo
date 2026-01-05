@@ -1,1 +1,1 @@
-"""Tests for bitnet_arch package."""
+"""Tests for wf_arch package."""

@@ -1,4 +1,4 @@
-"""Tests for wf_deployer.credentials module."""
+"""Tests for wf_deploy.credentials module."""
 
 import os
 from pathlib import Path
@@ -6,7 +6,7 @@ from tempfile import NamedTemporaryFile
 
 import pytest
 
-from wf_deployer.credentials import Credentials
+from wf_deploy.credentials import Credentials
 
 
 class TestCredentials:

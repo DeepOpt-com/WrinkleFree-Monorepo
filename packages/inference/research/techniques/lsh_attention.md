@@ -89,7 +89,7 @@ MagicPIG uses **sampling with theoretical guarantees** instead of TopK:
 ### Proposed Integration
 
 ```python
-# packages/inference/src/wrinklefree_inference/lsh_attention.py
+# packages/inference/src/wf_infer/lsh_attention.py
 
 class LSHAttention:
     def __init__(

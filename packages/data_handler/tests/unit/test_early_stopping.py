@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from data_handler.training import PlateauEarlyStopping
+from wf_data.training import PlateauEarlyStopping
 
 
 class TestPlateauEarlyStopping:

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-BitNet Architecture (`bitnet-arch`) is a shared library providing 1.58-bit quantized components:
+BitNet Architecture (`wf-arch`) is a shared library providing 1.58-bit quantized components:
 - **BitLinear**: Ternary weight quantization (-1, 0, 1) with 8-bit activation quantization
 - **BitLinearLRC**: BitLinear with Low-Rank Correction for post-quantization recovery
 - **SubLN**: Sub-Layer Normalization for stable BitNet training
@@ -19,23 +19,23 @@ This is a **shared library** imported by other packages:
 architecture (this package)
     │
     └──► packages/training (wrinklefree)
-            Uses: bitnet_arch.layers, bitnet_arch.conversion
+            Uses: wf_arch.layers, wf_arch.conversion
 ```
 
 **Workspace dependency** (in consumer's pyproject.toml):
 ```toml
 [project]
-dependencies = ["bitnet-arch"]
+dependencies = ["wf-arch"]
 
 [tool.uv.sources]
-bitnet-arch = { workspace = true }
+wf-arch = { workspace = true }
 ```
 
 **Related packages**:
 | Package | Relationship |
 |---------|--------------|
 | `training` | Uses BitLinear, SubLN for quantized training |
-| `data_handler` | Sibling library (data loading) |
+| `wf_data` | Sibling library (data loading) |
 
 ## Quick Start
 
@@ -44,16 +44,16 @@ bitnet-arch = { workspace = true }
 uv sync --all-packages
 
 # Run tests
-uv run --package bitnet-arch pytest packages/architecture/tests/
+uv run --package wf-arch pytest packages/architecture/tests/
 
 # Import in Python
-from bitnet_arch import BitLinear, SubLN, LambdaWarmup
-from bitnet_arch import convert_model_to_bitnet, auto_convert_if_needed
+from wf_arch import BitLinear, SubLN, LambdaWarmup
+from wf_arch import convert_model_to_bitnet, auto_convert_if_needed
 ```
 
 ## Key Components
 
-### Layers (`bitnet_arch.layers`)
+### Layers (`wf_arch.layers`)
 
 | Component | Purpose |
 |-----------|---------|
@@ -67,7 +67,7 @@ from bitnet_arch import convert_model_to_bitnet, auto_convert_if_needed
 | `freeze_model_except_lrc` | Freeze all params except LRC matrices |
 | `get_lrc_stats` | Get statistics about LRC layers in a model |
 
-### Quantization (`bitnet_arch.quantization`)
+### Quantization (`wf_arch.quantization`)
 
 | Component | Purpose |
 |-----------|---------|
@@ -76,7 +76,7 @@ from bitnet_arch import convert_model_to_bitnet, auto_convert_if_needed
 | `set_global_lambda_warmup` | Set global warmup instance |
 | `get_current_lambda` | Get current quantization lambda (0→1) |
 
-### Conversion (`bitnet_arch.conversion`)
+### Conversion (`wf_arch.conversion`)
 
 | Component | Purpose |
 |-----------|---------|
@@ -88,7 +88,7 @@ from bitnet_arch import convert_model_to_bitnet, auto_convert_if_needed
 ## Architecture
 
 ```
-src/bitnet_arch/
+src/wf_arch/
 ├── __init__.py              # Public API exports
 ├── layers/
 │   ├── __init__.py
@@ -108,7 +108,7 @@ src/bitnet_arch/
 ### BitLinear Layer
 
 ```python
-from bitnet_arch import BitLinear
+from wf_arch import BitLinear
 
 # Create a quantized linear layer
 layer = BitLinear(in_features=768, out_features=768)
@@ -120,7 +120,7 @@ output = layer(input_tensor)
 ### Model Conversion
 
 ```python
-from bitnet_arch import convert_model_to_bitnet, auto_convert_if_needed
+from wf_arch import convert_model_to_bitnet, auto_convert_if_needed
 from transformers import AutoModelForCausalLM
 
 # Load a standard model
@@ -138,7 +138,7 @@ bitnet_model = auto_convert_if_needed(model)
 Lambda warmup gradually increases quantization strength from 0 to 1. When disabled (default), `get_current_lambda()` returns 1.0 and the model trains with full quantization from step 0.
 
 ```python
-from bitnet_arch import LambdaWarmup, set_global_lambda_warmup, get_current_lambda
+from wf_arch import LambdaWarmup, set_global_lambda_warmup, get_current_lambda
 
 # Without warmup (default): get_current_lambda() returns 1.0
 # Full ternary quantization from the start
@@ -158,13 +158,13 @@ for step in range(total_steps):
 
 ```bash
 # Run all tests
-uv run --package bitnet-arch pytest packages/architecture/tests/
+uv run --package wf-arch pytest packages/architecture/tests/
 
 # Run specific test file
-uv run --package bitnet-arch pytest packages/architecture/tests/test_bitlinear.py -v
+uv run --package wf-arch pytest packages/architecture/tests/test_bitlinear.py -v
 
 # With coverage
-uv run --package bitnet-arch pytest packages/architecture/tests/ --cov=bitnet_arch
+uv run --package wf-arch pytest packages/architecture/tests/ --cov=wf_arch
 ```
 
 ### Low-Rank Correction (LRC)
@@ -172,7 +172,7 @@ uv run --package bitnet-arch pytest packages/architecture/tests/ --cov=bitnet_ar
 Based on [Low-Rank Correction for Quantized LLMs](https://arxiv.org/abs/2412.07902).
 
 ```python
-from bitnet_arch import BitLinearLRC, convert_bitlinear_to_lrc, freeze_model_except_lrc
+from wf_arch import BitLinearLRC, convert_bitlinear_to_lrc, freeze_model_except_lrc
 
 # Convert existing BitNet model to LRC (freezes weights, adds U/V matrices)
 model = convert_bitlinear_to_lrc(

@@ -7,7 +7,7 @@ import pytest
 import torch
 from unittest.mock import Mock, MagicMock, patch
 
-from data_handler.data.mixing import (
+from wf_data.data.mixing import (
     DatasetMixture,
     MixedDataset,
     PackedDataset,

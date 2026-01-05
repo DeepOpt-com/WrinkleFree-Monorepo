@@ -30,7 +30,7 @@ workdir: ../distillation
 # Mount dependencies and GCS credentials
 file_mounts:
   # Data handler library
-  ~/data_handler: ../data_handler
+  ~/wf_data: ../wf_data
   # GCS credentials for checkpoint download/upload
   /tmp/gcp-adc.json: ~/.config/gcloud/application_default_credentials.json
 
@@ -92,8 +92,8 @@ setup: |
   # Remove only workspace sources (keep git sources like muon-clip)
   sed -i '/workspace = true/d' pyproject.toml
 
-  # Install data_handler first (dependency)
-  uv pip install -e ~/data_handler
+  # Install wf_data first (dependency)
+  uv pip install -e ~/wf_data
 
   # Install distillation package
   uv pip install -e .

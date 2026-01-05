@@ -95,7 +95,7 @@ run: |
   # Using fineweb-edu (single source) for reliability - avoids HF API timeouts
   echo ""
   echo "[Training] Running unified training with STE+DLM..."
-  uv run --package wrinklefree python packages/training/scripts/train.py \
+  uv run --package wf-train python packages/training/scripts/train.py \
     model=${MODEL} \
     training=base \
     data=default \

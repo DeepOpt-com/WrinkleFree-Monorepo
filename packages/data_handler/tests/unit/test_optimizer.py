@@ -7,7 +7,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from data_handler.training.optimizer import (
+from wf_data.training.optimizer import (
     create_optimizer,
     get_parameter_groups,
     get_num_parameters,

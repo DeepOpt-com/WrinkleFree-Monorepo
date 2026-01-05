@@ -9,7 +9,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from wrinklefree.serving import convert_to_gguf
+from wf_train.serving import convert_to_gguf
 
 logging.basicConfig(
     level=logging.INFO,

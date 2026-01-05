@@ -37,7 +37,7 @@ effectively disabling dynamic data reweighting.
 
 **Effect**: Data mixture weights stay static (25/35/10/15/15) rather than adapting to model needs.
 
-**Location**: `packages/cheapertraining/src/cheapertraining/training/optimizer.py`
+**Location**: `packages/data_handler/src/wf_data/training/optimizer.py`
 
 ### 3. Expected Variance from Data Domains
 

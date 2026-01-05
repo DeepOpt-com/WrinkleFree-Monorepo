@@ -4,7 +4,7 @@
 This script applies the on-the-fly weight quantization that BitLinear uses,
 then converts the quantized weights to GGUF format.
 
-The quantization formula (from bitnet_arch.layers.bitlinear):
+The quantization formula (from wf_arch.layers.bitlinear):
     scale = 1.0 / mean(|W|)
     W_ternary = round(W * scale).clamp(-1, 1)  # Ternary: {-1, 0, 1}
     W_quant = W_ternary / scale  # Scaled back

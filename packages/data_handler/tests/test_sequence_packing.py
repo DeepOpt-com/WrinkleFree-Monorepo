@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch.utils.data import IterableDataset
 
-from data_handler.data.mixing import PackedDataset
+from wf_data.data.mixing import PackedDataset
 
 
 class MockTokenizer:

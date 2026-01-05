@@ -4,12 +4,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from bitnet_arch.layers.bitlinear import (
+from wf_arch.layers.bitlinear import (
     BitLinear,
     BitLinearNoActivationQuant,
     convert_linear_to_bitlinear,
 )
-from bitnet_arch.quantization import set_global_lambda_warmup, LambdaWarmup
+from wf_arch.quantization import set_global_lambda_warmup, LambdaWarmup
 
 
 class TestBitLinear:

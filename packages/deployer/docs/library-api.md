@@ -17,7 +17,7 @@ pip install -e ".[dev]"
 ### Training with Modal (Default)
 
 ```python
-from wf_deployer import quick_launch, Trainer
+from wf_deploy import quick_launch, Trainer
 
 # One-liner for AI tools
 run_id = quick_launch("qwen3_4b", stage=2, max_steps=10000)
@@ -36,7 +36,7 @@ trainer.logs(run_id, follow=True)
 ### Training with SkyPilot
 
 ```python
-from wf_deployer import TrainingConfig, Trainer, Credentials
+from wf_deploy import TrainingConfig, Trainer, Credentials
 
 creds = Credentials.from_env_file(".env")
 
@@ -56,7 +56,7 @@ trainer.logs(follow=True)
 ### Deploy a Service
 
 ```python
-from wf_deployer import ServiceConfig, Deployer, Credentials
+from wf_deploy import ServiceConfig, Deployer, Credentials
 
 creds = Credentials.from_env_file(".env")
 
@@ -226,7 +226,7 @@ def quick_launch(
 Direct access to Modal training functions.
 
 ```python
-from wf_deployer import ModalTrainer
+from wf_deploy import ModalTrainer
 
 trainer = ModalTrainer()
 
@@ -312,7 +312,7 @@ The library works alongside existing CLI workflows:
 # These still work
 sky serve up skypilot/service.yaml --name wrinklefree
 sky jobs launch skypilot/train.yaml -e MODEL=qwen3_4b
-modal run src/wf_deployer/modal_deployer.py --model qwen3_4b --stage 2
+modal run src/wf_deploy/modal_deployer.py --model qwen3_4b --stage 2
 ```
 
 ## Running Tests
@@ -322,5 +322,5 @@ modal run src/wf_deployer/modal_deployer.py --model qwen3_4b --stage 2
 uv run pytest tests/library/ -v
 
 # Run with coverage
-uv run pytest tests/library/ --cov=src/wf_deployer --cov-report=html
+uv run pytest tests/library/ --cov=src/wf_deploy --cov-report=html
 ```

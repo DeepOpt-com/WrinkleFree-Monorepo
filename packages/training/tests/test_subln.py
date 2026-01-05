@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from wrinklefree.models import SubLN, RMSNorm
+from wf_train.models import SubLN, RMSNorm
 
 
 class TestSubLN:

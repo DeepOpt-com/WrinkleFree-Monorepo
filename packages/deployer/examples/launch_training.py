@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example: Launch a training job using the wf_deployer library.
+"""Example: Launch a training job using the wf_deploy library.
 
 This example shows how to:
 1. Load credentials from a .env file
@@ -10,7 +10,7 @@ Usage:
     python examples/launch_training.py
 """
 
-from wf_deployer import TrainingConfig, Trainer, Credentials
+from wf_deploy import TrainingConfig, Trainer, Credentials
 
 
 def main():

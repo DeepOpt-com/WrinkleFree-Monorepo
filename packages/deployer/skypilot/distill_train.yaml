@@ -85,13 +85,13 @@ setup: |
   echo "Downloading dependencies from GCS..."
 
   # CheaperTraining (data loading)
-  mkdir -p ~/data_handler
-  gsutil -m cp -r gs://${GCS_BUCKET}/packages/data_handler/* ~/data_handler/ || {
-    echo "WARNING: data_handler not in GCS"
+  mkdir -p ~/wf_data
+  gsutil -m cp -r gs://${GCS_BUCKET}/packages/wf_data/* ~/wf_data/ || {
+    echo "WARNING: wf_data not in GCS"
   }
-  if [ -f ~/data_handler/pyproject.toml ]; then
-    echo "Installing data_handler..."
-    pushd ~/data_handler
+  if [ -f ~/wf_data/pyproject.toml ]; then
+    echo "Installing wf_data..."
+    pushd ~/wf_data
     sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
     uv pip install -e .
     popd

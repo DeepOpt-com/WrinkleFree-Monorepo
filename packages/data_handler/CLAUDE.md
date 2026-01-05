@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-data_handler is a shared library in the WrinkleFree monorepo providing:
+wf_data is a shared library in the WrinkleFree monorepo providing:
 - **Data Loading**: Streaming datasets, sequence packing, data mixing
 - **Mixture Optimization**: Dynamic dataset weight optimization
 
@@ -15,10 +15,10 @@ data_handler is a shared library in the WrinkleFree monorepo providing:
 This is a **shared library** imported by the training package:
 
 ```
-data_handler (this package)
+wf_data (this package)
     │
     └──► packages/training (wrinklefree)
-            Uses: data_handler.data, data_handler.influence
+            Uses: wf_data.data, wf_data.influence
 ```
 
 > **Note**: The legacy `distillation` package (now in `_legacy/`) also used this library.
@@ -27,15 +27,15 @@ data_handler (this package)
 **Workspace dependency** (in consumer's pyproject.toml):
 ```toml
 [project]
-dependencies = ["data-handler"]
+dependencies = ["wf-data"]
 
 [tool.uv.sources]
-data-handler = { workspace = true }
+wf-data = { workspace = true }
 ```
 
 **Running from monorepo root**:
 ```bash
-uv run --package data-handler python -c "import data_handler; print('ok')"
+uv run --package wf-data python -c "import wf_data; print('ok')"
 ```
 
 ## Quick Start
@@ -45,25 +45,25 @@ uv run --package data-handler python -c "import data_handler; print('ok')"
 uv sync --all-packages
 
 # Run tests
-uv run --package data-handler pytest packages/data_handler/tests/
+uv run --package wf-data pytest packages/wf_data/tests/
 
 # Import in Python
-from data_handler.data import get_loader
-from data_handler.influence import InfluenceAwareOptimizer
+from wf_data.data import get_loader
+from wf_data.influence import InfluenceAwareOptimizer
 ```
 
 ## Key Modules
 
 | Module | Purpose |
 |--------|---------|
-| `data_handler.data` | Data loading, streaming, packing |
-| `data_handler.data.mixing` | MixedDataset with dynamic weights |
-| `data_handler._legacy.influence_datainf` | DEPRECATED: DataInf influence (use ODM) |
+| `wf_data.data` | Data loading, streaming, packing |
+| `wf_data.data.mixing` | MixedDataset with dynamic weights |
+| `wf_data._legacy.influence_datainf` | DEPRECATED: DataInf influence (use ODM) |
 
 ## Architecture
 
 ```
-src/data_handler/
+src/wf_data/
 ├── data/                    # Data loading & processing
 │   ├── tokenization.py         # TokenizerWrapper
 │   ├── mixing.py               # MixedDataset, PackedDataset
@@ -98,20 +98,20 @@ Configs are in `configs/` using Hydra:
 
 **Selecting data config from training package**:
 ```bash
-uv run --package wrinklefree python scripts/train.py data.config_name=mixed_pretrain
+uv run --package wf-train python scripts/train.py data.config_name=mixed_pretrain
 ```
 
 ## Development
 
 ```bash
 # Run tests
-uv run --package data-handler pytest
+uv run --package wf-data pytest
 
 # Type check
-uv run mypy packages/data_handler/src/
+uv run mypy packages/wf_data/src/
 
 # Lint
-uv run ruff check packages/data_handler/
+uv run ruff check packages/wf_data/
 ```
 
 ## Notes

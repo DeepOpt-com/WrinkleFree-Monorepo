@@ -63,7 +63,7 @@ run: |
 
   # Authenticate with HuggingFace
   echo "Authenticating with HuggingFace..."
-  uv run --package wrinklefree python -c "from huggingface_hub import login; login(token='${HF_TOKEN}')"
+  uv run --package wf-train python -c "from huggingface_hub import login; login(token='${HF_TOKEN}')"
   echo "HF authentication complete"
 
   CHECKPOINT_DIR="/tmp/checkpoints"
@@ -79,7 +79,7 @@ run: |
   echo "================================================"
 
   export DATA_NUM_WORKERS=2
-  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=base \
     data.config_name=mixed_pretrain \

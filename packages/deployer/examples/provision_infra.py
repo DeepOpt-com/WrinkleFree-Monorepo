@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example: Provision infrastructure using the wf_deployer library.
+"""Example: Provision infrastructure using the wf_deploy library.
 
 This example shows how to:
 1. Load credentials from a .env file
@@ -11,7 +11,7 @@ Usage:
     python examples/provision_infra.py
 """
 
-from wf_deployer import Infra, Credentials
+from wf_deploy import Infra, Credentials
 
 
 def main():

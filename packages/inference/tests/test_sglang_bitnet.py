@@ -13,7 +13,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any
 
-from wrinklefree_inference.sglang_backend.bitnet_quantization import (
+from wf_infer.sglang_backend.bitnet_quantization import (
     BitNetConfig,
     BitNetQuantType,
     BitNetLinearMethod,

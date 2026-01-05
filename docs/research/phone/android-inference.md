@@ -16,7 +16,7 @@
 |-----------|------|----------------|
 | BitNet GEMV kernel | `packages/inference/extern/sglang-bitnet/sgl-kernel/csrc/bitnet/bitnet_gemv.cpp` | **Yes** - ARM NEON implemented |
 | Inference engine | `packages/inference/extern/sglang-bitnet/sgl-kernel/csrc/inference/bitnet_engine.cpp` | Yes - pure C++ |
-| Weight packing | `packages/inference/src/wrinklefree_inference/kernels/bitnet_patch.py` | Needs C++ port |
+| Weight packing | `packages/inference/src/wf_infer/kernels/bitnet_patch.py` | Needs C++ port |
 | Model loading | llama.cpp integration | Yes - has Android docs |
 
 ### ARM NEON Support Already Exists

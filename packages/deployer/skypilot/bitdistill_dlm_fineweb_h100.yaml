@@ -157,7 +157,7 @@ run: |
   echo "[Training] Starting Lightning training..."
   # Using unified config with Muon+AdamW optimizer, FineWeb-Edu only
   # Auto batch size enabled, SubLN additions disabled
-  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=base \
     data.config_name=fineweb \

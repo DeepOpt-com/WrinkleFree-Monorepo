@@ -93,8 +93,8 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=base \
 ## Monorepo Dependencies
 
 This package depends on:
-- **data_handler**: Data loading and influence-based optimization
-- **bitnet_arch**: BitNet layers (BitLinear, BitLinearLRC, SubLN) and model conversion
+- **wf_data**: Data loading and influence-based optimization
+- **wf_arch**: BitNet layers (BitLinear, BitLinearLRC, SubLN) and model conversion
 
 ## Configuration
 

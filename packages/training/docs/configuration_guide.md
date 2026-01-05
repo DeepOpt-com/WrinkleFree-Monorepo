@@ -9,7 +9,7 @@ Configurations are located in `configs/`:
 - **`model/`**: Model architectures (e.g., `smollm2_135m`, `qwen3_4b`)
 - **`training/`**: Training configs (e.g., `base`, `bitdistill_full`, `lrc_calibration`)
 - **`distributed/`**: Hardware strategies (e.g., `single_gpu`, `fsdp_multi`)
-- **`data/`**: Dataset configs (points to data_handler package)
+- **`data/`**: Dataset configs (points to wf_data package)
 
 ## Step 1: Choose Your Model (`model=...`)
 
@@ -193,10 +193,10 @@ Check `outputs/` or the GCS bucket if `gcs.enabled=true`.
 
 **Q: How do I use a different dataset?**
 
-Override `data.config_name` to use a different config from data_handler:
+Override `data.config_name` to use a different config from wf_data:
 
 ```bash
-data.config_name=fineweb  # Use data_handler's fineweb.yaml
+data.config_name=fineweb  # Use wf_data's fineweb.yaml
 ```
 
 **Q: How do I disable DLM and just do CE training?**

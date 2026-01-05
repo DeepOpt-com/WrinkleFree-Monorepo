@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from wrinklefree.models.ffn import BitNetFFN, BitNetMLP
+from wf_train.models.ffn import BitNetFFN, BitNetMLP
 
 
 class TestBitNetFFN:

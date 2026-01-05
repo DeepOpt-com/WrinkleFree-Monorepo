@@ -9,7 +9,7 @@ Tests:
 import pytest
 import torch
 
-from wrinklefree.meta import (
+from wf_train.meta import (
     LDCMTLConfig,
     LDCMTLManager,
     MetaOptimizationConfig,

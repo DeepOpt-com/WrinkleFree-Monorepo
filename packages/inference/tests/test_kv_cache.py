@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from wrinklefree_inference.kv_cache.validator import KVCacheValidator, run_kv_cache_validation
+from wf_infer.kv_cache.validator import KVCacheValidator, run_kv_cache_validation
 
 
 class TestKVCacheValidation:
@@ -77,7 +77,7 @@ class TestKVCacheEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_prompt(self, inference_url: str, skip_if_no_server):
         """Test handling of empty/minimal prompts."""
-        from wrinklefree_inference.client.bitnet_client import AsyncBitNetClient
+        from wf_infer.client.bitnet_client import AsyncBitNetClient
 
         async with AsyncBitNetClient(inference_url) as client:
             # Very short prompt
@@ -90,7 +90,7 @@ class TestKVCacheEdgeCases:
         """Test that identical prompts benefit from full caching."""
         import time
 
-        from wrinklefree_inference.client.bitnet_client import AsyncBitNetClient
+        from wf_infer.client.bitnet_client import AsyncBitNetClient
 
         prompt = "What is 2+2?"
 

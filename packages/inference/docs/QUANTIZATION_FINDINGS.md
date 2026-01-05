@@ -159,7 +159,7 @@ The `dlm_server` uses block diffusion decoding which may be more robust to weigh
 
 ```bash
 # Test BitLinear quantization
-uv run --package wrinklefree python packages/inference/scripts/test_correct_inference.py
+uv run --package wf-train python packages/inference/scripts/test_correct_inference.py
 
 # Debug weight conversion
 uv run python packages/inference/scripts/debug_conversion.py models/smollm2-135m-dlm-subln

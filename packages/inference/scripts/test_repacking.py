@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import torch
-from wrinklefree_inference.kernels.bitnet_patch import pack_ternary_weights
+from wf_infer.kernels.bitnet_patch import pack_ternary_weights
 
 # Test weight repacking
 print("Testing weight repacking...")

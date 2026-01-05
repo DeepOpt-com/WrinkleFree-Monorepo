@@ -29,7 +29,7 @@ WrinkleFree Training uses PyTorch Lightning with a multi-objective training syst
 | File | Purpose |
 |------|---------|
 | `module.py` | `WrinkleFreeLightningModule` - wraps model + ObjectiveManager |
-| `datamodule.py` | `WrinkleFreeDataModule` - wraps dataloaders from data_handler |
+| `datamodule.py` | `WrinkleFreeDataModule` - wraps dataloaders from wf_data |
 | `callbacks.py` | GCS upload, ZClip, TokenCount, InfluenceTracker, MuonClipInit |
 
 ### 2. ObjectiveManager (`objectives/`)
@@ -93,7 +93,7 @@ curriculum:
 - RMSNorm inserted before output projections
 - Stabilizes training for quantization
 
-**Integration with bitnet_arch package**:
+**Integration with wf_arch package**:
 - `BitLinear`, `BitLinearLRC`, `SubLN` layers
 - Auto-conversion of HuggingFace models to BitNet
 
@@ -114,15 +114,15 @@ Steps 1000+:     lambda = 1.0 (full quantization)
 
 ### 6. Data Integration
 
-Data loading is handled by the **data_handler** package:
+Data loading is handled by the **wf_data** package:
 
 ```yaml
 # configs/data/default.yaml
-config_name: mixed_pretrain  # Loads from data_handler
+config_name: mixed_pretrain  # Loads from wf_data
 ```
 
 **Influence-Based Data Remixing**:
-- `InfluenceTrackerCallback` wraps `data_handler.influence.InfluenceTracker`
+- `InfluenceTrackerCallback` wraps `wf_data.influence.InfluenceTracker`
 - Dynamically adjusts dataset weights based on influence scores
 - Updates weights at configurable intervals
 
@@ -188,8 +188,8 @@ src/wrinklefree/
 
 | Package | Relationship |
 |---------|--------------|
-| `data_handler` | Data loading, influence optimization |
-| `bitnet_arch` | BitNet layers and model conversion |
+| `wf_data` | Data loading, influence optimization |
+| `wf_arch` | BitNet layers and model conversion |
 | `deployer` | Cloud deployment (launches training jobs) |
 | `inference` | Serves trained models |
 | `eval` | Evaluates trained models |

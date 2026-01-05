@@ -75,8 +75,8 @@ def setup_distributed():
 
 def create_model(model_name: str = "smollm2_135m"):
     """Create a small BitNet model for testing."""
-    from wrinklefree.models import BitNetLlama
-    from wrinklefree.models.config import BitNetConfig
+    from wf_train.models import BitNetLlama
+    from wf_train.models.config import BitNetConfig
 
     # TP-compatible config (heads must be divisible by TP size)
     # For TP=8: need num_heads AND num_kv_heads divisible by 8
@@ -180,7 +180,7 @@ def run_smoke_test(args):
     if rank == 0:
         logger.info("Applying 2D parallelism (TP + FSDP2)...")
 
-    from wrinklefree._experimental.tensor_parallel.tensor_parallel import setup_2d_parallel
+    from wf_train._experimental.tensor_parallel.tensor_parallel import setup_2d_parallel
 
     tp_size = args.tp_size if args.tp_size > 0 else world_size
     model, device_mesh = setup_2d_parallel(
