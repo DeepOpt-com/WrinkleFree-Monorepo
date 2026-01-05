@@ -15,7 +15,7 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset, IterableDataset
 
-from data_handler.influence.config import ProbeSetConfig
+from math_utils.influence.config import ProbeSetConfig
 
 
 class ProbeSetCreator:

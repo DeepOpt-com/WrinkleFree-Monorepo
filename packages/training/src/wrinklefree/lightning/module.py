@@ -653,14 +653,24 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         gradient_clip_val: Optional[float] = None,
         gradient_clip_algorithm: Optional[str] = None,
     ):
-        """Custom gradient clipping - let Lightning handle it."""
-        # Use Lightning's built-in clipping
-        if self.gradient_clipping > 0:
-            self.clip_gradients(
-                optimizer,
-                gradient_clip_val=self.gradient_clipping,
-                gradient_clip_algorithm="norm",
-            )
+        """Custom gradient clipping - handles FSDP compatibility."""
+        if self.gradient_clipping <= 0:
+            return
+
+        # Check if we're using FSDP strategy (doesn't support 'norm' clipping)
+        strategy = self.trainer.strategy.__class__.__name__
+        if "FSDP" in strategy:
+            # FSDP doesn't support norm-based gradient clipping via Lightning
+            # Use value clipping instead or skip (FSDP uses gradient scaling internally)
+            logger.debug("Skipping gradient clipping for FSDP (use gradient_clip_val at trainer level)")
+            return
+
+        # Use Lightning's built-in clipping for non-FSDP strategies
+        self.clip_gradients(
+            optimizer,
+            gradient_clip_val=self.gradient_clipping,
+            gradient_clip_algorithm="norm",
+        )
 
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         """Add extra state to checkpoint."""

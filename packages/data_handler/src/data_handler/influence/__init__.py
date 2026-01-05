@@ -1,109 +1,77 @@
-"""Influence functions module - active components for data-efficient training.
+"""DEPRECATED: DataInf-based influence tracking.
 
-Implements influence function methodology from:
-- DataInf (ICLR 2024) - Efficient influence without Hessian inversion
-- MobileLLM-R1 (arXiv:2509.24945) - Cross-domain influence methodology
-- InfluenceDistillation (arXiv:2505.19051) - Landmark-based influence approximation
+This module has been replaced by ODM (Online Data Mixing) in the meta-optimization system.
+ODM uses EXP3 multi-armed bandit with O(1) complexity instead of O(K) gradient computation.
 
-Key components:
-- InfluenceTracker: Training callback for dynamic weight updates (primary API)
-- DataInfCalculator: Tractable influence calculation without Hessian inversion
-- InfluenceDistillation: Landmark-based influence approximation (faster for large N)
-- MixtureWeightCalculator: Optimize pre-training dataset mixture weights
-- DiscriminativeGradientExtractor: Extract gradients from discriminative layers
-- JVPEmbeddingExtractor: Extract JVP embeddings from transformer layers
+Use `training.meta_optimization.odm` instead of `training.influence`.
 
-Legacy components (moved to cheapertraining._legacy.influence):
-- ProbeSetCreator, ProbeDataset
-- SelfBoostingFilter, SelfBoostingDataset
+Reference: https://arxiv.org/abs/2312.02406 (ODM)
+
+For legacy code that still needs DataInf, imports are redirected to _legacy.
 """
 
-# Base interfaces
-from data_handler.influence.base import (
+import warnings
+
+warnings.warn(
+    "data_handler.influence is deprecated. Use training.meta_optimization.odm instead. "
+    "See https://arxiv.org/abs/2312.02406 for the ODM paper.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+# Re-export from _legacy for backwards compatibility (direct import to avoid _legacy/__init__.py)
+from data_handler._legacy.influence_datainf import (
+    # Base interfaces
     EmbeddingExtractor,
     InfluenceCalculator,
     DataSelector,
-)
-
-# Config
-from data_handler.influence.config import (
+    # Configs
     InfluenceConfig,
     InfluenceTarget,
     MixtureOptimizationConfig,
     ProbeSetConfig,
     SelfBoostingConfig,
-    # New configs for InfluenceDistillation
     JVPEmbeddingConfig,
     LandmarkConfig,
     KRRConfig,
     InfluenceDistillationConfig,
-)
-
-# Gradient extraction
-from data_handler.influence.gradient import (
+    # Gradient extraction
     DiscriminativeGradientExtractor,
-)
-
-# DataInf
-from data_handler.influence.datainf import (
+    # DataInf
     DataInfCalculator,
     create_influence_calculator,
-)
-
-# Influence Distillation (new)
-from data_handler.influence.jvp_embedding import (
+    # Influence Distillation
     JVPEmbeddingExtractor,
-)
-from data_handler.influence.hadamard import (
     RandomizedHadamardTransform,
     create_projection,
-)
-from data_handler.influence.landmark import (
     LandmarkSelector,
     select_landmarks,
-)
-from data_handler.influence.distillation import (
     InfluenceDistillation,
     create_influence_distillation,
-)
-
-# Mixture calculation
-from data_handler.influence.mixture_calculator import (
+    # Mixture calculation
     MixtureWeightCalculator,
     create_mixture_calculator,
-)
-
-# Training integration
-from data_handler.influence.tracker import (
+    # Tracker
     InfluenceTracker,
     create_influence_tracker,
 )
 
 __all__ = [
-    # Base interfaces
     "EmbeddingExtractor",
     "InfluenceCalculator",
     "DataSelector",
-    # Primary API (use this for training integration)
-    "InfluenceTracker",
-    "create_influence_tracker",
-    # Config - DataInf
     "InfluenceConfig",
     "InfluenceTarget",
     "MixtureOptimizationConfig",
     "ProbeSetConfig",
     "SelfBoostingConfig",
-    # Config - InfluenceDistillation
     "JVPEmbeddingConfig",
     "LandmarkConfig",
     "KRRConfig",
     "InfluenceDistillationConfig",
-    # Gradient extraction
     "DiscriminativeGradientExtractor",
-    # DataInf
     "DataInfCalculator",
     "create_influence_calculator",
-    # Influence Distillation
     "JVPEmbeddingExtractor",
     "RandomizedHadamardTransform",
     "create_projection",
@@ -111,7 +79,8 @@ __all__ = [
     "select_landmarks",
     "InfluenceDistillation",
     "create_influence_distillation",
-    # Mixture calculation
     "MixtureWeightCalculator",
     "create_mixture_calculator",
+    "InfluenceTracker",
+    "create_influence_tracker",
 ]

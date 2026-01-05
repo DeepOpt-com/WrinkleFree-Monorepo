@@ -33,14 +33,14 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 
 from data_handler.data.mixing import MixedDataset
-from data_handler.influence.config import (
+from math_utils._legacy.influence.config import (
     InfluenceConfig,
     MixtureOptimizationConfig,
     InfluenceDistillationConfig,
     JVPEmbeddingConfig,
     LandmarkConfig,
 )
-from data_handler.influence.mixture_calculator import MixtureWeightCalculator
+from data_handler._legacy.influence_datainf.mixture_calculator import MixtureWeightCalculator
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ class InfluenceTracker:
         probe_dataloaders: dict[str, DataLoader] | DataLoader | None,
     ):
         """Set up the InfluenceDistillation-based calculator."""
-        from data_handler.influence.distillation import InfluenceDistillation
+        from math_utils._legacy.influence.distillation import InfluenceDistillation
 
         # Build config from YAML
         distill_config = InfluenceDistillationConfig(

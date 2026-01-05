@@ -17,10 +17,14 @@ Legacy components (moved to cheapertraining._legacy):
 __version__ = "0.1.0"
 
 # Active components only - used by WrinkleFree-1.58Quant
-from data_handler.influence.config import InfluenceConfig
-from data_handler.influence.gradient import DiscriminativeGradientExtractor
-from data_handler.influence.datainf import DataInfCalculator
-from data_handler.influence.mixture_calculator import MixtureWeightCalculator
+# Note: InfluenceConfig, DiscriminativeGradientExtractor, DataInfCalculator now come from math_utils
+# but are re-exported via data_handler.influence for backward compatibility
+from data_handler.influence import (
+    InfluenceConfig,
+    DiscriminativeGradientExtractor,
+    DataInfCalculator,
+    MixtureWeightCalculator,
+)
 from data_handler.data.mixing import MixedDataset
 from data_handler.training.optimizer import InfluenceAwareOptimizer
 

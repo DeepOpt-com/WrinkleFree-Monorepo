@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from data_handler.influence.config import InfluenceConfig, InfluenceTarget
+from .config import InfluenceConfig, InfluenceTarget
 
 
 class DiscriminativeGradientExtractor:
@@ -327,4 +327,3 @@ class DiscriminativeGradientExtractor:
                 self.model.train()
 
         return self.flatten_gradients(gradients)
-

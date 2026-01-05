@@ -392,3 +392,81 @@ class ObjectiveManager(nn.Module):
     # 3. Objectives and curriculum can be recreated from config
     # 4. Curriculum step is synced via set_current_step() from Lightning's global_step
 
+    # =========================================================================
+    # Meta-optimization support
+    # =========================================================================
+
+    def set_weights(self, weights: dict[str, float]) -> None:
+        """Set objective weights from meta-optimizer.
+
+        Used by MetaOptimizerCallback to update weights during training.
+        This overrides the curriculum weights until the next curriculum step.
+
+        Args:
+            weights: Dictionary mapping objective name to weight
+        """
+        for name, weight in weights.items():
+            if name in self.base_weights:
+                self.base_weights[name] = weight
+                logger.debug(f"Meta-optimizer set {name} weight to {weight}")
+
+    def get_objective_names(self) -> list[str]:
+        """Get list of objective names.
+
+        Returns:
+            List of objective names in this manager
+        """
+        return list(self.objectives.keys())
+
+    def get_objective_gradients(self) -> dict[str, torch.Tensor]:
+        """Get cached per-objective gradients.
+
+        These are the gradients of each objective's loss w.r.t. model parameters,
+        computed during the last forward pass. Used by meta-optimization to
+        estimate how objective weights affect validation performance.
+
+        Note: This returns gradients from the last forward pass. Call this
+        after backward() but before optimizer.step().
+
+        Returns:
+            Dictionary mapping objective name to flattened gradient tensor
+        """
+        if not hasattr(self, "_cached_objective_gradients"):
+            return {}
+        return self._cached_objective_gradients
+
+    def cache_objective_gradients(self, model: nn.Module) -> None:
+        """Cache gradients from each objective for meta-optimization.
+
+        This should be called after backward() on the combined loss.
+        It's an approximation: we can't get exact per-objective gradients
+        without multiple backward passes. Instead, we cache the current
+        gradient and use it as a proxy.
+
+        For more accurate per-objective gradients, one would need to:
+        1. Compute each objective loss separately
+        2. Call backward() on each
+        3. Accumulate gradients
+
+        This approximation uses the combined gradient, which is a weighted
+        sum of the per-objective gradients.
+
+        Args:
+            model: Model with gradients computed
+        """
+        # For now, we cache a single gradient representing all objectives
+        # A more sophisticated version would track per-objective contributions
+        grads = []
+        for p in model.parameters():
+            if p.grad is not None:
+                grads.append(p.grad.flatten())
+
+        if grads:
+            combined = torch.cat(grads)
+            # Store as single combined gradient (approximation)
+            self._cached_objective_gradients = {
+                name: combined for name in self.objectives
+            }
+        else:
+            self._cached_objective_gradients = {}
+

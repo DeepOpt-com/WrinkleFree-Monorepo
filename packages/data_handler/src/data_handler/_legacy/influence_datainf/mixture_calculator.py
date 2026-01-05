@@ -16,8 +16,8 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from data_handler.influence.config import InfluenceConfig, MixtureOptimizationConfig
-from data_handler.influence.datainf import DataInfCalculator, create_influence_calculator
+from math_utils._legacy.influence.config import InfluenceConfig, MixtureOptimizationConfig
+from math_utils._legacy.influence.datainf import DataInfCalculator, create_influence_calculator
 
 
 # Default domain weights per MobileLLM-R1 (equal weighting)

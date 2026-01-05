@@ -252,6 +252,89 @@ schedule/dlm_weight               # Curriculum weight
 influence/weight_{dataset}        # Per-dataset mixture weight
 ```
 
+### Meta-Optimization (LDC-MTL + ODM)
+
+Efficient meta-optimization for learning objective weights (CE vs DLM) and dataset weights dynamically.
+Uses O(1) methods with no gradient caching or Hessian computation.
+
+**Components** (`src/wrinklefree/meta/`):
+- **LDC-MTL** ([arxiv:2502.08585](https://arxiv.org/abs/2502.08585)): Router network learns objective weights via loss discrepancy control
+- **ODM/EXP3** ([arxiv:2312.02406](https://arxiv.org/abs/2312.02406)): Multi-armed bandit learns dataset sampling probabilities
+
+```bash
+# Enable meta-optimization (both LDC-MTL + ODM)
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  data.config_name=mixed_pretrain \
+  training.meta_optimization.enabled=true \
+  training.meta_optimization.ldc_mtl.enabled=true \
+  training.meta_optimization.odm.enabled=true
+
+# LDC-MTL only (objective weights)
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  training.meta_optimization.enabled=true \
+  training.meta_optimization.ldc_mtl.enabled=true \
+  training.meta_optimization.odm.enabled=false
+
+# ODM only (dataset weights)
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  data.config_name=mixed_pretrain \
+  training.meta_optimization.enabled=true \
+  training.meta_optimization.ldc_mtl.enabled=false \
+  training.meta_optimization.odm.enabled=true
+```
+
+**How LDC-MTL Works**:
+- Small router MLP (32 hidden units) takes per-objective losses as input
+- Outputs softmax weights for each objective (CE, DLM, etc.)
+- Loss discrepancy penalty encourages balanced weighted losses: `f(W,x) = Σ|τ_i·l_i - τ_{i+1}·l_{i+1}|`
+- Router trains jointly with model via single-level optimization
+
+**How ODM Works**:
+- EXP3 multi-armed bandit algorithm
+- Each dataset is an "arm"; training loss is reward signal
+- Exploration rate decays: `ε_t = min{1/K, √(ln K / (K·t))}`
+- Sampling distribution: `π_t(i) = (1 - K·ε_t) × softmax(ε·R̂) + ε_t`
+- ~0% wall-clock overhead
+
+**Config** (`unified.yaml`):
+```yaml
+meta_optimization:
+  enabled: true
+  ldc_mtl:
+    enabled: true
+    lambda_penalty: 0.1      # Discrepancy penalty weight
+    hidden_dim: 32           # Router MLP hidden size
+    router_lr: 0.001         # Router learning rate
+  odm:
+    enabled: true
+    reward_smoothing: 0.9    # EMA coefficient for rewards
+    warmup_ratio: 0.01       # Fraction of steps with uniform weights
+    min_weight: 0.05         # Min sampling probability per dataset
+    max_weight: 0.60         # Max sampling probability per dataset
+  log_interval: 100
+```
+
+**WandB Metrics**:
+```
+meta/ldc_mtl/objective_weight_{name}  # Learned objective weights
+meta/ldc_mtl/loss_discrepancy         # Discrepancy penalty value
+meta/odm/dataset_weight_{name}        # Dataset sampling probabilities
+meta/odm/exploration_rate             # Current exploration rate
+meta/odm/avg_reward_{name}            # Per-domain average rewards
+```
+
+**Smoke Tests**:
+```bash
+cd packages/deployer
+source credentials/.env
+
+# 1x L40 meta-optimization
+sky launch skypilot/smoke_test_meta_opt_1gpu.yaml -y --cluster meta-1gpu
+
+# 2x L40 with FSDP (currently has dtype issues)
+sky launch skypilot/smoke_test_meta_opt_2gpu.yaml -y --cluster meta-2gpu
+```
+
 ### LRC Calibration (Post-Quantization Recovery)
 
 Low-Rank Correction (LRC) adds trainable low-rank matrices (U, V) to correct quantization errors.
@@ -788,6 +871,25 @@ optimizer = Muon([
 
 When `training.optimizer.type=muonclip` is specified, the trainer automatically uses `muon_fsdp2.Muon`.
 
+### Lightning FSDP Requirements
+
+When using `distributed=fsdp_multi` with Lightning, these constraints apply:
+
+| Constraint | Reason | Solution |
+|------------|--------|----------|
+| **No norm gradient clipping** | FSDPPrecision doesn't support it | Use value clipping or disable |
+| **No 8-bit optimizers** | Mixed dtypes in optimizer state | Use standard AdamW |
+| **No Muon parameter filtering** | FSDP flattens params | Use AdamW or muon_fsdp2 |
+| **Uniform dtypes** | FSDP requires same dtype | Use `.clone()` not `.copy_()` in conversions |
+
+**FSDP-compatible training command:**
+```bash
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  distributed=fsdp_multi \
+  training.optimizer.type=adamw \
+  +training.optimizer.use_8bit=false
+```
+
 ### Common FSDP Hangs
 
 | Symptom | Cause | Fix |
@@ -796,6 +898,7 @@ When `training.optimizer.type=muonclip` is specified, the trainer automatically 
 | Hang at eval | Different ranks make different save decisions | Sync eval loss with all_reduce |
 | Muon collective mismatch | Broadcast with sharded params | Use muon_fsdp2 |
 | Dataloader mismatch | Different batch counts per rank | Use drop_last=True |
+| Dtype assertion error | Mixed dtypes in optimizer state | Use non-8bit optimizer |
 
 ## Notes
 

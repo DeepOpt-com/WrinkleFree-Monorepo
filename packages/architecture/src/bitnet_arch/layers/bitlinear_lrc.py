@@ -256,9 +256,10 @@ def convert_bitlinear_to_lrc(
             )
 
             # Copy original weights (they will be frozen)
-            lrc_layer.weight.data.copy_(child.weight.data)
+            # Preserve dtype/device for FSDP compatibility
+            lrc_layer.weight.data = child.weight.data.clone()
             if child.bias is not None:
-                lrc_layer.bias.data.copy_(child.bias.data)
+                lrc_layer.bias.data = child.bias.data.clone()
 
             # Initialize LRC matrices (must be before compute_quantized_weights
             # if keep_original_weight=False, since SVD needs original weight)

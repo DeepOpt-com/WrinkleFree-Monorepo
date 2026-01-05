@@ -115,9 +115,10 @@ def insert_subln_before_projection(
                 original_proj.out_features,
                 bias=original_proj.bias is not None,
             )
-            new_proj.weight.data.copy_(original_proj.weight.data)
+            # Preserve dtype/device for FSDP compatibility
+            new_proj.weight.data = original_proj.weight.data.clone()
             if original_proj.bias is not None:
-                new_proj.bias.data.copy_(original_proj.bias.data)
+                new_proj.bias.data = original_proj.bias.data.clone()
 
         # Wrap in Sequential
         wrapped = nn.Sequential(subln, new_proj)
@@ -152,7 +153,8 @@ def convert_attention_layer(
                     proj.out_features,
                     bias=proj.bias is not None,
                 )
-                new_proj.weight.data.copy_(proj.weight.data)
+                # Preserve dtype/device for FSDP compatibility
+                new_proj.weight.data = proj.weight.data.clone()
                 if proj.bias is not None:
                     new_proj.bias.data.copy_(proj.bias.data)
 
@@ -173,9 +175,10 @@ def convert_attention_layer(
                 o_proj.out_features,
                 bias=o_proj.bias is not None,
             )
-            new_o_proj.weight.data.copy_(o_proj.weight.data)
+            # Preserve dtype/device for FSDP compatibility
+            new_o_proj.weight.data = o_proj.weight.data.clone()
             if o_proj.bias is not None:
-                new_o_proj.bias.data.copy_(o_proj.bias.data)
+                new_o_proj.bias.data = o_proj.bias.data.clone()
         else:
             new_o_proj = o_proj
 
@@ -216,7 +219,8 @@ def convert_mlp_layer(
                     proj.out_features,
                     bias=proj.bias is not None,
                 )
-                new_proj.weight.data.copy_(proj.weight.data)
+                # Preserve dtype/device for FSDP compatibility
+                new_proj.weight.data = proj.weight.data.clone()
                 if proj.bias is not None:
                     new_proj.bias.data.copy_(proj.bias.data)
 
@@ -237,9 +241,10 @@ def convert_mlp_layer(
                 down_proj.out_features,
                 bias=down_proj.bias is not None,
             )
-            new_down_proj.weight.data.copy_(down_proj.weight.data)
+            # Preserve dtype/device for FSDP compatibility
+            new_down_proj.weight.data = down_proj.weight.data.clone()
             if down_proj.bias is not None:
-                new_down_proj.bias.data.copy_(down_proj.bias.data)
+                new_down_proj.bias.data = down_proj.bias.data.clone()
         else:
             new_down_proj = down_proj
 

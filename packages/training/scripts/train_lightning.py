@@ -32,6 +32,7 @@ from pytorch_lightning.callbacks import (
     RichProgressBar,
 )
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies import FSDPStrategy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from omegaconf.base import ContainerMetadata
 from omegaconf._utils import ValueKind
@@ -57,6 +58,7 @@ from wrinklefree.lightning import (
     WrinkleFreeLightningModule,
     ZClipCallback,
 )
+from wrinklefree.meta import MetaOptimizerCallback, MetaOptimizationConfig
 from wrinklefree.objectives import create_objective_manager
 from wrinklefree.teachers import HiddenStateTeacher
 
@@ -475,6 +477,53 @@ def create_callbacks(cfg: DictConfig) -> list:
             )
         )
 
+    # Meta-optimization outer loop (supersedes influence when enabled)
+    meta_opt_cfg = cfg.training.get("meta_optimization", {})
+    if meta_opt_cfg.get("enabled", False):
+        # Build nested configs for LDC-MTL and ODM
+        ldc_mtl_cfg = meta_opt_cfg.get("ldc_mtl", {})
+        odm_cfg = meta_opt_cfg.get("odm", {})
+
+        from wrinklefree.meta.config import LDCMTLConfig, ODMConfig
+
+        ldc_mtl_config = LDCMTLConfig(
+            enabled=ldc_mtl_cfg.get("enabled", True),
+            lambda_penalty=ldc_mtl_cfg.get("lambda_penalty", 0.1),
+            hidden_dim=ldc_mtl_cfg.get("hidden_dim", 32),
+            router_lr=ldc_mtl_cfg.get("router_lr", 1e-3),
+        )
+
+        odm_config = ODMConfig(
+            enabled=odm_cfg.get("enabled", True),
+            reward_smoothing=odm_cfg.get("reward_smoothing", 0.9),
+            warmup_ratio=odm_cfg.get("warmup_ratio", 0.01),
+            min_weight=odm_cfg.get("min_weight", 0.05),
+            max_weight=odm_cfg.get("max_weight", 0.60),
+        )
+
+        meta_config = MetaOptimizationConfig(
+            enabled=True,
+            ldc_mtl=ldc_mtl_config,
+            odm=odm_config,
+            log_interval=meta_opt_cfg.get("log_interval", 100),
+        )
+
+        callbacks.append(MetaOptimizerCallback(config=meta_config))
+        logger.info(
+            f"Meta-optimization enabled: "
+            f"ldc_mtl={meta_config.ldc_mtl.enabled}, "
+            f"odm={meta_config.odm.enabled}, "
+            f"log_interval={meta_config.log_interval}"
+        )
+    else:
+        # Fallback to influence-based data remixing only
+        influence_cfg = cfg.training.get("influence", {})
+        if influence_cfg.get("enabled", False):
+            callbacks.append(InfluenceTrackerCallback(config=cfg))
+            logger.info(
+                f"Influence tracking enabled: update_interval={influence_cfg.get('update_interval', 1000)}, "
+                f"warmup={influence_cfg.get('warmup_steps', 500)}"
+            )
     # LR monitor
     callbacks.append(LearningRateMonitor(logging_interval="step"))
 
@@ -486,10 +535,41 @@ def create_callbacks(cfg: DictConfig) -> list:
 
 def create_trainer(cfg: DictConfig, callbacks: list) -> pl.Trainer:
     """Create Lightning Trainer from config."""
-    # Determine strategy
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    if world_size > 1:
-        strategy = cfg.distributed.get("strategy", "ddp")
+    # Determine strategy based on number of available GPUs
+    # NOTE: WORLD_SIZE isn't set yet (Lightning sets it later), so use cuda.device_count()
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    logger.info(f"Detected {num_gpus} GPUs for training")
+
+    if num_gpus > 1:
+        strategy_name = cfg.distributed.get("strategy", "ddp")
+        if strategy_name == "fsdp":
+            # Create proper FSDPStrategy with mixed precision for bfloat16 training
+            # Reference: https://lightning.ai/docs/pytorch/stable/api/lightning_fabric.strategies.FSDPStrategy.html
+            from torch.distributed.fsdp import ShardingStrategy, MixedPrecision
+
+            # FSDP mixed precision config (bfloat16 compute, fp32 reduce for stability)
+            mp_policy = MixedPrecision(
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.bfloat16,  # Reduce in bf16 to match params
+                buffer_dtype=torch.bfloat16,
+            )
+
+            # Get sharding strategy from config (default to FULL_SHARD = ZeRO-3)
+            fsdp_cfg = cfg.distributed.get("fsdp", {})
+            sharding_strategy_str = fsdp_cfg.get("sharding_strategy", "FULL_SHARD")
+            sharding_strategy = getattr(ShardingStrategy, sharding_strategy_str)
+
+            strategy = FSDPStrategy(
+                sharding_strategy=sharding_strategy,
+                mixed_precision=mp_policy,
+                activation_checkpointing_policy={torch.nn.TransformerEncoderLayer}
+                    if fsdp_cfg.get("activation_checkpointing", {}).get("enabled", False)
+                    else None,
+                limit_all_gathers=fsdp_cfg.get("limit_all_gathers", True),
+            )
+            logger.info(f"Using FSDPStrategy with {sharding_strategy_str} sharding and bf16 mixed precision")
+        else:
+            strategy = strategy_name
     else:
         strategy = "auto"
 
@@ -583,6 +663,12 @@ def main(cfg: DictConfig) -> None:
     val_cfg = cfg.training.get("validation", {})
     val_enabled = val_cfg.get("enabled", False)
 
+    # Determine num_workers: from config, env var, or default
+    # For influence + probe gradient caching, use 0 to avoid memory explosion
+    num_workers = cfg.data.get("num_workers", None)
+    if num_workers is None:
+        num_workers = int(os.environ.get("DATALOADER_NUM_WORKERS", "4"))
+
     datamodule = WrinkleFreeDataModule(
         tokenizer=tokenizer,
         batch_size=cfg.training.batch_size,
@@ -590,6 +676,7 @@ def main(cfg: DictConfig) -> None:
         config_name=cfg.data.get("config_name", "default"),
         with_probes=cfg.training.get("influence", {}).get("enabled", False),
         packed=cfg.training.get("packing", {}).get("enabled", True),
+        num_workers=num_workers,
         # Validation (C4 perplexity)
         val_config_name=val_cfg.get("config_name") if val_enabled else None,
         val_batch_size=val_cfg.get("batch_size", 8),
