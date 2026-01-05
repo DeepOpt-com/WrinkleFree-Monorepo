@@ -202,6 +202,12 @@ class LDCMTLManager:
         # Stack losses in consistent order
         loss_vec = torch.stack([losses[n] for n in self.objective_names])
 
+        # Move router to same device as losses if needed (handles lazy GPU init)
+        loss_device = loss_vec.device
+        if loss_device != self.device:
+            self.router = self.router.to(loss_device)
+            self.device = loss_device
+
         # Get weights from router (detach losses to avoid double backprop)
         weights = self.router(loss_vec.detach())
 
