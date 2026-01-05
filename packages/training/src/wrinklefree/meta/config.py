@@ -1,14 +1,16 @@
 """Configuration for efficient meta-optimization.
 
-This module provides configuration classes for two complementary methods:
+This module provides configuration classes for three complementary methods:
 1. LDC-MTL: Objective weight optimization (CE vs DLM vs distillation)
 2. ODM: Dataset weight optimization (web vs code vs math)
+3. LayerLR: Per-layer learning rate optimization
 
-Both methods are O(1) complexity and require no external dependencies.
+All methods are O(1) complexity and require no external dependencies.
 
 References:
 - LDC-MTL: https://arxiv.org/abs/2502.08585
 - ODM: https://arxiv.org/abs/2312.02406
+- LayerLR: Inspired by LARS (https://arxiv.org/abs/1708.03888)
 """
 
 from dataclasses import dataclass, field
@@ -88,11 +90,49 @@ class ODMConfig:
 
 
 @dataclass
+class LayerLRConfig:
+    """Per-layer learning rate optimization config.
+
+    Learns per-layer LR multipliers via direct gradient descent on
+    log-scale parameters. Uses gradient norms as signal for logging
+    and optional penalty terms.
+
+    Inspired by LARS (Layer-wise Adaptive Rate Scaling) but learned
+    dynamically rather than using a fixed formula.
+
+    Reference:
+        https://arxiv.org/abs/1708.03888 (LARS)
+
+    Attributes:
+        enabled: Whether to enable per-layer LR optimization.
+        lr: Learning rate for the multiplier optimizer.
+        min_multiplier: Minimum LR multiplier (prevents collapse).
+        max_multiplier: Maximum LR multiplier (prevents explosion).
+        ema_decay: EMA decay for gradient norm smoothing.
+        lambda_mean: Penalty weight for mean deviation from 1.0.
+            Keeps geometric mean of multipliers near 1.0.
+        warmup_ratio: Fraction of training with multipliers=1.0.
+            Skips adaptation during LR warmup when grad stats unreliable.
+        step_interval: Update multipliers every N optimizer steps.
+    """
+
+    enabled: bool = False
+    lr: float = 1e-3
+    min_multiplier: float = 0.1
+    max_multiplier: float = 10.0
+    ema_decay: float = 0.99
+    lambda_mean: float = 0.1
+    warmup_ratio: float = 0.05
+    step_interval: int = 1
+
+
+@dataclass
 class MetaOptimizationConfig:
     """Unified configuration for meta-optimization.
 
-    Combines LDC-MTL (objective weights) and ODM (dataset weights) into
-    a single configuration. Both can be enabled independently.
+    Combines LDC-MTL (objective weights), ODM (dataset weights), and
+    LayerLR (per-layer learning rates) into a single configuration.
+    All can be enabled independently.
 
     Example YAML config:
         meta_optimization:
@@ -108,12 +148,18 @@ class MetaOptimizationConfig:
             warmup_ratio: 0.01
             min_weight: 0.05
             max_weight: 0.60
+          layer_lr:
+            enabled: false
+            lr: 0.001
+            min_multiplier: 0.1
+            max_multiplier: 10.0
           log_interval: 100
 
     Attributes:
         enabled: Master switch for meta-optimization
         ldc_mtl: LDC-MTL config for objective weights
         odm: ODM config for dataset weights
+        layer_lr: LayerLR config for per-layer learning rates
         log_interval: Steps between logging meta-optimization metrics
     """
 
@@ -124,6 +170,9 @@ class MetaOptimizationConfig:
 
     # Dataset weights (ODM/EXP3)
     odm: ODMConfig = field(default_factory=ODMConfig)
+
+    # Per-layer learning rates
+    layer_lr: LayerLRConfig = field(default_factory=LayerLRConfig)
 
     # Logging
     log_interval: int = 100

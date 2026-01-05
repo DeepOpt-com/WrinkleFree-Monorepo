@@ -252,35 +252,31 @@ schedule/dlm_weight               # Curriculum weight
 influence/weight_{dataset}        # Per-dataset mixture weight
 ```
 
-### Meta-Optimization (LDC-MTL + ODM)
+### Meta-Optimization (LDC-MTL + ODM + LayerLR)
 
-Efficient meta-optimization for learning objective weights (CE vs DLM) and dataset weights dynamically.
+Efficient meta-optimization for learning objective weights, dataset weights, and per-layer learning rates dynamically.
 Uses O(1) methods with no gradient caching or Hessian computation.
 
 **Components** (`src/wrinklefree/meta/`):
 - **LDC-MTL** ([arxiv:2502.08585](https://arxiv.org/abs/2502.08585)): Router network learns objective weights via loss discrepancy control
 - **ODM/EXP3** ([arxiv:2312.02406](https://arxiv.org/abs/2312.02406)): Multi-armed bandit learns dataset sampling probabilities
+- **LayerLR** (inspired by [LARS](https://arxiv.org/abs/1708.03888)): Learns per-layer LR multipliers based on gradient norms
 
 ```bash
-# Enable meta-optimization (both LDC-MTL + ODM)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+# Enable all meta-optimization (LDC-MTL + ODM + LayerLR)
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
   data.config_name=mixed_pretrain \
   training.meta_optimization.enabled=true \
   training.meta_optimization.ldc_mtl.enabled=true \
-  training.meta_optimization.odm.enabled=true
+  training.meta_optimization.odm.enabled=true \
+  training.meta_optimization.layer_lr.enabled=true
 
-# LDC-MTL only (objective weights)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
-  training.meta_optimization.enabled=true \
-  training.meta_optimization.ldc_mtl.enabled=true \
-  training.meta_optimization.odm.enabled=false
-
-# ODM only (dataset weights)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
-  data.config_name=mixed_pretrain \
+# LayerLR only (per-layer learning rates)
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
   training.meta_optimization.enabled=true \
   training.meta_optimization.ldc_mtl.enabled=false \
-  training.meta_optimization.odm.enabled=true
+  training.meta_optimization.odm.enabled=false \
+  training.meta_optimization.layer_lr.enabled=true
 ```
 
 **How LDC-MTL Works**:
@@ -296,7 +292,14 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
 - Sampling distribution: `π_t(i) = (1 - K·ε_t) × softmax(ε·R̂) + ε_t`
 - ~0% wall-clock overhead
 
-**Config** (`unified.yaml`):
+**How LayerLR Works**:
+- Learns per-layer LR multipliers based on gradient norms
+- **Bidirectional**: increases LR when gradients are low, decreases when high
+- Penalty term: `(grad_norm * multiplier - target)²` pulls toward balanced product
+- Mean-centering penalty keeps geometric mean of multipliers near 1.0
+- Skips adaptation during LR warmup (grad stats unreliable)
+
+**Config** (`base.yaml`):
 ```yaml
 meta_optimization:
   enabled: true
@@ -311,6 +314,12 @@ meta_optimization:
     warmup_ratio: 0.01       # Fraction of steps with uniform weights
     min_weight: 0.05         # Min sampling probability per dataset
     max_weight: 0.60         # Max sampling probability per dataset
+  layer_lr:
+    enabled: false           # Enable per-layer LR optimization
+    lr: 0.001                # Optimizer LR for multipliers
+    min_multiplier: 0.1      # Minimum LR multiplier
+    max_multiplier: 10.0     # Maximum LR multiplier
+    warmup_ratio: 0.05       # Skip during LR warmup
   log_interval: 100
 ```
 
@@ -321,6 +330,9 @@ meta/ldc_mtl/loss_discrepancy         # Discrepancy penalty value
 meta/odm/dataset_weight_{name}        # Dataset sampling probabilities
 meta/odm/exploration_rate             # Current exploration rate
 meta/odm/avg_reward_{name}            # Per-domain average rewards
+meta/layer_lr/multiplier_layer_{i}    # Per-layer LR multipliers
+meta/layer_lr/grad_norm_layer_{i}     # Per-layer gradient norms (EMA)
+meta/layer_lr/mean_multiplier         # Geometric mean of multipliers
 ```
 
 **Smoke Tests**:

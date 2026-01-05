@@ -3,10 +3,12 @@
 Implements efficient meta-optimization using:
 - LDC-MTL for objective weight optimization (O(1) complexity)
 - ODM/EXP3 for dataset weight optimization (~0% overhead)
+- LayerLR for per-layer learning rate optimization
 
 References:
 - LDC-MTL: https://arxiv.org/abs/2502.08585
 - ODM: https://arxiv.org/abs/2312.02406
+- LayerLR: Inspired by LARS (https://arxiv.org/abs/1708.03888)
 """
 
 import logging
@@ -17,6 +19,7 @@ from pytorch_lightning.callbacks import Callback
 
 from wrinklefree.meta.config import MetaOptimizationConfig
 from wrinklefree.meta.ldc_mtl import LDCMTLManager
+from wrinklefree.meta.layer_lr import LayerLRManager
 from wrinklefree.meta.odm import OnlineDataMixer
 
 logger = logging.getLogger(__name__)
@@ -25,19 +28,20 @@ logger = logging.getLogger(__name__)
 class MetaOptimizerCallback(Callback):
     """Lightning callback for efficient meta-optimization.
 
-    Integrates LDC-MTL (objective weights) and ODM (dataset weights) into
-    the PyTorch Lightning training loop. Both methods are O(1) complexity
-    with negligible overhead.
+    Integrates LDC-MTL (objective weights), ODM (dataset weights), and
+    LayerLR (per-layer learning rates) into the PyTorch Lightning training
+    loop. All methods are O(1) complexity with negligible overhead.
 
     The callback:
-    - Initializes LDC-MTL and/or ODM during setup (if enabled and applicable)
-    - Updates weights after each training batch
+    - Initializes components during setup (if enabled and applicable)
+    - Updates weights/multipliers after each training batch
     - Logs metrics at configurable intervals
     - Saves/loads state with checkpoints
 
     Requirements:
     - LDC-MTL needs >1 objective (accessed via pl_module.objective_manager)
     - ODM needs >1 dataset (accessed via trainer.datamodule.get_mixed_dataset())
+    - LayerLR needs >1 transformer layer (detected from model structure)
 
     Example:
         ```python
@@ -45,6 +49,7 @@ class MetaOptimizerCallback(Callback):
             enabled=True,
             ldc_mtl=LDCMTLConfig(enabled=True),
             odm=ODMConfig(enabled=True),
+            layer_lr=LayerLRConfig(enabled=True),
         )
         trainer = pl.Trainer(callbacks=[MetaOptimizerCallback(config)])
         ```
@@ -54,6 +59,8 @@ class MetaOptimizerCallback(Callback):
         - meta/odm/dataset_weight_{name}: Dataset sampling probabilities
         - meta/odm/exploration_rate: Current EXP3 exploration rate
         - meta/odm/avg_reward_{name}: Per-domain average rewards
+        - meta/layer_lr/multiplier_layer_{i}: Per-layer LR multipliers
+        - meta/layer_lr/grad_norm_layer_{i}: Per-layer gradient norms
     """
 
     def __init__(self, config: MetaOptimizationConfig) -> None:
@@ -69,10 +76,12 @@ class MetaOptimizerCallback(Callback):
         # Initialized lazily in setup()
         self.ldc_mtl: LDCMTLManager | None = None
         self.odm: OnlineDataMixer | None = None
+        self.layer_lr: LayerLRManager | None = None
 
         # Track state
         self._is_enabled = False
         self._total_steps: int | None = None
+        self._warmup_steps: int = 0
 
     def setup(
         self,
@@ -132,7 +141,31 @@ class MetaOptimizerCallback(Callback):
                     "MetaOptimizerCallback: ODM disabled (need >1 dataset)"
                 )
 
-        self._is_enabled = self.ldc_mtl is not None or self.odm is not None
+        # Initialize LayerLR for per-layer learning rate optimization
+        if self.config.layer_lr.enabled:
+            try:
+                self.layer_lr = LayerLRManager(
+                    pl_module.model,
+                    self.config.layer_lr,
+                    device,
+                )
+                # Compute warmup steps for LayerLR
+                self._warmup_steps = int(
+                    self._total_steps * self.config.layer_lr.warmup_ratio
+                )
+                logger.info(
+                    f"MetaOptimizerCallback: LayerLR enabled for "
+                    f"{self.layer_lr.num_layers} layers, "
+                    f"warmup={self._warmup_steps} steps"
+                )
+            except ValueError as e:
+                logger.info(f"MetaOptimizerCallback: LayerLR disabled ({e})")
+
+        self._is_enabled = (
+            self.ldc_mtl is not None
+            or self.odm is not None
+            or self.layer_lr is not None
+        )
 
         if self._is_enabled:
             logger.info("MetaOptimizerCallback: enabled and ready")
@@ -158,6 +191,29 @@ class MetaOptimizerCallback(Callback):
             if hasattr(manager, "get_objective_names"):
                 return manager.get_objective_names()
         return []
+
+    def on_after_backward(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Collect gradient norms after backward pass (for LayerLR)."""
+        if self.layer_lr is not None:
+            self.layer_lr.collect_grad_norms(pl_module.model)
+
+    def on_before_optimizer_step(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        optimizer: Any,
+    ) -> None:
+        """Apply LR multipliers before optimizer step (for LayerLR)."""
+        if self.layer_lr is not None:
+            self.layer_lr.apply_multipliers(
+                optimizer,
+                trainer.global_step,
+                self._warmup_steps,
+            )
 
     def _get_dataset_names(self, datamodule: Any) -> list[str]:
         """Get dataset names from the datamodule.
@@ -214,6 +270,16 @@ class MetaOptimizerCallback(Callback):
         if self.ldc_mtl is not None:
             if step % self.config.ldc_mtl.step_interval == 0:
                 self.ldc_mtl.step()
+
+        # LayerLR: step multiplier optimizer and restore base LRs
+        if self.layer_lr is not None:
+            if step % self.config.layer_lr.step_interval == 0:
+                self.layer_lr.step()
+            # Restore base LRs for scheduler to work correctly
+            optimizer = trainer.optimizers[0]
+            if hasattr(optimizer, "_optimizer"):
+                optimizer = optimizer._optimizer
+            self.layer_lr.restore_lrs(optimizer)
 
         # Log periodically
         if step % self.config.log_interval == 0:
@@ -306,6 +372,12 @@ class MetaOptimizerCallback(Callback):
             for name, value in metrics.items():
                 pl_module.log(name, value, prog_bar=False)
 
+        # LayerLR metrics
+        if self.layer_lr is not None:
+            metrics = self.layer_lr.get_wandb_metrics()
+            for name, value in metrics.items():
+                pl_module.log(name, value, prog_bar=False)
+
     def _log_batch_dataset_balance(
         self,
         pl_module: pl.LightningModule,
@@ -360,6 +432,9 @@ class MetaOptimizerCallback(Callback):
         if self.odm is not None:
             state["odm"] = self.odm.state_dict()
 
+        if self.layer_lr is not None:
+            state["layer_lr"] = self.layer_lr.state_dict()
+
         if state:
             checkpoint["meta_optimizer_state"] = state
 
@@ -384,6 +459,9 @@ class MetaOptimizerCallback(Callback):
 
         if self.odm is not None and "odm" in state:
             self.odm.load_state_dict(state["odm"])
+
+        if self.layer_lr is not None and "layer_lr" in state:
+            self.layer_lr.load_state_dict(state["layer_lr"])
 
         logger.info("Restored meta-optimizer state from checkpoint")
 
@@ -414,5 +492,8 @@ class MetaOptimizerCallback(Callback):
 
         if self.odm is not None:
             result["dataset"] = self.odm.get_sampling_weights()
+
+        if self.layer_lr is not None:
+            result["layer_lr"] = self.layer_lr._current_multipliers
 
         return result

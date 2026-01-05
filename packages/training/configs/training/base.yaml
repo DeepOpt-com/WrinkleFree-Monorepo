@@ -183,16 +183,18 @@ influence:
 # Efficient meta-optimization using O(1) methods:
 # - LDC-MTL: Objective weight optimization (CE vs DLM vs distillation)
 # - ODM/EXP3: Dataset weight optimization (bandit-based data mixing)
+# - LayerLR: Per-layer learning rate optimization (LARS-inspired)
 #
 # NOTE: ODM replaces the older DataInf-based influence tracking.
 # Use meta_optimization.odm for dataset weights, NOT training.influence.
 #
-# Both methods are efficient, principled, and require no external dependencies.
+# All methods are efficient, principled, and require no external dependencies.
 # No Hessian computation, no gradient caching, no Pareto solvers.
 #
 # References:
 # - LDC-MTL (2025): https://arxiv.org/abs/2502.08585
 # - ODM (2023): https://arxiv.org/abs/2312.02406
+# - LayerLR: Inspired by LARS (https://arxiv.org/abs/1708.03888)
 meta_optimization:
   enabled: false  # Enable meta-optimization
 
@@ -214,6 +216,19 @@ meta_optimization:
     warmup_ratio: 0.01         # Fraction of steps with uniform weights
     min_weight: 0.05           # Minimum sampling probability per dataset
     max_weight: 0.60           # Maximum sampling probability per dataset
+
+  # LayerLR: Per-layer learning rate optimization
+  # Learns LR multipliers per layer based on gradient norms
+  # Bidirectional: increases LR when grads low, decreases when high
+  layer_lr:
+    enabled: false             # Enable per-layer LR optimization
+    lr: 0.001                  # Optimizer LR for multipliers
+    min_multiplier: 0.1        # Minimum LR multiplier (prevents collapse)
+    max_multiplier: 10.0       # Maximum LR multiplier (prevents explosion)
+    ema_decay: 0.99            # Grad norm smoothing
+    lambda_mean: 0.1           # Penalty to keep geometric mean near 1.0
+    warmup_ratio: 0.05         # Skip adaptation during LR warmup
+    step_interval: 1           # Update multipliers every N steps
 
   # Logging
   log_interval: 100

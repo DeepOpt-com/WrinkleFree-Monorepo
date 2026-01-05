@@ -1,0 +1,132 @@
+# WrinkleFree LayerLR Smoke Test (1x H100)
+#
+# Tests per-layer learning rate meta-optimization with:
+# - LayerLR: Per-layer LR multipliers based on gradient norms
+# - Bidirectional: Increases LR when grads low, decreases when high
+#
+# Reference: Inspired by LARS (https://arxiv.org/abs/1708.03888)
+#
+# Launch:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/smoke_test_layer_lr_h100.yaml -y --cluster layer-lr-h100
+#
+# Monitor:
+#   sky logs layer-lr-h100
+#
+# Tear down:
+#   sky down layer-lr-h100 -y
+
+name: wrinklefree-layer-lr-h100
+
+resources:
+  accelerators: H100:1
+  memory: 64+
+  use_spot: false
+  cloud: nebius
+  disk_size: 100
+
+# Sync from InfluenceClean worktree
+workdir: /home/lev/code/WrinkleFreeDevWrapper/InfluenceClean
+
+# Upload credentials
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  MAX_STEPS: 50
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: layer-lr-smoke-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Sync all packages
+  uv sync --all-packages
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Load credentials
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "========================================================"
+  echo "WrinkleFree LayerLR Smoke Test (1x H100)"
+  echo "========================================================"
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS"
+  echo ""
+  echo "LayerLR Features:"
+  echo "  - Per-layer LR multipliers based on gradient norms"
+  echo "  - Bidirectional: increases LR when grads low, decreases when high"
+  echo "  - Balance penalty: (grad_norm * multiplier - 0.5)^2"
+  echo "  - Mean-centering: keeps geometric mean of multipliers ~1.0"
+  echo "  - Bounded: multipliers clamped to [0.1, 10.0]"
+  echo "========================================================"
+
+  echo ""
+  echo "[Training] Running with LayerLR enabled..."
+  export TOKENIZERS_PARALLELISM=false
+  uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=base \
+    data.config_name=fineweb \
+    distributed=single_gpu \
+    training.max_steps=${MAX_STEPS} \
+    training.auto_batch_size=false \
+    training.batch_size=16 \
+    training.gradient_accumulation_steps=8 \
+    training.influence.enabled=false \
+    training.meta_optimization.enabled=true \
+    training.meta_optimization.ldc_mtl.enabled=false \
+    training.meta_optimization.odm.enabled=false \
+    training.meta_optimization.layer_lr.enabled=true \
+    training.meta_optimization.layer_lr.lr=0.001 \
+    training.meta_optimization.layer_lr.min_multiplier=0.1 \
+    training.meta_optimization.layer_lr.max_multiplier=10.0 \
+    training.meta_optimization.layer_lr.warmup_ratio=0.1 \
+    training.meta_optimization.log_interval=5 \
+    training.validation.enabled=false \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=layer_lr_smoke \
+    training.checkpoint.save_interval=1000 \
+    training.logging.log_interval=5 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    gcs.enabled=false
+
+  echo ""
+  echo "========================================================"
+  echo "LayerLR Smoke Test Complete!"
+  echo "========================================================"
+
+  echo ""
+  echo "Expected WandB metrics:"
+  echo "  - meta/layer_lr/multiplier_layer_{i} (should vary per layer)"
+  echo "  - meta/layer_lr/grad_norm_layer_{i} (gradient norms per layer)"
+  echo "  - meta/layer_lr/mean_multiplier (geometric mean ~1.0)"
+  echo "  - train/loss (should decrease)"
+  echo ""
+  echo "WandB run: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"

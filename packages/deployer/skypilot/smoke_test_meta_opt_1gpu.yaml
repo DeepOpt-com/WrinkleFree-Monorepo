@@ -42,9 +42,9 @@ envs:
   GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
   GCS_BUCKET: wrinklefree-checkpoints
   MODEL: smollm2_135m
-  MAX_STEPS: 50
+  MAX_STEPS: 19073
   WANDB_PROJECT: wrinklefree
-  WANDB_RUN_ID: meta-opt-1gpu-${SKYPILOT_TASK_ID}
+  WANDB_RUN_ID: meta-opt-v2-${SKYPILOT_TASK_ID}
   HF_HUB_ENABLE_HF_TRANSFER: "1"
 
 setup: |
@@ -99,26 +99,29 @@ run: |
   export TOKENIZERS_PARALLELISM=false
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=unified \
+    training=base \
     data.config_name=mixed_pretrain \
     distributed=single_gpu \
     training.max_steps=${MAX_STEPS} \
     training.auto_batch_size=false \
-    training.batch_size=4 \
-    training.gradient_accumulation_steps=8 \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=16 \
     training.influence.enabled=false \
     training.meta_optimization.enabled=true \
     training.meta_optimization.ldc_mtl.enabled=true \
-    training.meta_optimization.ldc_mtl.lambda_penalty=0.1 \
-    training.meta_optimization.ldc_mtl.router_lr=0.001 \
+    training.meta_optimization.ldc_mtl.lambda_penalty=0.05 \
+    training.meta_optimization.ldc_mtl.router_lr=3e-4 \
+    training.meta_optimization.ldc_mtl.step_interval=64 \
     training.meta_optimization.odm.enabled=true \
     training.meta_optimization.odm.reward_smoothing=0.9 \
-    training.meta_optimization.odm.warmup_ratio=0.1 \
-    training.meta_optimization.log_interval=5 \
+    training.meta_optimization.odm.warmup_ratio=0.05 \
+    training.meta_optimization.log_interval=10 \
+    training.validation.enabled=true \
+    training.validation.val_check_interval=500 \
     output_dir=$CHECKPOINT_DIR \
-    experiment_name=meta_opt_smoke_1gpu \
-    training.checkpoint.save_interval=20 \
-    training.logging.log_interval=1 \
+    experiment_name=meta_opt_v2 \
+    training.checkpoint.save_interval=500 \
+    training.logging.log_interval=10 \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
     gcs.enabled=true \

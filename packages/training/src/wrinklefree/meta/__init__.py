@@ -1,6 +1,6 @@
 """Efficient meta-optimization for PyTorch Lightning trainer.
 
-This module provides O(1) complexity meta-optimization using two complementary
+This module provides O(1) complexity meta-optimization using three complementary
 methods that can be enabled independently or together:
 
 1. **LDC-MTL** (Loss Discrepancy Control for Multi-Task Learning):
@@ -13,7 +13,12 @@ methods that can be enabled independently or together:
    - Uses EXP3 algorithm with training loss as reward signal
    - ~0% wall-clock overhead, published 19% iteration reduction
 
-Both methods are efficient, principled, and require no external dependencies.
+3. **LayerLR** (Per-layer learning rate optimization):
+   - Learns per-layer LR multipliers based on gradient norms
+   - Bidirectional: increases LR when grads low, decreases when high
+   - Inspired by LARS but learned dynamically
+
+All methods are efficient, principled, and require no external dependencies.
 
 Example usage:
     ```python
@@ -23,18 +28,19 @@ Example usage:
         enabled=True,
         ldc_mtl=LDCMTLConfig(enabled=True, lambda_penalty=0.1),
         odm=ODMConfig(enabled=True, warmup_ratio=0.01),
+        layer_lr=LayerLRConfig(enabled=True),
     )
     trainer = pl.Trainer(callbacks=[MetaOptimizerCallback(config)])
     ```
 
 References:
-    - LDC-MTL: "Loss Discrepancy Control for Multi-Task Learning"
-      https://arxiv.org/abs/2502.08585
-    - ODM: "Efficient Online Data Mixing For Language Model Pre-Training"
-      https://arxiv.org/abs/2312.02406
+    - LDC-MTL: https://arxiv.org/abs/2502.08585
+    - ODM: https://arxiv.org/abs/2312.02406
+    - LayerLR: Inspired by LARS (https://arxiv.org/abs/1708.03888)
 """
 
 from wrinklefree.meta.config import (
+    LayerLRConfig,
     LDCMTLConfig,
     MetaOptimizationConfig,
     ODMConfig,
@@ -44,6 +50,7 @@ from wrinklefree.meta.ldc_mtl import (
     ObjectiveRouter,
     compute_loss_discrepancy,
 )
+from wrinklefree.meta.layer_lr import LayerLRManager
 from wrinklefree.meta.odm import OnlineDataMixer
 from wrinklefree.meta.callback import MetaOptimizerCallback
 
@@ -52,12 +59,15 @@ __all__ = [
     "MetaOptimizationConfig",
     "LDCMTLConfig",
     "ODMConfig",
+    "LayerLRConfig",
     # LDC-MTL components
     "LDCMTLManager",
     "ObjectiveRouter",
     "compute_loss_discrepancy",
     # ODM components
     "OnlineDataMixer",
+    # LayerLR components
+    "LayerLRManager",
     # Callback
     "MetaOptimizerCallback",
 ]
