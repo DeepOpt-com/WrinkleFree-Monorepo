@@ -85,20 +85,6 @@ objectives:
     ignore_index: -100
     label_smoothing: 0.0
 
-  logits_distill:
-    enabled: true
-    weight: 10.0
-    temperature: 5.0
-    ignore_index: -100
-    shift_labels: true
-
-  attention_distill:
-    enabled: true
-    weight: 1.0e-5
-    distill_layer: -1
-    temperature: 1.0
-    ignore_index: -100
-
   # DLM enabled from the start for BitDistill
   dlm:
     enabled: true
@@ -106,6 +92,28 @@ objectives:
     mask_prob: 0.15
     mask_token_id: 0
     use_complementary_masks: true
+
+  # Unified distillation: logits + attention
+  distill:
+    enabled: true
+    weight: 1.0
+    hidden:
+      enabled: false
+    logits:
+      enabled: true
+      weight: 10.0
+      temperature: 5.0
+      mode: full
+      shift_labels: true
+      ignore_index: -100
+    attention:
+      enabled: true
+      weight: 1.0e-5
+      distill_layer: -1
+      mode: relation
+      temperature: 1.0
+    lrc:
+      enabled: false
 
 # === CURRICULUM SCHEDULE ===
 # All objectives enabled from the start (no warmup phases)
@@ -119,9 +127,8 @@ curriculum:
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
-        logits_distill: 10.0
-        attention_distill: 1.0e-5
         dlm: 1.0
+        distill: 1.0
 
 # Teacher model configuration
 teacher:

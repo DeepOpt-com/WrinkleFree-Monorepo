@@ -6,6 +6,9 @@ Implements the gradual quantization approach from HuggingFace's BitNet 1.58-bit 
 - Prevents catastrophic forgetting of pre-trained knowledge
 
 Reference: https://huggingface.co/blog/1_58_llm_extreme_quantization
+
+TODO: I think this is now depreciated as it turns out that the "savings" from this are out-weighed
+by the requirement to keep the original model
 """
 
 from __future__ import annotations

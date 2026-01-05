@@ -378,10 +378,12 @@ lrc:
   init_method: zeros    # or "svd_residual"
 
 objectives:
-  lrc_reconstruction:
+  distill:
     enabled: true
-    loss_type: mse
-    layer_weights: progressive
+    lrc:
+      enabled: true
+      loss_type: mse
+      layer_weights: progressive
 ```
 
 ### Legacy Stages (Still Supported)
@@ -649,18 +651,17 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 
 ### Core Components
 
-**Objectives** (`src/wrinklefree/objectives/`):
+**Objectives** (`src/wf_train/objectives/`):
 - `manager.py` - ObjectiveManager: runs multiple objectives on same batch
 - `continue_pretrain.py` - ContinuePretrainObjective: next-token prediction
 - `dlm.py` - DLMObjective: diffusion language model masking
-- `layerwise_distill.py` - LayerwiseDistillationObjective: hidden state alignment
-- `logits_distill.py` - LogitsDistillationObjective: KL divergence on teacher logits
-- `attention_distill.py` - AttentionRelationDistillationObjective: attention pattern matching
-- `tcs_distill.py` - TCSDistillationObjective: Target Concrete Score for DLM students
-- `bitdistill.py` - BitDistillObjective: combined logits + attention distillation
-- `lrc_reconstruction.py` - LRCReconstructionObjective: low-rank correction training
+- `distill.py` - DistillObjective: unified distillation with 4 configurable components:
+  - `hidden`: Hidden state alignment (layerwise distillation)
+  - `logits`: KL divergence on logits (full or sparse TCS mode)
+  - `attention`: Attention pattern matching (relation or block mode)
+  - `lrc`: Low-rank correction post-quantization recovery
 - `factory.py` - Creates ObjectiveManager from config
-- `curriculum.py` - CurriculumScheduler: phase-based weight transitions
+- `base.py` - Base Objective class with modifies_input, requires_teacher, etc.
 
 **Training** (`src/wrinklefree/training/`):
 - `fsdp_wrapper.py` - FSDP wrapping with activation checkpointing (ACTIVE)

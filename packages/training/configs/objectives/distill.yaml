@@ -1,0 +1,70 @@
+# Unified distillation objective configuration
+# Combines hidden states, logits, attention, and LRC distillation
+#
+# Each component can be independently enabled/disabled with its own weight.
+# Dynamic requirements based on enabled components:
+# - requires_teacher: True if any component enabled
+# - requires_hidden_states: True if hidden or lrc enabled
+# - requires_attentions: True if attention enabled
+
+# === HIDDEN STATES COMPONENT ===
+# Aligns student hidden states with teacher at each transformer layer.
+# Use for Stage 1.9 calibration or general distillation.
+hidden:
+  enabled: false
+  weight: 1.0
+  # Loss type: mse, mse_normalized (OneBit style), cosine, inner_product
+  loss_type: mse_normalized
+  # Layer weighting: null (uniform), progressive, exponential, or list of floats
+  layer_weights: progressive
+  # L2 normalize before loss computation (recommended for mse_normalized)
+  normalize: true
+
+# === LOGITS COMPONENT ===
+# KL divergence between teacher and student logits.
+# BitDistill Equation 13: L_LD = KL(P_teacher || P_student) * T^2
+logits:
+  enabled: false
+  weight: 10.0
+  # Softmax temperature (higher = softer distributions)
+  temperature: 5.0
+  # Mode: "full" (standard KL on all logits) or "sparse" (top-K TCS style for DLM)
+  mode: full
+  # Number of top tokens for sparse mode (ignored for full mode)
+  top_k: 100
+  # Shift logits for next-token prediction (True for AR models, False for DLM)
+  shift_labels: true
+  ignore_index: -100
+
+# === ATTENTION COMPONENT ===
+# Attention pattern matching between teacher and student.
+# BitDistill Equation 11: R = Softmax(A * A^T / sqrt(d_r))
+attention:
+  enabled: false
+  weight: 1.0e-5
+  # Layer to distill (-1 = last layer, recommended by BitDistill)
+  distill_layer: -1
+  # Mode: "relation" (A*A^T matching) or "block" (block-wise for DLM)
+  mode: relation
+  # Block size for block mode (ignored for relation mode)
+  block_size: 32
+  # Temperature for softmax in relation computation
+  temperature: 1.0
+
+# === LRC COMPONENT ===
+# Low-Rank Correction for post-quantization hidden state recovery.
+# Trains U, V matrices to minimize: ||h_teacher - h_student||^2
+lrc:
+  enabled: false
+  weight: 1.0
+  # Loss type: mse, mse_normalized, cosine
+  loss_type: mse
+  # Layer weighting: null (uniform), progressive, exponential, or list
+  layer_weights: progressive
+  # Temperature scaling (divides loss, higher = smaller loss magnitude)
+  temperature: 1.0
+  # L2 normalize before loss computation
+  normalize: false
+
+# Common settings
+ignore_index: -100

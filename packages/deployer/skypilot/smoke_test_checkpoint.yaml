@@ -18,11 +18,12 @@ resources:
   use_spot: false
   cloud: nebius
 
-workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+# Run from monorepo root
+workdir: .
 
 file_mounts:
-  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
-  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
+  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: packages/deployer/credentials/.env
   /tmp/global.env: ~/.config/.env.global
 
 envs:

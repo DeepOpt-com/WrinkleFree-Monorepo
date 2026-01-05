@@ -42,18 +42,28 @@ teacher:
 
 # Objectives: LRC reconstruction loss (hidden state matching)
 objectives:
-  lrc_reconstruction:
-    enabled: true
-    weight: 1.0
-    loss_type: mse
-    layer_weights: progressive
-    temperature: 1.0
-    normalize: false
-
   # Optional: Add LM loss to maintain generation quality
   continue_pretrain:
     enabled: false  # Set true to add CE loss
     weight: 0.1
+
+  # Unified distillation with LRC component enabled
+  distill:
+    enabled: true
+    weight: 1.0
+    hidden:
+      enabled: false
+    logits:
+      enabled: false
+    attention:
+      enabled: false
+    lrc:
+      enabled: true
+      weight: 1.0
+      loss_type: mse
+      layer_weights: progressive
+      temperature: 1.0
+      normalize: false
 
 # No curriculum needed for calibration
 curriculum:

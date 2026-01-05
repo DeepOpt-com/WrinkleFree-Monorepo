@@ -5,7 +5,7 @@
 # Research basis:
 # - OneBit (arxiv.org/abs/2402.11295): L2-normalized MSE for scale-invariance
 # - BitDistill (arxiv.org/abs/2510.13998): Later layers often more important
-stage: layerwise_distillation
+stage: unified  # Uses unified trainer with objectives system
 
 # torch.compile for 2.9x training speedup (A40 benchmark)
 # First step takes ~97s to compile, then 3x faster steady-state
@@ -21,56 +21,52 @@ teacher:
   fp16: true  # Load teacher in FP16 for memory efficiency
   offload_to_cpu: false  # Set true to offload between forward passes (slower but saves VRAM)
 
-# Layer-wise distillation settings
-layerwise:
-  # Loss type options:
-  #   - mse_normalized: MSE with L2 normalization (recommended, OneBit style)
-  #   - mse: Standard MSE (scale-dependent)
-  #   - kl: KL divergence after projecting to vocab space
-  #   - inner_product: Negative inner product (normalized)
-  # Note: cosine removed - mathematically equivalent to mse_normalized
-  #       (for L2-normalized vectors: mse_normalized = 2 * cosine_loss)
-  loss_type: mse_normalized
-
-  # Per-layer weights - how to weight each layer's contribution
-  # Options:
-  #   - null: Uniform weights (1/L for each layer)
-  #   - "progressive": Linearly increasing (later layers weighted more)
-  #   - "exponential": Exponentially increasing
-  #   - [0.1, 0.2, 0.3, ...]: Custom list per layer
-  layer_weights: progressive
-
-  # L2 normalize hidden states before loss computation
-  # Recommended: true for mse_normalized, inner_product
-  normalize: true
-
-  # Temperature (only used for KL loss)
-  temperature: 1.0
-
-  # LM loss weight: combines hidden state distillation with cross-entropy
-  # 0.0 = pure hidden state MSE (original behavior, may lose LM capability)
-  # 0.5 = balanced mix of distillation and cross-entropy (recommended)
-  # 1.0 = pure cross-entropy (no hidden state alignment)
-  # Adding LM loss helps maintain language modeling capability during distillation
-  # NOTE: If distill_schedule.enabled=true, this is ignored in favor of the schedule
-  lm_loss_weight: 0.5
-
-  # Distillation weight schedule (ramps down distillation over training)
-  # Gradually shifts from teacher alignment to LM capability
-  distill_schedule:
+# === OBJECTIVES SYSTEM ===
+# Layer-wise distillation via unified distill objective
+objectives:
+  # LM loss for maintaining generation quality
+  continue_pretrain:
     enabled: true
-    # Schedule type: "linear" or "cosine"
-    type: cosine
-    # Starting distillation weight (high = more distillation)
-    initial_weight: 0.5
-    # Final distillation weight (low = less distillation, more LM focus)
-    final_weight: 0.0
-    # Optional warmup: keep initial_weight constant for N steps before ramping
-    warmup_steps: 0
+    weight: 0.5
+    ignore_index: -100
 
-  # Model dimensions (needed for KL loss projection)
-  hidden_size: ${model.hidden_size}
-  vocab_size: ${model.vocab_size}
+  # Unified distillation with hidden states component enabled
+  distill:
+    enabled: true
+    weight: 1.0
+    hidden:
+      enabled: true
+      weight: 1.0
+      # mse_normalized: MSE with L2 normalization (OneBit style, recommended)
+      loss_type: mse_normalized
+      # progressive: Later layers weighted more (linearly increasing)
+      layer_weights: progressive
+      # L2 normalize hidden states before loss computation
+      normalize: true
+    logits:
+      enabled: false
+    attention:
+      enabled: false
+    lrc:
+      enabled: false
+
+# Curriculum for distillation schedule (ramps down distillation over training)
+curriculum:
+  enabled: true
+  interpolation: cosine
+  phases:
+    # Phase 1: High distillation weight
+    - name: distill_heavy
+      end_ratio: 0.5
+      objectives:
+        continue_pretrain: 0.5
+        distill: 1.0
+    # Phase 2: Ramp down distillation, focus on LM
+    - name: lm_focus
+      end_ratio: 1.0
+      objectives:
+        continue_pretrain: 1.0
+        distill: 0.0
 
 # Optimization (Muon optimizer for better convergence)
 optimizer:

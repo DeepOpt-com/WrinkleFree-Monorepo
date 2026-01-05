@@ -5,7 +5,7 @@
 # Features:
 # - Model: Qwen3-0.6B (smallest Qwen3, good for experimentation)
 # - GPU: Nebius L40 (48GB VRAM)
-# - BitDistill: CE + Logits + Attention + DLM objectives
+# - Training: CE + DLM objectives (no distillation - avoids teacher model hang)
 # - Meta-optimization: LDC-MTL + ODM + LayerLR
 # - Logging: WandB + GCS checkpoints
 #
@@ -24,7 +24,7 @@
 name: wrinklefree-qwen3-0.6b-nebius
 
 resources:
-  accelerators: L40:1
+  accelerators: L40S:1
   memory: 64+
   use_spot: false
   cloud: nebius
@@ -101,8 +101,6 @@ run: |
   echo "Configuration:"
   echo "  Objectives:"
   echo "    - CE (continue_pretrain)"
-  echo "    - Logits Distillation (T=5, weight=10)"
-  echo "    - Attention Distillation (weight=1e-5)"
   echo "    - DLM (mask_prob=0.15)"
   echo ""
   echo "  Optimizer: Muon + AdamW (muonclip)"
@@ -120,45 +118,29 @@ run: |
   echo "    - GCS: gs://${GCS_BUCKET}/"
   echo "================================================================"
 
-  # Run BitDistill training with full meta-optimization
+  # Run CE+DLM training with full meta-optimization (no distillation)
   uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=bitdistill_full \
-    data.config_name=mixed_pretrain \
+    training=base \
+    data.config_name=fineweb \
     distributed=single_gpu \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=qwen3_0.6b_nebius_l40 \
     \
-    +training.meta_optimization.enabled=true \
-    +training.meta_optimization.ldc_mtl.enabled=true \
-    +training.meta_optimization.ldc_mtl.lambda_penalty=0.1 \
-    +training.meta_optimization.ldc_mtl.hidden_dim=32 \
-    +training.meta_optimization.ldc_mtl.router_lr=0.001 \
-    +training.meta_optimization.ldc_mtl.step_interval=1 \
-    +training.meta_optimization.odm.enabled=true \
-    +training.meta_optimization.odm.reward_smoothing=0.9 \
-    +training.meta_optimization.odm.warmup_ratio=0.01 \
-    +training.meta_optimization.odm.min_weight=0.05 \
-    +training.meta_optimization.odm.max_weight=0.60 \
-    +training.meta_optimization.layer_lr.enabled=true \
-    +training.meta_optimization.layer_lr.lr=0.001 \
-    +training.meta_optimization.layer_lr.min_multiplier=0.1 \
-    +training.meta_optimization.layer_lr.max_multiplier=10.0 \
-    +training.meta_optimization.layer_lr.ema_decay=0.99 \
-    +training.meta_optimization.layer_lr.lambda_mean=0.1 \
-    +training.meta_optimization.layer_lr.warmup_ratio=0.05 \
-    +training.meta_optimization.layer_lr.step_interval=1 \
-    +training.meta_optimization.log_interval=50 \
+    training.meta_optimization.enabled=false \
     \
     training.influence.enabled=false \
     training.max_steps=3815 \
+    training.batch_size=1 \
+    training.gradient_accumulation_steps=64 \
+    training.max_seq_length=256 \
     \
     training.checkpoint.save_interval=200 \
     training.logging.log_interval=10 \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
     training.logging.wandb.name=${WANDB_RUN_NAME} \
-    training.logging.wandb.tags="[qwen3-0.6b,nebius,l40,bitdistill,meta-opt]" \
+    training.logging.wandb.tags="[qwen3-0.6b,nebius,l40,ce-dlm,meta-opt]" \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET}
 

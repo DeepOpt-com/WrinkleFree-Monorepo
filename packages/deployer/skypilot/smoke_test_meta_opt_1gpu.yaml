@@ -29,13 +29,13 @@ resources:
   cloud: nebius
   disk_size: 100
 
-# Sync from InfluenceClean worktree
-workdir: /home/lev/code/WrinkleFreeDevWrapper/InfluenceClean
+# Run from monorepo root
+workdir: .
 
 # Upload credentials
 file_mounts:
-  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
-  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: packages/deployer/credentials/.env
   /tmp/global.env: ~/.config/.env.global
 
 envs:

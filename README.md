@@ -24,11 +24,11 @@ uv sync --all-packages
 uv run pytest
 
 # Run training with Lightning (recommended)
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m training=base
 
 # With auto batch size scaling
-uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m training=base training.auto_batch_size=true
 ```
 
@@ -73,16 +73,16 @@ WrinkleFree-Monorepo/
 uv sync --all-packages
 
 # Install single package
-uv sync --package wrinklefree
+uv sync --package wf-train
 
 # Run in package context
-uv run --package wrinklefree python scripts/train.py
+uv run --package wf-train python packages/training/scripts/train_lightning.py
 
 # Add dependency to package
 cd packages/training && uv add torch
 
 # Run tests for specific package
-uv run --package wrinklefree pytest packages/training/tests/
+uv run --package wf-train pytest packages/training/tests/
 ```
 
 ## Shared Dependencies

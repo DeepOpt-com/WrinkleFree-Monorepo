@@ -14,13 +14,13 @@ from omegaconf import DictConfig, OmegaConf
 from wf_train.objectives.base import Objective
 from wf_train.objectives.continue_pretrain import ContinuePretrainObjective
 from wf_train.objectives.dlm import DLMObjective
-from wf_train.objectives.layerwise import LayerwiseDistillationObjective, LayerwiseLossType
-from wf_train.objectives.logits_distill import LogitsDistillationObjective
-from wf_train.objectives.attention_distill import AttentionRelationDistillationObjective
-from wf_train.objectives.tcs_distill import TCSDistillationObjective
-from wf_train.objectives.block_attention_distill import BlockAttentionDistillationObjective
-from wf_train.objectives.bitdistill import BitDistillObjective
-from wf_train.objectives.lrc_reconstruction import LRCReconstructionObjective, LRCLossType
+from wf_train.objectives.distill import (
+    DistillObjective,
+    HiddenConfig,
+    LogitsConfig,
+    AttentionConfig,
+    LRCConfig,
+)
 from wf_train.objectives.manager import (
     CurriculumPhase,
     CurriculumScheduler,
@@ -52,55 +52,76 @@ def create_objective(name: str, config: dict[str, Any]) -> Objective:
             ignore_index=config.get("ignore_index", -100),
             use_complementary_masks=config.get("use_complementary_masks", True),
         )
-    elif name == "layerwise_distill":
-        loss_type = config.get("loss_type", "mse_normalized")
-        return LayerwiseDistillationObjective(
-            loss_type=LayerwiseLossType(loss_type) if isinstance(loss_type, str) else loss_type,
-            layer_weights=config.get("layer_weights"),
-            normalize=config.get("normalize", True),
-        )
-    elif name == "logits_distill":
-        return LogitsDistillationObjective(
-            temperature=config.get("temperature", 5.0),
-            ignore_index=config.get("ignore_index", -100),
-            shift_labels=config.get("shift_labels", True),
-        )
-    elif name == "attention_distill":
-        return AttentionRelationDistillationObjective(
-            distill_layer=config.get("distill_layer", -1),
-            temperature=config.get("temperature", 1.0),
-            ignore_index=config.get("ignore_index", -100),
-        )
-    elif name == "tcs_distill":
-        return TCSDistillationObjective(
-            temperature=config.get("temperature", 5.0),
-            top_k=config.get("top_k", 100),
-            ignore_index=config.get("ignore_index", -100),
-        )
-    elif name == "block_attention_distill":
-        return BlockAttentionDistillationObjective(
-            block_size=config.get("block_size", 32),
-            distill_layer=config.get("distill_layer", -1),
-            ignore_index=config.get("ignore_index", -100),
-        )
-    elif name == "bitdistill":
-        return BitDistillObjective(
-            lambda_logits=config.get("lambda_logits", 10.0),
-            gamma_attention=config.get("gamma_attention", 1e-5),
-            temperature=config.get("temperature", 5.0),
-            distill_layer=config.get("distill_layer", -1),
-            ignore_index=config.get("ignore_index", -100),
-        )
-    elif name == "lrc_reconstruction":
-        loss_type = config.get("loss_type", "mse")
-        return LRCReconstructionObjective(
-            loss_type=LRCLossType(loss_type) if isinstance(loss_type, str) else loss_type,
-            layer_weights=config.get("layer_weights"),
-            temperature=config.get("temperature", 1.0),
-            normalize=config.get("normalize", False),
-        )
+    elif name == "distill":
+        return _create_distill_objective(config)
     else:
         raise ValueError(f"Unknown objective type: {name}")
+
+
+def _create_distill_objective(config: dict[str, Any]) -> DistillObjective:
+    """Create DistillObjective from config.
+
+    Args:
+        config: Distill config with hidden, logits, attention, lrc sub-configs
+
+    Returns:
+        Configured DistillObjective
+    """
+    hidden = None
+    if "hidden" in config:
+        hidden_cfg = config["hidden"]
+        hidden = HiddenConfig(
+            enabled=hidden_cfg.get("enabled", False),
+            weight=hidden_cfg.get("weight", 1.0),
+            loss_type=hidden_cfg.get("loss_type", "mse_normalized"),
+            layer_weights=hidden_cfg.get("layer_weights"),
+            normalize=hidden_cfg.get("normalize", True),
+        )
+
+    logits = None
+    if "logits" in config:
+        logits_cfg = config["logits"]
+        logits = LogitsConfig(
+            enabled=logits_cfg.get("enabled", False),
+            weight=logits_cfg.get("weight", 10.0),
+            temperature=logits_cfg.get("temperature", 5.0),
+            mode=logits_cfg.get("mode", "full"),
+            top_k=logits_cfg.get("top_k", 100),
+            shift_labels=logits_cfg.get("shift_labels", True),
+            ignore_index=logits_cfg.get("ignore_index", -100),
+        )
+
+    attention = None
+    if "attention" in config:
+        attn_cfg = config["attention"]
+        attention = AttentionConfig(
+            enabled=attn_cfg.get("enabled", False),
+            weight=attn_cfg.get("weight", 1.0e-5),
+            distill_layer=attn_cfg.get("distill_layer", -1),
+            mode=attn_cfg.get("mode", "relation"),
+            block_size=attn_cfg.get("block_size", 32),
+            temperature=attn_cfg.get("temperature", 1.0),
+        )
+
+    lrc = None
+    if "lrc" in config:
+        lrc_cfg = config["lrc"]
+        lrc = LRCConfig(
+            enabled=lrc_cfg.get("enabled", False),
+            weight=lrc_cfg.get("weight", 1.0),
+            loss_type=lrc_cfg.get("loss_type", "mse"),
+            layer_weights=lrc_cfg.get("layer_weights"),
+            temperature=lrc_cfg.get("temperature", 1.0),
+            normalize=lrc_cfg.get("normalize", False),
+        )
+
+    return DistillObjective(
+        hidden=hidden,
+        logits=logits,
+        attention=attention,
+        lrc=lrc,
+        ignore_index=config.get("ignore_index", -100),
+    )
 
 
 def create_curriculum_scheduler(

@@ -23,13 +23,13 @@ resources:
   use_spot: false
   cloud: runpod
 
-# Sync from Refact worktree
-workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+# Run from monorepo root
+workdir: .
 
 # Upload credentials
 file_mounts:
-  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
-  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: packages/deployer/credentials/.env
   /tmp/global.env: ~/.config/.env.global
 
 envs:
