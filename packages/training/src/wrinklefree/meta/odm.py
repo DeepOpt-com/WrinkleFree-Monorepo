@@ -13,7 +13,6 @@ loss as a reward signal - higher loss means more to learn from that domain.
 
 import logging
 import math
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -30,22 +29,45 @@ class OnlineDataMixer:
     loss per domain as the reward signal to learn optimal sampling
     probabilities dynamically during training.
 
-    The EXP3 algorithm:
-    1. Maintains estimated rewards for each arm (dataset)
-    2. Samples according to softmax over rewards + exploration
-    3. Updates rewards using importance-weighted estimator
+    The intuition is that higher loss = more to learn from that domain,
+    so we should sample it more often. This naturally balances learning
+    across domains without manual tuning.
+
+    The EXP3 algorithm (Exponential-weight algorithm for Exploration and
+    Exploitation):
+    1. Maintains estimated rewards for each arm (dataset domain)
+    2. Samples according to softmax over rewards mixed with uniform exploration
+    3. Updates rewards using importance-weighted estimator for unbiased estimation
+
+    The sampling distribution balances exploitation (sample high-reward domains)
+    with exploration (sample all domains to gather information):
+
+        π_t(i) = (1 - K·ε_t) × softmax(ε·R̂) + ε_t
+
+    where ε_t decays over time: ε_t = min{1/K, √(ln K / (K·t))}
+
+    Reference:
+        Section 3.1 of https://arxiv.org/abs/2312.02406
+
+    Example:
+        >>> mixer = OnlineDataMixer(["web", "code", "math"], config)
+        >>> # In training loop:
+        >>> weights = mixer.get_sampling_weights()  # Use for dataloader
+        >>> # ... train on batch from domain ...
+        >>> mixer.update({"web": 2.5, "code": 1.8, "math": 3.2})  # Report losses
     """
 
     def __init__(
         self,
         dataset_names: list[str],
         config: ODMConfig,
-    ):
+    ) -> None:
         """Initialize the online data mixer.
 
         Args:
-            dataset_names: List of dataset/domain names
-            config: ODM configuration
+            dataset_names: List of dataset/domain names. These should match
+                the domain names reported in per-domain losses.
+            config: ODM configuration with hyperparameters.
         """
         self.dataset_names = dataset_names
         self.config = config
@@ -67,11 +89,20 @@ class OnlineDataMixer:
     def get_exploration_rate(self) -> float:
         """Compute decaying exploration rate.
 
-        From the paper:
+        The exploration rate controls the balance between exploitation
+        (sampling high-reward domains) and exploration (sampling all
+        domains to gather information). It decays over time as we become
+        more confident in our reward estimates.
+
+        From the paper (Section 3.1):
             ε_t = min{1/K, √(ln K / (K·t))}
 
+        This ensures:
+        - Early training: High exploration (ε ≈ 1/K for all domains)
+        - Late training: Low exploration, mostly exploitation
+
         Returns:
-            Current exploration rate
+            Current exploration rate in range (0, 1/K].
         """
         if self.step_count == 0:
             return 1.0 / self.K
@@ -83,14 +114,20 @@ class OnlineDataMixer:
     def get_sampling_weights(self) -> dict[str, float]:
         """Compute current sampling distribution.
 
-        From the paper:
+        Computes the EXP3 sampling distribution that mixes exploitation
+        (softmax over rewards) with uniform exploration:
+
             π_t(i) = (1 - K·ε_t) × softmax(ε_{t-1}·R̂) + ε_t
 
-        This mixes the exploitation distribution (softmax over rewards)
-        with uniform exploration.
+        The previous exploration rate is used as a temperature for the
+        softmax, making exploitation sharper as training progresses.
+
+        After computing raw probabilities, min/max constraints are applied
+        via iterative projection to ensure no domain is ignored or dominant.
 
         Returns:
-            Dict mapping dataset names to sampling probabilities
+            Dict mapping dataset names to sampling probabilities.
+            Probabilities sum to 1 and satisfy min/max weight constraints.
         """
         eps = self.get_exploration_rate()
 
@@ -124,39 +161,59 @@ class OnlineDataMixer:
     def _apply_constraints(self, probs: torch.Tensor) -> torch.Tensor:
         """Apply min/max weight constraints via iterative projection.
 
-        Clips probabilities to [min_weight, max_weight] and renormalizes.
-        Uses iterative projection to ensure all constraints are satisfied.
+        Uses alternating projection to satisfy both box constraints
+        [min_weight, max_weight] and simplex constraint (sum to 1).
+
+        The algorithm:
+        1. Clamp probabilities to [min_weight, max_weight]
+        2. Renormalize to sum to 1
+        3. Repeat until both constraints are satisfied
+
+        This typically converges in 2-3 iterations for reasonable
+        min/max values. Edge cases (e.g., min_weight * K > 1) may
+        not converge, but 10 iterations is a safe upper bound.
 
         Args:
-            probs: Raw probabilities tensor
+            probs: Raw probabilities tensor of shape (K,).
 
         Returns:
-            Constrained and renormalized probabilities (sum to 1)
+            Constrained probabilities that sum to 1 and satisfy
+            min_weight <= p_i <= max_weight for all i.
         """
         min_w = self.config.min_weight
         max_w = self.config.max_weight
 
         # Iterative projection to satisfy both min/max AND sum-to-1
-        # This handles edge cases where simple clamp+renormalize fails
         for _ in range(10):  # Usually converges in 2-3 iterations
-            # Clamp to range
+            # Project onto box constraint
             probs = probs.clamp(min_w, max_w)
-            # Renormalize
+            # Project onto simplex constraint
             probs = probs / probs.sum()
-            # Check if constraints satisfied
+            # Check if both constraints satisfied
             if probs.min() >= min_w - 1e-6 and probs.max() <= max_w + 1e-6:
                 break
 
         return probs
 
     def update(self, losses_per_domain: dict[str, float]) -> None:
-        """Update rewards based on observed domain losses.
+        """Update reward estimates based on observed domain losses.
 
-        Reward = loss (higher loss = more to learn = higher priority)
-        Uses importance-weighted update for unbiased estimation.
+        Uses importance-weighted rewards for unbiased estimation:
+            R̂_i = loss_i / π_i
+
+        where π_i is the current sampling probability. This corrects for
+        the fact that we observe high-probability domains more often.
+
+        The reward signal is: higher loss = more to learn = higher reward.
+        This encourages sampling domains where the model is struggling.
+
+        Updates are smoothed via exponential moving average:
+            R̂_new = α·R̂_old + (1-α)·R̂_observed
 
         Args:
-            losses_per_domain: Dict mapping dataset names to their losses
+            losses_per_domain: Dict mapping dataset names to their losses.
+                Only observed domains need to be included; missing domains
+                are silently skipped.
         """
         self.step_count += 1
 
@@ -229,19 +286,29 @@ class OnlineDataMixer:
 
         return metrics
 
-    def state_dict(self) -> dict:
-        """Get state dict for checkpointing."""
+    def state_dict(self) -> dict[str, object]:
+        """Get state dict for checkpointing.
+
+        Returns:
+            Dict containing reward estimates and step count.
+            Can be saved with torch.save() and restored with load_state_dict().
+        """
         return {
             "avg_rewards": self.avg_rewards.copy(),
             "step_count": self.step_count,
         }
 
-    def load_state_dict(self, state: dict) -> None:
-        """Load state from checkpoint."""
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        """Load state from checkpoint.
+
+        Args:
+            state: State dict from a previous state_dict() call.
+                Missing keys are silently ignored for backwards compatibility.
+        """
         if "avg_rewards" in state:
-            self.avg_rewards = state["avg_rewards"].copy()
+            self.avg_rewards = dict(state["avg_rewards"])  # type: ignore[arg-type]
         if "step_count" in state:
-            self.step_count = state["step_count"]
+            self.step_count = int(state["step_count"])  # type: ignore[arg-type]
         logger.info(
             f"OnlineDataMixer state restored: step={self.step_count}, "
             f"rewards={self.avg_rewards}"

@@ -12,7 +12,6 @@ References:
 """
 
 from dataclasses import dataclass, field
-from typing import Literal, Optional
 
 
 @dataclass
@@ -22,11 +21,22 @@ class LDCMTLConfig:
     LDC-MTL (Loss Discrepancy Control for Multi-Task Learning) uses a small
     router network to learn optimal task weights with O(1) complexity.
 
+    The key insight from the paper is that one gradient term in bi-level
+    optimization is empirically ~100x smaller than the other, allowing safe
+    simplification to a penalized single-level problem.
+
+    Reference:
+        https://arxiv.org/abs/2502.08585
+
     Attributes:
-        enabled: Whether to enable LDC-MTL objective weighting
-        lambda_penalty: Weight for the discrepancy penalty (higher = more balanced)
-        hidden_dim: Hidden layer dimension for the router MLP
-        router_lr: Learning rate for the router optimizer
+        enabled: Whether to enable LDC-MTL objective weighting.
+        lambda_penalty: Weight for the discrepancy penalty. Higher values
+            encourage more balanced weighted losses across objectives.
+            Paper recommends 0.1-1.0 range.
+        hidden_dim: Hidden layer dimension for the router MLP. A small
+            network (32-64) is sufficient as input is just K loss values.
+        router_lr: Learning rate for the router optimizer. Should be
+            similar to or slightly higher than main model learning rate.
     """
 
     enabled: bool = True
@@ -42,12 +52,28 @@ class ODMConfig:
     ODM (Online Data Mixing) uses the EXP3 multi-armed bandit algorithm
     to learn optimal dataset sampling probabilities during training.
 
+    Each dataset domain is treated as an "arm" in the bandit. Training
+    loss serves as the reward signal - higher loss means more to learn
+    from that domain, so it gets higher sampling probability.
+
+    Published results show 19% fewer iterations to reach same perplexity
+    with ~0% wall-clock overhead.
+
+    Reference:
+        https://arxiv.org/abs/2312.02406
+
     Attributes:
-        enabled: Whether to enable ODM dataset weighting
-        reward_smoothing: EMA coefficient for reward updates (0-1, higher = more smoothing)
-        warmup_ratio: Fraction of training to use uniform weights (0-1)
-        min_weight: Minimum allowed sampling probability per dataset
-        max_weight: Maximum allowed sampling probability per dataset
+        enabled: Whether to enable ODM dataset weighting.
+        reward_smoothing: EMA coefficient for reward updates (0-1).
+            Higher values give more weight to historical rewards,
+            providing smoother but slower adaptation. Default 0.9.
+        warmup_ratio: Fraction of training to use uniform weights (0-1).
+            During warmup, all datasets are sampled equally to gather
+            initial statistics. Default 0.01 (1% of training).
+        min_weight: Minimum allowed sampling probability per dataset.
+            Prevents any dataset from being completely ignored.
+        max_weight: Maximum allowed sampling probability per dataset.
+            Prevents any single dataset from dominating training.
     """
 
     enabled: bool = True

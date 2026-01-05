@@ -10,7 +10,7 @@ References:
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
@@ -25,31 +25,54 @@ logger = logging.getLogger(__name__)
 class MetaOptimizerCallback(Callback):
     """Lightning callback for efficient meta-optimization.
 
-    Uses LDC-MTL for objective weights and ODM for dataset weights.
-    Both are O(1) complexity with negligible overhead.
+    Integrates LDC-MTL (objective weights) and ODM (dataset weights) into
+    the PyTorch Lightning training loop. Both methods are O(1) complexity
+    with negligible overhead.
 
-    Usage:
-        callbacks.append(MetaOptimizerCallback(
-            config=MetaOptimizationConfig(enabled=True),
-        ))
+    The callback:
+    - Initializes LDC-MTL and/or ODM during setup (if enabled and applicable)
+    - Updates weights after each training batch
+    - Logs metrics at configurable intervals
+    - Saves/loads state with checkpoints
+
+    Requirements:
+    - LDC-MTL needs >1 objective (accessed via pl_module.objective_manager)
+    - ODM needs >1 dataset (accessed via trainer.datamodule.get_mixed_dataset())
+
+    Example:
+        ```python
+        config = MetaOptimizationConfig(
+            enabled=True,
+            ldc_mtl=LDCMTLConfig(enabled=True),
+            odm=ODMConfig(enabled=True),
+        )
+        trainer = pl.Trainer(callbacks=[MetaOptimizerCallback(config)])
+        ```
+
+    WandB Metrics:
+        - meta/ldc_mtl/objective_weight_{name}: Learned objective weights
+        - meta/odm/dataset_weight_{name}: Dataset sampling probabilities
+        - meta/odm/exploration_rate: Current EXP3 exploration rate
+        - meta/odm/avg_reward_{name}: Per-domain average rewards
     """
 
-    def __init__(self, config: MetaOptimizationConfig):
+    def __init__(self, config: MetaOptimizationConfig) -> None:
         """Initialize callback.
 
         Args:
-            config: Meta-optimization configuration
+            config: Meta-optimization configuration. Components are
+                initialized lazily during setup() based on what's available.
         """
         super().__init__()
         self.config = config
 
-        # Will be initialized in setup()
-        self.ldc_mtl: Optional[LDCMTLManager] = None
-        self.odm: Optional[OnlineDataMixer] = None
+        # Initialized lazily in setup()
+        self.ldc_mtl: LDCMTLManager | None = None
+        self.odm: OnlineDataMixer | None = None
 
         # Track state
         self._is_enabled = False
-        self._total_steps: Optional[int] = None
+        self._total_steps: int | None = None
 
     def setup(
         self,
@@ -57,7 +80,15 @@ class MetaOptimizerCallback(Callback):
         pl_module: pl.LightningModule,
         stage: str,
     ) -> None:
-        """Initialize meta-optimization components."""
+        """Initialize meta-optimization components.
+
+        Called by Lightning at the start of fit/validate/test/predict.
+        Only initializes components during the "fit" stage.
+
+        Initialization checks:
+        - LDC-MTL: Requires pl_module.objective_manager with >1 objective
+        - ODM: Requires trainer.datamodule with get_mixed_dataset() and >1 dataset
+        """
         if stage != "fit":
             return
 
@@ -107,7 +138,17 @@ class MetaOptimizerCallback(Callback):
             logger.info("MetaOptimizerCallback: enabled and ready")
 
     def _get_objective_names(self, pl_module: pl.LightningModule) -> list[str]:
-        """Get objective names from the Lightning module."""
+        """Get objective names from the Lightning module.
+
+        Looks for pl_module.objective_manager and extracts objective names
+        from its objectives dict or get_objective_names() method.
+
+        Args:
+            pl_module: The Lightning module being trained.
+
+        Returns:
+            List of objective names, or empty list if not found.
+        """
         if hasattr(pl_module, "objective_manager"):
             manager = pl_module.objective_manager
             if hasattr(manager, "objectives"):
@@ -116,8 +157,18 @@ class MetaOptimizerCallback(Callback):
                 return manager.get_objective_names()
         return []
 
-    def _get_dataset_names(self, datamodule) -> list[str]:
-        """Get dataset names from the datamodule."""
+    def _get_dataset_names(self, datamodule: Any) -> list[str]:
+        """Get dataset names from the datamodule.
+
+        Looks for datamodule.get_mixed_dataset() and extracts dataset names
+        from the mixed dataset's get_dataset_names() or dataset_names attr.
+
+        Args:
+            datamodule: The Lightning DataModule (may be None).
+
+        Returns:
+            List of dataset names, or empty list if not found.
+        """
         if datamodule is None:
             return []
 
@@ -139,7 +190,11 @@ class MetaOptimizerCallback(Callback):
         batch: dict[str, Any],
         batch_idx: int,
     ) -> None:
-        """Update meta-parameters after each batch."""
+        """Update meta-parameters after each training batch.
+
+        For ODM: Updates dataset weights based on per-domain losses from outputs.
+        For LDC-MTL: Steps the router optimizer (gradients computed during forward).
+        """
         if not self._is_enabled:
             return
 
@@ -164,7 +219,11 @@ class MetaOptimizerCallback(Callback):
         outputs: Any,
         step: int,
     ) -> None:
-        """Update ODM dataset weights."""
+        """Update ODM dataset weights based on training outputs.
+
+        Extracts per-domain losses from outputs and updates the bandit.
+        Skips during warmup period (uses uniform weights instead).
+        """
         # Check warmup
         if self.odm.is_in_warmup(step, self._total_steps):
             return
@@ -196,10 +255,13 @@ class MetaOptimizerCallback(Callback):
 
     def _apply_dataset_weights(
         self,
-        datamodule,
+        datamodule: Any,
         weights: dict[str, float],
     ) -> None:
-        """Apply dataset sampling weights."""
+        """Apply updated sampling weights to the dataset.
+
+        Looks for set_weights() or update_weights() method on the mixed dataset.
+        """
         if datamodule is None:
             return
 
@@ -235,7 +297,11 @@ class MetaOptimizerCallback(Callback):
         pl_module: pl.LightningModule,
         checkpoint: dict[str, Any],
     ) -> None:
-        """Save meta-optimization state to checkpoint."""
+        """Save meta-optimization state to checkpoint.
+
+        Stores LDC-MTL router weights and ODM bandit state under
+        the key "meta_optimizer_state" in the checkpoint dict.
+        """
         state = {}
 
         if self.ldc_mtl is not None:
@@ -253,7 +319,11 @@ class MetaOptimizerCallback(Callback):
         pl_module: pl.LightningModule,
         checkpoint: dict[str, Any],
     ) -> None:
-        """Load meta-optimization state from checkpoint."""
+        """Load meta-optimization state from checkpoint.
+
+        Restores LDC-MTL router weights and ODM bandit state from
+        the "meta_optimizer_state" key if present.
+        """
         if "meta_optimizer_state" not in checkpoint:
             return
 
@@ -269,12 +339,25 @@ class MetaOptimizerCallback(Callback):
 
     @property
     def is_enabled(self) -> bool:
-        """Check if meta-optimization is active."""
+        """Check if meta-optimization is active.
+
+        Returns:
+            True if at least one of LDC-MTL or ODM was successfully initialized.
+        """
         return self._is_enabled
 
     def get_current_weights(self) -> dict[str, dict[str, float]]:
-        """Get all current meta-parameter weights."""
-        result = {}
+        """Get all current meta-parameter weights.
+
+        Returns:
+            Dict with optional "objective" and "dataset" keys, each mapping
+            to a dict of name -> weight. Empty dict if nothing is enabled.
+
+        Example:
+            >>> callback.get_current_weights()
+            {"objective": {"ce": 0.6, "dlm": 0.4}, "dataset": {"web": 0.5, "code": 0.5}}
+        """
+        result: dict[str, dict[str, float]] = {}
 
         if self.ldc_mtl is not None:
             result["objective"] = self.ldc_mtl.get_weights()
