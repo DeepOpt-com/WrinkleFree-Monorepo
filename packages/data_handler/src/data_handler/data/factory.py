@@ -154,6 +154,7 @@ def create_dataloader(
             seed=seed,
             packed=packed,
             shuffle_buffer_size=config.get("shuffle_buffer_size", 1000),
+            homogeneous_batch_size=config.get("homogeneous_batch_size", 0),
         )
 
     # Single-source mode
@@ -192,8 +193,15 @@ def _create_multi_source_dataloader(
     seed: int,
     packed: bool,
     shuffle_buffer_size: int,
+    homogeneous_batch_size: int = 0,
 ) -> tuple[DataLoader, MixedDataset]:
-    """Create dataloader for multi-source mixed dataset."""
+    """Create dataloader for multi-source mixed dataset.
+
+    Args:
+        homogeneous_batch_size: If > 0, yield this many consecutive samples from
+            the same domain before sampling a new domain. This implements the
+            ODM paper's homogeneous batch sampling strategy (arxiv:2312.02406).
+    """
     # Convert source dicts to DatasetMixture objects
     mixtures = []
     for source in sources:
@@ -216,6 +224,7 @@ def _create_multi_source_dataloader(
         rank=rank,
         world_size=world_size,
         shuffle_buffer_size=shuffle_buffer_size,
+        homogeneous_batch_size=homogeneous_batch_size,
     )
 
     # Wrap with packing if enabled

@@ -43,6 +43,7 @@ class MixedDataset(IterableDataset):
         rank: int = 0,
         world_size: int = 1,
         shuffle_buffer_size: int = 10000,
+        homogeneous_batch_size: int = 0,
     ):
         """Initialize mixed dataset.
 
@@ -53,6 +54,9 @@ class MixedDataset(IterableDataset):
             rank: Process rank for distributed training
             world_size: Total number of processes for distributed training
             shuffle_buffer_size: Size of shuffle buffer for streaming datasets
+            homogeneous_batch_size: If > 0, yield this many consecutive samples from
+                the same domain before sampling a new domain. This implements the
+                ODM paper's homogeneous batch sampling strategy (arxiv:2312.02406).
         """
         # Filter out mixtures with weight=0 (disabled datasets)
         self.mixtures = [m for m in mixtures if m.weight > 0]
@@ -61,6 +65,7 @@ class MixedDataset(IterableDataset):
         self.rank = rank
         self.world_size = world_size
         self.shuffle_buffer_size = shuffle_buffer_size
+        self.homogeneous_batch_size = homogeneous_batch_size
 
         # Normalize weights (only among active mixtures)
         total_weight = sum(m.weight for m in self.mixtures)
@@ -287,6 +292,9 @@ class MixedDataset(IterableDataset):
         When a dataset is exhausted, it is excluded from future sampling
         (weights are renormalized among remaining datasets).
         Iteration stops when all datasets are exhausted.
+
+        If homogeneous_batch_size > 0, yields consecutive samples from the
+        same domain before sampling a new domain (ODM paper style).
         """
         if self._datasets is None:
             self._load_datasets()
@@ -299,6 +307,10 @@ class MixedDataset(IterableDataset):
         # Track which datasets are still active (not exhausted)
         active_mask = torch.ones(len(self.mixtures), dtype=torch.bool)
 
+        # For homogeneous batch mode
+        current_domain_idx = None
+        samples_from_current_domain = 0
+
         while active_mask.any():
             # Renormalize weights among active datasets only
             masked_weights = self.normalized_weights * active_mask.float()
@@ -307,8 +319,21 @@ class MixedDataset(IterableDataset):
                 break  # All datasets exhausted
             masked_weights = masked_weights / weight_sum
 
-            # Sample from active datasets only
-            idx = torch.multinomial(masked_weights, 1, generator=rng).item()
+            # Determine which dataset to sample from
+            if self.homogeneous_batch_size > 0:
+                # ODM-style homogeneous batches: yield N samples from same domain
+                if (current_domain_idx is None or
+                    samples_from_current_domain >= self.homogeneous_batch_size or
+                    not active_mask[current_domain_idx]):
+                    # Sample a new domain
+                    current_domain_idx = torch.multinomial(
+                        masked_weights, 1, generator=rng
+                    ).item()
+                    samples_from_current_domain = 0
+                idx = current_domain_idx
+            else:
+                # Standard mixed sampling
+                idx = torch.multinomial(masked_weights, 1, generator=rng).item()
 
             sample = self._get_sample(idx)
             if sample is None:
@@ -318,7 +343,11 @@ class MixedDataset(IterableDataset):
                 logger.info(
                     f"Remaining active datasets: {remaining}/{len(self.mixtures)}"
                 )
+                # Force new domain selection on next iteration
+                if self.homogeneous_batch_size > 0:
+                    current_domain_idx = None
             else:
+                samples_from_current_domain += 1
                 yield sample
 
         # Log final stats when epoch completes
@@ -401,22 +430,33 @@ class PackedDataset(IterableDataset):
         return encoded["input_ids"]
 
     def __iter__(self) -> Iterator[dict]:
-        """Iterate over packed sequences with batched tokenization."""
+        """Iterate over packed sequences with batched tokenization.
+
+        Preserves domain/source info from the underlying dataset for ODM.
+        Each packed sequence gets the domain of its first document.
+        """
         token_buffer: collections.deque = collections.deque()
         text_buffer: List[str] = []
+        source_buffer: List[str] = []  # Track sources for each text
+        current_chunk_source: Optional[str] = None  # Source for current packed chunk
 
         for sample in self.dataset:
             text_buffer.append(sample["text"])
+            source_buffer.append(sample.get("source", sample.get("domain", "unknown")))
 
             # Batch tokenize when buffer is full
             if len(text_buffer) >= self.tokenize_batch_size:
                 token_batches = self._batch_tokenize(text_buffer)
-                for tokens in token_batches:
+                for i, tokens in enumerate(token_batches):
+                    # Track source of first document in buffer for each chunk
+                    if current_chunk_source is None and i < len(source_buffer):
+                        current_chunk_source = source_buffer[i]
                     # Add separator between documents
                     if token_buffer:
                         token_buffer.append(self.separator_token_id)
                     token_buffer.extend(tokens)
                 text_buffer = []
+                source_buffer = []
 
                 # Yield complete chunks
                 while len(token_buffer) >= self.max_length:
@@ -428,12 +468,16 @@ class PackedDataset(IterableDataset):
                         "attention_mask": torch.ones(self.max_length, dtype=torch.long),
                         "position_ids": position_ids,
                         "labels": input_ids.clone(),  # For causal LM training
+                        "domain": current_chunk_source,  # For ODM
                     }
+                    current_chunk_source = None  # Reset for next chunk
 
         # Process remaining texts in buffer
         if text_buffer:
             token_batches = self._batch_tokenize(text_buffer)
-            for tokens in token_batches:
+            for i, tokens in enumerate(token_batches):
+                if current_chunk_source is None and i < len(source_buffer):
+                    current_chunk_source = source_buffer[i]
                 if token_buffer:
                     token_buffer.append(self.separator_token_id)
                 token_buffer.extend(tokens)
@@ -448,7 +492,9 @@ class PackedDataset(IterableDataset):
                     "attention_mask": torch.ones(self.max_length, dtype=torch.long),
                     "position_ids": position_ids,
                     "labels": input_ids.clone(),  # For causal LM training
+                    "domain": current_chunk_source,  # For ODM
                 }
+                current_chunk_source = None
 
 
 def create_mixed_dataset(
@@ -482,6 +528,7 @@ def create_mixed_dataset(
         rank=rank,
         world_size=world_size,
         shuffle_buffer_size=config.get("shuffle_buffer_size", 10000),
+        homogeneous_batch_size=config.get("homogeneous_batch_size", 0),
     )
 
     if packing:

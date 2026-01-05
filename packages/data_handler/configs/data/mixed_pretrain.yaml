@@ -10,6 +10,13 @@ name: mixed_pretrain
 # 50000 recommended for 5+ sources to ensure proper domain mixing
 shuffle_buffer_size: 50000
 
+# Homogeneous batch size for ODM (Online Data Mixing)
+# When > 0, yields this many consecutive samples from the same domain
+# before sampling a new domain. This implements the ODM paper's
+# homogeneous batch sampling strategy (arxiv:2312.02406).
+# Set to 0 for standard mixed sampling, or ~128 when using ODM.
+homogeneous_batch_size: 0
+
 # Multiple data sources with initial weights (adjusted by influence remixing)
 # Web + Code + Math + Reasoning + Diversity mix for influence remixing
 sources:

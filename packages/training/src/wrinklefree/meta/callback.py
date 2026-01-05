@@ -181,6 +181,9 @@ class MetaOptimizerCallback(Callback):
                     return mixed.get_dataset_names()
                 if hasattr(mixed, "dataset_names"):
                     return mixed.dataset_names
+                # MixedDataset exposes names via get_current_weights()
+                if hasattr(mixed, "get_current_weights"):
+                    return list(mixed.get_current_weights().keys())
 
         return []
 
@@ -204,7 +207,7 @@ class MetaOptimizerCallback(Callback):
 
         # Update ODM with per-domain losses (if available)
         if self.odm is not None:
-            self._update_odm(trainer, outputs, step)
+            self._update_odm(trainer, outputs, batch, step)
 
         # LDC-MTL updates happen during forward pass (gradients flow through router)
         # We step the optimizer based on step_interval config
@@ -221,11 +224,13 @@ class MetaOptimizerCallback(Callback):
         self,
         trainer: pl.Trainer,
         outputs: Any,
+        batch: dict[str, Any],
         step: int,
     ) -> None:
         """Update ODM dataset weights based on training outputs.
 
         Extracts per-domain losses from outputs and updates the bandit.
+        Uses batch["domain"] for ODM paper-style homogeneous batch rewards.
         Skips during warmup period (uses uniform weights instead).
         """
         # Check warmup
@@ -241,11 +246,18 @@ class MetaOptimizerCallback(Callback):
             elif "domain_losses" in outputs:
                 losses_per_domain = outputs["domain_losses"]
 
-        if losses_per_domain is None:
-            # Try to get from batch metadata
-            if "domain" in outputs.get("batch", {}):
-                domain = outputs["batch"]["domain"]
-                loss = outputs.get("loss", 0.0)
+        # ODM paper style: use batch["domain"] with overall batch loss
+        if losses_per_domain is None and "domain" in batch:
+            domain = batch["domain"]
+            # Handle batched domain field (take first if it's a list)
+            if isinstance(domain, (list, tuple)):
+                domain = domain[0] if domain else None
+            elif hasattr(domain, "__getitem__") and hasattr(domain, "__len__"):
+                # Tensor or array-like
+                domain = domain[0].item() if hasattr(domain[0], "item") else domain[0]
+
+            if domain is not None:
+                loss = outputs.get("loss", 0.0) if isinstance(outputs, dict) else outputs
                 if hasattr(loss, "item"):
                     loss = loss.item()
                 losses_per_domain = {domain: loss}
