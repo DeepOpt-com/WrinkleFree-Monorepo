@@ -155,7 +155,7 @@ run: |
   # Using unified config with Muon+AdamW optimizer, FineWeb-Edu only
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=unified \
+    training=base \
     data.config_name=fineweb \
     training.max_steps=${MAX_STEPS} \
     training.auto_batch_size=false \

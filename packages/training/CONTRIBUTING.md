@@ -174,7 +174,7 @@ Runtime:
 | Add training callback | `lightning/callbacks.py` |
 | Modify data loading | `lightning/datamodule.py` (wraps data_handler) |
 | Change optimizer | `lightning/module.py:configure_optimizers()` |
-| Add curriculum phase | `configs/training/unified.yaml:curriculum.phases` |
+| Add curriculum phase | `configs/training/base.yaml:curriculum.phases` |
 
 ---
 
@@ -333,7 +333,7 @@ sky logs lightning-smoke
 - **Test Integration**: Changes affect deployer, eval, inference. Run smoke tests after significant changes:
   ```bash
   uv run --package wrinklefree python scripts/train_lightning.py \
-    model=smollm2_135m training=unified training.max_steps=10
+    model=smollm2_135m training=base training.max_steps=10
   ```
 
 - **Legacy Code**: `_legacy/` contains deprecated trainers. Use Lightning trainer for all new work.

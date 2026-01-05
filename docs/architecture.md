@@ -66,7 +66,7 @@ The new Lightning-based trainer provides a cleaner, more maintainable training l
 - All objectives work unchanged (DLM, LRC, distillation)
 
 ```bash
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
 ```
 
 #### Legacy Stages (Still Supported)

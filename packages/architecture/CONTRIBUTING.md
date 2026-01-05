@@ -213,7 +213,7 @@ uv run --package bitnet-arch pytest packages/architecture/tests/ --cov=bitnet_ar
 - **Test Both Packages**: Changes here affect `training` package. Always run training smoke test after modifications:
   ```bash
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
-    model=smollm2_135m training=unified training.max_steps=10
+    model=smollm2_135m training=base training.max_steps=10
   ```
 
 - **Bias Default**: BitLinear defaults to `bias=False` (standard for BitNet). Don't change without reason.

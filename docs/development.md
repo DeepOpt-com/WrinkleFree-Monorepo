@@ -127,11 +127,11 @@ git submodule status
 ```bash
 # Run Lightning training (recommended)
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
-  model=smollm2_135m training=unified training.max_steps=10
+  model=smollm2_135m training=base training.max_steps=10
 
 # With auto batch size scaling
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
-  model=smollm2_135m training=unified training.auto_batch_size=true
+  model=smollm2_135m training=base training.auto_batch_size=true
 
 # Run unit tests
 uv run --package wrinklefree pytest packages/training/tests/unit/

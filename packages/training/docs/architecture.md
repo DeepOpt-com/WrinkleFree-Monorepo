@@ -69,7 +69,7 @@ output = manager(model_outputs, batch)
 Phase-based weight transitions for objectives:
 
 ```yaml
-# configs/training/unified.yaml
+# configs/training/base.yaml
 curriculum:
   phases:
     - name: warmup         # Steps 0-10%

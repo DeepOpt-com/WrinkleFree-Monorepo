@@ -236,7 +236,7 @@ uv run --package data-handler pytest packages/data_handler/tests/ --cov=data_han
 - **Test Both Packages**: Changes affect `training` package. Always run training smoke test:
   ```bash
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
-    model=smollm2_135m training=unified training.max_steps=10
+    model=smollm2_135m training=base training.max_steps=10
   ```
 
 - **Config Changes**: Data configs are shared between training and eval. Coordinate changes with both packages.

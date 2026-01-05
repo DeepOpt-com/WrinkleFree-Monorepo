@@ -19,7 +19,7 @@
 
 | Task | Command |
 |------|---------|
-| **Training (Lightning)** | `uv run --package wrinklefree python scripts/train_lightning.py model=smollm2_135m training=unified` |
+| **Training (Lightning)** | `uv run --package wrinklefree python scripts/train_lightning.py model=smollm2_135m training=base` |
 | Training with auto batch | `... training.auto_batch_size=true` |
 | BitDistill distillation | `... training=bitdistill_full` |
 | LRC calibration | `... training=lrc_calibration` |
@@ -83,7 +83,7 @@ model=smollm2_135m          # 135M params, good for testing
 model=qwen3_4b              # 4B params, production
 
 # Training configs
-training=unified            # Combined CE + DLM (recommended)
+training=base            # Combined CE + DLM (recommended)
 training=bitdistill_full    # Knowledge distillation
 training=lrc_calibration    # Low-rank correction
 

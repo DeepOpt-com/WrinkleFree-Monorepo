@@ -44,7 +44,7 @@ With TP=2, DP=4:
 # Multi-GPU with Lightning (handles distributed automatically)
 uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
-  training=unified \
+  training=base \
   distributed=fsdp_multi
 
 # For tensor parallelism experiments, see packages/training/configs/distributed/

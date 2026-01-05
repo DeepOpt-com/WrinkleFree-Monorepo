@@ -124,7 +124,7 @@ run: |
   export DATA_NUM_WORKERS=0
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=unified \
+    training=base \
     data.config_name=mixed_pretrain \
     training.max_steps=${MAX_STEPS} \
     training.auto_batch_size=true \

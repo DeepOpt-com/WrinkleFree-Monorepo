@@ -23,10 +23,10 @@ WrinkleFree trains language models with **1.58-bit (ternary) weights** {-1, 0, 1
 uv sync --all-packages
 
 # Run unified training (recommended)
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
 
 # With auto batch size scaling
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
     training.auto_batch_size=true
 ```
 
@@ -34,7 +34,7 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
 
 | Config | Purpose | Use Case |
 |--------|---------|----------|
-| `unified` | Combined STE + DLM training | **Recommended** - production training |
+| `base` | Combined STE + DLM training | **Recommended** - production training |
 | `bitdistill_full` | Knowledge distillation | Teacher-student distillation |
 | `lrc_calibration` | Low-rank correction | Post-quantization recovery |
 | `stage2_pretrain` | Continue pretraining | Legacy stage-based training |
@@ -44,10 +44,10 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
 The recommended approach combines STE quantization with DLM (Diffusion Language Model) objectives:
 
 ```bash
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
 
 # With influence-based data remixing
-uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
     data.config_name=mixed_pretrain \
     training.influence.enabled=true
 ```
