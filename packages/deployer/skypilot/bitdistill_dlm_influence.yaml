@@ -160,6 +160,9 @@ run: |
   echo "================================================"
   echo ""
 
+  # IMPORTANT: num_workers=0 avoids streaming dataset deadlocks with multiprocessing
+  export DATA_NUM_WORKERS=0
+
   echo "[Training] Starting Lightning training with meta-optimization..."
   # Using unified config with Muon+AdamW optimizer + meta-optimization (SubLN fix applied)
   uv run --package wrinklefree python packages/training/scripts/train_lightning.py \
