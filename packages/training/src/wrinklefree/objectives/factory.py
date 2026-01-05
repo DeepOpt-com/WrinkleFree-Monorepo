@@ -137,7 +137,7 @@ def create_curriculum_scheduler(
     return CurriculumScheduler(
         phases=phases,
         total_steps=total_steps,
-        interpolation=curriculum_config.get("interpolation", "linear"),
+        interpolation=curriculum_config.get("interpolation", "step"),
     )
 
 
@@ -162,7 +162,7 @@ def create_objective_manager(
 
     curriculum:
       enabled: false
-      interpolation: linear
+      interpolation: step  # "step" (immediate), "linear", or "cosine"
       phases:
         - name: warmup
           end_ratio: 0.2

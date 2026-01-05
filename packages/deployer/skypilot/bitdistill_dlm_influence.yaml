@@ -43,10 +43,10 @@ envs:
   MODEL: smollm2_135m
   TRAINING_CONFIG: bitdistill_dlm_influence
   TOTAL_TOKENS: 5000000000  # 5B tokens
-  MAX_STEPS: 47684  # 5B tokens / (4*16*2048) tokens per step (batch=4, grad_accum=16)
-  MUON_LR: 0.01  # Muon LR for 2D weights
-  ADAM_LR: 1.5e-4  # AdamW LR for embeddings/biases (halved from 3e-4)
-  EXPERIMENT_NAME: bitnet_muon_5b_v2
+  MAX_STEPS: 19073  # 5B tokens / (4*32*2048) tokens per step (batch=4, grad_accum=32)
+  MUON_LR: 0.02  # Muon LR for 2D weights (recommended default)
+  ADAM_LR: 3e-4  # AdamW LR for embeddings/biases (recommended default)
+  EXPERIMENT_NAME: smollm2_135m_5b_influence
   WANDB_PROJECT: wrinklefree
   WANDB_RUN_ID: bitdistill-dlm-${SKYPILOT_TASK_ID}
   HF_HUB_ENABLE_HF_TRANSFER: "1"
@@ -75,6 +75,8 @@ setup: |
   uv sync --all-packages
   # Install muon-clip from GitHub (required for MuonClip optimizer on single GPU)
   uv pip install git+https://github.com/GAD-cell/muon-clip.git
+  # Install gcsfs for Lightning checkpoint loading from GCS
+  uv pip install gcsfs
 
   # Activate GCS credentials and verify access
   echo "Activating GCS credentials..."
@@ -128,10 +130,12 @@ run: |
   echo "Training Config: $TRAINING_CONFIG"
   echo "Total Tokens: $TOTAL_TOKENS (5B)"
   echo "Max Steps: $MAX_STEPS"
-  echo "Muon LR: $MUON_LR (2D weights)"
-  echo "AdamW LR: $ADAM_LR (embeddings/biases)"
+  echo "Optimizer: MuonClip (with QK clipping)"
+  echo "Muon LR: $MUON_LR (2D weights, recommended=0.02)"
+  echo "AdamW LR: $ADAM_LR (embeddings/biases, recommended=3e-4)"
+  echo "Weight Decay: 0.01 (CRITICAL for Muon stability)"
   echo "Batch Size: 4 (fixed for influence compatibility)"
-  echo "Grad Accum: 16"
+  echo "Grad Accum: 32"
   echo "Experiment: $EXPERIMENT_NAME"
   echo "WandB Project: $WANDB_PROJECT"
   echo "GCS Bucket: $GCS_BUCKET"
@@ -165,10 +169,11 @@ run: |
     training.max_steps=${MAX_STEPS} \
     training.auto_batch_size=false \
     training.batch_size=4 \
-    training.gradient_accumulation_steps=16 \
-    training.optimizer.type=muon \
+    training.gradient_accumulation_steps=32 \
+    training.optimizer.type=muonclip \
     training.optimizer.lr_muon=${MUON_LR} \
     training.optimizer.lr_adam=${ADAM_LR} \
+    training.optimizer.weight_decay=0.01 \
     training.lambda_warmup.enabled=false \
     training.influence.enabled=true \
     training.influence.method=datainf \
@@ -183,7 +188,6 @@ run: |
     training.logging.wandb.project=${WANDB_PROJECT} \
     training.logging.log_interval=10 \
     training.validation.enabled=false \
-    resume.skip_completed=false \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET} \
     2>&1 | tee training.log
