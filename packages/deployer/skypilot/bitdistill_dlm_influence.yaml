@@ -135,7 +135,7 @@ run: |
   echo "Training Config: $TRAINING_CONFIG"
   echo "Total Tokens: $TOTAL_TOKENS (5B)"
   echo "Max Steps: $MAX_STEPS"
-  echo "Optimizer: MuonClip (with QK clipping)"
+  echo "Optimizer: PyTorch Muon (official)"
   echo "Muon LR: $MUON_LR (2D weights, recommended=0.02)"
   echo "AdamW LR: $ADAM_LR (embeddings/biases, recommended=3e-4)"
   echo "Weight Decay: 0.01 (CRITICAL for Muon stability)"
@@ -170,7 +170,7 @@ run: |
     training.auto_batch_size=false \
     training.batch_size=4 \
     training.gradient_accumulation_steps=32 \
-    training.optimizer.type=muonclip \
+    training.optimizer.type=muon \
     training.optimizer.lr_muon=${MUON_LR} \
     training.optimizer.lr_adam=${ADAM_LR} \
     training.optimizer.weight_decay=0.01 \

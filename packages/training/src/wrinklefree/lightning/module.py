@@ -538,7 +538,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
 
         logger.info(
             f"Created PyTorch Muon + AdamW: {len(muon_params)} Muon params (lr={lr_muon}), "
-            f"{len(adam_params)} AdamW params (lr={lr_adam})"
+            f"{len(adam_params)} AdamW params (lr={lr_adam}), weight_decay={weight_decay}"
         )
         return combined
 
