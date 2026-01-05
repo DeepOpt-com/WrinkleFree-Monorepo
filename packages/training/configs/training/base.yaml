@@ -59,7 +59,9 @@ max_seq_length: 2048
 batch_size: 32
 gradient_accumulation_steps: 16
 gradient_clipping: 1.0
-auto_batch_size: false  # Enable for Lightning BatchSizeFinder
+auto_batch_size: false  # Enable for Lightning BatchSizeFinder (single GPU only!)
+auto_batch_size_margin: 0.15  # Safety buffer (15%) - reduces found batch size to avoid OOM
+auto_batch_size_max_val: 512  # Max batch size to test
 
 # Lambda warmup for gradual quantization (disabled by default)
 # When disabled, model trains with full quantization from step 0
@@ -103,25 +105,15 @@ objectives:
 
 # === CURRICULUM SCHEDULE ===
 # Phase-based training with objective weight transitions
-# No DLM ramp: warmup then immediate full CE+DLM
+# DLM enabled from the start (no warmup phase)
 curriculum:
   enabled: true
   interpolation: step  # "step" (immediate jump), "linear", or "cosine"
   phases:
-    # Phase 1: Warmup - CE only (first 20%)
-    # Longer warmup helps stabilize training before adding DLM
-    - name: warmup
-      end_ratio: 0.20
-      data_config: fineweb
-      objectives:
-        continue_pretrain: 1.0
-        dlm: 0.0
-
-    # Phase 2: Full combined training (20% - 100%)
-    # CE + DLM after warmup
+    # Single phase: CE + DLM from step 0
     - name: main
       end_ratio: 1.0
-      data_config: mixed_pretrain
+      data_config: fineweb
       objectives:
         continue_pretrain: 1.0
         dlm: 1.0

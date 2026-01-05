@@ -25,7 +25,7 @@ uv sync --all-packages
 # Run unified training (recommended)
 uv run python scripts/train_lightning.py model=smollm2_135m training=base
 
-# With auto batch size scaling
+# With auto batch size scaling (single GPU only - not supported with DDP/FSDP!)
 uv run python scripts/train_lightning.py model=smollm2_135m training=base \
     training.auto_batch_size=true
 ```
@@ -103,7 +103,7 @@ All configs use [Hydra](https://hydra.cc/) and are in `configs/`:
 ```bash
 # Common overrides
 training.max_steps=100              # Limit steps for testing
-training.auto_batch_size=true       # Auto-find max batch size
+training.auto_batch_size=true       # Auto-find max batch size (single GPU only!)
 training.optimizer.type=adamw       # Use AdamW instead of MuonClip
 gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
 ```

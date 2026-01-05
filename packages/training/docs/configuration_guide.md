@@ -79,11 +79,12 @@ uv run python scripts/train_lightning.py \
 ### Production Training (Multi-GPU)
 
 ```bash
+# NOTE: auto_batch_size is NOT supported with FSDP - manually set batch_size instead
 uv run python scripts/train_lightning.py \
     model=qwen3_4b \
     training=base \
     distributed=fsdp_multi \
-    training.auto_batch_size=true
+    training.batch_size=8  # Manually tuned for your GPU
 ```
 
 ### With Influence-Based Data Remixing
@@ -138,7 +139,7 @@ uv run python scripts/train_lightning.py \
 training:
   max_steps: 100000           # Total training steps
   batch_size: 32              # Per-GPU batch size
-  auto_batch_size: true       # Auto-find max batch size
+  auto_batch_size: true       # Auto-find max batch size (single GPU only!)
   gradient_accumulation_steps: 4
   lr: 2.4e-3                  # Learning rate
 
@@ -181,10 +182,10 @@ curriculum:
 
 **Q: I'm getting Out of Memory (OOM) errors.**
 
-1. Enable auto batch size: `training.auto_batch_size=true`
+1. Enable auto batch size (single GPU only): `training.auto_batch_size=true`
 2. Switch to smaller model: `model=smollm2_135m`
 3. Reduce batch size: `training.batch_size=1`
-4. Use FSDP: `distributed=fsdp_multi`
+4. Use FSDP for large models: `distributed=fsdp_multi` (but manually tune batch_size)
 
 **Q: Where are my checkpoints?**
 

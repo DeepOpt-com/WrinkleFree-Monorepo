@@ -45,7 +45,7 @@ envs:
   # Higher Muon LR, restored AdamW LR
   MUON_LR: "0.05"   # Muon LR for 2D weights (5x higher than half-lr run)
   ADAM_LR: "3e-4"   # AdamW LR for embeddings/biases (restored to original)
-  EXPERIMENT_NAME: smollm2_135m_5b_fineweb_muon_0.05_no_subln
+  EXPERIMENT_NAME: smollm2_135m_5b_fineweb_muon_0.05
   WANDB_PROJECT: wrinklefree
   WANDB_RUN_ID: bitdistill-h100-${SKYPILOT_TASK_ID}
   HF_HUB_ENABLE_HF_TRANSFER: "1"
@@ -136,8 +136,8 @@ run: |
   echo "Muon LR: $MUON_LR (2D weights) - HIGHER (5x)"
   echo "AdamW LR: $ADAM_LR (embeddings/biases) - RESTORED"
   echo "Weight Decay: 0.01 (CRITICAL for Muon stability)"
-  echo "Auto Batch Size: ENABLED (starting from 8)"
-  echo "SubLN Additions: DISABLED"
+  echo "Batch Size: 24 (fixed), Grad Accum: 11"
+  echo "SubLN Additions: ENABLED (default)"
   echo "Experiment: $EXPERIMENT_NAME"
   echo "WandB Project: $WANDB_PROJECT"
   echo "GCS Bucket: $GCS_BUCKET"
@@ -162,14 +162,13 @@ run: |
     training=base \
     data.config_name=fineweb \
     training.max_steps=${MAX_STEPS} \
-    training.auto_batch_size=true \
-    training.batch_size=8 \
-    training.gradient_accumulation_steps=16 \
+    training.auto_batch_size=false \
+    training.batch_size=24 \
+    training.gradient_accumulation_steps=11 \
     training.optimizer.type=muon \
     training.optimizer.lr_muon=${MUON_LR} \
     training.optimizer.lr_adam=${ADAM_LR} \
     training.optimizer.weight_decay=0.01 \
-    +training.auto_convert.insert_subln=false \
     training.lambda_warmup.enabled=false \
     training.influence.enabled=false \
     training.resume.checkpoint_path=${RESUME_CHECKPOINT} \

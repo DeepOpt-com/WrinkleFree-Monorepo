@@ -3,17 +3,17 @@
 
 This is the new, simplified training script using PyTorch Lightning.
 It provides:
-- Auto batch size scaling via BatchSizeFinder
+- Auto batch size scaling via Tuner.scale_batch_size() (standard Lightning approach)
 - Built-in DDP/FSDP support
 - Clean separation of concerns
 - All objectives work unchanged (DLM, LRC, distillation)
 
 Usage:
-    uv run python scripts/train_lightning.py model=smollm2_135m training=unified
+    uv run python scripts/train_lightning.py model=smollm2_135m training=base
     uv run python scripts/train_lightning.py model=qwen3_4b training=bitdistill_full
 
 With auto batch size:
-    uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+    uv run python scripts/train_lightning.py model=smollm2_135m training=base \
         training.auto_batch_size=true
 """
 
@@ -26,13 +26,13 @@ import hydra
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import (
-    BatchSizeFinder,
     LearningRateMonitor,
     ModelCheckpoint,
     RichProgressBar,
 )
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import FSDPStrategy
+from pytorch_lightning.tuner import Tuner
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from omegaconf.base import ContainerMetadata
 from omegaconf._utils import ValueKind
@@ -47,7 +47,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from bitnet_arch.conversion import auto_convert_if_needed
 from wrinklefree.lightning import (
     GCSCheckpointCallback,
-    InfluenceAwareBatchSizeFinder,
     InfluenceTrackerCallback,
     LambdaWarmupCallback,
     MuonClipInitCallback,
@@ -370,41 +369,8 @@ def create_callbacks(cfg: DictConfig) -> list:
             f"warmup={influence_cfg.get('warmup_steps', 500)}"
         )
 
-    # Auto batch size finder
-    if cfg.training.get("auto_batch_size", False):
-        # Use InfluenceAwareBatchSizeFinder when influence is enabled
-        # This initializes influence cache BEFORE batch size search to account for memory
-        if influence_callback is not None:
-            callbacks.append(
-                InfluenceAwareBatchSizeFinder(
-                    influence_callback=influence_callback,
-                    mode="binsearch",
-                    steps_per_trial=3,
-                    init_val=cfg.training.get("batch_size", 32),
-                )
-            )
-            logger.info(
-                "InfluenceAwareBatchSizeFinder enabled "
-                "(initializes influence cache before batch size search)"
-            )
-        else:
-            callbacks.append(
-                BatchSizeFinder(
-                    mode="binsearch",
-                    steps_per_trial=3,
-                    init_val=cfg.training.get("batch_size", 32),
-                )
-            )
-            logger.info("Auto batch size scaling enabled (BatchSizeFinder)")
-
-        # MuonClipInitCallback: Required when using MuonClip with BatchSizeFinder
-        # BatchSizeFinder cycles model.eval()/train() which breaks MuonClip's hooks
-        # due to an upstream bug where is_registered flag isn't reset on remove_hooks()
-        # This callback re-registers hooks after BatchSizeFinder completes
-        optimizer_type = cfg.training.get("optimizer", {}).get("type", "adamw")
-        if optimizer_type.lower() == "muonclip":
-            callbacks.append(MuonClipInitCallback())
-            logger.info("MuonClipInitCallback added (required for BatchSizeFinder + MuonClip)")
+    # Note: Auto batch size scaling is now handled via Tuner.scale_batch_size()
+    # before trainer.fit() - see main() function. This is the standard Lightning approach.
 
     # Checkpointing - save every N steps
     save_interval = cfg.training.checkpoint.get("save_interval", 500)
@@ -719,6 +685,49 @@ def main(cfg: DictConfig) -> None:
     resume_ckpt_path = find_lightning_resume_checkpoint(cfg)
     if resume_ckpt_path:
         logger.info(f"Resuming training from: {resume_ckpt_path}")
+
+    # Auto batch size scaling using Tuner (standard Lightning approach)
+    # This runs BEFORE training and finds the optimal batch size
+    # NOTE: Not supported for DDP/FSDP per Lightning docs!
+    if cfg.training.get("auto_batch_size", False):
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        if world_size > 1:
+            # Batch size finder is NOT supported with DDP/FSDP
+            # See: https://lightning.ai/docs/pytorch/stable/advanced/training_tricks.html
+            print(f"\n{'='*60}")
+            print(f"WARNING: auto_batch_size is NOT supported with DDP/FSDP!")
+            print(f"  WORLD_SIZE={world_size}, using batch_size={cfg.training.get('batch_size', 32)}")
+            print(f"{'='*60}\n")
+            logger.warning(
+                "auto_batch_size is NOT supported with DDP/FSDP distributed training. "
+                "Skipping batch size finder - using configured batch_size=%d instead. "
+                "Consider manually tuning batch_size for your GPU.",
+                cfg.training.get("batch_size", 32),
+            )
+        else:
+            margin = cfg.training.get("auto_batch_size_margin", 0.15)
+            max_val = cfg.training.get("auto_batch_size_max_val", 512)
+            init_val = cfg.training.get("batch_size", 32)
+            print(f"\n{'='*60}")
+            print(f"AUTO BATCH SIZE: Running Tuner.scale_batch_size()")
+            print(f"  init_val={init_val}, margin={margin}, max_val={max_val}")
+            print(f"{'='*60}\n")
+            logger.info("Running Tuner.scale_batch_size() to find optimal batch size...")
+            tuner = Tuner(trainer)
+            tuner.scale_batch_size(
+                module,
+                datamodule=datamodule,
+                mode="binsearch",
+                init_val=init_val,
+                max_trials=25,
+                steps_per_trial=5,  # More steps = more accurate memory estimate
+                margin=margin,  # Safety buffer
+                max_val=max_val,  # Upper bound
+            )
+            print(f"\n{'='*60}")
+            print(f"AUTO BATCH SIZE: Optimal batch size found: {datamodule.batch_size}")
+            print(f"{'='*60}\n")
+            logger.info(f"Optimal batch size found: {datamodule.batch_size}")
 
     # Train!
     logger.info("Starting training...")

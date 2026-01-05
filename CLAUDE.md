@@ -20,7 +20,7 @@
 | Task | Command |
 |------|---------|
 | **Training (Lightning)** | `uv run --package wrinklefree python scripts/train_lightning.py model=smollm2_135m training=base` |
-| Training with auto batch | `... training.auto_batch_size=true` |
+| Training with auto batch | `... training.auto_batch_size=true` (single GPU only!) |
 | Meta-optimization | `... training.meta_optimization.enabled=true` |
 | BitDistill distillation | `... training=bitdistill_full` |
 | LRC calibration | `... training=lrc_calibration` |
@@ -34,7 +34,7 @@
 
 ### DO
 - Use PyTorch Lightning trainer (`train_lightning.py`) for new training runs
-- Use `training.auto_batch_size=true` to auto-find optimal batch size
+- Use `training.auto_batch_size=true` to auto-find optimal batch size (single GPU only - not supported with DDP/FSDP!)
 - Check WandB for training metrics: https://wandb.ai/umd-leans-well/wrinklefree
 - Use `sky exec <cluster> <yaml>` to re-run jobs on existing clusters
 - Clean `/tmp/checkpoints/` on remote before re-running smoke tests
@@ -98,7 +98,7 @@ training=lrc_calibration    # Low-rank correction
 
 # Common overrides
 training.max_steps=100      # Limit steps for testing
-training.auto_batch_size=true  # Auto-find max batch size
+training.auto_batch_size=true  # Auto-find max batch size (single GPU only!)
 output_dir=/tmp/checkpoints
 gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
 ```
