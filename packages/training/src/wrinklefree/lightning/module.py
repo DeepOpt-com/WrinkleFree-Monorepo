@@ -173,6 +173,8 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         """Single training step.
 
         Uses ObjectiveManager to compute all objective losses and combine them.
+        If LDC-MTL meta-optimization is enabled, uses learned weights instead of
+        curriculum weights.
         """
         # Preprocess batch (DLM masking, etc.)
         batch = self.objective_manager.preprocess_batch(batch)
@@ -186,12 +188,35 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         # Compute combined loss via ObjectiveManager
         manager_output = self.objective_manager(model_outputs, batch, teacher_outputs)
 
+        # Check if LDC-MTL meta-optimization is enabled
+        final_loss = manager_output.loss
+        meta_callback = getattr(self, "_meta_optimizer_callback", None)
+        if meta_callback is not None and meta_callback.ldc_mtl is not None:
+            # Use LDC-MTL to recompute weighted loss with learned weights
+            individual_losses = {
+                name: obj_out.loss
+                for name, obj_out in manager_output.objective_outputs.items()
+            }
+            if len(individual_losses) > 1:
+                final_loss, ldc_weights = meta_callback.ldc_mtl.compute_weighted_loss(
+                    individual_losses
+                )
+                # Log LDC-MTL weights
+                for name, weight in ldc_weights.items():
+                    self.log(
+                        f"meta/ldc_mtl/objective_weight_{name}",
+                        weight,
+                        on_step=True,
+                        prog_bar=False,
+                        sync_dist=True,
+                    )
+
         # Log all metrics (reuse existing get_wandb_metrics!)
         metrics = self.objective_manager.get_wandb_metrics(manager_output, prefix="train")
         self.log_dict(metrics, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
 
         # Log main metrics to progress bar only (not to WandB - already in metrics dict)
-        self.log("loss", manager_output.loss, prog_bar=True, sync_dist=True, logger=False)
+        self.log("loss", final_loss, prog_bar=True, sync_dist=True, logger=False)
         if manager_output.perplexity is not None:
             self.log("ppl", manager_output.perplexity, prog_bar=True, sync_dist=True, logger=False)
 
@@ -203,7 +228,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         # Advance curriculum scheduler if present
         self.objective_manager.step_curriculum()
 
-        return manager_output.loss
+        return final_loss
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Validation step - computes clean perplexity WITHOUT DLM preprocessing.

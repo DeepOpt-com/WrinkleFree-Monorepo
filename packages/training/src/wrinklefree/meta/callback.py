@@ -136,6 +136,8 @@ class MetaOptimizerCallback(Callback):
 
         if self._is_enabled:
             logger.info("MetaOptimizerCallback: enabled and ready")
+            # Attach to pl_module so training_step can access LDC-MTL
+            pl_module._meta_optimizer_callback = self
 
     def _get_objective_names(self, pl_module: pl.LightningModule) -> list[str]:
         """Get objective names from the Lightning module.
@@ -213,6 +215,7 @@ class MetaOptimizerCallback(Callback):
         # Log periodically
         if step % self.config.log_interval == 0:
             self._log_metrics(pl_module, step)
+            self._log_batch_dataset_balance(pl_module, batch)
 
     def _update_odm(
         self,
@@ -280,17 +283,51 @@ class MetaOptimizerCallback(Callback):
         step: int,
     ) -> None:
         """Log meta-optimization metrics."""
-        # LDC-MTL metrics
+        # LDC-MTL metrics (weights are already logged in training_step)
         if self.ldc_mtl is not None:
-            metrics = self.ldc_mtl.get_wandb_metrics()
-            for name, value in metrics.items():
-                pl_module.log(name, value, prog_bar=False)
+            # Log loss discrepancy for debugging
+            pass  # Weights logged in training_step for every step
 
         # ODM metrics
         if self.odm is not None:
             metrics = self.odm.get_wandb_metrics()
             for name, value in metrics.items():
                 pl_module.log(name, value, prog_bar=False)
+
+    def _log_batch_dataset_balance(
+        self,
+        pl_module: pl.LightningModule,
+        batch: dict[str, Any],
+    ) -> None:
+        """Log which datasets contributed to the current batch.
+
+        If batch contains 'source' or 'domain' metadata, logs the distribution.
+        This helps visualize actual dataset balance during training.
+        """
+        # Try different possible field names for dataset source
+        source_field = None
+        for field in ["source", "domain", "dataset", "source_name"]:
+            if field in batch:
+                source_field = batch[field]
+                break
+
+        if source_field is None:
+            return
+
+        # Count occurrences if it's a list/tensor
+        if isinstance(source_field, (list, tuple)):
+            from collections import Counter
+            counts = Counter(source_field)
+            total = len(source_field)
+            for name, count in counts.items():
+                pl_module.log(
+                    f"data/batch_fraction_{name}",
+                    count / total,
+                    prog_bar=False,
+                )
+        elif isinstance(source_field, str):
+            # Single source for whole batch
+            pl_module.log(f"data/batch_source_{source_field}", 1.0, prog_bar=False)
 
     def on_save_checkpoint(
         self,
