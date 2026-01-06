@@ -320,6 +320,12 @@ class ObjectiveManager(nn.Module):
             if weight <= 0:
                 continue  # Skip disabled objectives
 
+            # Skip objectives that require teacher if teacher_outputs is None
+            # This happens during lazy loading transition (first step after teacher loads)
+            if obj.requires_teacher and teacher_outputs is None:
+                logger.debug(f"Skipping {name} objective: requires teacher but teacher_outputs is None")
+                continue
+
             # Compute objective
             output = obj(model_outputs, batch, teacher_outputs)
             objective_outputs[name] = output

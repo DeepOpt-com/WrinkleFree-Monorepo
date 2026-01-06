@@ -266,7 +266,6 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         # Check if distill weight is currently non-zero
         current_weights = self.objective_manager.get_current_weights()
         distill_weight = current_weights.get("distill", 0.0)
-
         if distill_weight <= 0:
             # Distill not active in current curriculum phase
             return None
@@ -294,18 +293,14 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         teacher_input_ids = batch.get("_original_input_ids", batch["input_ids"])
 
         with torch.no_grad():
+            # HiddenStateTeacher.forward() returns dict with logits, hidden_states, attentions
             teacher_out = self.teacher_model(
                 input_ids=teacher_input_ids,
                 attention_mask=batch.get("attention_mask"),
-                output_hidden_states=self.objective_manager.requires_hidden_states,
                 output_attentions=self.objective_manager.requires_attentions,
-                return_dict=True,
             )
-            return {
-                "logits": teacher_out.logits,
-                "hidden_states": getattr(teacher_out, "hidden_states", None),
-                "attentions": getattr(teacher_out, "attentions", None),
-            }
+            # teacher_out is already a dict from HiddenStateTeacher
+            return teacher_out
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Single training step.
