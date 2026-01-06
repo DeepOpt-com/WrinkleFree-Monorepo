@@ -16,16 +16,17 @@ Where:
 Training loss (computed in training package):
     L = ||W @ X - W_quant @ Q_a(X) - U @ V^T @ X||^2
 
-QLRC Extension:
-    Optionally quantize the U and V matrices themselves using bitsandbytes
-    for memory efficiency during training (QLoRA-style).
+QLRC Extension (QA-LoRA style):
+    Optionally apply group-wise quantization to U and V matrices during training
+    using Straight-Through Estimator (STE) for gradient flow.
+    Based on QA-LoRA: https://arxiv.org/abs/2309.14717
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
@@ -33,48 +34,147 @@ import torch.nn.functional as F
 
 from wf_arch.layers.bitlinear import BitLinear
 
-if TYPE_CHECKING:
-    import bitsandbytes as bnb
-
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class QLRCConfig:
-    """Configuration for quantized LRC adapters (QLoRA-style).
+    """Configuration for QA-LoRA style quantized LRC adapters.
 
-    When enabled, the LRC matrices (U, V) are stored in quantized format
-    using bitsandbytes, reducing memory usage during training.
+    Uses Straight-Through Estimator (STE) for trainable quantized adapters.
+    Weights are stored in full precision but quantized on-the-fly during forward pass.
+    Gradients flow through as if no quantization happened (STE).
+
+    Quantization approach: **Group-wise symmetric quantization**
+    - NOT row-wise or per-tensor - each `group_size` contiguous elements share a scale
+    - Scale computed as: max(abs(group)) / (2^(bits-1) - 1)
+    - More groups = more scale parameters = better accuracy but larger model
+
+    Memory comparison (for rank=128, in=4096, out=4096 adapters):
+    - Full precision: 2 * 128 * 4096 * 4 bytes = 4MB
+    - 4-bit group_size=32: same weights + scales every 32 elements
+    - During training: full precision weights stored for gradients
+
+    Based on QA-LoRA: https://arxiv.org/abs/2309.14717 (ICLR 2024)
 
     Attributes:
-        enabled: Whether to use quantized adapters.
-        quantization_type: Quantization format - "Q4_0" (4-bit NF4) or "Q8_0" (8-bit).
-        compute_dtype: Dtype for computation (e.g., "bfloat16", "float16").
-        use_double_quant: Use double quantization for Q4 (reduces memory further).
+        enabled: Whether to use quantized adapters with STE.
+        bits: Number of bits for quantization (4 or 8).
+            4-bit: range [-8, 7], 8-bit: range [-128, 127]
+        group_size: Number of elements per quantization group.
+            Smaller groups = more scale parameters = better accuracy.
+            Common values: 32 (QA-LoRA default), 64, 128.
     """
 
     enabled: bool = False
-    quantization_type: Literal["Q4_0", "Q8_0"] = "Q4_0"
-    compute_dtype: str = "bfloat16"
-    use_double_quant: bool = True
+    bits: int = 4  # 4-bit or 8-bit quantization
+    group_size: int = 32  # QA-LoRA default
 
-    def get_bnb_config(self) -> dict:
-        """Get bitsandbytes configuration kwargs."""
-        compute_dtype = getattr(torch, self.compute_dtype)
 
-        if self.quantization_type == "Q4_0":
-            return {
-                "layer_class": "Linear4bit",
-                "quant_type": "nf4",
-                "compute_dtype": compute_dtype,
-                "compress_statistics": self.use_double_quant,
-            }
-        else:  # Q8_0
-            return {
-                "layer_class": "Linear8bitLt",
-                "has_fp16_weights": False,
-                "threshold": 6.0,
-            }
+class QuantizedLinearSTE(nn.Module):
+    """Linear layer with STE (Straight-Through Estimator) quantization.
+
+    Enables training of quantized adapters by:
+    1. Storing weights in full precision (for gradient updates)
+    2. Quantizing on-the-fly during forward pass
+    3. Using STE so gradients bypass quantization during backward pass
+
+    Quantization approach: **Group-wise symmetric quantization**
+    - Weight tensor is flattened and divided into groups of `group_size` elements
+    - Each group has its own scale factor: scale = max(abs(group)) / qmax
+    - Symmetric: values quantized to range [-2^(bits-1), 2^(bits-1)-1]
+    - NOT row-wise or column-wise - groups tile linearly across the flattened tensor
+
+    Example with group_size=32, bits=4:
+    - qmax = 2^3 - 1 = 7
+    - Each 32-element group gets scale = max(|w[i:i+32]|) / 7
+    - Values quantized to integers in [-8, 7], then dequantized
+
+    Based on QA-LoRA: https://arxiv.org/abs/2309.14717 (ICLR 2024)
+
+    Args:
+        in_features: Input dimension
+        out_features: Output dimension
+        bits: Quantization bits (4 or 8). 4-bit has range [-8,7], 8-bit has [-128,127]
+        group_size: Elements per quantization group. Smaller = more scales = better
+            accuracy but larger overhead. QA-LoRA default is 32.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bits: int = 4,
+        group_size: int = 32,
+        bias: bool = False,
+    ):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.bits = bits
+        self.group_size = group_size
+
+        # Weights stored in full precision for gradient updates
+        # Default init is Kaiming uniform (same as nn.Linear)
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        nn.init.kaiming_uniform_(self.weight, a=5**0.5)
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(out_features))
+        else:
+            self.register_parameter("bias", None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass with STE quantization."""
+        w_quant = self._quantize_ste(self.weight)
+        return F.linear(x, w_quant, self.bias)
+
+    def _quantize_ste(self, w: torch.Tensor) -> torch.Tensor:
+        """Group-wise symmetric quantization with Straight-Through Estimator.
+
+        Forward: uses quantized weights
+        Backward: gradients flow through as if no quantization (STE)
+        """
+        original_shape = w.shape
+        numel = w.numel()
+
+        # Ensure divisible by group_size (pad if necessary)
+        if numel % self.group_size != 0:
+            pad_size = self.group_size - (numel % self.group_size)
+            w_padded = F.pad(w.view(-1), (0, pad_size))
+        else:
+            w_padded = w.view(-1)
+            pad_size = 0
+
+        # Reshape for group-wise quantization
+        w_grouped = w_padded.view(-1, self.group_size)
+
+        # Compute scale per group (symmetric quantization)
+        qmax = 2 ** (self.bits - 1) - 1
+        scale = w_grouped.abs().amax(dim=1, keepdim=True) / qmax
+        scale = scale.clamp(min=1e-8)
+
+        # Quantize: round to nearest integer
+        w_int = (w_grouped / scale).round().clamp(-qmax - 1, qmax)
+
+        # Dequantize
+        w_dequant = w_int * scale
+
+        # STE: forward uses dequantized, backward uses original
+        # Achieved via: original + (dequant - original).detach()
+        w_ste = w_grouped + (w_dequant - w_grouped).detach()
+
+        # Remove padding and reshape
+        w_ste = w_ste.view(-1)
+        if pad_size > 0:
+            w_ste = w_ste[:-pad_size]
+
+        return w_ste.view(original_shape)
+
+    def extra_repr(self) -> str:
+        return (
+            f"in_features={self.in_features}, out_features={self.out_features}, "
+            f"bits={self.bits}, group_size={self.group_size}, bias={self.bias is not None}"
+        )
 
 
 class BitLinearLRC(BitLinear):
@@ -157,58 +257,41 @@ class BitLinearLRC(BitLinear):
         self.compute_quantized_weights()
 
     def _init_quantized_lrc(self) -> None:
-        """Initialize quantized LRC layers using bitsandbytes."""
-        try:
-            import bitsandbytes as bnb
-        except ImportError as e:
-            raise ImportError(
-                "Quantized LRC (QLRC) requires bitsandbytes. "
-                "Install with: pip install bitsandbytes>=0.43.0"
-            ) from e
+        """Initialize QA-LoRA style quantized LRC layers using STE.
 
-        cfg = self.qlrc_config.get_bnb_config()
-        layer_class = cfg.pop("layer_class")
+        Uses QuantizedLinearSTE for trainable quantized adapters.
+        Weights are stored in full precision but quantized on-the-fly
+        during forward pass with Straight-Through Estimator for gradients.
+        """
+        bits = self.qlrc_config.bits
+        group_size = self.qlrc_config.group_size
 
-        if layer_class == "Linear4bit":
-            # V projection: x @ V -> (batch, seq, rank)
-            # Linear4bit: weight shape (out_features, in_features)
-            self.lrc_V_linear = bnb.nn.Linear4bit(
-                self.in_features,
-                self.rank,
-                bias=False,
-                compute_dtype=cfg["compute_dtype"],
-                quant_type=cfg["quant_type"],
-                compress_statistics=cfg["compress_statistics"],
-            )
-            # U projection: result @ U^T -> (batch, seq, out_features)
-            self.lrc_U_linear = bnb.nn.Linear4bit(
-                self.rank,
-                self.out_features,
-                bias=False,
-                compute_dtype=cfg["compute_dtype"],
-                quant_type=cfg["quant_type"],
-                compress_statistics=cfg["compress_statistics"],
-            )
-        else:  # Linear8bitLt
-            self.lrc_V_linear = bnb.nn.Linear8bitLt(
-                self.in_features,
-                self.rank,
-                bias=False,
-                has_fp16_weights=cfg["has_fp16_weights"],
-                threshold=cfg["threshold"],
-            )
-            self.lrc_U_linear = bnb.nn.Linear8bitLt(
-                self.rank,
-                self.out_features,
-                bias=False,
-                has_fp16_weights=cfg["has_fp16_weights"],
-                threshold=cfg["threshold"],
-            )
+        # V projection: x @ V -> (batch, seq, rank)
+        # QuantizedLinearSTE weight shape: (out_features, in_features) = (rank, in_features)
+        self.lrc_V_linear = QuantizedLinearSTE(
+            self.in_features,
+            self.rank,
+            bits=bits,
+            group_size=group_size,
+            bias=False,
+        )
 
-        # Initialize with zeros (default behavior)
-        # Note: bitsandbytes layers initialize randomly, so we need to zero them
+        # U projection: result @ U^T -> (batch, seq, out_features)
+        # QuantizedLinearSTE weight shape: (out_features, rank)
+        self.lrc_U_linear = QuantizedLinearSTE(
+            self.rank,
+            self.out_features,
+            bits=bits,
+            group_size=group_size,
+            bias=False,
+        )
+
+        # LoRA-style initialization: V=random (Kaiming), U=zero
+        # This ensures:
+        # 1. Initial LRC contribution is zero (since U @ ... = 0)
+        # 2. Gradients flow from start (∂L/∂U ≠ 0 since V @ x ≠ 0)
+        # QuantizedLinearSTE now has Kaiming init by default, so zero only U
         with torch.no_grad():
-            self.lrc_V_linear.weight.zero_()
             self.lrc_U_linear.weight.zero_()
 
     def compute_quantized_weights(self) -> None:
@@ -314,10 +397,10 @@ class BitLinearLRC(BitLinear):
             V_init = (Vh[:k, :].t() * sqrt_S.unsqueeze(0)).to(original_weight.dtype)
 
             if self._use_quantized_lrc:
-                # For quantized LRC, set weights on the linear layers
-                # lrc_V_linear: (in_features, rank) -> weight is (rank, in_features)
-                # lrc_U_linear: (rank, out_features) -> weight is (out_features, rank)
-                self.lrc_V_linear.weight.data[:, :k].copy_(V_init.t())
+                # For STE-based QLRC, weights are stored in full precision
+                # lrc_V_linear: weight is (rank, in_features) - needs V_init.t()
+                # lrc_U_linear: weight is (out_features, rank) - needs U_init as-is
+                self.lrc_V_linear.weight.data[:k, :].copy_(V_init.t())
                 self.lrc_U_linear.weight.data[:, :k].copy_(U_init)
             else:
                 self.lrc_U.data[:, :k].copy_(U_init)
@@ -325,9 +408,10 @@ class BitLinearLRC(BitLinear):
 
     def get_lrc_weights_dequantized(self) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Get dequantized U and V weights for GGUF export or inspection.
+        Get U and V weights for GGUF export or inspection.
 
-        For QLRC, this dequantizes the bitsandbytes weights back to full precision.
+        For STE-based QLRC, returns the QUANTIZED (dequantized) weights that are
+        actually used in the forward pass, not the full-precision proxy weights.
         For full-precision LRC, this returns the weights as-is.
 
         Returns:
@@ -336,27 +420,15 @@ class BitLinearLRC(BitLinear):
                 - V: shape (in_features, rank)
         """
         if self._use_quantized_lrc:
-            import bitsandbytes as bnb
-
-            # Get weights from bitsandbytes layers
+            # STE-based QLRC: apply quantization to get effective weights
+            # This returns what's actually used in forward pass
             # lrc_V_linear: weight is (rank, in_features)
             # lrc_U_linear: weight is (out_features, rank)
-            if hasattr(self.lrc_V_linear.weight, "quant_state"):
-                # 4-bit quantized - need to dequantize
-                V_weight = bnb.functional.dequantize_4bit(
-                    self.lrc_V_linear.weight.data,
-                    self.lrc_V_linear.weight.quant_state,
-                )
-                U_weight = bnb.functional.dequantize_4bit(
-                    self.lrc_U_linear.weight.data,
-                    self.lrc_U_linear.weight.quant_state,
-                )
-            else:
-                # 8-bit or not yet quantized - just get the weights
-                V_weight = self.lrc_V_linear.weight.data.float()
-                U_weight = self.lrc_U_linear.weight.data.float()
+            with torch.no_grad():
+                U_weight = self.lrc_U_linear._quantize_ste(self.lrc_U_linear.weight)
+                V_weight = self.lrc_V_linear._quantize_ste(self.lrc_V_linear.weight)
 
-            # V_weight is (rank, in_features), need to transpose to (in_features, rank)
+            # V_weight is (rank, in_features), transpose to (in_features, rank)
             return U_weight, V_weight.t()
         else:
             return self.lrc_U.data.clone(), self.lrc_V.data.clone()
@@ -367,7 +439,7 @@ class BitLinearLRC(BitLinear):
             f"rank={self.rank}, bias={self.bias is not None}"
         )
         if self._use_quantized_lrc:
-            base += f", qlrc={self.qlrc_config.quantization_type}"
+            base += f", qlrc={self.qlrc_config.bits}bit_g{self.qlrc_config.group_size}"
         return base
 
 
@@ -513,7 +585,8 @@ def get_lrc_stats(model: nn.Module) -> dict[str, int]:
         "total_frozen_params": 0,
         "average_rank": 0,
         "ranks": [],
-        "qlrc_quantization_type": None,
+        "qlrc_bits": None,
+        "qlrc_group_size": None,
     }
 
     for module in model.modules():
@@ -522,7 +595,8 @@ def get_lrc_stats(model: nn.Module) -> dict[str, int]:
 
             if module._use_quantized_lrc:
                 stats["num_qlrc_layers"] += 1
-                stats["qlrc_quantization_type"] = module.qlrc_config.quantization_type
+                stats["qlrc_bits"] = module.qlrc_config.bits
+                stats["qlrc_group_size"] = module.qlrc_config.group_size
                 # For QLRC, count params from the linear layers
                 stats["total_lrc_params"] += (
                     module.lrc_U_linear.weight.numel()

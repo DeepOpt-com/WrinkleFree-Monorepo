@@ -295,12 +295,26 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     logger.info(f"[DEBUG] LRC check: lrc_cfg={dict(lrc_cfg)}, enabled={lrc_enabled}")
     if lrc_enabled:
         try:
-            from wf_arch import convert_bitlinear_to_lrc, freeze_model_except_lrc
+            from wf_arch import QLRCConfig, convert_bitlinear_to_lrc, freeze_model_except_lrc
 
             rank_percentage = lrc_cfg.get("rank_percentage", 0.1)
             init_method = lrc_cfg.get("init_method", "zeros")
             keep_original_weight = lrc_cfg.get("keep_original_weight", True)
             trainable_weight = lrc_cfg.get("trainable_weight", False)
+
+            # Parse QLRC (QA-LoRA style quantized adapters) config
+            qlrc_cfg = lrc_cfg.get("qlrc", {})
+            qlrc_config = None
+            if qlrc_cfg.get("enabled", False):
+                qlrc_config = QLRCConfig(
+                    enabled=True,
+                    bits=qlrc_cfg.get("bits", 4),
+                    group_size=qlrc_cfg.get("group_size", 32),
+                )
+                logger.info(
+                    f"QLRC: Using STE quantized adapters "
+                    f"(bits={qlrc_config.bits}, group_size={qlrc_config.group_size})"
+                )
 
             logger.info(
                 f"LRC: Converting BitLinear → BitLinearLRC "
@@ -314,6 +328,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 init_method=init_method,
                 keep_original_weight=keep_original_weight,
                 trainable_weight=trainable_weight,
+                qlrc_config=qlrc_config,
             )
 
             # Freeze all parameters except LRC matrices (U, V) if trainable_weight=False

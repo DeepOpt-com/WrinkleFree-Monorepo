@@ -131,6 +131,14 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         output_hidden_states = self.objective_manager.requires_hidden_states
         output_attentions = self.objective_manager.requires_attentions
 
+        # Debug: log if hidden states requested
+        if output_hidden_states and not hasattr(self, "_logged_hidden_states"):
+            import logging
+            logging.getLogger(__name__).info(
+                f"Forward: output_hidden_states={output_hidden_states}"
+            )
+            self._logged_hidden_states = True
+
         outputs = self.model(
             input_ids=batch["input_ids"],
             attention_mask=batch.get("attention_mask"),
@@ -139,9 +147,14 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             return_dict=True,
         )
 
+        # Extract hidden_states - handle both CausalLMOutputWithPast and dict
+        hidden_states = getattr(outputs, "hidden_states", None)
+        if hidden_states is None and hasattr(outputs, "get"):
+            hidden_states = outputs.get("hidden_states")
+
         return {
             "logits": outputs.logits,
-            "hidden_states": getattr(outputs, "hidden_states", None),
+            "hidden_states": hidden_states,
             "attentions": getattr(outputs, "attentions", None),
         }
 

@@ -9331,12 +9331,18 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "bitsandbytes" },
     { name = "pytest" },
     { name = "pytest-cov" },
+]
+qlrc = [
+    { name = "bitsandbytes" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "bitsandbytes", marker = "extra == 'dev'", specifier = ">=0.43.0" },
+    { name = "bitsandbytes", marker = "extra == 'qlrc'", specifier = ">=0.43.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "safetensors", specifier = ">=0.4.0" },

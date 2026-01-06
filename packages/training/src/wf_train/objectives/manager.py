@@ -212,7 +212,10 @@ class ObjectiveManager(nn.Module):
         logger.info(f"ObjectiveManager initialized with {len(objectives)} objectives:")
         for name, obj in objectives.items():
             weight = self.base_weights.get(name, 1.0)
-            logger.info(f"  - {name}: weight={weight}, {obj.extra_repr()}")
+            requires_hs = getattr(obj, "requires_hidden_states", False)
+            logger.info(f"  - {name}: weight={weight}, requires_hidden_states={requires_hs}, {obj.extra_repr()}")
+
+        logger.info(f"ObjectiveManager: requires_teacher={self._requires_teacher}, requires_hidden_states={self._requires_hidden_states}")
 
         # Validate objective compatibility
         self._validate_objective_compatibility()

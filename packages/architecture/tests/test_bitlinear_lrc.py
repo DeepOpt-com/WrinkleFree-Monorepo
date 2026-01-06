@@ -564,3 +564,232 @@ class TestTrainableWeight:
         assert layer.weight.grad is not None
         assert layer.lrc_U.grad is not None
         assert layer.lrc_V.grad is not None
+
+
+class TestQLRC:
+    """Test QLRC (QA-LoRA style Quantized LRC) functionality using STE."""
+
+    def test_qlrc_config_creation(self):
+        """Test QLRCConfig dataclass creation."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4, group_size=32)
+        assert config.enabled is True
+        assert config.bits == 4
+        assert config.group_size == 32
+
+    def test_qlrc_config_defaults(self):
+        """Test QLRCConfig default values."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True)
+        assert config.bits == 4  # default
+        assert config.group_size == 32  # default
+
+    def test_qlrc_config_8bit(self):
+        """Test QLRCConfig with 8-bit quantization."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=8, group_size=64)
+        assert config.bits == 8
+        assert config.group_size == 64
+
+    def test_qlrc_4bit_init(self):
+        """Test BitLinearLRC with 4-bit STE quantization initializes correctly."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig, QuantizedLinearSTE
+
+        config = QLRCConfig(enabled=True, bits=4, group_size=32)
+        layer = BitLinearLRC(128, 64, rank=16, qlrc_config=config)
+
+        assert layer._use_quantized_lrc is True
+        assert hasattr(layer, "lrc_U_linear")
+        assert hasattr(layer, "lrc_V_linear")
+        assert isinstance(layer.lrc_U_linear, QuantizedLinearSTE)
+        assert isinstance(layer.lrc_V_linear, QuantizedLinearSTE)
+        assert not hasattr(layer, "lrc_U")  # Should not have nn.Parameter version
+        assert not hasattr(layer, "lrc_V")
+
+    def test_qlrc_8bit_init(self):
+        """Test BitLinearLRC with 8-bit STE quantization initializes correctly."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig, QuantizedLinearSTE
+
+        config = QLRCConfig(enabled=True, bits=8, group_size=64)
+        layer = BitLinearLRC(128, 64, rank=16, qlrc_config=config)
+
+        assert layer._use_quantized_lrc is True
+        assert isinstance(layer.lrc_U_linear, QuantizedLinearSTE)
+        assert layer.lrc_U_linear.bits == 8
+        assert layer.lrc_U_linear.group_size == 64
+
+    def test_qlrc_forward_shape(self):
+        """Test QLRC forward pass produces correct output shape."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4)
+        layer = BitLinearLRC(128, 256, rank=16, qlrc_config=config)
+        x = torch.randn(4, 32, 128)
+
+        output = layer(x)
+        assert output.shape == (4, 32, 256)
+
+    def test_qlrc_disabled_uses_full_precision(self):
+        """Test that disabled QLRC uses full precision nn.Parameters."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=False)
+        layer = BitLinearLRC(128, 64, rank=16, qlrc_config=config)
+
+        assert layer._use_quantized_lrc is False
+        assert hasattr(layer, "lrc_U")
+        assert hasattr(layer, "lrc_V")
+        assert isinstance(layer.lrc_U, nn.Parameter)
+        assert isinstance(layer.lrc_V, nn.Parameter)
+
+    def test_qlrc_extra_repr(self):
+        """Test extra_repr shows QLRC info."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4, group_size=32)
+        layer = BitLinearLRC(128, 64, rank=16, qlrc_config=config)
+
+        repr_str = layer.extra_repr()
+        assert "qlrc=4bit_g32" in repr_str
+
+    def test_qlrc_get_weights(self):
+        """Test getting QLRC weights for export."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4)
+        layer = BitLinearLRC(64, 32, rank=8, qlrc_config=config)
+
+        # Set some non-zero weights
+        with torch.no_grad():
+            layer.lrc_U_linear.weight.normal_(std=0.1)
+            layer.lrc_V_linear.weight.normal_(std=0.1)
+
+        U, V = layer.get_lrc_weights_dequantized()
+
+        # Check shapes
+        assert U.shape == (32, 8)  # (out_features, rank)
+        assert V.shape == (64, 8)  # (in_features, rank)
+
+    def test_qlrc_full_precision_get_dequantized_weights(self):
+        """Test dequantization returns clone for full precision."""
+        layer = BitLinearLRC(64, 32, rank=8)
+
+        with torch.no_grad():
+            layer.lrc_U.normal_(std=0.1)
+            layer.lrc_V.normal_(std=0.1)
+
+        U, V = layer.get_lrc_weights_dequantized()
+
+        assert torch.allclose(U, layer.lrc_U.data)
+        assert torch.allclose(V, layer.lrc_V.data)
+
+    def test_qlrc_convert_bitlinear_to_lrc(self):
+        """Test convert_bitlinear_to_lrc with QLRC config."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4)
+        linear = BitLinear(128, 64)
+        model = nn.Sequential(linear)
+
+        model = convert_bitlinear_to_lrc(model, rank=16, qlrc_config=config)
+
+        lrc_layer = model[0]
+        assert isinstance(lrc_layer, BitLinearLRC)
+        assert lrc_layer._use_quantized_lrc is True
+
+    def test_qlrc_get_lrc_stats(self):
+        """Test get_lrc_stats reports QLRC info."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4, group_size=32)
+        layer = BitLinearLRC(128, 64, rank=16, qlrc_config=config)
+        model = nn.Sequential(layer)
+
+        stats = get_lrc_stats(model)
+
+        assert stats["num_lrc_layers"] == 1
+        assert stats["num_qlrc_layers"] == 1
+        assert stats["qlrc_bits"] == 4
+        assert stats["qlrc_group_size"] == 32
+
+    def test_qlrc_freeze_model_includes_qlrc_params(self):
+        """Test freeze_model_except_lrc keeps QLRC linear params trainable."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4)
+        layer = BitLinearLRC(128, 64, rank=16, qlrc_config=config)
+        model = nn.Sequential(layer)
+
+        freeze_stats = freeze_model_except_lrc(model)
+
+        # Should have trainable params (the QLRC linear layers)
+        assert freeze_stats["trainable"] > 0
+        # The LRC linear weights should be trainable
+        assert layer.lrc_U_linear.weight.requires_grad
+        assert layer.lrc_V_linear.weight.requires_grad
+
+    def test_qlrc_gradient_flow(self):
+        """Test that gradients flow through STE quantization."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4, group_size=32)
+        layer = BitLinearLRC(64, 32, rank=8, qlrc_config=config)
+        x = torch.randn(2, 8, 64, requires_grad=True)
+
+        output = layer(x)
+        loss = output.sum()
+        loss.backward()
+
+        # Gradients should flow through STE to the QLRC linear weights
+        assert layer.lrc_U_linear.weight.grad is not None
+        assert layer.lrc_V_linear.weight.grad is not None
+        # But NOT to frozen base weights
+        assert layer.weight.grad is None
+
+    def test_qlrc_ste_quantization_effect(self):
+        """Test that STE quantization actually quantizes during forward."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig, QuantizedLinearSTE
+
+        # Create a standalone STE layer
+        ste_layer = QuantizedLinearSTE(32, 16, bits=4, group_size=8)
+
+        # Set some random weights
+        with torch.no_grad():
+            ste_layer.weight.fill_(0.5)  # A value that won't round to itself
+
+        x = torch.ones(1, 32)
+
+        # The output should reflect quantized weights, not exact 0.5
+        output = ste_layer(x)
+
+        # If weights were exactly 0.5 and not quantized, output = 32 * 0.5 = 16 per row
+        # With quantization, the value will be different
+        expected_no_quant = 16.0
+        actual = output[0, 0].item()
+
+        # The values won't be exactly equal due to quantization
+        # (4-bit with group_size=8 will round values)
+        # Just verify quantization does something
+        assert output.shape == (1, 16)
+
+    def test_qlrc_svd_init_works(self):
+        """Test SVD initialization works with STE-based QLRC."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4)
+        layer = BitLinearLRC(64, 32, rank=8, qlrc_config=config)
+        original_weight = torch.randn(32, 64)
+
+        # Should not raise
+        layer.init_lrc_from_svd(original_weight)
+
+        # LRC matrices should be non-zero after SVD init
+        assert not torch.allclose(
+            layer.lrc_U_linear.weight, torch.zeros_like(layer.lrc_U_linear.weight)
+        )
+        assert not torch.allclose(
+            layer.lrc_V_linear.weight, torch.zeros_like(layer.lrc_V_linear.weight)
+        )

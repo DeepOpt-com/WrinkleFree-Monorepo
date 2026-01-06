@@ -30,6 +30,14 @@ lrc:
   trainable_weight: false
   # Delete original weights to save memory (valid when trainable_weight=false)
   keep_original_weight: false
+  # QLRC: QA-LoRA style quantized adapters with STE (trainable!)
+  # Uses Straight-Through Estimator for gradient flow through quantized adapters.
+  # Based on QA-LoRA: https://arxiv.org/abs/2309.14717 (ICLR 2024)
+  # Weights stored in full precision, quantized on-the-fly during forward pass.
+  qlrc:
+    enabled: true  # Enable for memory-efficient training
+    bits: 4        # 4-bit or 8-bit quantization
+    group_size: 32 # Elements per quantization group (QA-LoRA default)
 
 # Auto-convert to BitNet if needed
 auto_convert:
@@ -103,7 +111,7 @@ objectives:
     mask_token_id: 0  # Use unk_token as mask token
     use_complementary_masks: true
 
-  # Distillation disabled for LRC run
+  # Distillation disabled - LRC distill has hidden_states bug, using CE+DLM only
   distill:
     enabled: false
 

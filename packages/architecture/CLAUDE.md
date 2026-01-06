@@ -192,6 +192,44 @@ output = layer(x)
 
 **Key principle**: Only `lrc_U` and `lrc_V` are trainable. All other params (quantized weights, bias, embeddings, norms) are **frozen**.
 
+### QLRC: Quantized LRC Adapters (QA-LoRA style)
+
+Based on [QA-LoRA: Quantization-Aware Low-Rank Adaptation](https://arxiv.org/abs/2309.14717) (ICLR 2024).
+
+QLRC enables **trainable quantized adapters** using Straight-Through Estimator (STE):
+- Weights stored in full precision (for gradient updates)
+- Quantized on-the-fly during forward pass
+- Gradients flow through as if no quantization (STE)
+
+```python
+from wf_arch import BitLinearLRC, QLRCConfig, convert_bitlinear_to_lrc
+
+# Configure quantized adapters
+qlrc_config = QLRCConfig(
+    enabled=True,
+    bits=4,        # 4-bit or 8-bit quantization
+    group_size=32, # Elements per quantization group
+)
+
+# Convert with QLRC enabled
+model = convert_bitlinear_to_lrc(
+    model,
+    rank_percentage=0.25,  # 25% rank for LRC
+    qlrc_config=qlrc_config,
+)
+```
+
+**Quantization approach: Group-wise symmetric quantization**
+- NOT row-wise or per-tensor - each `group_size` contiguous elements share a scale
+- Scale = max(abs(group)) / (2^(bits-1) - 1)
+- 4-bit: values quantized to range [-8, 7]
+- 8-bit: values quantized to range [-128, 127]
+
+**When to use QLRC:**
+- Memory-constrained training where full-precision adapters are too large
+- Models will be deployed with quantized adapters
+- Research into quantization-aware fine-tuning
+
 ## Notes
 
 - This is a **pure library** - no CLI or scripts
@@ -205,3 +243,4 @@ output = layer(x)
 - [BitDistill Paper](https://arxiv.org/abs/2510.13998) - 1.58-bit training approach
 - [BitNet Paper](https://arxiv.org/abs/2310.11453) - Ternary weight quantization
 - [LRC Paper](https://arxiv.org/abs/2412.07902) - Low-Rank Correction for quantized LLMs
+- [QA-LoRA Paper](https://arxiv.org/abs/2309.14717) - Quantization-Aware LoRA with STE (ICLR 2024)
