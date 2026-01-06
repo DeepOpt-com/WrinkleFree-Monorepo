@@ -100,6 +100,7 @@ class Keys:
         TIME_DECAY_EXTRA_DIM              = "{arch}.time_decay_extra_dim"
         RESIDUAL_SCALE                    = "{arch}.residual_scale"
         EMBEDDING_SCALE                   = "{arch}.embedding_scale"
+        LRC_RANK                          = "{arch}.lrc.rank"
 
     class Attention:
         HEAD_COUNT        = "{arch}.attention.head_count"

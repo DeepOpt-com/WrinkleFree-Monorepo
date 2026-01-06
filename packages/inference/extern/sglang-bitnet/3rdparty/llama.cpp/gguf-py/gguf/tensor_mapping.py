@@ -696,6 +696,50 @@ class TensorNameMap:
         MODEL_TENSOR.CLS_OUT: (
             "classifier.out_proj", # roberta
         ),
+
+        # LRC (Low-Rank Correction) tensors for ternary models
+        MODEL_TENSOR.ATTN_Q_LRC_U: (
+            "model.layers.{bid}.self_attn.q_proj.lrc_U",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.ATTN_Q_LRC_V: (
+            "model.layers.{bid}.self_attn.q_proj.lrc_V",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.ATTN_K_LRC_U: (
+            "model.layers.{bid}.self_attn.k_proj.lrc_U",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.ATTN_K_LRC_V: (
+            "model.layers.{bid}.self_attn.k_proj.lrc_V",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.ATTN_V_LRC_U: (
+            "model.layers.{bid}.self_attn.v_proj.lrc_U",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.ATTN_V_LRC_V: (
+            "model.layers.{bid}.self_attn.v_proj.lrc_V",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.ATTN_OUT_LRC_U: (
+            "model.layers.{bid}.self_attn.o_proj.lrc_U",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.ATTN_OUT_LRC_V: (
+            "model.layers.{bid}.self_attn.o_proj.lrc_V",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.FFN_GATE_LRC_U: (
+            "model.layers.{bid}.mlp.gate_proj.lrc_U",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.FFN_GATE_LRC_V: (
+            "model.layers.{bid}.mlp.gate_proj.lrc_V",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.FFN_UP_LRC_U: (
+            "model.layers.{bid}.mlp.up_proj.lrc_U",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.FFN_UP_LRC_V: (
+            "model.layers.{bid}.mlp.up_proj.lrc_V",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.FFN_DOWN_LRC_U: (
+            "model.layers.{bid}.mlp.down_proj.lrc_U",  # bitnet-lrc
+        ),
+        MODEL_TENSOR.FFN_DOWN_LRC_V: (
+            "model.layers.{bid}.mlp.down_proj.lrc_V",  # bitnet-lrc
+        ),
     }
 
     # architecture-specific block mappings

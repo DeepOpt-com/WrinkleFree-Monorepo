@@ -1663,6 +1663,9 @@ class LlamaModel(Model):
 class BitnetModel(Model):
     model_arch = gguf.MODEL_ARCH.BITNET
 
+    # LRC rank detected from tensors (0 = no LRC)
+    _lrc_rank: int = 0
+
     def set_vocab(self):
         # Try GPT2/tiktoken first (used by DLM models), fall back to sentencepiece
         try:
@@ -1674,6 +1677,12 @@ class BitnetModel(Model):
         super().set_gguf_parameters()
         self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.LINEAR)
         self.gguf_writer.add_rope_scaling_factor(1.0)
+        # Add LRC rank if detected
+        if self._lrc_rank > 0:
+            self.gguf_writer.add_uint32(
+                gguf.Keys.LLM.LRC_RANK.format(arch="bitnet"),
+                self._lrc_rank
+            )
 
     def weight_quant(self, weight: Tensor) -> Tensor:
         dtype = weight.dtype
@@ -1686,7 +1695,53 @@ class BitnetModel(Model):
         result = (weight * iscale).round().clamp(-1, 1) / iscale
         return result.type(dtype)
 
+    def _is_lrc_tensor(self, name: str) -> bool:
+        """Check if tensor is an LRC correction matrix (U or V)."""
+        return ".lrc_U" in name or ".lrc_V" in name
+
+    def _map_lrc_tensor_name(self, name: str, bid: int) -> str:
+        """Map PyTorch LRC tensor name to GGUF format.
+
+        Examples:
+            model.layers.0.self_attn.q_proj.lrc_U -> blk.0.attn_q.lrc_u
+            model.layers.0.mlp.gate_proj.lrc_V -> blk.0.ffn_gate.lrc_v
+        """
+        # Mapping from PyTorch names to GGUF names
+        mapping = {
+            "self_attn.q_proj": "attn_q",
+            "self_attn.k_proj": "attn_k",
+            "self_attn.v_proj": "attn_v",
+            "self_attn.o_proj": "attn_output",
+            "mlp.gate_proj": "ffn_gate",
+            "mlp.up_proj": "ffn_up",
+            "mlp.down_proj": "ffn_down",
+        }
+
+        suffix = "lrc_u" if ".lrc_U" in name else "lrc_v"
+
+        for pt_name, gguf_name in mapping.items():
+            if pt_name in name:
+                return f"blk.{bid}.{gguf_name}.{suffix}"
+
+        raise ValueError(f"Unknown LRC tensor: {name}")
+
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # Handle LRC tensors (U, V correction matrices)
+        if self._is_lrc_tensor(name):
+            # Extract rank from first LRC tensor encountered
+            if self._lrc_rank == 0:
+                # Rank is the last dimension for both U (out, rank) and V (in, rank)
+                self._lrc_rank = data_torch.shape[-1]
+                logger.info(f"Detected LRC rank: {self._lrc_rank}")
+
+            # Map to GGUF tensor name
+            assert bid is not None, f"LRC tensor {name} must have a block id"
+            lrc_name = self._map_lrc_tensor_name(name, bid)
+
+            # Keep as F16 for now (quantization can be done post-conversion)
+            yield (lrc_name, data_torch)
+            return
+
         new_name = self.map_tensor_name(name)
 
         if any(self.match_model_tensor_name(new_name, key, bid) for key in [

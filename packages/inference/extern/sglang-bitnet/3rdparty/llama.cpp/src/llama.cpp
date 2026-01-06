@@ -624,6 +624,21 @@ enum llm_tensor {
     LLM_TENSOR_ENC_OUTPUT_NORM,
     LLM_TENSOR_CLS,
     LLM_TENSOR_CLS_OUT,
+    // LRC (Low-Rank Correction) tensors for ternary models
+    LLM_TENSOR_ATTN_Q_LRC_U,
+    LLM_TENSOR_ATTN_Q_LRC_V,
+    LLM_TENSOR_ATTN_K_LRC_U,
+    LLM_TENSOR_ATTN_K_LRC_V,
+    LLM_TENSOR_ATTN_V_LRC_U,
+    LLM_TENSOR_ATTN_V_LRC_V,
+    LLM_TENSOR_ATTN_OUT_LRC_U,
+    LLM_TENSOR_ATTN_OUT_LRC_V,
+    LLM_TENSOR_FFN_GATE_LRC_U,
+    LLM_TENSOR_FFN_GATE_LRC_V,
+    LLM_TENSOR_FFN_UP_LRC_U,
+    LLM_TENSOR_FFN_UP_LRC_V,
+    LLM_TENSOR_FFN_DOWN_LRC_U,
+    LLM_TENSOR_FFN_DOWN_LRC_V,
 };
 
 static const std::map<llm_arch, std::map<llm_tensor, const char *>> LLM_TENSOR_NAMES = {
@@ -1404,6 +1419,21 @@ static const std::map<llm_arch, std::map<llm_tensor, const char *>> LLM_TENSOR_N
             { LLM_TENSOR_FFN_UP_EXPS,     "blk.%d.ffn_up_exps" },
             { LLM_TENSOR_ATTN_SUB_NORM,   "blk.%d.attn_sub_norm" },
             { LLM_TENSOR_FFN_SUB_NORM,    "blk.%d.ffn_sub_norm" },
+            // LRC (Low-Rank Correction) tensors
+            { LLM_TENSOR_ATTN_Q_LRC_U,    "blk.%d.attn_q.lrc_u" },
+            { LLM_TENSOR_ATTN_Q_LRC_V,    "blk.%d.attn_q.lrc_v" },
+            { LLM_TENSOR_ATTN_K_LRC_U,    "blk.%d.attn_k.lrc_u" },
+            { LLM_TENSOR_ATTN_K_LRC_V,    "blk.%d.attn_k.lrc_v" },
+            { LLM_TENSOR_ATTN_V_LRC_U,    "blk.%d.attn_v.lrc_u" },
+            { LLM_TENSOR_ATTN_V_LRC_V,    "blk.%d.attn_v.lrc_v" },
+            { LLM_TENSOR_ATTN_OUT_LRC_U,  "blk.%d.attn_output.lrc_u" },
+            { LLM_TENSOR_ATTN_OUT_LRC_V,  "blk.%d.attn_output.lrc_v" },
+            { LLM_TENSOR_FFN_GATE_LRC_U,  "blk.%d.ffn_gate.lrc_u" },
+            { LLM_TENSOR_FFN_GATE_LRC_V,  "blk.%d.ffn_gate.lrc_v" },
+            { LLM_TENSOR_FFN_UP_LRC_U,    "blk.%d.ffn_up.lrc_u" },
+            { LLM_TENSOR_FFN_UP_LRC_V,    "blk.%d.ffn_up.lrc_v" },
+            { LLM_TENSOR_FFN_DOWN_LRC_U,  "blk.%d.ffn_down.lrc_u" },
+            { LLM_TENSOR_FFN_DOWN_LRC_V,  "blk.%d.ffn_down.lrc_v" },
         },
     },
     {
@@ -2799,6 +2829,23 @@ struct llama_layer {
     struct ggml_tensor * ffn_gate_scale;
     struct ggml_tensor * ffn_up_scale;
     struct ggml_tensor * ffn_down_scale;
+
+    // LRC (Low-Rank Correction) tensors for ternary models
+    // U: (out_features, rank), V: (in_features, rank)
+    struct ggml_tensor * wq_lrc_u = nullptr;
+    struct ggml_tensor * wq_lrc_v = nullptr;
+    struct ggml_tensor * wk_lrc_u = nullptr;
+    struct ggml_tensor * wk_lrc_v = nullptr;
+    struct ggml_tensor * wv_lrc_u = nullptr;
+    struct ggml_tensor * wv_lrc_v = nullptr;
+    struct ggml_tensor * wo_lrc_u = nullptr;
+    struct ggml_tensor * wo_lrc_v = nullptr;
+    struct ggml_tensor * ffn_gate_lrc_u = nullptr;
+    struct ggml_tensor * ffn_gate_lrc_v = nullptr;
+    struct ggml_tensor * ffn_up_lrc_u = nullptr;
+    struct ggml_tensor * ffn_up_lrc_v = nullptr;
+    struct ggml_tensor * ffn_down_lrc_u = nullptr;
+    struct ggml_tensor * ffn_down_lrc_v = nullptr;
 };
 
 // very similar to llama_batch,
@@ -8797,6 +8844,45 @@ static bool llm_load_tensors(
                                 }
                             }
                         }
+
+                        // LRC (Low-Rank Correction) tensors - optional
+                        // Check if first LRC tensor exists to determine rank
+                        {
+                            const ggml_tensor_meta * lrc_meta = ml.get_tensor_meta(tn(LLM_TENSOR_ATTN_Q_LRC_U, "weight", i).c_str());
+                            if (lrc_meta) {
+                                // LRC is present - load all LRC tensors
+                                // U shape: (out_features, rank), V shape: (in_features, rank)
+                                const int64_t lrc_rank = lrc_meta->ne[1];  // rank is second dimension
+
+                                // Attention Q
+                                layer.wq_lrc_u = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_Q_LRC_U, "weight", i), {n_embd_head_k * n_head, lrc_rank});
+                                layer.wq_lrc_v = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_Q_LRC_V, "weight", i), {n_embd, lrc_rank});
+
+                                // Attention K
+                                layer.wk_lrc_u = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_K_LRC_U, "weight", i), {n_embd_k_gqa, lrc_rank});
+                                layer.wk_lrc_v = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_K_LRC_V, "weight", i), {n_embd, lrc_rank});
+
+                                // Attention V
+                                layer.wv_lrc_u = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_V_LRC_U, "weight", i), {n_embd_v_gqa, lrc_rank});
+                                layer.wv_lrc_v = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_V_LRC_V, "weight", i), {n_embd, lrc_rank});
+
+                                // Attention output
+                                layer.wo_lrc_u = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_OUT_LRC_U, "weight", i), {n_embd, lrc_rank});
+                                layer.wo_lrc_v = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_OUT_LRC_V, "weight", i), {n_embd_head_k * n_head, lrc_rank});
+
+                                // FFN (only if not MoE)
+                                if (n_expert == 0) {
+                                    layer.ffn_gate_lrc_u = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_GATE_LRC_U, "weight", i), {n_ff, lrc_rank});
+                                    layer.ffn_gate_lrc_v = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_GATE_LRC_V, "weight", i), {n_embd, lrc_rank});
+
+                                    layer.ffn_up_lrc_u = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_UP_LRC_U, "weight", i), {n_ff, lrc_rank});
+                                    layer.ffn_up_lrc_v = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_UP_LRC_V, "weight", i), {n_embd, lrc_rank});
+
+                                    layer.ffn_down_lrc_u = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_DOWN_LRC_U, "weight", i), {n_embd, lrc_rank});
+                                    layer.ffn_down_lrc_v = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_DOWN_LRC_V, "weight", i), {n_ff, lrc_rank});
+                                }
+                            }
+                        }
                     }
                 } break;
             case LLM_ARCH_T5:
@@ -9484,6 +9570,65 @@ static struct ggml_tensor * llm_build_lora_mm_id(
             ctx0, lora->b,
             ggml_mul_mat_id(ctx0, lora->a, cur, ids),
             ids
+        );
+        ab_cur = ggml_scale(ctx0, ab_cur, scale);
+        res = ggml_add(ctx0, res, ab_cur);
+    }
+    return res;
+}
+
+// do mat_mul with optional LRC (Low-Rank Correction) for ternary models
+// LRC: output = W_quant @ cur + U @ V^T @ cur
+// where W_quant is ternary weights, U/V are FP16/quantized correction matrices
+static struct ggml_tensor * llm_build_lrc_mm(
+         struct ggml_context * ctx0,
+          struct ggml_tensor * w,      // ternary weights
+          struct ggml_tensor * cur,    // input activations
+          struct ggml_tensor * lrc_u,  // (out_features, rank) - optional
+          struct ggml_tensor * lrc_v)  // (in_features, rank) - optional
+{
+    // Ternary path: W_quant @ cur
+    struct ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
+
+    // If LRC tensors are present, add correction: U @ V^T @ cur
+    if (lrc_u != nullptr && lrc_v != nullptr) {
+        // V^T @ cur: (rank, in_features) @ (in_features, n_tokens) = (rank, n_tokens)
+        // V is stored as (in_features, rank), so V^T is implicit in mul_mat
+        struct ggml_tensor * vt_cur = ggml_mul_mat(ctx0, lrc_v, cur);
+
+        // U @ (V^T @ cur): (out_features, rank) @ (rank, n_tokens) = (out_features, n_tokens)
+        struct ggml_tensor * lrc_out = ggml_mul_mat(ctx0, lrc_u, vt_cur);
+
+        // Add correction to ternary output
+        res = ggml_add(ctx0, res, lrc_out);
+    }
+
+    return res;
+}
+
+// do mat_mul with optional LRC + LoRA (for full flexibility)
+static struct ggml_tensor * llm_build_lora_lrc_mm(
+        struct llama_context & lctx,
+         struct ggml_context * ctx0,
+          struct ggml_tensor * w,
+          struct ggml_tensor * cur,
+          struct ggml_tensor * lrc_u,
+          struct ggml_tensor * lrc_v) {
+    // First apply LRC
+    struct ggml_tensor * res = llm_build_lrc_mm(ctx0, w, cur, lrc_u, lrc_v);
+
+    // Then apply LoRA adapters (if any)
+    for (auto & it : lctx.lora_adapters) {
+        struct llama_lora_weight * lora = it.first->get_weight(w);
+        if (lora == nullptr) {
+            continue;
+        }
+        const float alpha = it.first->alpha;
+        const float rank  = (float) lora->b->ne[0];
+        const float scale = alpha ? it.second * alpha / rank : it.second;
+        struct ggml_tensor * ab_cur = ggml_mul_mat(
+            ctx0, lora->b,
+            ggml_mul_mat(ctx0, lora->a, cur)
         );
         ab_cur = ggml_scale(ctx0, ab_cur, scale);
         res = ggml_add(ctx0, res, ab_cur);
@@ -15422,22 +15567,25 @@ struct llm_build_context {
                 struct ggml_tensor * rope_factors = build_rope_factors(il);
                 // printf("%f\n\n\n\n",((float*)rope_factors->data)[1]);
 
-                // compute Q and K and RoPE them
-                struct ggml_tensor * Qcur = llm_build_lora_mm(lctx, ctx0, model.layers[il].wq, cur);
+                // compute Q, K, V with optional LRC (Low-Rank Correction) and RoPE
+                struct ggml_tensor * Qcur = llm_build_lora_lrc_mm(lctx, ctx0, model.layers[il].wq, cur,
+                    model.layers[il].wq_lrc_u, model.layers[il].wq_lrc_v);
                 cb(Qcur, "Qcur", il);
                 if (model.layers[il].bq) {
                     Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
                     cb(Qcur, "Qcur", il);
                 }
 
-                struct ggml_tensor * Kcur = llm_build_lora_mm(lctx, ctx0, model.layers[il].wk, cur);
+                struct ggml_tensor * Kcur = llm_build_lora_lrc_mm(lctx, ctx0, model.layers[il].wk, cur,
+                    model.layers[il].wk_lrc_u, model.layers[il].wk_lrc_v);
                 cb(Kcur, "Kcur", il);
                 if (model.layers[il].bk) {
                     Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
                     cb(Kcur, "Kcur", il);
                 }
 
-                struct ggml_tensor * Vcur = llm_build_lora_mm(lctx, ctx0, model.layers[il].wv, cur);
+                struct ggml_tensor * Vcur = llm_build_lora_lrc_mm(lctx, ctx0, model.layers[il].wv, cur,
+                    model.layers[il].wv_lrc_u, model.layers[il].wv_lrc_v);
                 cb(Vcur, "Vcur", il);
                 if (model.layers[il].bv) {
                     Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
@@ -15461,13 +15609,15 @@ struct llm_build_context {
                 cur = llm_build_kv(ctx0, lctx, kv_self, gf,
                         NULL, NULL,
                         Kcur, Vcur, Qcur, KQ_mask, n_tokens, kv_head, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, il);
-            
+
                 cur = llm_build_norm(ctx0, cur, hparams,
                         model.layers[il].attn_sub_norm, NULL,
                         LLM_NORM_RMS, cb, il);
                 cb(cur, "attn_sub_norm", il);
 
-                cur = llm_build_lora_mm(lctx, ctx0, model.layers[il].wo, cur);
+                // Output projection with optional LRC
+                cur = llm_build_lora_lrc_mm(lctx, ctx0, model.layers[il].wo, cur,
+                    model.layers[il].wo_lrc_u, model.layers[il].wo_lrc_v);
                 if (model.layers[il].wo_scale) {
                     cur = ggml_mul(ctx0, cur, model.layers[il].wo_scale);
                 }
@@ -15493,20 +15643,43 @@ struct llm_build_context {
                     LLM_NORM_RMS, cb, il);
             cb(cur, "ffn_norm", il);
 
-            cur = llm_build_ffn(ctx0, lctx, cur,
-                    model.layers[il].ffn_up,   NULL, model.layers[il].ffn_up_scale,
-                    model.layers[il].ffn_gate, NULL, model.layers[il].ffn_gate_scale,
-                    NULL, NULL, NULL,
-                    NULL,
-                    LLM_FFN_RELU_SQR, LLM_FFN_PAR, cb, il);
-            cb(cur, "ffn_out", il);
+            // FFN with LRC: inline computation for gate/up projections with LRC support
+            // RELU_SQR activation: relu^2(gate) * up
+            {
+                struct ggml_tensor * ffn_up = llm_build_lora_lrc_mm(lctx, ctx0, model.layers[il].ffn_up, cur,
+                    model.layers[il].ffn_up_lrc_u, model.layers[il].ffn_up_lrc_v);
+                cb(ffn_up, "ffn_up", il);
+                if (model.layers[il].ffn_up_scale) {
+                    ffn_up = ggml_mul(ctx0, ffn_up, model.layers[il].ffn_up_scale);
+                    cb(ffn_up, "ffn_up_s", il);
+                }
+
+                struct ggml_tensor * ffn_gate = llm_build_lora_lrc_mm(lctx, ctx0, model.layers[il].ffn_gate, cur,
+                    model.layers[il].ffn_gate_lrc_u, model.layers[il].ffn_gate_lrc_v);
+                cb(ffn_gate, "ffn_gate", il);
+                if (model.layers[il].ffn_gate_scale) {
+                    ffn_gate = ggml_mul(ctx0, ffn_gate, model.layers[il].ffn_gate_scale);
+                    cb(ffn_gate, "ffn_gate_s", il);
+                }
+
+                // RELU_SQR: relu^2(gate) * up
+                ffn_gate = ggml_relu(ctx0, ffn_gate);
+                cb(ffn_gate, "ffn_relu", il);
+                ffn_gate = ggml_sqr(ctx0, ffn_gate);
+                cb(ffn_gate, "ffn_relu_sqr", il);
+
+                cur = ggml_mul(ctx0, ffn_gate, ffn_up);
+                cb(cur, "ffn_out", il);
+            }
 
             cur = llm_build_norm(ctx0, cur, hparams,
                             model.layers[il].ffn_sub_norm, NULL,
                             LLM_NORM_RMS, cb, il);
             cb(cur, "ffn_sub_norm", il);
 
-            cur = llm_build_lora_mm(lctx, ctx0, model.layers[il].ffn_down, cur);
+            // FFN down projection with optional LRC
+            cur = llm_build_lora_lrc_mm(lctx, ctx0, model.layers[il].ffn_down, cur,
+                model.layers[il].ffn_down_lrc_u, model.layers[il].ffn_down_lrc_v);
             if (model.layers[il].ffn_down_scale) {
                 cur = ggml_mul(ctx0, cur, model.layers[il].ffn_down_scale);
             }
