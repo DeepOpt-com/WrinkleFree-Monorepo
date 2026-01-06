@@ -74,12 +74,11 @@ scheduler:
 # Training: 1B tokens
 total_tokens: 1_000_000_000
 max_steps: null
-max_seq_length: 512
-batch_size: 32
-gradient_accumulation_steps: 16
+max_seq_length: 2048  # Full context length
+batch_size: 2  # Reduced for 2048 seq len on A40 (46GB)
+gradient_accumulation_steps: 256  # Maintain effective batch of 512
 gradient_clipping: 1.0
-auto_batch_size: true
-auto_batch_size_margin: 0.15
+auto_batch_size: false  # Disabled - QLRC + torch.compile causes incorrect batch size detection
 
 # Lambda warmup disabled (LRC uses pre-computed quantized weights)
 lambda_warmup:
