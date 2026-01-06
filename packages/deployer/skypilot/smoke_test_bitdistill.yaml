@@ -21,7 +21,7 @@ resources:
   accelerators: L40S:1
   memory: 64+
   use_spot: false
-  cloud: runpod
+  cloud: nebius
 
 # Run from monorepo root
 workdir: .
@@ -77,20 +77,25 @@ run: |
   echo ""
   echo "Test Configuration:"
   echo "  - 20 training steps"
-  echo "  - CE + Logits Distillation + Attention Distillation"
-  echo "  - Teacher: Auto-detect from student model"
+  echo "  - CE + DLM + Logits Distillation"
+  echo "  - Teacher: HuggingFaceTB/SmolLM2-135M (fp16)"
+  echo "  - Attention distillation: DISABLED (requires eager attention config)"
   echo ""
   echo "Features:"
   echo "  - Integrated distillation objectives"
-  echo "  - KL divergence with temperature scaling"
-  echo "  - Attention relation distillation (BitDistill Eq. 11)"
+  echo "  - KL divergence with temperature scaling (T=5.0)"
+  echo "  - DLM masking for block diffusion compatibility"
   echo "  - MuonClip optimizer"
   echo "================================================"
 
   # Run bitdistill training
   echo ""
   echo "[Training] Running BitDistill training..."
-  uv run --package wf-train python packages/training/scripts/train.py \
+
+  # Debug: Show HYDRA_FULL_ERROR for complete stack traces
+  export HYDRA_FULL_ERROR=1
+
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=bitdistill_full \
     data=default \
@@ -102,9 +107,10 @@ run: |
     training.logging.log_interval=1 \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
-    gcs.enabled=true \
-    gcs.bucket=${GCS_BUCKET} \
-    training.early_stopping.enabled=false
+    gcs.enabled=false \
+    training.early_stopping.enabled=false \
+    training.teacher.model_name=HuggingFaceTB/SmolLM2-135M \
+    training.objectives.distill.attention.enabled=false
 
   echo ""
   echo "================================================"

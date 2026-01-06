@@ -25,7 +25,7 @@ resources:
 # Sync training code (monorepo paths)
 workdir: ../training
 
-# Mount GCS credentials + CheaperTraining for influence
+# Mount GCS credentials + wf_data for data loading
 file_mounts:
   /gcs-creds/gcp-service-account.json: credentials/gcp-service-account.json
   /wf_data: ../wf_data
@@ -59,7 +59,7 @@ setup: |
   # Install wrinklefree package (editable)
   pip install -e . --no-deps
 
-  # Install CheaperTraining for influence-based training
+  # Install wf_data for data loading
   pip install -e /wf_data --no-deps
 
   # Verify GPU setup

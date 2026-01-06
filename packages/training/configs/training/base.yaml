@@ -158,27 +158,11 @@ validation:
   limit_val_batches: 50         # Number of validation batches (streaming)
   batch_size: 8                 # Smaller batch for eval (no gradients)
 
-# CheaperTraining influence-based data selection
-influence:
-  enabled: true
-  method: datainf  # "datainf" or "distillation" (InfluenceDistillation for landmark KRR)
-  update_interval: 1000
-  warmup_steps: 500
-  learning_rate: 0.2
-  samples_per_dataset: 1000  # Samples per source for influence computation
-  config:
-    lambda_val: 0.1
-    gamma_val: 0.1
-    temperature: 1.0
-
-# === META-OPTIMIZATION (Replaces DataInf influence) ===
+# === META-OPTIMIZATION ===
 # Efficient meta-optimization using O(1) methods:
 # - LDC-MTL: Objective weight optimization (CE vs DLM vs distillation)
 # - ODM/EXP3: Dataset weight optimization (bandit-based data mixing)
 # - LayerLR: Per-layer learning rate optimization (LARS-inspired)
-#
-# NOTE: ODM replaces the older DataInf-based influence tracking.
-# Use meta_optimization.odm for dataset weights, NOT training.influence.
 #
 # All methods are efficient, principled, and require no external dependencies.
 # No Hessian computation, no gradient caching, no Pareto solvers.
@@ -201,7 +185,6 @@ meta_optimization:
 
   # ODM: Dataset weight optimization via EXP3 bandit
   # Uses training loss as reward signal with ~0% overhead
-  # NOTE: This replaces training.influence.enabled (DataInf approach)
   odm:
     enabled: true              # Enable dataset weight optimization
     reward_smoothing: 0.9      # EMA coefficient (0-1, higher = more smoothing)

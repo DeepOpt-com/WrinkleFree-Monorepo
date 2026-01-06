@@ -355,6 +355,21 @@ class MODEL_TENSOR(IntEnum):
     ENC_OUTPUT_NORM      = auto()
     CLS                  = auto() # classifier
     CLS_OUT              = auto() # classifier output projection
+    # LRC (Low-Rank Correction) tensors for ternary models
+    ATTN_Q_LRC_U         = auto()
+    ATTN_Q_LRC_V         = auto()
+    ATTN_K_LRC_U         = auto()
+    ATTN_K_LRC_V         = auto()
+    ATTN_V_LRC_U         = auto()
+    ATTN_V_LRC_V         = auto()
+    ATTN_OUT_LRC_U       = auto()
+    ATTN_OUT_LRC_V       = auto()
+    FFN_GATE_LRC_U       = auto()
+    FFN_GATE_LRC_V       = auto()
+    FFN_UP_LRC_U         = auto()
+    FFN_UP_LRC_V         = auto()
+    FFN_DOWN_LRC_U       = auto()
+    FFN_DOWN_LRC_V       = auto()
 
 
 MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
@@ -517,6 +532,21 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.ENC_OUTPUT_NORM:           "enc.output_norm",
     MODEL_TENSOR.CLS:                       "cls",
     MODEL_TENSOR.CLS_OUT:                   "cls.output",
+    # LRC (Low-Rank Correction) tensors
+    MODEL_TENSOR.ATTN_Q_LRC_U:              "blk.{bid}.attn_q.lrc_u",
+    MODEL_TENSOR.ATTN_Q_LRC_V:              "blk.{bid}.attn_q.lrc_v",
+    MODEL_TENSOR.ATTN_K_LRC_U:              "blk.{bid}.attn_k.lrc_u",
+    MODEL_TENSOR.ATTN_K_LRC_V:              "blk.{bid}.attn_k.lrc_v",
+    MODEL_TENSOR.ATTN_V_LRC_U:              "blk.{bid}.attn_v.lrc_u",
+    MODEL_TENSOR.ATTN_V_LRC_V:              "blk.{bid}.attn_v.lrc_v",
+    MODEL_TENSOR.ATTN_OUT_LRC_U:            "blk.{bid}.attn_output.lrc_u",
+    MODEL_TENSOR.ATTN_OUT_LRC_V:            "blk.{bid}.attn_output.lrc_v",
+    MODEL_TENSOR.FFN_GATE_LRC_U:            "blk.{bid}.ffn_gate.lrc_u",
+    MODEL_TENSOR.FFN_GATE_LRC_V:            "blk.{bid}.ffn_gate.lrc_v",
+    MODEL_TENSOR.FFN_UP_LRC_U:              "blk.{bid}.ffn_up.lrc_u",
+    MODEL_TENSOR.FFN_UP_LRC_V:              "blk.{bid}.ffn_up.lrc_v",
+    MODEL_TENSOR.FFN_DOWN_LRC_U:            "blk.{bid}.ffn_down.lrc_u",
+    MODEL_TENSOR.FFN_DOWN_LRC_V:            "blk.{bid}.ffn_down.lrc_v",
 }
 
 MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
@@ -1163,6 +1193,21 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_UP,
         MODEL_TENSOR.ATTN_SUB_NORM,
         MODEL_TENSOR.FFN_SUB_NORM,
+        # LRC (Low-Rank Correction) tensors - optional
+        MODEL_TENSOR.ATTN_Q_LRC_U,
+        MODEL_TENSOR.ATTN_Q_LRC_V,
+        MODEL_TENSOR.ATTN_K_LRC_U,
+        MODEL_TENSOR.ATTN_K_LRC_V,
+        MODEL_TENSOR.ATTN_V_LRC_U,
+        MODEL_TENSOR.ATTN_V_LRC_V,
+        MODEL_TENSOR.ATTN_OUT_LRC_U,
+        MODEL_TENSOR.ATTN_OUT_LRC_V,
+        MODEL_TENSOR.FFN_GATE_LRC_U,
+        MODEL_TENSOR.FFN_GATE_LRC_V,
+        MODEL_TENSOR.FFN_UP_LRC_U,
+        MODEL_TENSOR.FFN_UP_LRC_V,
+        MODEL_TENSOR.FFN_DOWN_LRC_U,
+        MODEL_TENSOR.FFN_DOWN_LRC_V,
     ],
     MODEL_ARCH.BITNET_25: [
         MODEL_TENSOR.TOKEN_EMBD,

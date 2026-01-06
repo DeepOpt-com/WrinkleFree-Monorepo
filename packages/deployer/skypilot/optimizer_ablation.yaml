@@ -40,7 +40,7 @@ envs:
   GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
   GCS_BUCKET: wrinklefree-checkpoints
   MODEL: smollm2_135m
-  TRAINING_CONFIG: lrc_dlm_influence
+  TRAINING_CONFIG: base
   TOTAL_TOKENS: 500_000_000  # 500M tokens for ablation (half of full run)
   MAX_STEPS: 3815  # Half of 7630 steps
   OPTIMIZER: muonclip  # Options: muonclip, adamw, muonclip_clip

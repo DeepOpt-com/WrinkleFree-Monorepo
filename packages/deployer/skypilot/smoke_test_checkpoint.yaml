@@ -100,7 +100,7 @@ run: |
   echo "[Training] Starting Lightning training..."
   PYTHONUNBUFFERED=1 uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=lrc_dlm_influence \
+    training=base \
     training.max_steps=${MAX_STEPS} \
     training.checkpoint.save_interval=${SAVE_INTERVAL} \
     training.auto_batch_size=false \

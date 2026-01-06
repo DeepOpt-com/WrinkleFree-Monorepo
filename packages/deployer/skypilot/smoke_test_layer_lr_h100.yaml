@@ -98,7 +98,6 @@ run: |
     training.auto_batch_size=false \
     training.batch_size=16 \
     training.gradient_accumulation_steps=8 \
-    training.influence.enabled=false \
     training.meta_optimization.enabled=true \
     training.meta_optimization.ldc_mtl.enabled=false \
     training.meta_optimization.odm.enabled=false \

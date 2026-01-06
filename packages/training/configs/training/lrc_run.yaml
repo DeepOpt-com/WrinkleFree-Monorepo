@@ -1,0 +1,175 @@
+# LRC + DLM Run: Low-Rank Correction with Diffusion Language Model
+#
+# Combines:
+# - LRC (Low-Rank Correction) for quantization error recovery
+# - DLM (Diffusion Language Model) for fast parallel inference
+# - CE (Continue Pretrain) for standard autoregressive generation
+#
+# Key features:
+# - 25% LRC rank (higher than calibration's 10% for better error recovery)
+# - Base model frozen (only U, V matrices trainable)
+# - No distillation (pure LRC + DLM + CE)
+#
+# Based on: "Low-Rank Correction for Quantized LLMs" (arxiv 2412.07902)
+#
+# Usage:
+#   uv run python scripts/train_lightning.py \
+#     model=qwen3_0.6b training=lrc_run
+
+stage: lrc_dlm_run
+
+# LRC Configuration - 25% rank, frozen base model
+lrc:
+  enabled: true
+  # Rank as percentage of min(in_features, out_features)
+  # 25% provides better error recovery than 10% calibration default
+  rank_percentage: 0.25
+  # Initialization: "zeros" (default) or "svd_residual" (better starting point)
+  init_method: zeros
+  # Freeze base model - only U, V matrices trainable
+  trainable_weight: false
+  # Delete original weights to save memory (valid when trainable_weight=false)
+  keep_original_weight: false
+
+# Auto-convert to BitNet if needed
+auto_convert:
+  enabled: true
+  exclude_layers:
+    - embed_tokens
+    - lm_head
+    - embed_positions
+
+# torch.compile for training speedup
+torch_compile:
+  enabled: true
+  mode: default
+
+# Sequence packing
+packing:
+  enabled: true
+
+# Optimizer: AdamW 8-bit (Muon not needed - base frozen, only U,V trained)
+optimizer:
+  type: adamw
+  learning_rate: 1e-4
+  weight_decay: 0.0
+  use_8bit: true
+
+# Scheduler: WSD
+scheduler:
+  type: wsd
+  warmup_steps: 500
+  decay_ratio: 0.2
+  decay_type: linear
+  min_lr_ratio: 0.0
+
+# Training: 1B tokens
+total_tokens: 1_000_000_000
+max_steps: null
+max_seq_length: 512
+batch_size: 32
+gradient_accumulation_steps: 16
+gradient_clipping: 1.0
+auto_batch_size: true
+auto_batch_size_margin: 0.15
+
+# Lambda warmup disabled (LRC uses pre-computed quantized weights)
+lambda_warmup:
+  enabled: false
+
+# Resume configuration
+resume:
+  checkpoint_path: null
+  load_optimizer_state: true
+  load_scheduler_state: true
+  load_training_state: true
+  strict_model_load: true
+
+# === OBJECTIVES ===
+# CE + DLM (no distillation)
+objectives:
+  # Standard next-token prediction (CE loss)
+  continue_pretrain:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+  # DLM: Diffusion Language Model for fast parallel inference
+  dlm:
+    enabled: true
+    weight: 0.5
+    mask_prob: 0.15
+    mask_token_id: 0  # Use unk_token as mask token
+    use_complementary_masks: true
+
+  # Distillation disabled for LRC run
+  distill:
+    enabled: false
+
+# No curriculum (fixed CE+DLM weights)
+curriculum:
+  enabled: false
+
+# Teacher model configuration (for LRC layer matching if needed)
+teacher:
+  fp16: true
+  offload_to_cpu: false
+  load_in_4bit: false
+  use_flash_attention: false
+
+# Checkpointing
+checkpoint:
+  save_interval: 200
+  keep_last_n: 5
+  save_optimizer: true
+
+# Logging
+logging:
+  log_interval: 10
+  wandb:
+    enabled: true
+    project: wrinklefree_v2
+    entity: null
+    name: null
+    tags: [lrc, dlm, bitnet, 25pct_rank]
+
+# Early stopping
+early_stopping:
+  enabled: false
+  patience: 5
+  min_delta: 0.01
+  min_evals: 10
+
+# Validation (C4 perplexity)
+validation:
+  enabled: true
+  config_name: c4_validation
+  val_check_interval: 500
+  limit_val_batches: 50
+  batch_size: 8
+
+# Memory optimization
+memory:
+  gradient_checkpointing: true
+  clear_cache_interval: 100
+
+# === META-OPTIMIZATION ===
+# LDC-MTL for pareto optimal objective weighting (CE vs DLM)
+meta_optimization:
+  enabled: true
+
+  ldc_mtl:
+    enabled: true
+    lambda_penalty: 0.1        # Discrepancy penalty (encourages balanced losses)
+    hidden_dim: 32             # Router MLP hidden size
+    router_lr: 0.001           # Router learning rate
+    step_interval: 1           # Update router every step
+
+  odm:
+    enabled: false             # Single dataset, not needed
+
+  layer_lr:
+    enabled: false             # Not using per-layer LR for LRC
+
+  log_interval: 100

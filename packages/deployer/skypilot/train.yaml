@@ -32,7 +32,7 @@ workdir: ../training
 
 # Mount dependencies and credentials
 file_mounts:
-  # CheaperTraining library for influence-based training
+  # wf_data package for data loading
   ~/wf_data: ../wf_data
   # GCP credentials for GCS checkpointing
   ~/.config/gcloud/application_default_credentials.json: ~/.config/gcloud/application_default_credentials.json
@@ -72,7 +72,7 @@ setup: |
   # This allows pip install to work with the mounted wf_data package
   sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
 
-  # Install CheaperTraining first (dependency of wrinklefree)
+  # Install wf_data first (dependency of wrinklefree)
   uv pip install -e ~/wf_data
 
   # Install muon-clip from git (removed from pyproject.toml sources by sed above)
@@ -120,7 +120,7 @@ run: |
   fi
 
   # Determine data config based on stage
-  # Note: data/default.yaml delegates to CheaperTraining's mixed_pretrain config
+  # Note: data/default.yaml delegates to wf_data's mixed_pretrain config
   case $STAGE in
     1)   DATA_CONFIG="" ;;  # Stage 1 doesn't need data
     1.9) DATA_CONFIG="data=default" ;;

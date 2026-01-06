@@ -96,7 +96,6 @@ uv run --package wf-train-deployer sky jobs queue
 | `skypilot/train.yaml` | SkyPilot training job template |
 | `skypilot/service.yaml` | SkyServe inference template |
 | `skypilot/smoke_test_lightning.yaml` | **Smoke test: Lightning + auto batch (RECOMMENDED)** |
-| `skypilot/smoke_test_influence.yaml` | Smoke test: Influence-based data remixing |
 | `skypilot/smoke_test_meta_opt_1gpu.yaml` | Smoke test: Meta-optimization (1x L40) |
 | `skypilot/smoke_test_meta_opt_2gpu.yaml` | Smoke test: Meta-optimization (2x L40 FSDP) |
 | `skypilot/smoke_test_unified_1gpu.yaml` | Smoke test: 1x L40 unified training (legacy) |
@@ -118,9 +117,6 @@ source credentials/.env
 sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
   --env OBJECTIVE_COMBO=dlm
 
-# Influence-based data remixing (tests InfluenceTrackerCallback)
-sky launch skypilot/smoke_test_influence.yaml -y --cluster influence-smoke
-
 # Meta-optimization (LDC-MTL + ODM, O(1) complexity)
 # References: arxiv:2502.08585 (LDC-MTL), arxiv:2312.02406 (ODM/EXP3)
 sky launch skypilot/smoke_test_meta_opt_1gpu.yaml -y --cluster meta-1gpu  # 1x L40
@@ -138,17 +134,16 @@ sky launch skypilot/smoke_test_lrc.yaml -y --secret WANDB_API_KEY --secret SKYPI
 
 # Monitor
 sky logs lightning-smoke
-sky logs influence-smoke
 sky logs unified-1gpu
 
 # Teardown
-sky down lightning-smoke influence-smoke meta-1gpu meta-2gpu unified-1gpu unified-2gpu wf-smoke-lrc -y
+sky down lightning-smoke meta-1gpu meta-2gpu unified-1gpu unified-2gpu wf-smoke-lrc -y
 ```
 
 **Test Configuration**:
-- **Steps**: 20 total (4 warmup + 16 with influence)
-- **First 20%**: Warmup on fineweb-edu, no influence updates
-- **Remaining 80%**: Mixed data with influence-based remixing
+- **Steps**: 20 total (4 warmup + 16 main training)
+- **First 20%**: Warmup on fineweb-edu
+- **Remaining 80%**: Mixed data training
 - **Checkpoints**: GCS upload every 10 steps
 - **Verifies**: Loss decreases, MuonClip works, GCS/WandB logging
 

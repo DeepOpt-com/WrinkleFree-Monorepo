@@ -165,7 +165,6 @@ run: |
     training.optimizer.lr_adam=${ADAM_LR} \
     training.optimizer.weight_decay=0.01 \
     training.lambda_warmup.enabled=false \
-    training.influence.enabled=false \
     training.resume.checkpoint_path=${RESUME_CHECKPOINT} \
     training.resume.load_optimizer_state=false \
     training.resume.load_scheduler_state=false \

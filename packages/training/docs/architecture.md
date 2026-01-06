@@ -121,11 +121,6 @@ Data loading is handled by the **wf_data** package:
 config_name: mixed_pretrain  # Loads from wf_data
 ```
 
-**Influence-Based Data Remixing**:
-- `InfluenceTrackerCallback` wraps `wf_data.influence.InfluenceTracker`
-- Dynamically adjusts dataset weights based on influence scores
-- Updates weights at configurable intervals
-
 ### 7. Training Configuration
 
 | Directory | Purpose |

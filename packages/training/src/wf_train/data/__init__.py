@@ -32,19 +32,6 @@ except ImportError as e:
         "uv add wf_data (from the monorepo)"
     ) from e
 
-# Legacy influence imports (deprecated - use meta_optimization.odm instead)
-# These are stubs for backward compatibility
-InfluenceTracker = None
-create_influence_tracker = None
-try:
-    from wf_data.influence import (
-        InfluenceTracker,
-        create_influence_tracker,
-    )
-except ImportError:
-    # Influence module removed - use training.meta_optimization.odm instead
-    pass
-
 # Import local finetune datasets (SFT-specific)
 from wf_train.data.finetune_dataset import (
     FinetuneDataset,
@@ -187,8 +174,6 @@ __all__ = [
     # Lower-level API (from wf_data)
     "create_dataloader",
     "create_probe_dataloaders",
-    "InfluenceTracker",
-    "create_influence_tracker",
     "get_dataset_weights_from_config",
     # Dataset classes
     "MixedDataset",

@@ -107,7 +107,6 @@ run: |
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET} \
     training.early_stopping.enabled=false \
-    training.influence.enabled=false \
     training.curriculum.enabled=false \
     training.objectives.dlm.enabled=true \
     training.objectives.dlm.weight=0.5 \

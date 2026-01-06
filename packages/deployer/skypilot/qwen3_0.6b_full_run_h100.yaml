@@ -1,30 +1,31 @@
-# WrinkleFree Qwen3-0.6B Training on Nebius L40
+# WrinkleFree Qwen3-0.6B Full Run on Nebius H100
 #
-# Full training run with BitDistill + Meta-Optimization on Nebius L40 GPU.
+# Training with MuonClip + AdamW optimizer on H100.
+# Uses curriculum: CE + DLM -> ramp to distillation
 #
 # Features:
-# - Model: Qwen3-0.6B (smallest Qwen3, good for experimentation)
-# - GPU: Nebius L40 (48GB VRAM)
-# - Training: CE + DLM objectives (no distillation - avoids teacher model hang)
-# - Meta-optimization: LDC-MTL + ODM + LayerLR
+# - Model: Qwen3-0.6B
+# - GPU: Nebius H100 (80GB VRAM)
+# - Training: full_run (CE + DLM + distillation with curriculum)
+# - Optimizer: MuonClip (Muon + AdamW)
 # - Logging: WandB + GCS checkpoints
 #
 # Launch:
 #   cd packages/deployer
 #   source credentials/.env
-#   sky launch skypilot/qwen3_0.6b_nebius_l40.yaml -y --cluster qwen3-nebius
+#   sky launch skypilot/qwen3_0.6b_full_run_h100.yaml -y --cluster qwen3-full
 #
 # Monitor:
-#   sky logs qwen3-nebius
+#   sky logs qwen3-full
 #   WandB: https://wandb.ai/wrinklefree
 #
 # Teardown:
-#   sky down qwen3-nebius -y
+#   sky down qwen3-full -y
 
-name: wrinklefree-qwen3-0.6b-nebius
+name: wrinklefree-qwen3-0.6b-full-run
 
 resources:
-  accelerators: L40S:1
+  accelerators: H100:1
   memory: 64+
   use_spot: false
   cloud: nebius
@@ -44,8 +45,8 @@ envs:
   GOOGLE_CLOUD_PROJECT: wrinklefree-481904
   GCS_BUCKET: wrinklefree-checkpoints
   MODEL: qwen3_0.6b
-  WANDB_PROJECT: wrinklefree
-  WANDB_RUN_NAME: qwen3-0.6b-nebius-l40-v1
+  WANDB_PROJECT: wrinklefree_v2
+  WANDB_RUN_NAME: qwen3-0.6b-full-run-h100
   HF_HUB_ENABLE_HF_TRANSFER: "1"
 
 setup: |
@@ -92,66 +93,64 @@ run: |
   mkdir -p $CHECKPOINT_DIR
 
   echo "================================================================"
-  echo "WrinkleFree Qwen3-0.6B Training (Nebius L40)"
+  echo "WrinkleFree Qwen3-0.6B Full Run (Nebius H100)"
   echo "================================================================"
   echo "Model: $MODEL (Qwen3-0.6B)"
-  echo "GPU: Nebius L40 (48GB)"
-  echo "Total tokens: 1B (bitdistill_full.yaml default)"
+  echo "GPU: Nebius H100 (80GB)"
+  echo "Total tokens: 10B (full_run.yaml default)"
   echo ""
   echo "Configuration:"
+  echo "  Training config: full_run"
+  echo "  Curriculum phases:"
+  echo "    - 0-10%: CE + DLM only (fineweb)"
+  echo "    - 10-90%: CE + DLM (mixed_pretrain)"
+  echo "    - 90-100%: CE + DLM + distillation"
+  echo ""
   echo "  Objectives:"
-  echo "    - CE (continue_pretrain)"
-  echo "    - DLM (mask_prob=0.15)"
+  echo "    - continue_pretrain: Standard CE loss"
+  echo "    - DLM: Mask prediction (mask_prob=0.15)"
+  echo "    - distill: TCS-style sparse logits distillation"
   echo ""
-  echo "  Optimizer: Muon + AdamW (muonclip)"
+  echo "  Optimizer: MuonClip (Muon + AdamW)"
   echo "    - lr_muon: 0.005"
-  echo "    - lr_adam: 5e-5"
-  echo "    - QK clipping enabled"
-  echo ""
-  echo "  Meta-Optimization:"
-  echo "    - LDC-MTL: Objective weight learning (lambda=0.1)"
-  echo "    - ODM/EXP3: Dataset weight optimization"
-  echo "    - LayerLR: Per-layer LR adaptation"
+  echo "    - lr_adam: 1e-4"
+  echo "    - clipping_threshold: 10.0"
   echo ""
   echo "  Logging:"
   echo "    - WandB: ${WANDB_PROJECT}/${WANDB_RUN_NAME}"
   echo "    - GCS: gs://${GCS_BUCKET}/"
   echo "================================================================"
 
-  # Run CE+DLM training with full meta-optimization (no distillation)
+  # Run full_run training
   uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=base \
-    data.config_name=fineweb \
+    training=full_run \
+    data.config_name=mixed_pretrain \
     distributed=single_gpu \
     output_dir=$CHECKPOINT_DIR \
-    experiment_name=qwen3_0.6b_nebius_l40 \
+    experiment_name=qwen3_0.6b_full_run \
     \
-    training.meta_optimization.enabled=false \
+    training.auto_batch_size=true \
+    training.auto_batch_size_margin=0.15 \
     \
-    training.max_steps=3815 \
-    training.batch_size=1 \
-    training.gradient_accumulation_steps=64 \
-    training.max_seq_length=256 \
-    \
-    training.checkpoint.save_interval=200 \
+    training.checkpoint.save_interval=500 \
     training.logging.log_interval=10 \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
     training.logging.wandb.name=${WANDB_RUN_NAME} \
-    training.logging.wandb.tags="[qwen3-0.6b,nebius,l40,ce-dlm,meta-opt]" \
+    training.logging.wandb.tags="[qwen3-0.6b,full-run,h100,muonclip,ce-dlm-distill]" \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET}
 
   echo ""
   echo "================================================================"
-  echo "Qwen3-0.6B Training Complete!"
+  echo "Qwen3-0.6B Full Run Training Complete!"
   echo "================================================================"
 
   # Final checkpoint info
   echo ""
   echo "Final checkpoint:"
-  ls -la $CHECKPOINT_DIR/qwen3_0.6b_nebius_l40/checkpoints/ 2>/dev/null || echo "No local checkpoints"
+  ls -la $CHECKPOINT_DIR/qwen3_0.6b_full_run/checkpoints/ 2>/dev/null || echo "No local checkpoints"
 
   echo ""
   echo "GCS checkpoints:"

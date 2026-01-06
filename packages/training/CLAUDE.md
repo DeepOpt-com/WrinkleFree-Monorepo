@@ -46,13 +46,13 @@ WrinkleFree is a repository for training and serving 1.58-bit (ternary) LLM mode
 ## Monorepo Integration
 
 This package is part of the WrinkleFree monorepo and depends on:
-- **wf_data**: Shared data loading and influence functions
+- **wf_data**: Shared data loading
 - **wf_arch**: BitNet layers (BitLinear, SubLN) and model conversion
 
 **Related packages**:
 | Package | Relationship |
 |---------|--------------|
-| `wf_data` | Data loading, influence optimization |
+| `wf_data` | Data loading |
 | `architecture` | BitNet layers and model conversion |
 | `deployer` | Cloud deployment (launches training jobs) |
 | `inference` | Serves trained models |
@@ -98,7 +98,7 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=base
 # - Multi-task: LM loss + DLM masking loss on same data
 # - Curriculum: Phases ramp up DLM weight over training
 # - MuonClip optimizer with QK clipping
-# - Influence-based data remixing (dynamic dataset weights)
+# - Meta-optimization for dynamic dataset weights (via ODM)
 # - WandB logging with per-objective losses
 ```
 
@@ -192,7 +192,7 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=base \
 |------|---------|
 | `module.py` | `WrinkleFreeLightningModule` - wraps model + ObjectiveManager |
 | `datamodule.py` | `WrinkleFreeDataModule` - wraps existing dataloaders |
-| `callbacks.py` | Custom callbacks (GCS, ZClip, TokenCount, InfluenceTracker, etc.) |
+| `callbacks.py` | Custom callbacks (GCS, ZClip, TokenCount, etc.) |
 
 **Smoke Tests** (L40 GPU):
 ```bash
@@ -204,53 +204,6 @@ sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
   --env OBJECTIVE_COMBO=dlm
 
 # Available combos: ce_only, dlm, distill, bitdistill, lrc
-```
-
-### Influence-Based Data Remixing
-
-Dynamic dataset weight optimization during training (MobileLLM-R1 methodology).
-
-**Lightning Integration**: Uses `InfluenceTrackerCallback` which wraps `wf_data.influence.InfluenceTracker`.
-
-```bash
-# Enable influence remixing with mixed_pretrain data (Lightning trainer)
-uv run python scripts/train_lightning.py model=smollm2_135m training=base \
-  data.config_name=mixed_pretrain \
-  training.influence.enabled=true \
-  training.influence.warmup_steps=1000 \
-  training.influence.update_interval=5000 \
-  training.influence.learning_rate=0.1
-
-# What happens:
-# 1. InfluenceTrackerCallback caches probe gradients at train start
-# 2. Warmup (first 1000 steps): Use initial dataset weights
-# 3. After warmup: Every 5000 steps, compute influence scores
-# 4. Adjust dataset weights to maximize influence on probe domains
-# 5. Log weights to WandB: influence/weight_{dataset_name}
-```
-
-**Smoke Test for Influence**:
-```bash
-cd packages/deployer
-source credentials/.env
-sky launch skypilot/smoke_test_influence.yaml -y --cluster influence-smoke
-```
-
-**How Influence Works**:
-1. **Probe domains** (in `mixed_pretrain.yaml`): web_edu, code, math, dclm, diverse, reasoning
-2. **DataInf algorithm**: Efficient gradient-based influence estimation
-3. **Weight update**: `new_weight = (1 - lr) * current + lr * optimal`
-4. **Constraints**: min_weight=0.05, max_weight=0.60 (no domain dominates)
-
-**WandB Metrics**:
-```
-train/loss                    # Combined weighted loss
-train/continue_pretrain_loss  # LM objective loss
-train/dlm_loss               # DLM objective loss
-train/dlm_num_masked         # Tokens masked per batch
-schedule/continue_pretrain_weight  # Curriculum weight
-schedule/dlm_weight               # Curriculum weight
-influence/weight_{dataset}        # Per-dataset mixture weight
 ```
 
 ### Meta-Optimization (LDC-MTL + ODM + LayerLR)
@@ -505,7 +458,7 @@ Smoke tests validate the full training pipeline in ~5 minutes:
 ```bash
 cd packages/deployer
 
-# 1x L40 smoke test (20 steps with influence remixing)
+# 1x L40 smoke test (20 steps)
 sky launch skypilot/smoke_test_unified_1gpu.yaml -y --cluster unified-1gpu
 
 # 2x L40 smoke test (FSDP data parallelism)
@@ -520,9 +473,9 @@ sky down unified-1gpu unified-2gpu -y
 ```
 
 **Smoke Test Configuration**:
-- **Steps**: 20 total (4 warmup + 16 with influence)
-- **First 20%** (steps 1-4): fineweb-edu warmup, no influence
-- **Remaining 80%** (steps 5-20): mixed_pretrain with influence updates
+- **Steps**: 20 total (4 warmup + 16 main training)
+- **First 20%** (steps 1-4): fineweb-edu warmup
+- **Remaining 80%** (steps 5-20): mixed_pretrain training
 - **Checkpoints**: GCS upload every 10 steps
 - **Verifies**: Loss decreases, MuonClip works, GCS/WandB logging works
 
@@ -680,7 +633,6 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 
 **Data** (`src/wrinklefree/data/`):
 - Imports from `wf_data` package
-- `InfluenceTracker` - Training callback for weight updates
 - `MixedDataset` - Runtime dataset with dynamic weights
 
 ### Key Patterns
@@ -932,7 +884,6 @@ the actual data config from `wf_data/configs/data/mixed_pretrain.yaml`.
 
 The `mixed_pretrain` config includes:
 - 6 data sources (DCLM, FineWeb-Edu, GitHub Code 2025, FineMath, SlimPajama, SYNTH)
-- Multi-domain probe loaders for influence-based remixing
 - All sources are commercially friendly (CC-BY, ODC-By, MIT, Apache 2.0, CDLA)
 
 **To use a different data config**, override `data.config_name`:
@@ -942,8 +893,8 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=stage2_pret
 ```
 
 **Available configs** (in `packages/wf_data/configs/data/`):
-- `mixed_pretrain` - Multi-source with influence (default, recommended)
-- `fineweb` - Single-source FineWeb-Edu (no influence)
+- `mixed_pretrain` - Multi-source (default, recommended)
+- `fineweb` - Single-source FineWeb-Edu
 - `downstream` - SFT/finetuning tasks (Stage 3)
 
 ## A10G GPU Settings

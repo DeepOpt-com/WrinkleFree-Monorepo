@@ -186,13 +186,3 @@ validation:
   val_check_interval: 500
   limit_val_batches: 50
   batch_size: 8
-
-# Influence-based data selection
-influence:
-  enabled: true
-  update_interval: 1000
-  learning_rate: 0.2
-  config:
-    lambda_val: 0.1
-    gamma_val: 0.1
-    temperature: 1.0

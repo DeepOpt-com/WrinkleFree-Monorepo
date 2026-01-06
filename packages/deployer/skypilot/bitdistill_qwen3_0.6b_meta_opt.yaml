@@ -151,7 +151,6 @@ run: |
     +training.meta_optimization.layer_lr.step_interval=1 \
     +training.meta_optimization.log_interval=50 \
     \
-    training.influence.enabled=false \
     training.max_steps=3815 \
     \
     training.checkpoint.save_interval=200 \

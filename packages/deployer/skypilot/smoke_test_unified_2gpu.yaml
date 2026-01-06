@@ -81,14 +81,13 @@ run: |
   echo "GPUs: 2 (Data Parallelism via FSDP)"
   echo ""
   echo "Test Configuration:"
-  echo "  - Steps 1-4 (20%): Warmup on fineweb-edu (no influence)"
-  echo "  - Steps 5-20 (80%): Mixed data with influence updates"
+  echo "  - Steps 1-4 (20%): Warmup on fineweb-edu"
+  echo "  - Steps 5-20 (80%): Mixed data training"
   echo "  - GCS upload every 10 steps"
   echo ""
   echo "Features:"
   echo "  - Combined STE + DLM (multi-task)"
   echo "  - MuonClip + QK Clipping"
-  echo "  - Influence-based data remixing"
   echo "  - FSDP data parallelism (2 GPUs)"
   echo "  - Auto BitNet conversion"
   echo "  - GCS checkpoint upload"
@@ -121,12 +120,7 @@ run: |
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET} \
     training.early_stopping.enabled=false \
-    training.objectives.dlm.mask_token_id=0 \
-    influence.enabled=true \
-    influence.warmup_steps=4 \
-    influence.update_interval=5 \
-    influence.learning_rate=0.2 \
-    influence.samples_per_dataset=50
+    training.objectives.dlm.mask_token_id=0
 
   echo ""
   echo "===================================================="

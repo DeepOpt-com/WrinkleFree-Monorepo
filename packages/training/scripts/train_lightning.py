@@ -47,7 +47,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from wf_arch.conversion import auto_convert_if_needed
 from wf_train.lightning import (
     GCSCheckpointCallback,
-    InfluenceTrackerCallback,
     LambdaWarmupCallback,
     MuonClipInitCallback,
     QKClipCallback,
@@ -289,19 +288,22 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
         )
         logger.info(f"Model converted to BitNet (insert_subln={insert_subln})")
 
-    # Handle LRC calibration stage
-    if stage == "lrc_calibration":
+    # Handle LRC (Low-Rank Correction) if enabled in config
+    # Check lrc.enabled rather than stage name to support lrc_run, lrc_calibration, etc.
+    lrc_cfg = cfg.training.get("lrc", {})
+    lrc_enabled = lrc_cfg.get("enabled", False)
+    logger.info(f"[DEBUG] LRC check: lrc_cfg={dict(lrc_cfg)}, enabled={lrc_enabled}")
+    if lrc_enabled:
         try:
             from wf_arch import convert_bitlinear_to_lrc, freeze_model_except_lrc
 
-            lrc_cfg = cfg.training.get("lrc", {})
             rank_percentage = lrc_cfg.get("rank_percentage", 0.1)
             init_method = lrc_cfg.get("init_method", "zeros")
             keep_original_weight = lrc_cfg.get("keep_original_weight", True)
             trainable_weight = lrc_cfg.get("trainable_weight", False)
 
             logger.info(
-                f"LRC Calibration: Converting BitLinear → BitLinearLRC "
+                f"LRC: Converting BitLinear → BitLinearLRC "
                 f"(rank={rank_percentage*100:.0f}%, init={init_method}, "
                 f"keep_weight={keep_original_weight}, trainable={trainable_weight})"
             )
@@ -314,15 +316,18 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 trainable_weight=trainable_weight,
             )
 
-            # Freeze all parameters except LRC matrices (U, V)
-            freeze_stats = freeze_model_except_lrc(model)
-            logger.info(
-                f"LRC: Trainable={freeze_stats['trainable']:,}, "
-                f"Frozen={freeze_stats['frozen']:,}"
-            )
+            # Freeze all parameters except LRC matrices (U, V) if trainable_weight=False
+            if not trainable_weight:
+                freeze_stats = freeze_model_except_lrc(model)
+                logger.info(
+                    f"LRC: Trainable={freeze_stats['trainable']:,}, "
+                    f"Frozen={freeze_stats['frozen']:,}"
+                )
+            else:
+                logger.info("LRC: trainable_weight=True, base model weights also trainable via STE")
 
         except ImportError as e:
-            logger.error(f"LRC calibration requires wf_arch package: {e}")
+            logger.error(f"LRC requires wf_arch package: {e}")
             raise
 
     return model, tokenizer
@@ -453,8 +458,10 @@ def load_teacher_model(cfg: DictConfig) -> HiddenStateTeacher | None:
         HiddenStateTeacher or None if not needed immediately
     """
     needs_teacher, needs_lazy_load, initial_weight = _get_distill_status(cfg)
+    logger.info(f"[DEBUG] load_teacher_model: needs_teacher={needs_teacher}, needs_lazy_load={needs_lazy_load}, initial_weight={initial_weight}")
 
     if not needs_teacher:
+        logger.info("[DEBUG] load_teacher_model: returning None because needs_teacher=False")
         return None
 
     if needs_lazy_load:
@@ -467,6 +474,7 @@ def load_teacher_model(cfg: DictConfig) -> HiddenStateTeacher | None:
     # Load teacher immediately
     teacher_config = prepare_teacher_config(cfg)
     if teacher_config is None:
+        logger.info("[DEBUG] load_teacher_model: returning None because teacher_config is None")
         return None
 
     logger.info(f"Loading teacher model: {teacher_config['model_name']}")
@@ -495,17 +503,6 @@ def create_callbacks(cfg: DictConfig) -> list:
         skip_completed=cfg.get("resume", {}).get("skip_completed", True),
     )
     callbacks.append(run_manager_cb)
-
-    # Influence tracking callback - created early so InfluenceAwareBatchSizeFinder can reference it
-    influence_cfg = cfg.training.get("influence", {})
-    influence_callback = None
-    if influence_cfg.get("enabled", False):
-        influence_callback = InfluenceTrackerCallback(config=cfg)
-        callbacks.append(influence_callback)
-        logger.info(
-            f"Influence tracking enabled: update_interval={influence_cfg.get('update_interval', 1000)}, "
-            f"warmup={influence_cfg.get('warmup_steps', 500)}"
-        )
 
     # Note: Auto batch size scaling is now handled via Tuner.scale_batch_size()
     # before trainer.fit() - see main() function. This is the standard Lightning approach.
@@ -628,15 +625,7 @@ def create_callbacks(cfg: DictConfig) -> list:
             f"odm={meta_config.odm.enabled}, "
             f"log_interval={meta_config.log_interval}"
         )
-    else:
-        # Fallback to influence-based data remixing only
-        influence_cfg = cfg.training.get("influence", {})
-        if influence_cfg.get("enabled", False):
-            callbacks.append(InfluenceTrackerCallback(config=cfg))
-            logger.info(
-                f"Influence tracking enabled: update_interval={influence_cfg.get('update_interval', 1000)}, "
-                f"warmup={influence_cfg.get('warmup_steps', 500)}"
-            )
+
     # LR monitor
     callbacks.append(LearningRateMonitor(logging_interval="step"))
 
@@ -804,7 +793,6 @@ def main(cfg: DictConfig) -> None:
     val_enabled = val_cfg.get("enabled", False)
 
     # Determine num_workers: from config, env var, or default
-    # For influence + probe gradient caching, use 0 to avoid memory explosion
     num_workers = cfg.data.get("num_workers", None)
     if num_workers is None:
         num_workers = int(os.environ.get("DATALOADER_NUM_WORKERS", "4"))
@@ -814,7 +802,7 @@ def main(cfg: DictConfig) -> None:
         batch_size=cfg.training.batch_size,
         max_length=cfg.training.max_seq_length,
         config_name=cfg.data.get("config_name", "default"),
-        with_probes=cfg.training.get("influence", {}).get("enabled", False),
+        with_probes=False,  # Probe dataloaders only used by legacy influence tracking
         packed=cfg.training.get("packing", {}).get("enabled", True),
         num_workers=num_workers,
         # Validation (C4 perplexity)
