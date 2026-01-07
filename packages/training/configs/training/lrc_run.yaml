@@ -47,9 +47,9 @@ auto_convert:
     - lm_head
     - embed_positions
 
-# torch.compile disabled - causes high memory overhead with LRC
+# torch.compile for training speedup
 torch_compile:
-  enabled: false
+  enabled: true
   mode: default
 
 # Sequence packing
@@ -73,10 +73,10 @@ scheduler:
 
 # Training: 1B tokens
 total_tokens: 1_000_000_000
-max_steps: null
+max_steps: 20  # DEBUG: short run to verify memory usage
 max_seq_length: 1024  # Half context to fit GPU memory
-batch_size: 48  # H100 80GB without torch.compile (LRC overhead)
-gradient_accumulation_steps: 10  # Effective batch ~= 480
+batch_size: 8  # DEBUG: reduced from 32 to debug memory issue
+gradient_accumulation_steps: 64  # Effective batch = 8*64 = 512 (same as before)
 gradient_clipping: 1.0
 auto_batch_size: false  # Disable to avoid torch_compile recompilation loop
 
@@ -108,7 +108,7 @@ objectives:
     weight: 0.5
     mask_prob: 0.15
     mask_token_id: 0  # Use unk_token as mask token
-    use_complementary_masks: true
+    use_complementary_masks: false  # Disabled - doubles memory usage
 
   # Distillation disabled - LRC distill has hidden_states bug, using CE+DLM only
   distill:
