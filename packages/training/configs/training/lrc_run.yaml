@@ -73,21 +73,21 @@ packing:
 # - The matmul shapes don't match (U/V have different dimensions than Q/K)
 #
 # Muon's Newton-Schulz orthogonalization still benefits the U/V matrices.
-# optimizer:
-#   type: muonclip
-#   lr_muon: 0.01          # Muon LR for 2D trainable params (U,V matrices)
-#   lr_adam: 1e-4          # AdamW LR for 1D params (biases, weights etc)
-#   weight_decay: 0.01
-#   momentum: 0.95
-#   enable_clipping: false  # Disabled for LRC - only works with full attention training
-#   clipping_threshold: 50.0
-#   clipping_alpha: 0.5
-
 optimizer:
-  type: adamw
-  use_8bit: true  # defaults to true anyway
-  learning_rate: 1e-5
+  type: muonclip
+  lr_muon: 0.02          # Muon LR for 2D trainable params (U,V matrices)
+  lr_adam: 2e-4          # AdamW LR for 1D params (biases, weights etc)
   weight_decay: 0.01
+  momentum: 0.95
+  enable_clipping: false  # Disabled for LRC - only works with full attention training
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
+
+#optimizer:
+#  type: adamw
+#  use_8bit: true  # defaults to true anyway
+#  learning_rate: 1e-5
+#  weight_decay: 0.01
 
 # Scheduler: WSD
 scheduler:
@@ -129,7 +129,7 @@ objectives:
   # Standard next-token prediction (CE loss)
   continue_pretrain:
     enabled: true
-    weight: 1.0
+    weight: 0.5
     ignore_index: -100
     label_smoothing: 0.0
 
@@ -137,9 +137,9 @@ objectives:
   dlm:
     enabled: true
     weight: 0.5
-    mask_prob: 0.15
-    mask_token_id: 0  # Use unk_token as mask token
-    use_complementary_masks: false  # Disabled - doubles memory usage
+    mask_prob: 0.5
+    mask_token_id: 151643  # Qwen3 PAD token (no native MASK token in decoder-only models)
+    use_complementary_masks: true  # Two passes with complementary masks (doubles memory)
 
   # Distillation disabled - LRC distill has hidden_states bug, using CE+DLM only
   distill:
@@ -198,10 +198,10 @@ memory:
 # LDC-MTL for pareto optimal objective weighting (CE vs DLM)
 # TODO: Disabled for now - causes instability with LRC. See GitHub issue.
 meta_optimization:
-  enabled: false
+  enabled: true
 
   ldc_mtl:
-    enabled: false  # Disabled - investigate instability with LRC
+    enabled: true  # Disabled - investigate instability with LRC
     lambda_penalty: 0.1        # Discrepancy penalty (encourages balanced losses)
     hidden_dim: 32             # Router MLP hidden size
     router_lr: 0.001           # Router learning rate
