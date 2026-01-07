@@ -5,7 +5,7 @@
 # - LRC rank: 25% (better error recovery than 10% calibration)
 # - Objectives: CE (weight=1.0) + DLM (weight=0.5)
 # - Total tokens: 1B
-# - Auto batch size: finds optimal batch for H100
+# - Fixed batch size: 32 (no auto-sizing for faster iteration)
 #
 # Launch:
 #   cd packages/deployer
@@ -27,8 +27,9 @@ resources:
   cloud: nebius
   disk_size: 100
 
-# Sync entire monorepo (relative path for portability)
-workdir: .
+# Sync entire monorepo (workdir is relative to where sky launch is run)
+# Run from packages/deployer, sync ../../ to get monorepo root
+workdir: ../..
 
 file_mounts:
   /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
