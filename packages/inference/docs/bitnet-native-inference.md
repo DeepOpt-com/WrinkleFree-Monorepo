@@ -1,5 +1,9 @@
 # BitNet Native Inference Guide
 
+> **DEPRECATED**: This document describes an alternative inference path using sgl-kernel binary format.
+> The **recommended** approach is now GGUF conversion + `dlm_server`. See [CLAUDE.md](../CLAUDE.md) for current instructions.
+> Scripts referenced here have been moved to `scripts/_legacy/` or removed.
+
 This document describes how to run BitNet 1.58-bit models using native SIMD kernels.
 
 ## TL;DR - Quick Start (Python Server)

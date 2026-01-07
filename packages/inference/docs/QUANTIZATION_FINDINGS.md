@@ -146,26 +146,23 @@ The `dlm_server` uses block diffusion decoding which may be more robust to weigh
 
 ## Files Created
 
-| File | Purpose |
-|------|---------|
-| `scripts/convert_with_quantization.py` | Applies BitLinear weight quantization |
-| `scripts/debug_conversion.py` | Compares quantization methods |
-| `scripts/test_python_inference.py` | Tests different model configurations |
-| `scripts/test_correct_inference.py` | Demonstrates correct vs incorrect pipelines |
-| `scripts/test_kernel_correctness.py` | Validates I2_S kernel math |
-| `scripts/benchmark_and_validate.py` | Compares Python vs C++ output |
+> **Note**: Many of these scripts have been archived or removed during cleanup.
+> See `scripts/_legacy/` for archived conversion scripts.
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `scripts/convert_checkpoint_to_gguf.py` | Main GGUF converter | **Active** |
+| `scripts/benchmark_and_validate.py` | Compares Python vs C++ output | **Active** |
+| `scripts/_legacy/convert_with_quantization.py` | Applies BitLinear weight quantization | Archived |
 
 ## Verification Commands
 
 ```bash
-# Test BitLinear quantization
-uv run --package wf-train python packages/inference/scripts/test_correct_inference.py
+# Convert and validate
+python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o model.gguf
 
-# Debug weight conversion
-uv run python packages/inference/scripts/debug_conversion.py models/smollm2-135m-dlm-subln
-
-# Test kernel correctness
-uv run python packages/inference/scripts/test_kernel_correctness.py
+# Benchmark output correctness
+uv run python scripts/benchmark_and_validate.py
 ```
 
 ## Next Steps

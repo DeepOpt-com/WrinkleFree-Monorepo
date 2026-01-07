@@ -45,17 +45,17 @@ scripts/
 └── launch_sglang_bitnet.sh  # Server launch script
 
 extern/
-├── sglang-bitnet/           # SGLang with BitNet support
-│   ├── python/sglang/       # SGLang Python package
-│   └── sgl-kernel/          # Native SIMD kernels
-└── BitNet/                  # Microsoft BitNet.cpp (reference)
+└── sglang-bitnet/           # SGLang with BitNet support
+    ├── python/sglang/       # SGLang Python package
+    ├── sgl-kernel/          # Native SIMD kernels
+    └── sgl-model-gateway/   # Rust DLM server (Fast-dLLM v2)
 
 src/wf_infer/
 ├── sglang_backend/          # SGLang integration utilities
 ├── kernels/                 # Kernel wrappers
 ├── kv_cache/                # KV cache utilities
 ├── client/                  # API client
-└── moe/                     # MoE support
+└── cache/                   # Model caching utilities
 ```
 
 ## API Usage
@@ -106,26 +106,11 @@ uv sync --all-extras
 
 # Run tests
 uv run pytest tests/ -v
-
-# Validate KV cache behavior
-uv run python scripts/validate_kv_cache.py --url http://localhost:30000
 ```
 
 ## Cloud Deployment
 
-See [WrinkleFree-Deployer](../deployer) for SkyPilot configurations:
-
-```bash
-# GCP C3D (recommended)
-sky launch skypilot/inference/gcp_c3d.yaml -y --cluster ie-c3d
-
-# RunPod (development)
-sky launch skypilot/inference/runpod_cpu.yaml -y --cluster ie-runpod
-```
-
-## Legacy Components
-
-Archived code (BitNet.cpp integration, CLI tools, benchmarks) is in `legacy/`. See `legacy/README.md` for details.
+See [WrinkleFree-Deployer](../deployer) for SkyPilot configurations.
 
 ## License
 

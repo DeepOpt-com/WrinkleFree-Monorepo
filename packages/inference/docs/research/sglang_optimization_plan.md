@@ -1,5 +1,9 @@
 # SGLang BitNet Performance Optimization Plan
 
+> **HISTORICAL NOTE**: This document contains research notes from Dec 2025 optimization work.
+> Scripts referenced here may have been archived or removed. The current recommended inference
+> path uses `dlm_server` with GGUF models. See [CLAUDE.md](../../CLAUDE.md).
+
 ## Goal
 Close the 1.35x throughput gap: sglang 19.2 tok/s → BitNet.cpp 26 tok/s on AMD CPU.
 

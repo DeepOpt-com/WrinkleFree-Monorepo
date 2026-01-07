@@ -92,7 +92,7 @@ export LD_LIBRARY_PATH="extern/sglang-bitnet/3rdparty/llama.cpp/build/src:extern
   --model-path models/model.gguf \
   --port 30000 \
   --decode-mode adaptive \
-  --threshold 0.9 \
+  --threshold 0.7 \
   --block-size 32 \
   --mask-token-id 0
 ```
@@ -136,9 +136,11 @@ SubLN adds normalization before output projections. WrinkleFree checkpoints use 
 packages/inference/
 ├── scripts/
 │   ├── convert_checkpoint_to_gguf.py  # PRIMARY converter (auto-fixes, validates)
-│   ├── convert_to_sglkernel.py        # For sgl-kernel packed format
 │   ├── launch_rust_gateway.sh         # Start Rust DLM server
-│   └── serve.sh                       # Full stack launcher
+│   ├── launch_sglang_bitnet.sh        # Start SGLang server
+│   ├── serve.sh                       # Full stack launcher (multiple backends)
+│   ├── benchmark_*.py                 # Performance benchmarking scripts
+│   └── _legacy/                       # Archived conversion scripts
 ├── demo/
 │   └── serve_sglang.py                # Streamlit chat UI
 ├── extern/
