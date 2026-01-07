@@ -32,8 +32,8 @@ lrc:
   init_method: kaiming
   # Freeze base model - only U, V matrices trainable
   trainable_weight: false
-  # Delete original weights to save memory (valid when trainable_weight=false)
-  keep_original_weight: true
+  # Delete original weights to save memory (kaiming init doesn't need them)
+  keep_original_weight: false
   # QLRC: QA-LoRA style quantized adapters with STE (trainable!)
   # Uses Straight-Through Estimator for gradient flow through quantized adapters.
   # Based on QA-LoRA: https://arxiv.org/abs/2309.14717 (ICLR 2024)
