@@ -59,7 +59,7 @@ max_seq_length: 2048
 batch_size: 32
 gradient_accumulation_steps: 16
 gradient_clipping: 1.0
-auto_batch_size: false  # Enable auto batch size probing (single GPU only!)
+auto_batch_size: true  # Auto batch size probing enabled (single GPU only!)
 auto_batch_size_max_val: 128  # Starting batch size (halves on OOM)
 
 # Lambda warmup for gradual quantization (disabled by default)
