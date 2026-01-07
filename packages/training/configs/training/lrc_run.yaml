@@ -86,10 +86,14 @@ scheduler:
 total_tokens: 1_000_000_000
 max_steps: null  # Token-based termination
 max_seq_length: 1024
-batch_size: 16  # Reduced from 32 - memory constrained with LRC+QLRC
-gradient_accumulation_steps: 32  # Effective batch = 16*32 = 512
+# Batch size tuned for H100 + qwen3_0.6b + LRC+QLRC
+# L40: use batch_size=16, H100: use batch_size=32
+batch_size: 32
+gradient_accumulation_steps: 16  # Effective batch = 32*16 = 512
 gradient_clipping: 1.0
-auto_batch_size: false  # Disable to avoid torch_compile recompilation loop
+# Auto batch size DISABLED - Lightning BatchSizeFinder is too slow (stuck in loop)
+# Using fixed batch sizes from lookup table instead
+auto_batch_size: false
 
 # Lambda warmup disabled (LRC uses pre-computed quantized weights)
 lambda_warmup:

@@ -27,12 +27,12 @@ resources:
   cloud: nebius
   disk_size: 100
 
-# Sync entire monorepo
-workdir: /home/lev/code/WrinkleFreeWORKTREE/InfluenceClean
+# Sync entire monorepo (relative path for portability)
+workdir: .
 
 file_mounts:
-  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
-  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: packages/deployer/credentials/.env
   /tmp/global.env: ~/.config/.env.global
 
 envs:
@@ -96,7 +96,7 @@ run: |
   echo "Model: ${MODEL}"
   echo "Training: lrc_run (LRC 25% + CE + DLM)"
   echo "Total tokens: 1B"
-  echo "Auto batch size: enabled"
+  echo "Batch size: 32 (fixed, no auto-sizing)"
   echo ""
   echo "Objectives:"
   echo "  - CE (continue_pretrain): weight=1.0"
@@ -114,8 +114,6 @@ run: |
     distributed=single_gpu \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=lrc_run_qwen3_0.6b \
-    \
-    \
     training.checkpoint.save_interval=500 \
     training.logging.log_interval=10 \
     training.logging.wandb.enabled=true \

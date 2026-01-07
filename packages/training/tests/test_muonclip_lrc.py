@@ -3,7 +3,12 @@
 Tests MuonClip functionality when training LRC adapters where:
 - Base model weights are frozen
 - Only U, V low-rank matrices are trainable
-- QK-clipping should still work to prevent attention score explosions
+- QK-clipping is DISABLED for LRC (shapes don't match - U/V vs Q/K)
+
+Key learnings from implementation:
+1. QK-clipping expects trainable Q/K projection weights but LRC has U/V matrices
+2. Newton-Schulz iterations in Muon require float32, but models may be bfloat16
+3. The dtype patch must convert params, grads, optimizer state, and hook inputs
 """
 
 import logging
@@ -404,9 +409,19 @@ class TestMuonClipDtypeHandling:
 
 
 def _patch_muonclip_dtype_handling(muon_module) -> None:
-    """Patch MuonClip to handle bfloat16/float32 dtype mismatch.
+    """Patch MuonClip to handle bfloat16/float32 dtype mismatch in Newton-Schulz.
 
-    This mirrors the patch in wf_train.lightning.module.
+    This mirrors the production patch in wf_train.lightning.module.
+
+    Problem:
+        MuonClip's Newton-Schulz iterations require float32 for numerical stability,
+        but model params may be bfloat16. This causes RuntimeError in torch.matmul.
+
+    Solution:
+        Wrap MuonClip.step to temporarily convert bfloat16 params/grads/state to float32,
+        run the original step, then convert back.
+
+    See: https://github.com/MoonshotAI/Muon/issues/XXX (upstream issue)
     """
     if not hasattr(muon_module, "MuonClip"):
         return
@@ -417,7 +432,15 @@ def _patch_muonclip_dtype_handling(muon_module) -> None:
 
     original_step = MuonClip.step
 
+    def _convert_state_to_float32(state: dict) -> None:
+        """Convert optimizer state buffers from bfloat16 to float32."""
+        for key in ["momentum_buffer", "velocity_buffer", "exp_avg", "exp_avg_sq"]:
+            if key in state and state[key].dtype == torch.bfloat16:
+                state[key] = state[key].float()
+
     def patched_step(self, closure=None):
+        """Patched step that handles bfloat16/float32 dtype mismatch."""
+        # Store original dtypes and convert bfloat16 -> float32
         original_dtypes = {}
         for group in self.param_groups:
             for p in group["params"]:
@@ -425,13 +448,34 @@ def _patch_muonclip_dtype_handling(muon_module) -> None:
                     original_dtypes[id(p)] = p.dtype
                     p.data = p.data.float()
                     p.grad.data = p.grad.data.float()
+                    # Also convert optimizer state if it exists
+                    if p in self.state:
+                        _convert_state_to_float32(self.state[p])
 
+        # Also convert hook_recorder.attn_inputs for QK-clipping
+        original_attn_dtypes = {}
+        if hasattr(self, "hook_recorder") and self.hook_recorder is not None:
+            for key, tensor in self.hook_recorder.attn_inputs.items():
+                if tensor is not None and tensor.dtype == torch.bfloat16:
+                    original_attn_dtypes[key] = tensor.dtype
+                    self.hook_recorder.attn_inputs[key] = tensor.float()
+
+        # Run original step in float32
         result = original_step(self, closure)
 
+        # Convert params back to original dtype
         for group in self.param_groups:
             for p in group["params"]:
                 if id(p) in original_dtypes:
                     p.data = p.data.to(original_dtypes[id(p)])
+
+        # Convert attn_inputs back
+        if hasattr(self, "hook_recorder") and self.hook_recorder is not None:
+            for key, dtype in original_attn_dtypes.items():
+                if key in self.hook_recorder.attn_inputs:
+                    self.hook_recorder.attn_inputs[key] = (
+                        self.hook_recorder.attn_inputs[key].to(dtype)
+                    )
 
         return result
 
