@@ -144,23 +144,23 @@ packages/inference/
 ├── demo/
 │   └── serve_sglang.py                # Streamlit chat UI
 ├── extern/
-│   └── sglang-bitnet/
-│       ├── 3rdparty/llama.cpp/        # Stripped to BitNet essentials
-│       │   ├── convert_hf_to_gguf.py  # Generic HF→GGUF converter
-│       │   ├── gguf-py/               # GGUF Python library
-│       │   ├── src/                   # Core llama.cpp
-│       │   ├── ggml/                  # GGML tensor library
-│       │   ├── examples/main/         # llama-cli
-│       │   └── examples/quantize/     # llama-quantize
-│       └── sgl-model-gateway/         # Rust HTTP server
-└── src/wf_infer/         # Python utilities
+│   └── sglang-bitnet/                 # Stripped to essentials (~38MB)
+│       ├── 3rdparty/
+│       │   ├── llama.cpp/             # Core llama.cpp (convert, quantize, cli)
+│       │   └── amd/                   # AMD GPU profiling
+│       ├── sgl-kernel/                # Native BitNet SIMD kernels
+│       ├── sgl-model-gateway/         # Rust HTTP server (dlm_server)
+│       └── python/sglang/             # SGLang backend
+└── src/wf_infer/                      # Python utilities
 ```
 
-**llama.cpp is stripped** to BitNet/DLM essentials only:
-- Core: `src/`, `ggml/`, `common/`, `include/`
-- Tools: `examples/main/` (llama-cli), `examples/quantize/`
-- Conversion: `convert_hf_to_gguf.py`, `gguf-py/`
-- Non-essential code moved to `_deprecated/`
+**sglang-bitnet is stripped** to BitNet/DLM essentials only:
+- `3rdparty/llama.cpp/`: Core (`src/`, `ggml/`, `common/`), tools (`examples/main/`, `examples/quantize/`), conversion (`convert_hf_to_gguf.py`, `gguf-py/`)
+- `3rdparty/amd/`: AMD GPU profiling utilities
+- `sgl-kernel/`: Native BitNet SIMD kernels (AVX2/AVX512)
+- `sgl-model-gateway/`: Rust HTTP server (dlm_server)
+- `python/sglang/`: SGLang backend for CPU inference
+- Removed: benchmark/, examples/, docs/, test/, scripts/, docker/, assets/
 
 ## Server Options
 

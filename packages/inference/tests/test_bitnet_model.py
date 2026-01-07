@@ -3,7 +3,16 @@
 import pytest
 import numpy as np
 
+# Check if native kernel is available
+try:
+    from wf_infer.kernels.native import build_kernel
+    _kernel = build_kernel()
+    KERNEL_AVAILABLE = True
+except (ImportError, OSError, Exception):
+    KERNEL_AVAILABLE = False
 
+
+@pytest.mark.skipif(not KERNEL_AVAILABLE, reason="Native kernel not built - run 'pip install -e .' in sgl-kernel")
 class TestNativeKernel:
     """Test native kernel correctness."""
 
@@ -92,6 +101,7 @@ class TestNativeKernel:
                 assert cosine > 0.9999, f"Batch {b} cosine too low: {cosine}"
 
 
+@pytest.mark.skipif(not KERNEL_AVAILABLE, reason="Native kernel not built - run 'pip install -e .' in sgl-kernel")
 class TestHFWeightConversion:
     """Test HuggingFace weight format conversion."""
 

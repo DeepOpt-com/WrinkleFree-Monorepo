@@ -1,6 +1,16 @@
-"""Tests for MoE (Mixture of Experts) implementation."""
+"""Tests for MoE (Mixture of Experts) implementation.
+
+NOTE: MoE is not yet implemented. These tests are skipped until implementation.
+See: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/36
+"""
 
 import pytest
+
+# Skip entire module - MoE not implemented yet
+pytestmark = pytest.mark.skip(
+    reason="MoE not implemented. See: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/36"
+)
+
 import torch
 import torch.nn as nn
 

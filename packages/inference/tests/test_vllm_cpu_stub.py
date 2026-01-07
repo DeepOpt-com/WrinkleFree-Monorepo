@@ -11,7 +11,15 @@ import pytest
 import torch
 import numpy as np
 
+# Check if vllm-cpu-stub is available
+try:
+    import vllm
+    VLLM_AVAILABLE = True
+except ImportError:
+    VLLM_AVAILABLE = False
 
+
+@pytest.mark.skipif(not VLLM_AVAILABLE, reason="vllm-cpu-stub not installed")
 class TestVLLMCPUStubImports:
     """Test that vllm-cpu-stub imports work correctly."""
 
@@ -61,6 +69,7 @@ class TestVLLMCPUStubImports:
         assert isinstance(logger, logging.Logger)
 
 
+@pytest.mark.skipif(not VLLM_AVAILABLE, reason="vllm-cpu-stub not installed")
 class TestVLLMActivationOps:
     """Test vllm activation operations."""
 
@@ -118,6 +127,7 @@ class TestVLLMActivationOps:
         assert torch.allclose(out, expected, atol=1e-5)
 
 
+@pytest.mark.skipif(not VLLM_AVAILABLE, reason="vllm-cpu-stub not installed")
 class TestVLLMLayerNorm:
     """Test vllm layer normalization implementations."""
 
@@ -183,6 +193,7 @@ class TestVLLMLayerNorm:
         assert torch.allclose(out, expected, atol=1e-4)
 
 
+@pytest.mark.skipif(not VLLM_AVAILABLE, reason="vllm-cpu-stub not installed")
 class TestVLLMDistributed:
     """Test vllm distributed stubs."""
 

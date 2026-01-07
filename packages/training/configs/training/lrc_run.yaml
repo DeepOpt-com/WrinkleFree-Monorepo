@@ -78,7 +78,7 @@ max_seq_length: 1024  # Half context to fit GPU memory
 batch_size: 2  # DLM doubles this to 4 with complementary masks
 gradient_accumulation_steps: 256  # Effective batch = 2*256 = 512
 gradient_clipping: 1.0
-auto_batch_size: false  # Disabled - QLRC + torch.compile causes incorrect batch size detection
+auto_batch_size: true  # Auto-find optimal batch size for GPU
 
 # Lambda warmup disabled (LRC uses pre-computed quantized weights)
 lambda_warmup:

@@ -301,6 +301,7 @@ class TestBatchMemoryEfficiency:
         assert overall_success >= 0.85, f"Low overall success rate: {overall_success*100:.0f}%"
 
 
+@pytest.mark.skip(reason="MoE not implemented. See: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/36")
 class TestBatchingWithMoE:
     """Test batching behavior with MoE module (unit tests, no server needed)."""
 

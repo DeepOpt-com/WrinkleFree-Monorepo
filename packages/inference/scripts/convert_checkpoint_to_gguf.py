@@ -182,7 +182,7 @@ def validate_gguf_output(
     estimated_params = estimate_model_params(config)
 
     # Expected sizes based on quantization type (bytes per param)
-    if quant_type in ("tq1_0", "tq2_0"):
+    if quant_type in ("tq1_0", "tq2_0", "i2_s"):
         # ~0.5-0.6 bytes per param for ternary quantization
         expected_min = estimated_params * 0.4
         expected_max = estimated_params * 0.8
