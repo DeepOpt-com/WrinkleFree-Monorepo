@@ -193,12 +193,12 @@ def probe_batch_size(
     probe_fn: Callable[[int], None],
     starting_batch_size: int,
     min_batch_size: int = 1,
-    reduction_factor: float = 0.9,
+    reduction_factor: float = 0.5,
 ) -> int:
     """Find the maximum batch size that fits in memory.
 
-    Uses Accelerate-style approach: multiply by reduction_factor on OOM.
-    This is more efficient than halving (0.9 vs 0.5).
+    Uses halving approach: multiply by reduction_factor (0.5) on OOM.
+    Faster than fine-grained search - finds optimal in 1-3 tries.
 
     Run this BEFORE training to find the optimal batch size.
 

@@ -59,9 +59,8 @@ max_seq_length: 2048
 batch_size: 32
 gradient_accumulation_steps: 16
 gradient_clipping: 1.0
-auto_batch_size: false  # Enable for Lightning BatchSizeFinder (single GPU only!)
-auto_batch_size_margin: 0.10  # Safety buffer (10%) - reduces found batch size to avoid OOM
-auto_batch_size_max_val: 512  # Max batch size to test
+auto_batch_size: false  # Enable auto batch size probing (single GPU only!)
+auto_batch_size_max_val: 128  # Starting batch size (halves on OOM)
 
 # Lambda warmup for gradual quantization (disabled by default)
 # When disabled, model trains with full quantization from step 0

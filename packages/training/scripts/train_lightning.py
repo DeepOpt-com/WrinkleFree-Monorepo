@@ -32,7 +32,6 @@ from pytorch_lightning.callbacks import (
 )
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import FSDPStrategy
-from pytorch_lightning.tuner import Tuner
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from omegaconf.base import ContainerMetadata
 from omegaconf._utils import ValueKind
@@ -341,9 +340,45 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             else:
                 logger.info("LRC: trainable_weight=True, base model weights also trainable via STE")
 
+            # Debug: Check if original weights were deleted
+            from wf_arch.layers import BitLinearLRC
+            for name, module in model.named_modules():
+                if isinstance(module, BitLinearLRC):
+                    weight_numel = module.weight.numel()
+                    weight_quantized_numel = module.weight_quantized.numel()
+                    u_numel = module.lrc_U.numel() if hasattr(module, "lrc_U") else 0
+                    v_numel = module.lrc_V.numel() if hasattr(module, "lrc_V") else 0
+                    logger.info(
+                        f"[DEBUG] {name}: weight={weight_numel}, "
+                        f"weight_quantized={weight_quantized_numel}, "
+                        f"U={u_numel}, V={v_numel}, "
+                        f"keep_original={module.keep_original_weight}"
+                    )
+                    break  # Only log first layer
+
         except ImportError as e:
             logger.error(f"LRC requires wf_arch package: {e}")
             raise
+
+    # Log model memory usage before gradient checkpointing - use print() for reliable output
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    param_memory_mb = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024 / 1024
+    print(
+        f"[DEBUG] Model params: total={total_params:,}, trainable={trainable_params:,}, "
+        f"param_memory={param_memory_mb:.1f}MB", flush=True
+    )
+
+    # Enable gradient checkpointing if configured (saves significant VRAM)
+    memory_cfg = cfg.training.get("memory", {})
+    gc_enabled = memory_cfg.get("gradient_checkpointing", False)
+    print(f"[DEBUG] Gradient checkpointing config: memory_cfg={dict(memory_cfg)}, gc_enabled={gc_enabled}", flush=True)
+    if gc_enabled:
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable()
+            print(">>> Gradient checkpointing ENABLED <<<", flush=True)
+        else:
+            print(">>> WARNING: Model does not support gradient_checkpointing_enable() <<<", flush=True)
 
     return model, tokenizer
 
@@ -753,6 +788,14 @@ def main(cfg: DictConfig) -> None:
     if rank == 0:
         logger.info("TF32 enabled for CUDA matmul and cuDNN")
 
+    # Helper for GPU memory debugging - use print() for reliable output
+    def log_gpu_memory(label: str) -> None:
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            max_allocated = torch.cuda.max_memory_allocated() / 1024**3
+            print(f"[GPU MEM] {label}: allocated={allocated:.2f}GB, reserved={reserved:.2f}GB, max={max_allocated:.2f}GB", flush=True)
+
     # Log config
     if rank == 0:
         logger.info("=" * 60)
@@ -783,10 +826,13 @@ def main(cfg: DictConfig) -> None:
             logger.warning("Neither max_steps nor total_tokens specified, using default max_steps=10000")
 
     # Load model and tokenizer
+    log_gpu_memory("before model load")
     model, tokenizer = load_model_and_tokenizer(cfg)
+    log_gpu_memory("after model load (on CPU)")
 
     # Load teacher if needed immediately, or prepare config for lazy loading
     teacher = load_teacher_model(cfg)
+    log_gpu_memory("after teacher check")
     teacher_cfg = prepare_teacher_config(cfg) if teacher is None else None
 
     # Add batch size reduction factor to teacher config for lazy loading
@@ -858,50 +904,51 @@ def main(cfg: DictConfig) -> None:
     if resume_ckpt_path:
         logger.info(f"Resuming training from: {resume_ckpt_path}")
 
-    # Auto batch size scaling using Tuner (standard Lightning approach)
-    # This runs BEFORE training and finds the optimal batch size
-    # NOTE: Not supported for DDP/FSDP per Lightning docs!
-    if cfg.training.get("auto_batch_size", False):
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
-        if world_size > 1:
-            # Batch size finder is NOT supported with DDP/FSDP
-            # See: https://lightning.ai/docs/pytorch/stable/advanced/training_tricks.html
-            print(f"\n{'='*60}")
-            print(f"WARNING: auto_batch_size is NOT supported with DDP/FSDP!")
-            print(f"  WORLD_SIZE={world_size}, using batch_size={cfg.training.get('batch_size', 32)}")
-            print(f"{'='*60}\n")
-            logger.warning(
-                "auto_batch_size is NOT supported with DDP/FSDP distributed training. "
-                "Skipping batch size finder - using configured batch_size=%d instead. "
-                "Consider manually tuning batch_size for your GPU.",
-                cfg.training.get("batch_size", 32),
-            )
-        else:
-            margin = cfg.training.get("auto_batch_size_margin", 0.15)
-            max_val = cfg.training.get("auto_batch_size_max_val", 512)
-            init_val = cfg.training.get("batch_size", 32)
-            print(f"\n{'='*60}")
-            print(f"AUTO BATCH SIZE: Running Tuner.scale_batch_size()")
-            print(f"  init_val={init_val}, margin={margin}, max_val={max_val}")
-            print(f"{'='*60}\n")
-            logger.info("Running Tuner.scale_batch_size() to find optimal batch size...")
-            tuner = Tuner(trainer)
-            tuner.scale_batch_size(
-                module,
-                datamodule=datamodule,
-                mode="binsearch",
-                init_val=init_val,
-                max_trials=25,
-                steps_per_trial=5,  # More steps = more accurate memory estimate
-                margin=margin,  # Safety buffer
-                max_val=max_val,  # Upper bound
-            )
-            print(f"\n{'='*60}")
-            print(f"AUTO BATCH SIZE: Optimal batch size found: {datamodule.batch_size}")
-            print(f"{'='*60}\n")
-            logger.info(f"Optimal batch size found: {datamodule.batch_size}")
+    # Auto batch size scaling using Lightning's Tuner (fast mode)
+    # Uses steps_per_trial=1 for quick probing
+    # NOTE: Not supported for DDP/FSDP!
+    auto_batch_enabled = cfg.training.get("auto_batch_size", False)
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+    if auto_batch_enabled and world_size > 1:
+        print(f"\n{'='*60}")
+        print(f"WARNING: auto_batch_size is NOT supported with DDP/FSDP!")
+        print(f"  WORLD_SIZE={world_size}, using batch_size={cfg.training.get('batch_size', 32)}")
+        print(f"{'='*60}\n")
+        logger.warning(
+            "auto_batch_size is NOT supported with DDP/FSDP distributed training. "
+            "Using configured batch_size=%d instead.",
+            cfg.training.get("batch_size", 32),
+        )
+        auto_batch_enabled = False
+
+    if auto_batch_enabled:
+        from pytorch_lightning.tuner import Tuner
+
+        max_val = cfg.training.get("auto_batch_size_max_val", 128)
+        init_val = cfg.training.get("batch_size", 32)
+
+        print(f"\n{'='*60}")
+        print(f"AUTO BATCH SIZE: Lightning Tuner (init={init_val}, max={max_val})")
+        print(f"{'='*60}\n")
+
+        tuner = Tuner(trainer)
+        tuner.scale_batch_size(
+            module,
+            datamodule=datamodule,
+            mode="binsearch",  # Binary search for optimal
+            init_val=init_val,
+            max_trials=10,  # Fewer trials (was 25)
+            steps_per_trial=1,  # Fast: 1 step per trial (was 5)
+            batch_arg_name="batch_size",
+        )
+        print(f"\n{'='*60}")
+        print(f"AUTO BATCH SIZE: Found optimal batch size: {datamodule.batch_size}")
+        print(f"{'='*60}\n")
+        logger.info(f"Auto batch size: {datamodule.batch_size}")
 
     # Train!
+    log_gpu_memory("before trainer.fit()")
     logger.info("Starting training...")
     trainer.fit(module, datamodule, ckpt_path=resume_ckpt_path)
 
