@@ -8848,8 +8848,8 @@ static bool llm_load_tensors(
                         // LRC (Low-Rank Correction) tensors - optional
                         // Check if first LRC tensor exists to determine rank
                         {
-                            const ggml_tensor_meta * lrc_meta = ml.get_tensor_meta(tn(LLM_TENSOR_ATTN_Q_LRC_U, "weight", i).c_str());
-                            if (lrc_meta) {
+                            const struct ggml_tensor * lrc_meta = ml.get_tensor_meta(tn(LLM_TENSOR_ATTN_Q_LRC_U, "weight", i).c_str());
+                            if (lrc_meta != nullptr) {
                                 // LRC is present - load all LRC tensors
                                 // U shape: (out_features, rank), V shape: (in_features, rank)
                                 const int64_t lrc_rank = lrc_meta->ne[1];  // rank is second dimension

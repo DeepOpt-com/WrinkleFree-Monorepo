@@ -130,6 +130,52 @@ SubLN adds normalization before output projections. WrinkleFree checkpoints use 
 
 **Note**: The GGUF converter handles SubLN tensor naming automatically. No manual export required.
 
+## LRC (Low-Rank Correction)
+
+LRC recovers accuracy lost during quantization by adding a low-rank correction term:
+
+```
+output = W_quant @ Q_a(X) + U @ V^T @ X
+```
+
+Where:
+- `W_quant`: Quantized ternary weights (±1, 0)
+- `Q_a(X)`: Quantized activations (int8)
+- `U, V`: Low-rank correction matrices (rank typically 32-128)
+
+### LRC Tensor Types
+
+14 LRC tensors per layer (U/V pairs for each projection):
+
+| Projection | Tensors |
+|------------|---------|
+| Attention Q | `attn_q.lrc_U`, `attn_q.lrc_V` |
+| Attention K | `attn_k.lrc_U`, `attn_k.lrc_V` |
+| Attention V | `attn_v.lrc_U`, `attn_v.lrc_V` |
+| Attention O | `attn_output.lrc_U`, `attn_output.lrc_V` |
+| FFN Gate | `ffn_gate.lrc_U`, `ffn_gate.lrc_V` |
+| FFN Up | `ffn_up.lrc_U`, `ffn_up.lrc_V` |
+| FFN Down | `ffn_down.lrc_U`, `ffn_down.lrc_V` |
+
+### Pipeline Integration
+
+LRC is fully supported in the inference pipeline:
+
+1. **Training** (`packages/architecture`): `BitLinearLRC` layer stores U/V matrices
+2. **Conversion** (`convert_hf_to_gguf.py`): Maps `q_proj.lrc_U` → `blk.N.attn_q.lrc_U`
+3. **Inference** (`llama.cpp`): `llm_build_lrc_mm()` applies correction during forward pass
+
+**Note**: LRC tensors are automatically detected and converted. No special flags needed.
+
+### LRC Model Sizes
+
+LRC adds ~5-10% size overhead (depending on rank):
+
+| Model | Base I2_S | With LRC (rank=64) |
+|-------|-----------|-------------------|
+| 135M | ~55MB | ~60MB |
+| 2B | ~1.1GB | ~1.2GB |
+
 ## Architecture
 
 ```
@@ -238,7 +284,7 @@ curl http://localhost:30000/v1/chat/completions \
 | `training` | Produces checkpoints to convert and serve |
 | `deployer` | Cloud deployment orchestration (SkyPilot) |
 | `eval` | Uses inference for benchmarks |
-| `architecture` | BitLinear/SubLN layer definitions |
+| `architecture` | BitLinear/BitLinearLRC/SubLN layer definitions |
 
 ## Related Files
 

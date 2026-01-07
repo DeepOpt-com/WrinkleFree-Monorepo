@@ -115,7 +115,6 @@ run: |
     output_dir=$CHECKPOINT_DIR \
     experiment_name=lrc_run_qwen3_0.6b \
     \
-    training.auto_batch_size=true \
     \
     training.checkpoint.save_interval=500 \
     training.logging.log_interval=10 \

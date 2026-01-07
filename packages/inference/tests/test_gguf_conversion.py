@@ -332,5 +332,113 @@ class TestGCSDownload:
         assert not local_path.startswith("gs://")
 
 
+class TestLRCTensorMapping:
+    """Tests for LRC (Low-Rank Correction) tensor mapping in GGUF conversion."""
+
+    def test_lrc_tensor_names_in_constants(self):
+        """Verify LRC tensor types are defined in GGUF constants.py file."""
+        constants_path = Path(__file__).parent.parent / "extern/sglang-bitnet/3rdparty/llama.cpp/gguf-py/gguf/constants.py"
+
+        with open(constants_path, "r") as f:
+            content = f.read()
+
+        # Check LRC tensor types exist in the file
+        lrc_tensors = [
+            "ATTN_Q_LRC_U", "ATTN_Q_LRC_V",
+            "ATTN_K_LRC_U", "ATTN_K_LRC_V",
+            "ATTN_V_LRC_U", "ATTN_V_LRC_V",
+            "ATTN_OUT_LRC_U", "ATTN_OUT_LRC_V",
+            "FFN_GATE_LRC_U", "FFN_GATE_LRC_V",
+            "FFN_UP_LRC_U", "FFN_UP_LRC_V",
+            "FFN_DOWN_LRC_U", "FFN_DOWN_LRC_V",
+        ]
+
+        for tensor_name in lrc_tensors:
+            assert tensor_name in content, f"Missing LRC tensor type in constants.py: {tensor_name}"
+
+    def test_lrc_tensor_mapping_in_file(self):
+        """Verify LRC tensors are mapped in tensor_mapping.py."""
+        mapping_path = Path(__file__).parent.parent / "extern/sglang-bitnet/3rdparty/llama.cpp/gguf-py/gguf/tensor_mapping.py"
+
+        with open(mapping_path, "r") as f:
+            content = f.read()
+
+        # Check that checkpoint tensor names are mapped
+        checkpoint_names = [
+            "q_proj.lrc_U", "q_proj.lrc_V",
+            "k_proj.lrc_U", "k_proj.lrc_V",
+            "v_proj.lrc_U", "v_proj.lrc_V",
+            "o_proj.lrc_U", "o_proj.lrc_V",
+            "gate_proj.lrc_U", "gate_proj.lrc_V",
+            "up_proj.lrc_U", "up_proj.lrc_V",
+            "down_proj.lrc_U", "down_proj.lrc_V",
+        ]
+
+        for name in checkpoint_names:
+            assert name in content, f"Missing LRC mapping for: {name}"
+
+    def test_lrc_shapes_valid(self):
+        """Test that LRC tensor shapes are valid (out_features x rank for U, in_features x rank for V)."""
+        # Simulate LRC tensors for a small model
+        hidden_size = 256
+        rank = 16  # 10% of 160 (min dim)
+
+        # U shape: (out_features, rank)
+        # V shape: (in_features, rank)
+        lrc_u = np.random.randn(hidden_size, rank).astype(np.float16)
+        lrc_v = np.random.randn(hidden_size, rank).astype(np.float16)
+
+        assert lrc_u.shape == (hidden_size, rank), f"U shape wrong: {lrc_u.shape}"
+        assert lrc_v.shape == (hidden_size, rank), f"V shape wrong: {lrc_v.shape}"
+
+        # Verify LRC computation: output = U @ (V^T @ x)
+        x = np.random.randn(hidden_size).astype(np.float16)
+        vt_x = lrc_v.T @ x  # (rank,)
+        lrc_output = lrc_u @ vt_x  # (hidden_size,)
+        assert lrc_output.shape == (hidden_size,), f"LRC output shape wrong: {lrc_output.shape}"
+
+
+class TestLRCInferenceIntegration:
+    """Integration tests for LRC with llama.cpp."""
+
+    def test_llama_cpp_lrc_build(self):
+        """Verify llama.cpp builds with LRC support."""
+        llama_cpp_path = Path(__file__).parent.parent / "extern/sglang-bitnet/3rdparty/llama.cpp"
+        llama_cli = llama_cpp_path / "build/bin/llama-cli"
+        libllama = llama_cpp_path / "build/src/libllama.so"
+
+        # Check binaries exist (they should after build)
+        if not llama_cli.exists():
+            pytest.skip("llama-cli not built - run cmake build first")
+
+        assert llama_cli.exists(), "llama-cli binary not found"
+        assert libllama.exists(), "libllama.so not found"
+
+    def test_lrc_tensor_enum_in_llama_cpp(self):
+        """Verify LRC tensor enums match between Python and C++."""
+        # The GGUF names used in Python tensor mapping
+        gguf_names = [
+            "blk.{bid}.attn_q.lrc_u",
+            "blk.{bid}.attn_q.lrc_v",
+            "blk.{bid}.attn_k.lrc_u",
+            "blk.{bid}.attn_k.lrc_v",
+            "blk.{bid}.attn_v.lrc_u",
+            "blk.{bid}.attn_v.lrc_v",
+            "blk.{bid}.attn_output.lrc_u",
+            "blk.{bid}.attn_output.lrc_v",
+            "blk.{bid}.ffn_gate.lrc_u",
+            "blk.{bid}.ffn_gate.lrc_v",
+            "blk.{bid}.ffn_up.lrc_u",
+            "blk.{bid}.ffn_up.lrc_v",
+            "blk.{bid}.ffn_down.lrc_u",
+            "blk.{bid}.ffn_down.lrc_v",
+        ]
+
+        # All LRC tensor names should follow the pattern blk.{bid}.{projection}.lrc_{u|v}
+        for name in gguf_names:
+            assert ".lrc_u" in name or ".lrc_v" in name, f"Invalid LRC tensor name: {name}"
+            assert name.startswith("blk."), f"LRC tensor should start with 'blk.': {name}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

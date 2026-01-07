@@ -47,9 +47,9 @@ auto_convert:
     - lm_head
     - embed_positions
 
-# torch.compile for training speedup
+# torch.compile disabled - causes high memory overhead with LRC
 torch_compile:
-  enabled: true
+  enabled: false
   mode: default
 
 # Sequence packing
@@ -75,10 +75,10 @@ scheduler:
 total_tokens: 1_000_000_000
 max_steps: null
 max_seq_length: 1024  # Half context to fit GPU memory
-batch_size: 2  # DLM doubles this to 4 with complementary masks
-gradient_accumulation_steps: 256  # Effective batch = 2*256 = 512
+batch_size: 48  # H100 80GB without torch.compile (LRC overhead)
+gradient_accumulation_steps: 10  # Effective batch ~= 480
 gradient_clipping: 1.0
-auto_batch_size: true  # Auto-find optimal batch size for GPU
+auto_batch_size: false  # Disable to avoid torch_compile recompilation loop
 
 # Lambda warmup disabled (LRC uses pre-computed quantized weights)
 lambda_warmup:
