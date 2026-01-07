@@ -406,6 +406,31 @@ class BitLinearLRC(BitLinear):
                 self.lrc_U.data[:, :k].copy_(U_init)
                 self.lrc_V.data[:, :k].copy_(V_init)
 
+    def init_lrc_kaiming(self) -> None:
+        """LoRA-style initialization: V=Kaiming, U=zeros.
+
+        Initial output is zero (U @ V^T @ x = 0 @ ? = 0), but gradients
+        flow immediately since V is non-zero. This is much faster than
+        SVD initialization and provides good training dynamics.
+
+        Based on LoRA paper initialization strategy.
+        """
+        import math
+
+        with torch.no_grad():
+            if self._use_quantized_lrc:
+                # For STE-based QLRC
+                # V: Kaiming normal (provides gradient signal)
+                nn.init.kaiming_uniform_(self.lrc_V_linear.weight, a=math.sqrt(5))
+                # U: zeros (initial LRC contribution = 0)
+                nn.init.zeros_(self.lrc_U_linear.weight)
+            else:
+                # For full-precision LRC
+                # V: Kaiming normal (provides gradient signal)
+                nn.init.kaiming_uniform_(self.lrc_V, a=math.sqrt(5))
+                # U: zeros (initial LRC contribution = 0)
+                nn.init.zeros_(self.lrc_U)
+
     def get_lrc_weights_dequantized(self) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Get U and V weights for GGUF export or inspection.
@@ -477,12 +502,15 @@ def convert_bitlinear_to_lrc(
         Module with BitLinear layers replaced by BitLinearLRC
     """
     exclude_names = exclude_names or []
+    layer_count = 0
 
     for name, child in module.named_children():
         if name in exclude_names:
             continue
 
         if isinstance(child, BitLinear) and not isinstance(child, BitLinearLRC):
+            layer_count += 1
+            print(f"  [{layer_count}] Converting {name} ({child.out_features}x{child.in_features})...", flush=True)
             original_weight = child.weight.data.clone()
 
             # Always create with keep_original_weight=True initially so we can
@@ -508,7 +536,12 @@ def convert_bitlinear_to_lrc(
             # Initialize LRC matrices (must be before compute_quantized_weights
             # if keep_original_weight=False, since SVD needs original weight)
             if init_method == "svd_residual":
+                print(f"      SVD init...", flush=True)
                 lrc_layer.init_lrc_from_svd(original_weight)
+                print(f"      SVD done!", flush=True)
+            elif init_method == "kaiming":
+                # LoRA-style: V=Kaiming, U=zeros. Fast and effective.
+                lrc_layer.init_lrc_kaiming()
             # else: zeros (already initialized in __init__)
 
             # Now set the actual keep_original_weight and recompute

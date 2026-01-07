@@ -18,17 +18,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | BatchSizeFinder + WandB resume | Clean checkpoints before retry | Fixed in code |
 | PyTorch 2.6 weights_only | Added safe_globals for omegaconf types | Fixed |
 | BatchSizeFinder + DDP/FSDP | Auto-skipped with warning; manually tune batch_size | **Known limitation** |
-| Muon + LRC oscillating loss | LRC params excluded from Muon, use AdamW | **Fixed** (2026-01-07) |
 
 **MuonClip Fix Details**: The upstream muon-clip package has a bug where `HookRecorder.remove_hooks()`
 doesn't reset `is_registered=False`. This causes hooks to never re-register after BatchSizeFinder's
 `eval/train` cycles. Fixed via `MuonClipInitCallback` + patched `remove_hooks()` in module.py.
-
-**Muon + LRC Fix Details**: LRC's `lrc_U`/`lrc_V` matrices are 2D tensors, so they were incorrectly
-classified as Muon params and received Newton-Schulz orthogonalization. Newton-Schulz is designed for
-full-rank matrices; applying it to low-rank matrices destroys their structure, causing oscillating loss.
-Fixed by excluding `lrc_` params from Muon in `_create_muon_fsdp_optimizer` and `_create_pytorch_muon_optimizer`.
-See: [Riemannion paper](https://arxiv.org/abs/2507.12142) for principled low-rank + Muon approach.
 
 ## Project Overview
 

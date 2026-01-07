@@ -223,6 +223,108 @@ class TestConvertBitLinearToLRC:
         # SVD init should produce non-zero LRC matrices
         assert not torch.allclose(lrc_layer.lrc_U, torch.zeros_like(lrc_layer.lrc_U))
 
+    def test_svd_init_produces_nonzero_gradients(self):
+        """Test that SVD init produces non-zero gradients on first backward pass.
+
+        This is the key fix for the "loss not decreasing" bug.
+        With zeros init, both U and V start at 0, so gradients are:
+          dL/dU = (dL/dout) @ V^T @ X^T = ? @ 0 @ ? = 0
+          dL/dV = X @ (dL/dout)^T @ U^T = ? @ ? @ 0 = 0
+        Both gradients are zero, so optimizer can't update!
+
+        With SVD init, U and V are non-zero, so gradients flow properly.
+        """
+        linear = BitLinear(64, 32)
+        linear.weight.data.normal_()
+        model = nn.Sequential(linear)
+
+        # Convert with SVD init
+        model = convert_bitlinear_to_lrc(model, init_method="svd_residual")
+        lrc_layer = model[0]
+
+        # Forward pass
+        x = torch.randn(2, 8, 64, requires_grad=True)
+        output = model(x)
+        loss = output.sum()
+
+        # Backward pass
+        loss.backward()
+
+        # With SVD init, gradients should be non-zero
+        assert lrc_layer.lrc_U.grad is not None
+        assert lrc_layer.lrc_V.grad is not None
+        assert lrc_layer.lrc_U.grad.abs().sum() > 0, "U gradient is zero with SVD init!"
+        assert lrc_layer.lrc_V.grad.abs().sum() > 0, "V gradient is zero with SVD init!"
+
+    def test_zeros_init_has_zero_gradients(self):
+        """Test that zeros init has zero gradients (the bug we fixed).
+
+        This test documents the failure mode that occurs with init_method='zeros'.
+        """
+        linear = BitLinear(64, 32)
+        linear.weight.data.normal_()
+        model = nn.Sequential(linear)
+
+        # Convert with zeros init (the problematic default)
+        model = convert_bitlinear_to_lrc(model, init_method="zeros")
+        lrc_layer = model[0]
+
+        # Verify U and V are actually zeros
+        assert torch.allclose(lrc_layer.lrc_U, torch.zeros_like(lrc_layer.lrc_U))
+        assert torch.allclose(lrc_layer.lrc_V, torch.zeros_like(lrc_layer.lrc_V))
+
+        # Forward pass
+        x = torch.randn(2, 8, 64, requires_grad=True)
+        output = model(x)
+        loss = output.sum()
+
+        # Backward pass
+        loss.backward()
+
+        # With zeros init, gradients ARE zero - this is the bug!
+        # dL/dU = (dL/dout) @ V^T @ X^T, but V=0, so gradient=0
+        # dL/dV = X @ (dL/dout)^T @ U^T, but U=0, so gradient=0
+        assert lrc_layer.lrc_U.grad is not None
+        assert lrc_layer.lrc_V.grad is not None
+        # Both gradients should be zero (or very close)
+        assert lrc_layer.lrc_U.grad.abs().sum() < 1e-6, "Expected zero U gradient with zeros init"
+        assert lrc_layer.lrc_V.grad.abs().sum() < 1e-6, "Expected zero V gradient with zeros init"
+
+    def test_kaiming_init_produces_nonzero_gradients(self):
+        """Test that kaiming init produces non-zero gradients like SVD init.
+
+        Kaiming init is LoRA-style: V=Kaiming random, U=zeros.
+        Initial output is zero (U @ V^T @ x = 0), but gradients flow
+        because V is non-zero.
+        """
+        linear = BitLinear(64, 32)
+        linear.weight.data.normal_()
+        model = nn.Sequential(linear)
+
+        # Convert with kaiming init
+        model = convert_bitlinear_to_lrc(model, init_method="kaiming")
+        lrc_layer = model[0]
+
+        # U should be zeros, V should be non-zero (Kaiming init)
+        assert torch.allclose(lrc_layer.lrc_U, torch.zeros_like(lrc_layer.lrc_U))
+        assert not torch.allclose(lrc_layer.lrc_V, torch.zeros_like(lrc_layer.lrc_V))
+
+        # Forward pass
+        x = torch.randn(2, 8, 64, requires_grad=True)
+        output = model(x)
+        loss = output.sum()
+
+        # Backward pass
+        loss.backward()
+
+        # With kaiming init, gradients should be non-zero
+        # dL/dU = (dL/dout) @ V^T @ X^T - V is non-zero, so gradient is non-zero!
+        # dL/dV = X @ (dL/dout)^T @ U^T - U is zero, so this gradient IS zero
+        assert lrc_layer.lrc_U.grad is not None
+        assert lrc_layer.lrc_V.grad is not None
+        # U gradient should be non-zero (because V is non-zero)
+        assert lrc_layer.lrc_U.grad.abs().sum() > 0, "U gradient should be non-zero with kaiming init!"
+
     def test_exclude_layers(self):
         """Test layer exclusion."""
 

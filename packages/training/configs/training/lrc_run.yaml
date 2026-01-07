@@ -25,8 +25,11 @@ lrc:
   # 15% provides good error recovery while fitting in H100 memory
   # (25% caused OOM with batch_size=32, 161M trainable params)
   rank_percentage: 0.15
-  # Initialization: "zeros" (default) or "svd_residual" (better starting point)
-  init_method: svd_residual
+  # Initialization options:
+  # - "kaiming": LoRA-style (V=Kaiming, U=zeros). Fast, good gradients. (recommended)
+  # - "svd_residual": SVD of quantization error. Slow but best quality.
+  # - "zeros": Both U,V=zeros. DON'T USE - causes zero gradients!
+  init_method: kaiming
   # Freeze base model - only U, V matrices trainable
   trainable_weight: false
   # Delete original weights to save memory (valid when trainable_weight=false)
@@ -72,8 +75,8 @@ packing:
 # Muon's Newton-Schulz orthogonalization still benefits the U/V matrices.
 # optimizer:
 #   type: muonclip
-#   lr_muon: 0.005          # Muon LR for 2D trainable params (U,V matrices)
-#   lr_adam: 5e-5          # AdamW LR for 1D params (biases, weights etc)
+#   lr_muon: 0.01          # Muon LR for 2D trainable params (U,V matrices)
+#   lr_adam: 1e-4          # AdamW LR for 1D params (biases, weights etc)
 #   weight_decay: 0.01
 #   momentum: 0.95
 #   enable_clipping: false  # Disabled for LRC - only works with full attention training

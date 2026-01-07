@@ -254,35 +254,44 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     Handles special stages:
     - lrc_calibration: Converts BitLinear → BitLinearLRC and freezes non-LRC params
     """
+    print("[DEBUG] Entered load_model_and_tokenizer", flush=True)
     # Resolve checkpoint path (local > GCS > HuggingFace)
     stage = cfg.training.get("stage", "stage2")
+    print(f"[DEBUG] Got stage: {stage}", flush=True)
     model_path = resolve_checkpoint_path(cfg, stage=stage)
+    print(f"[DEBUG] Got model_path: {model_path}", flush=True)
 
     # Fallback to model.name if nothing found
     if model_path is None:
         model_path = cfg.model.name
 
-    logger.info(f"Loading model: {model_path}")
+    print(f"[DEBUG] Loading model: {model_path}", flush=True)
 
     # Convert Path to string for transformers compatibility
     model_path_str = str(model_path) if isinstance(model_path, Path) else model_path
 
+    print(f"[DEBUG] Loading tokenizer from {model_path_str}...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(model_path_str)
+    print(f"[DEBUG] Tokenizer loaded!", flush=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    print(f"[DEBUG] Loading model from {model_path_str}...", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_path_str,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
+    print(f"[DEBUG] Model loaded!", flush=True)
 
     # Auto-convert to BitNet if needed
+    print(f"[DEBUG] Checking auto_convert...", flush=True)
     if cfg.training.get("auto_convert", {}).get("enabled", True):
         exclude_layers = cfg.training.get("auto_convert", {}).get("exclude_layers", None)
         # insert_subln=False by default to preserve pretrained weights
         # Set to True only if running Stage 1.9 layer-wise distillation afterward
         insert_subln = cfg.training.get("auto_convert", {}).get("insert_subln", False)
+        print(f"[DEBUG] Auto-converting to BitNet...", flush=True)
         model = auto_convert_if_needed(
             model,
             hidden_size=cfg.model.hidden_size,
@@ -290,13 +299,13 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             exclude_layers=exclude_layers,
             insert_subln=insert_subln,
         )
-        logger.info(f"Model converted to BitNet (insert_subln={insert_subln})")
+        print(f"[DEBUG] BitNet conversion done!", flush=True)
 
     # Handle LRC (Low-Rank Correction) if enabled in config
     # Check lrc.enabled rather than stage name to support lrc_run, lrc_calibration, etc.
     lrc_cfg = cfg.training.get("lrc", {})
     lrc_enabled = lrc_cfg.get("enabled", False)
-    logger.info(f"[DEBUG] LRC check: lrc_cfg={dict(lrc_cfg)}, enabled={lrc_enabled}")
+    print(f"[DEBUG] LRC check: enabled={lrc_enabled}", flush=True)
     if lrc_enabled:
         try:
             from wf_arch import QLRCConfig, convert_bitlinear_to_lrc, freeze_model_except_lrc
@@ -320,10 +329,11 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                     f"(bits={qlrc_config.bits}, group_size={qlrc_config.group_size})"
                 )
 
-            logger.info(
-                f"LRC: Converting BitLinear → BitLinearLRC "
+            print(
+                f"[DEBUG] LRC: Converting BitLinear → BitLinearLRC "
                 f"(rank={rank_percentage*100:.0f}%, init={init_method}, "
-                f"keep_weight={keep_original_weight}, trainable={trainable_weight})"
+                f"keep_weight={keep_original_weight}, trainable={trainable_weight})",
+                flush=True,
             )
 
             model = convert_bitlinear_to_lrc(
@@ -334,6 +344,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 trainable_weight=trainable_weight,
                 qlrc_config=qlrc_config,
             )
+            print(f"[DEBUG] LRC conversion done!", flush=True)
 
             # Freeze all parameters except LRC matrices (U, V) if trainable_weight=False
             if not trainable_weight:
@@ -885,7 +896,9 @@ def main(cfg: DictConfig) -> None:
 
     # Load model and tokenizer
     log_gpu_memory("before model load")
+    print("[DEBUG] About to call load_model_and_tokenizer", flush=True)
     model, tokenizer = load_model_and_tokenizer(cfg)
+    print("[DEBUG] Returned from load_model_and_tokenizer", flush=True)
     log_gpu_memory("after model load (on CPU)")
 
     # Load teacher if needed immediately, or prepare config for lazy loading

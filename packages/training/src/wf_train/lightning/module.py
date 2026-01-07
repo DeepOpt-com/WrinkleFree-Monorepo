@@ -750,11 +750,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            # LRC params (lrc_U, lrc_V) should use AdamW, not Muon.
-            # Newton-Schulz orthogonalization destroys low-rank structure.
-            # See: https://arxiv.org/abs/2507.12142 (Riemannion paper)
-            is_lrc_param = "lrc_" in name.lower()
-            if param.ndim >= 2 and "embed" not in name.lower() and not is_lrc_param:
+            if param.ndim >= 2 and "embed" not in name.lower():
                 muon_params.append(param)
             else:
                 adam_params.append(param)
@@ -763,11 +759,6 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             {"params": muon_params, "lr": lr_muon, "use_muon": True},
             {"params": adam_params, "lr": lr_adam, "use_muon": False},
         ])
-
-        # Log LRC mode detection
-        lrc_count = sum(1 for n, p in self.model.named_parameters() if "lrc_" in n.lower() and p.requires_grad)
-        if lrc_count > 0:
-            logger.info(f"LRC mode: {lrc_count} LRC params using AdamW (excluded from Muon/Newton-Schulz)")
 
         logger.info(
             f"Created Muon FSDP optimizer: {len(muon_params)} Muon params, "
@@ -832,12 +823,8 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            # LRC params (lrc_U, lrc_V) should use AdamW, not Muon.
-            # Newton-Schulz orthogonalization destroys low-rank structure.
-            # See: https://arxiv.org/abs/2507.12142 (Riemannion paper)
-            is_lrc_param = "lrc_" in name.lower()
-            # Muon: 2D+ weights, excluding embeddings, lm_head, and LRC params
-            if param.ndim >= 2 and "embed" not in name.lower() and "lm_head" not in name.lower() and not is_lrc_param:
+            # Muon: 2D+ weights, excluding embeddings and lm_head
+            if param.ndim >= 2 and "embed" not in name.lower() and "lm_head" not in name.lower():
                 muon_params.append(param)
             else:
                 adam_params.append(param)
@@ -857,11 +844,6 @@ class WrinkleFreeLightningModule(pl.LightningModule):
 
         # Wrap both optimizers in a combined interface for Lightning
         combined = CombinedMuonAdamWOptimizer(muon_opt, adam_opt, lr_muon)
-
-        # Log LRC mode detection
-        lrc_count = sum(1 for n, p in self.model.named_parameters() if "lrc_" in n.lower() and p.requires_grad)
-        if lrc_count > 0:
-            logger.info(f"LRC mode: {lrc_count} LRC params using AdamW (excluded from Muon/Newton-Schulz)")
 
         logger.info(
             f"Created PyTorch Muon + AdamW: {len(muon_params)} Muon params (lr={lr_muon}), "
