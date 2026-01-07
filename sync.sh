@@ -327,6 +327,17 @@ setup_credentials() {
         run_ssh "mkdir -p ~/.config/gcloud"
         rsync -az -e "$RSYNC_RSH" "$GCP_CREDS_FILE" "$REMOTE_HOST:~/.config/gcloud/application_default_credentials.json" 2>/dev/null || true
         run_ssh "chmod 600 ~/.config/gcloud/application_default_credentials.json" 2>/dev/null || true
+
+        # Get and set GCP project (CRITICAL: without this, GCS uploads fail!)
+        local gcp_project
+        gcp_project=$(gcloud config get-value project 2>/dev/null || true)
+        if [[ -n "$gcp_project" && "$gcp_project" != "(unset)" ]]; then
+            echo "    - Setting GCP project: $gcp_project"
+            run_ssh "grep -q 'GOOGLE_CLOUD_PROJECT' ~/.bashrc 2>/dev/null || echo 'export GOOGLE_CLOUD_PROJECT=\"$gcp_project\"' >> ~/.bashrc"
+            run_ssh "grep -q 'CLOUDSDK_CORE_PROJECT' ~/.bashrc 2>/dev/null || echo 'export CLOUDSDK_CORE_PROJECT=\"$gcp_project\"' >> ~/.bashrc"
+        else
+            echo "    - WARNING: No GCP project found locally. Run 'gcloud config set project <project>' first!"
+        fi
     fi
 
     # Check/install gcloud CLI
@@ -335,6 +346,14 @@ setup_credentials() {
         echo "    - Installing gcloud CLI (this may take a minute)..."
         run_ssh 'curl -sSL https://sdk.cloud.google.com > /tmp/install_gcloud.sh && bash /tmp/install_gcloud.sh --disable-prompts --install-dir=$HOME 2>/dev/null' || true
         run_ssh 'grep -q "google-cloud-sdk" ~/.bashrc 2>/dev/null || echo '\''export PATH="$HOME/google-cloud-sdk/bin:$PATH"'\'' >> ~/.bashrc'
+    fi
+
+    # Configure gcloud project if installed
+    local gcp_project
+    gcp_project=$(gcloud config get-value project 2>/dev/null || true)
+    if [[ -n "$gcp_project" && "$gcp_project" != "(unset)" ]]; then
+        echo "    - Configuring gcloud default project..."
+        run_ssh "export PATH=\"\$HOME/google-cloud-sdk/bin:\$PATH\" && gcloud config set project $gcp_project 2>/dev/null" || true
     fi
 
     echo "[+] Credentials setup complete!"
