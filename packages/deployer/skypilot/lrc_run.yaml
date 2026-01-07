@@ -31,9 +31,10 @@ resources:
 # Run from packages/deployer, sync ../../ to get monorepo root
 workdir: ../..
 
+# File mounts are relative to where sky launch is run (packages/deployer)
 file_mounts:
-  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
-  /tmp/credentials.env: packages/deployer/credentials/.env
+  /tmp/gcp-creds.json: credentials/gcp-service-account.json
+  /tmp/credentials.env: credentials/.env
   /tmp/global.env: ~/.config/.env.global
 
 envs:
