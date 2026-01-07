@@ -56,12 +56,23 @@ torch_compile:
 packing:
   enabled: true
 
-# Optimizer: AdamW 8-bit (Muon not needed - base frozen, only U,V trained)
+# Optimizer: MuonClip (without QK-clipping for LRC)
+#
+# QK-clipping is DISABLED for LRC because:
+# - QK-clipping expects trainable Q/K projection weights
+# - LRC has U/V correction matrices as trainable params (frozen Q/K)
+# - The matmul shapes don't match (U/V have different dimensions than Q/K)
+#
+# Muon's Newton-Schulz orthogonalization still benefits the U/V matrices.
 optimizer:
-  type: adamw
-  learning_rate: 1e-4
-  weight_decay: 0.0
-  use_8bit: true
+  type: muonclip
+  lr_muon: 0.02          # Muon LR for 2D trainable params (U matrices)
+  lr_adam: 1e-4          # AdamW LR for 1D params (V matrices, biases)
+  weight_decay: 0.01
+  momentum: 0.95
+  enable_clipping: false  # Disabled for LRC - only works with full attention training
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
 
 # Scheduler: WSD
 scheduler:

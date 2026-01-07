@@ -549,6 +549,15 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         MuonClip.__init__() overrides model.train() to register hooks.
         """
         from muon import MuonClip, MuonConfig
+        import muon
+
+        # ==============================================================================
+        # FIX: Patch MuonClip.step to handle bfloat16/float32 dtype mismatch
+        # ==============================================================================
+        # The error "expected mat1 and mat2 to have the same dtype" occurs because
+        # Muon internals use float32 for Newton-Schulz, but params may be bfloat16.
+        # We patch the step method to handle this dtype conversion properly.
+        self._patch_muonclip_dtype_handling(muon)
 
         # Default to LLaMA-style naming if not specified
         if clipping_layers_mapping is None:
@@ -626,6 +635,88 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             f"clipping={enable_clipping} (threshold={clipping_threshold}, alpha={clipping_alpha})"
         )
         return optimizer
+
+    def _patch_muonclip_dtype_handling(self, muon_module) -> None:
+        """Patch MuonClip to handle bfloat16/float32 dtype mismatch in Newton-Schulz.
+
+        Problem:
+            MuonClip's Newton-Schulz iterations require float32 for numerical stability,
+            but model params may be bfloat16. This causes RuntimeError in torch.matmul.
+
+        Solution:
+            Wrap MuonClip.step to temporarily convert bfloat16 params/grads/state to float32,
+            run the original step, then convert back.
+
+        Note:
+            QK-clipping must be disabled when using LRC (enable_clipping=false) because
+            QK-clipping expects trainable Q/K weights, not LRC's U/V correction matrices.
+
+        This is a known upstream issue in muon-clip with bfloat16 models.
+        """
+        if not hasattr(muon_module, "MuonClip"):
+            return
+
+        MuonClip = muon_module.MuonClip
+        if getattr(MuonClip, "_dtype_patch_applied", False):
+            return  # Already patched
+
+        original_step = MuonClip.step
+
+        def _convert_state_to_float32(state: dict) -> None:
+            """Convert optimizer state buffers from bfloat16 to float32."""
+            for key in ["momentum_buffer", "velocity_buffer", "exp_avg", "exp_avg_sq"]:
+                if key in state and state[key].dtype == torch.bfloat16:
+                    state[key] = state[key].float()
+
+        def patched_step(self, closure=None):
+            """Patched step that handles bfloat16/float32 dtype mismatch.
+
+            Converts bfloat16 params, gradients, and optimizer state to float32
+            before running Newton-Schulz, then converts params back afterwards.
+            """
+            # Store original dtypes and convert bfloat16 -> float32
+            original_dtypes = {}
+            for group in self.param_groups:
+                for p in group["params"]:
+                    if p.grad is not None and p.dtype == torch.bfloat16:
+                        original_dtypes[id(p)] = p.dtype
+                        p.data = p.data.float()
+                        p.grad.data = p.grad.data.float()
+                        # Also convert optimizer state if it exists
+                        if p in self.state:
+                            _convert_state_to_float32(self.state[p])
+
+            # Also convert hook_recorder.attn_inputs for QK-clipping
+            # (These come from forward pass in bfloat16)
+            original_attn_dtypes = {}
+            if hasattr(self, "hook_recorder") and self.hook_recorder is not None:
+                for key, tensor in self.hook_recorder.attn_inputs.items():
+                    if tensor is not None and tensor.dtype == torch.bfloat16:
+                        original_attn_dtypes[key] = tensor.dtype
+                        self.hook_recorder.attn_inputs[key] = tensor.float()
+
+            # Run original step in float32
+            result = original_step(self, closure)
+
+            # Convert params back to original dtype
+            for group in self.param_groups:
+                for p in group["params"]:
+                    if id(p) in original_dtypes:
+                        p.data = p.data.to(original_dtypes[id(p)])
+
+            # Convert attn_inputs back (will be overwritten next forward anyway)
+            if hasattr(self, "hook_recorder") and self.hook_recorder is not None:
+                for key, dtype in original_attn_dtypes.items():
+                    if key in self.hook_recorder.attn_inputs:
+                        self.hook_recorder.attn_inputs[key] = (
+                            self.hook_recorder.attn_inputs[key].to(dtype)
+                        )
+
+            return result
+
+        MuonClip.step = patched_step
+        MuonClip._dtype_patch_applied = True
+        logger.info("Patched MuonClip.step to handle bfloat16/float32 dtype mismatch")
 
     def _create_muon_fsdp_optimizer(self, lr_muon: float, lr_adam: float):
         """Create Muon optimizer for multi-GPU FSDP via muon_fsdp2."""

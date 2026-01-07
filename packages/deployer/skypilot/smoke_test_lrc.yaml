@@ -1,10 +1,10 @@
 # LRC (Low-Rank Correction) Smoke Test - Nebius 1x L40S
 #
-# Tests the LRC calibration feature:
+# Tests LRC training with MuonClip optimizer:
 # 1. Auto-converts model to BitNet (if needed)
 # 2. Converts BitLinear -> BitLinearLRC (adds U, V matrices)
 # 3. Freezes all params except U, V
-# 4. Trains using MuonClip + AdamW with LRC objective
+# 4. Trains using MuonClip with QK-clipping for attention stability
 #
 # Launch:
 #   cd packages/deployer
@@ -49,9 +49,10 @@ setup: |
 
   uv sync --all-packages
 
-  # Verify LRC imports
-  echo "Verifying LRC imports..."
-  uv run python -c "from wf_arch import BitLinearLRC, convert_bitlinear_to_lrc, freeze_model_except_lrc; from wf_train.objectives import LRCReconstructionObjective; print('LRC imports OK!')"
+  # Verify LRC and MuonClip imports
+  echo "Verifying LRC and MuonClip imports..."
+  uv run python -c "from wf_arch import BitLinearLRC, convert_bitlinear_to_lrc, freeze_model_except_lrc; print('LRC imports OK!')"
+  uv run python -c "from muon import MuonClip, MuonConfig; print('MuonClip imports OK!')"
 
   echo "Setup complete!"
 
@@ -80,19 +81,21 @@ run: |
   echo "  2. Auto-convert to BitNet (insert BitLinear + SubLN)"
   echo "  3. Convert BitLinear -> BitLinearLRC (add U, V)"
   echo "  4. Freeze ALL params except U, V"
-  echo "  5. Train 100 steps with MuonClip + AdamW"
+  echo "  5. Train 100 steps with MuonClip (QK-clipping for attention stability)"
   echo "=============================================="
 
-  uv run --package wf-train python packages/training/scripts/train.py \
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=lrc_calibration \
+    training=lrc_run \
     training.max_steps=100 \
     training.batch_size=8 \
     training.gradient_accumulation_steps=1 \
     training.max_seq_length=256 \
     training.logging.log_interval=10 \
+    training.auto_batch_size=false \
+    training.torch_compile.enabled=false \
     output_dir=$CHECKPOINT_DIR \
-    experiment_name=lrc_smoke \
+    experiment_name=lrc_smoke_muonclip \
     distributed=single_gpu \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET} \
@@ -107,7 +110,7 @@ run: |
   echo "  - Auto BitNet conversion"
   echo "  - BitLinearLRC layer creation"
   echo "  - Parameter freezing (only U, V trainable)"
-  echo "  - MuonClip + AdamW optimizer"
+  echo "  - MuonClip optimizer with QK-clipping"
   echo "  - WandB logging"
   echo "  - GCS checkpoint upload"
   echo ""
