@@ -43,6 +43,8 @@ envs:
   MODEL: qwen3_0.6b
   WANDB_PROJECT: wrinklefree_v2
   HF_HUB_ENABLE_HF_TRANSFER: "1"
+  # Fix Python stdout buffering so logs appear in real-time
+  PYTHONUNBUFFERED: "1"
 
 setup: |
   set -e

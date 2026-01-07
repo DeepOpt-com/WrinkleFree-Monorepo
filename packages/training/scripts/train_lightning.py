@@ -17,9 +17,14 @@ With auto batch size:
         training.auto_batch_size=true
 """
 
+# Force unbuffered stdout/stderr for real-time log visibility in cloud environments
+# This must be set before any other imports to ensure all output is unbuffered
+import sys
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 import logging
 import os
-import sys
 from pathlib import Path
 
 import hydra
@@ -337,6 +342,29 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                     f"LRC: Trainable={freeze_stats['trainable']:,}, "
                     f"Frozen={freeze_stats['frozen']:,}"
                 )
+
+                # CRITICAL: Enable input require grads for LRC training!
+                # When embeddings are frozen, the embedding output has requires_grad=False.
+                # This breaks gradient flow because downstream layers (including LRC) see
+                # inputs without gradient tracking. This hook ensures the embedding output
+                # has requires_grad=True, allowing gradients to flow to LRC U/V matrices.
+                # See: https://huggingface.co/docs/peft/developer_guides/troubleshooting#valueerror-requires_grad
+                if hasattr(model, "enable_input_require_grads"):
+                    model.enable_input_require_grads()
+                    logger.info("LRC: Enabled input_require_grads for frozen embedding support")
+                else:
+                    # Manual fallback: add hook to embedding layer
+                    def make_inputs_require_grad(module, input, output):
+                        output.requires_grad_(True)
+
+                    if hasattr(model, "get_input_embeddings"):
+                        model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+                        logger.info("LRC: Added require_grad hook to embedding layer (fallback)")
+                    else:
+                        logger.warning(
+                            "LRC: Could not enable input_require_grads! "
+                            "Training may fail with frozen embeddings."
+                        )
             else:
                 logger.info("LRC: trainable_weight=True, base model weights also trainable via STE")
 
@@ -370,13 +398,25 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     )
 
     # Enable gradient checkpointing if configured (saves significant VRAM)
+    # CRITICAL: Must use use_reentrant=False for LRC training!
+    # use_reentrant=True (old default) breaks with frozen embeddings because it doesn't
+    # preserve requires_grad state during recomputation.
+    # See: https://pytorch.org/docs/stable/checkpoint.html
     memory_cfg = cfg.training.get("memory", {})
     gc_enabled = memory_cfg.get("gradient_checkpointing", False)
     print(f"[DEBUG] Gradient checkpointing config: memory_cfg={dict(memory_cfg)}, gc_enabled={gc_enabled}", flush=True)
     if gc_enabled:
         if hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable()
-            print(">>> Gradient checkpointing ENABLED <<<", flush=True)
+            # Use use_reentrant=False for compatibility with LRC (frozen embeddings)
+            # HuggingFace models support gradient_checkpointing_kwargs since transformers 4.35+
+            try:
+                model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                print(">>> Gradient checkpointing ENABLED (use_reentrant=False) <<<", flush=True)
+            except TypeError:
+                # Older transformers version doesn't support kwargs
+                model.gradient_checkpointing_enable()
+                print(">>> Gradient checkpointing ENABLED (legacy, use_reentrant=True) <<<", flush=True)
+                print(">>> WARNING: May not work with LRC - upgrade transformers to 4.35+ <<<", flush=True)
         else:
             print(">>> WARNING: Model does not support gradient_checkpointing_enable() <<<", flush=True)
 

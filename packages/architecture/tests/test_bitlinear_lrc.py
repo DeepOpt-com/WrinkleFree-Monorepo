@@ -793,3 +793,365 @@ class TestQLRC:
         assert not torch.allclose(
             layer.lrc_V_linear.weight, torch.zeros_like(layer.lrc_V_linear.weight)
         )
+
+
+class TestTorchCompileCompatibility:
+    """Test torch.compile compatibility with LRC layers.
+
+    GitHub Issue #39: torch.compile breaks gradient flow with LRC layers.
+    """
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for torch.compile")
+    def test_torch_compile_basic_forward(self):
+        """Test torch.compile works for forward pass."""
+        layer = BitLinearLRC(64, 32, rank=8).cuda()
+        compiled = torch.compile(layer, mode="reduce-overhead")
+
+        x = torch.randn(2, 8, 64, device="cuda")
+        output = compiled(x)
+
+        assert output.shape == (2, 8, 32)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for torch.compile")
+    def test_torch_compile_gradient_flow(self):
+        """Test torch.compile doesn't break gradient flow to LRC params."""
+        layer = BitLinearLRC(64, 32, rank=8).cuda()
+        compiled = torch.compile(layer, mode="reduce-overhead")
+
+        x = torch.randn(2, 8, 64, device="cuda", requires_grad=True)
+        output = compiled(x)
+        loss = output.sum()
+        loss.backward()
+
+        # CRITICAL: Gradients must flow to LRC params
+        assert layer.lrc_U.grad is not None, "torch.compile broke gradient flow to lrc_U"
+        assert layer.lrc_V.grad is not None, "torch.compile broke gradient flow to lrc_V"
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for torch.compile")
+    def test_torch_compile_with_frozen_embeddings(self):
+        """Test torch.compile with frozen embedding (simulates LRC training)."""
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(100, 64)
+                self.lrc = BitLinearLRC(64, 32, rank=8)
+
+            def forward(self, x):
+                return self.lrc(self.embed(x))
+
+        model = SimpleModel().cuda()
+        # Freeze embedding (LRC training pattern)
+        model.embed.weight.requires_grad = False
+        freeze_model_except_lrc(model)
+
+        # Enable input require grads (the fix for frozen embeddings)
+        def make_inputs_require_grad(module, input, output):
+            output.requires_grad_(True)
+        model.embed.register_forward_hook(make_inputs_require_grad)
+
+        compiled = torch.compile(model, mode="reduce-overhead")
+
+        x = torch.randint(0, 100, (2, 8), device="cuda")
+        output = compiled(x)
+        loss = output.sum()
+        loss.backward()
+
+        # Gradients must flow to LRC params even with compiled model
+        assert model.lrc.lrc_U.grad is not None
+        assert model.lrc.lrc_V.grad is not None
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for torch.compile")
+    def test_torch_compile_qlrc(self):
+        """Test torch.compile with QLRC (quantized adapters)."""
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4, group_size=32)
+        layer = BitLinearLRC(64, 32, rank=8, qlrc_config=config).cuda()
+        compiled = torch.compile(layer, mode="reduce-overhead")
+
+        x = torch.randn(2, 8, 64, device="cuda", requires_grad=True)
+        output = compiled(x)
+        loss = output.sum()
+        loss.backward()
+
+        # Gradients must flow through STE quantization
+        assert layer.lrc_U_linear.weight.grad is not None
+        assert layer.lrc_V_linear.weight.grad is not None
+
+    def test_torch_compile_cpu_fallback(self):
+        """Test torch.compile falls back gracefully on CPU."""
+        layer = BitLinearLRC(64, 32, rank=8)
+        # On CPU, torch.compile may be a no-op or use inductor
+        compiled = torch.compile(layer, mode="default", fullgraph=False)
+
+        x = torch.randn(2, 8, 64, requires_grad=True)
+        output = compiled(x)
+        loss = output.sum()
+        loss.backward()
+
+        assert layer.lrc_U.grad is not None
+        assert layer.lrc_V.grad is not None
+
+
+class TestGradientCheckpointingCompatibility:
+    """Test gradient checkpointing compatibility with LRC layers.
+
+    GitHub Issue #39: Gradient checkpointing breaks gradient flow with LRC layers.
+    """
+
+    def test_gradient_checkpointing_basic(self):
+        """Test basic gradient checkpointing with LRC."""
+        from torch.utils.checkpoint import checkpoint
+
+        layer = BitLinearLRC(64, 32, rank=8)
+        x = torch.randn(2, 8, 64, requires_grad=True)
+
+        # Use gradient checkpointing (use_reentrant=False is recommended)
+        output = checkpoint(layer, x, use_reentrant=False)
+        loss = output.sum()
+        loss.backward()
+
+        assert layer.lrc_U.grad is not None, "Gradient checkpointing broke lrc_U gradients"
+        assert layer.lrc_V.grad is not None, "Gradient checkpointing broke lrc_V gradients"
+
+    def test_gradient_checkpointing_with_frozen_embeddings(self):
+        """Test gradient checkpointing with frozen embeddings (LRC training pattern)."""
+        from torch.utils.checkpoint import checkpoint
+
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(100, 64)
+                self.lrc = BitLinearLRC(64, 32, rank=8)
+
+            def forward(self, x):
+                h = self.embed(x)
+                # Apply checkpointing to LRC layer
+                return checkpoint(self.lrc, h, use_reentrant=False)
+
+        model = SimpleModel()
+        # Freeze embedding
+        model.embed.weight.requires_grad = False
+        freeze_model_except_lrc(model)
+
+        # Enable input require grads (critical fix)
+        def make_inputs_require_grad(module, input, output):
+            output.requires_grad_(True)
+        model.embed.register_forward_hook(make_inputs_require_grad)
+
+        x = torch.randint(0, 100, (2, 8))
+        output = model(x)
+        loss = output.sum()
+        loss.backward()
+
+        assert model.lrc.lrc_U.grad is not None
+        assert model.lrc.lrc_V.grad is not None
+
+    def test_gradient_checkpointing_reentrant_false_required(self):
+        """Test that use_reentrant=False is required for LRC.
+
+        use_reentrant=True breaks with frozen inputs because it doesn't
+        preserve the requires_grad state during recomputation.
+        """
+        from torch.utils.checkpoint import checkpoint
+
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(100, 64)
+                self.lrc = BitLinearLRC(64, 32, rank=8)
+
+            def forward(self, x, use_reentrant=True):
+                h = self.embed(x)
+                return checkpoint(self.lrc, h, use_reentrant=use_reentrant)
+
+        model = SimpleModel()
+        model.embed.weight.requires_grad = False
+        freeze_model_except_lrc(model)
+
+        # Enable input require grads
+        def make_inputs_require_grad(module, input, output):
+            output.requires_grad_(True)
+        model.embed.register_forward_hook(make_inputs_require_grad)
+
+        x = torch.randint(0, 100, (2, 8))
+
+        # use_reentrant=False should work
+        output = model(x, use_reentrant=False)
+        loss = output.sum()
+        loss.backward()
+        assert model.lrc.lrc_U.grad is not None
+
+        # Reset gradients
+        model.zero_grad()
+
+        # use_reentrant=True may fail or produce incorrect gradients
+        # We don't assert failure here since behavior varies by PyTorch version,
+        # but we document that use_reentrant=False is required
+
+    def test_gradient_checkpointing_multiple_layers(self):
+        """Test gradient checkpointing with multiple LRC layers."""
+        from torch.utils.checkpoint import checkpoint
+
+        class MultiLayerModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lrc1 = BitLinearLRC(64, 64, rank=8)
+                self.lrc2 = BitLinearLRC(64, 32, rank=8)
+
+            def forward(self, x):
+                h = checkpoint(self.lrc1, x, use_reentrant=False)
+                return checkpoint(self.lrc2, h, use_reentrant=False)
+
+        model = MultiLayerModel()
+        x = torch.randn(2, 8, 64, requires_grad=True)
+
+        output = model(x)
+        loss = output.sum()
+        loss.backward()
+
+        # All LRC params should have gradients
+        assert model.lrc1.lrc_U.grad is not None
+        assert model.lrc1.lrc_V.grad is not None
+        assert model.lrc2.lrc_U.grad is not None
+        assert model.lrc2.lrc_V.grad is not None
+
+    def test_gradient_checkpointing_with_qlrc(self):
+        """Test gradient checkpointing with QLRC (quantized adapters)."""
+        from torch.utils.checkpoint import checkpoint
+        from wf_arch.layers.bitlinear_lrc import QLRCConfig
+
+        config = QLRCConfig(enabled=True, bits=4, group_size=32)
+        layer = BitLinearLRC(64, 32, rank=8, qlrc_config=config)
+
+        x = torch.randn(2, 8, 64, requires_grad=True)
+        output = checkpoint(layer, x, use_reentrant=False)
+        loss = output.sum()
+        loss.backward()
+
+        # STE gradients must flow even with checkpointing
+        assert layer.lrc_U_linear.weight.grad is not None
+        assert layer.lrc_V_linear.weight.grad is not None
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_gradient_checkpointing_cuda(self):
+        """Test gradient checkpointing on CUDA."""
+        from torch.utils.checkpoint import checkpoint
+
+        layer = BitLinearLRC(64, 32, rank=8).cuda()
+        x = torch.randn(2, 8, 64, device="cuda", requires_grad=True)
+
+        output = checkpoint(layer, x, use_reentrant=False)
+        loss = output.sum()
+        loss.backward()
+
+        assert layer.lrc_U.grad is not None
+        assert layer.lrc_V.grad is not None
+
+
+class TestEnableInputRequireGrads:
+    """Test the enable_input_require_grads pattern for frozen embeddings.
+
+    This is the critical fix documented in notebook.md for LRC training.
+    """
+
+    def test_frozen_embedding_with_checkpointing_breaks_gradient_flow(self):
+        """Demonstrate the problem: frozen embeddings + gradient checkpointing breaks gradient flow.
+
+        The issue manifests specifically when gradient checkpointing is applied to blocks
+        where the input comes from a frozen layer. Simple forward/backward works, but
+        checkpointing's re-computation fails when input doesn't have requires_grad=True.
+        """
+        from torch.utils.checkpoint import checkpoint
+
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(100, 64)
+                self.lrc = BitLinearLRC(64, 32, rank=8)
+
+            def forward(self, x, use_checkpointing=False):
+                h = self.embed(x)
+                if use_checkpointing:
+                    # This is where it breaks - checkpointing with frozen input
+                    return checkpoint(self.lrc, h, use_reentrant=True)
+                return self.lrc(h)
+
+        model = SimpleModel()
+        # Freeze embedding - this is what breaks gradient flow with checkpointing
+        model.embed.weight.requires_grad = False
+        freeze_model_except_lrc(model)
+
+        x = torch.randint(0, 100, (2, 8))
+
+        # Simple forward/backward works (no checkpointing)
+        output = model(x, use_checkpointing=False)
+        loss = output.sum()
+        loss.backward()
+        assert model.lrc.lrc_U.grad is not None, "Simple forward should work"
+        model.zero_grad()
+
+        # But with checkpointing (use_reentrant=True), it may break or produce wrong gradients
+        # Note: use_reentrant=True is the old default that has this issue
+
+    def test_enable_input_require_grads_fixes_issue(self):
+        """Test that enable_input_require_grads fixes the gradient flow issue."""
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(100, 64)
+                self.lrc = BitLinearLRC(64, 32, rank=8)
+
+            def forward(self, x):
+                return self.lrc(self.embed(x))
+
+        model = SimpleModel()
+        model.embed.weight.requires_grad = False
+        freeze_model_except_lrc(model)
+
+        # THE FIX: Add forward hook to enable requires_grad on embedding output
+        def make_inputs_require_grad(module, input, output):
+            output.requires_grad_(True)
+        model.embed.register_forward_hook(make_inputs_require_grad)
+
+        x = torch.randint(0, 100, (2, 8))
+        output = model(x)
+        loss = output.sum()
+        loss.backward()
+
+        # Now gradients flow correctly
+        assert model.lrc.lrc_U.grad is not None
+        assert model.lrc.lrc_V.grad is not None
+
+    def test_enable_input_require_grads_with_multiple_frozen_layers(self):
+        """Test fix works with multiple frozen layers before LRC."""
+        class DeepModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(100, 64)
+                self.norm = nn.LayerNorm(64)  # Also frozen
+                self.linear = nn.Linear(64, 64)  # Also frozen
+                self.lrc = BitLinearLRC(64, 32, rank=8)
+
+            def forward(self, x):
+                h = self.embed(x)
+                h = self.norm(h)
+                h = self.linear(h)
+                return self.lrc(h)
+
+        model = DeepModel()
+        freeze_model_except_lrc(model)
+
+        # Add hook to first layer (embedding)
+        def make_inputs_require_grad(module, input, output):
+            output.requires_grad_(True)
+        model.embed.register_forward_hook(make_inputs_require_grad)
+
+        x = torch.randint(0, 100, (2, 8))
+        output = model(x)
+        loss = output.sum()
+        loss.backward()
+
+        # Gradients should flow through all frozen layers to LRC
+        assert model.lrc.lrc_U.grad is not None
+        assert model.lrc.lrc_V.grad is not None

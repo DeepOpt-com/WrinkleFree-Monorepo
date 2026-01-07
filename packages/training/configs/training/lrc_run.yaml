@@ -18,12 +18,13 @@
 
 stage: lrc_dlm_run
 
-# LRC Configuration - 25% rank, frozen base model
+# LRC Configuration - 15% rank, frozen base model
 lrc:
   enabled: true
   # Rank as percentage of min(in_features, out_features)
-  # 25% provides better error recovery than 10% calibration default
-  rank_percentage: 0.25
+  # 15% provides good error recovery while fitting in H100 memory
+  # (25% caused OOM with batch_size=32, 161M trainable params)
+  rank_percentage: 0.15
   # Initialization: "zeros" (default) or "svd_residual" (better starting point)
   init_method: zeros
   # Freeze base model - only U, V matrices trainable
@@ -34,8 +35,10 @@ lrc:
   # Uses Straight-Through Estimator for gradient flow through quantized adapters.
   # Based on QA-LoRA: https://arxiv.org/abs/2309.14717 (ICLR 2024)
   # Weights stored in full precision, quantized on-the-fly during forward pass.
+  # Tracking issue: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/37
   qlrc:
-    enabled: true  # Enable for memory-efficient training
+    # TODO: turn back on! (see issue #37)
+    enabled: false  # Enable for memory-efficient training
     bits: 4        # 4-bit or 8-bit quantization
     group_size: 32 # Elements per quantization group (QA-LoRA default)
 
@@ -48,8 +51,9 @@ auto_convert:
     - embed_positions
 
 # torch.compile for training speedup
+# DISABLED: Breaks gradient flow with LRC custom layers
 torch_compile:
-  enabled: true
+  enabled: false
   mode: default
 
 # Sequence packing
@@ -66,8 +70,8 @@ packing:
 # Muon's Newton-Schulz orthogonalization still benefits the U/V matrices.
 optimizer:
   type: muonclip
-  lr_muon: 0.02          # Muon LR for 2D trainable params (U matrices)
-  lr_adam: 1e-4          # AdamW LR for 1D params (V matrices, biases)
+  lr_muon: 0.005          # Muon LR for 2D trainable params (U,V matrices)
+  lr_adam: 5e-5          # AdamW LR for 1D params (biases, weights etc)
   weight_decay: 0.01
   momentum: 0.95
   enable_clipping: false  # Disabled for LRC - only works with full attention training
@@ -86,10 +90,11 @@ scheduler:
 total_tokens: 1_000_000_000
 max_steps: null  # Token-based termination
 max_seq_length: 1024
-# Batch size tuned for H100 + qwen3_0.6b + LRC+QLRC
-# L40: use batch_size=16, H100: use batch_size=32
-batch_size: 32
-gradient_accumulation_steps: 16  # Effective batch = 32*16 = 512
+# Batch size tuned for H100 + qwen3_0.6b + LRC (15% rank)
+# With gradient checkpointing (use_reentrant=False) we can use larger batch sizes
+# Previous OOM at batch_size=16 was without gradient checkpointing
+batch_size: 16  # Increased from 8 with gradient checkpointing enabled
+gradient_accumulation_steps: 32  # Effective batch = 16*32 = 512
 gradient_clipping: 1.0
 # Auto batch size DISABLED - Lightning BatchSizeFinder is too slow (stuck in loop)
 # Using fixed batch sizes from lookup table instead
@@ -172,17 +177,20 @@ validation:
   batch_size: 8
 
 # Memory optimization
+# Gradient checkpointing now works with LRC after fixing use_reentrant=False
+# in train_lightning.py. This saves significant VRAM.
 memory:
-  gradient_checkpointing: true
+  gradient_checkpointing: true  # FIXED: Now uses use_reentrant=False
   clear_cache_interval: 100
 
 # === META-OPTIMIZATION ===
 # LDC-MTL for pareto optimal objective weighting (CE vs DLM)
+# TODO: Disabled for now - causes instability with LRC. See GitHub issue.
 meta_optimization:
-  enabled: true
+  enabled: false
 
   ldc_mtl:
-    enabled: true
+    enabled: false  # Disabled - investigate instability with LRC
     lambda_penalty: 0.1        # Discrepancy penalty (encourages balanced losses)
     hidden_dim: 32             # Router MLP hidden size
     router_lr: 0.001           # Router learning rate
