@@ -822,7 +822,7 @@ def create_trainer(cfg: DictConfig, callbacks: list, max_steps: int) -> pl.Train
 
     trainer = pl.Trainer(
         max_steps=max_steps,
-        max_epochs=-1,  # Disable epoch-based training (use max_steps only)
+        max_epochs=9999,  # Large value - training stops at max_steps anyway
         accumulate_grad_batches=cfg.training.gradient_accumulation_steps,
         precision="bf16-mixed",
         strategy=strategy,

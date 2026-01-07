@@ -437,7 +437,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         val_loss = metrics.get("val/loss", metrics.get("val_loss"))
         val_ppl = metrics.get("val/perplexity")
         if val_loss is not None:
-            logger.info(f"=== Validation complete: loss={val_loss:.4f}, ppl={val_ppl:.2f if val_ppl else 'N/A'} ===")
+            logger.info(f"=== Validation complete: loss={val_loss:.4f}, ppl={f'{val_ppl:.2f}' if val_ppl else 'N/A'} ===")
 
     def configure_optimizers(self):
         """Configure optimizer and scheduler.
