@@ -131,6 +131,7 @@ checkpoint:
   save_optimizer: true
 
 # Logging with enhanced metrics
+# Override at CLI: training.logging.log_interval=1 for debugging
 logging:
   log_interval: 10
   wandb:

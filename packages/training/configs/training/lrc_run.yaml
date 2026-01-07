@@ -26,11 +26,11 @@ lrc:
   # (25% caused OOM with batch_size=32, 161M trainable params)
   rank_percentage: 0.15
   # Initialization: "zeros" (default) or "svd_residual" (better starting point)
-  init_method: zeros
+  init_method: svd_residual
   # Freeze base model - only U, V matrices trainable
   trainable_weight: false
   # Delete original weights to save memory (valid when trainable_weight=false)
-  keep_original_weight: false
+  keep_original_weight: true
   # QLRC: QA-LoRA style quantized adapters with STE (trainable!)
   # Uses Straight-Through Estimator for gradient flow through quantized adapters.
   # Based on QA-LoRA: https://arxiv.org/abs/2309.14717 (ICLR 2024)
@@ -50,11 +50,13 @@ auto_convert:
     - lm_head
     - embed_positions
 
-# torch.compile for training speedup
-# DISABLED: Breaks gradient flow with LRC custom layers
+# torch.compile for training speedup (38% on H100)
+# Now ENABLED after enable_input_require_grads() fix in train_lightning.py
+# Uses mode="default" which works reliably with LRC layers
 torch_compile:
-  enabled: false
+  enabled: true
   mode: default
+  fullgraph: false  # fullgraph=False allows dynamic control flow
 
 # Sequence packing
 packing:
@@ -68,15 +70,21 @@ packing:
 # - The matmul shapes don't match (U/V have different dimensions than Q/K)
 #
 # Muon's Newton-Schulz orthogonalization still benefits the U/V matrices.
+# optimizer:
+#   type: muonclip
+#   lr_muon: 0.005          # Muon LR for 2D trainable params (U,V matrices)
+#   lr_adam: 5e-5          # AdamW LR for 1D params (biases, weights etc)
+#   weight_decay: 0.01
+#   momentum: 0.95
+#   enable_clipping: false  # Disabled for LRC - only works with full attention training
+#   clipping_threshold: 50.0
+#   clipping_alpha: 0.5
+
 optimizer:
-  type: muonclip
-  lr_muon: 0.005          # Muon LR for 2D trainable params (U,V matrices)
-  lr_adam: 5e-5          # AdamW LR for 1D params (biases, weights etc)
+  type: adamw
+  use_8bit: true  # defaults to true anyway
+  learning_rate: 1e-5
   weight_decay: 0.01
-  momentum: 0.95
-  enable_clipping: false  # Disabled for LRC - only works with full attention training
-  clipping_threshold: 50.0
-  clipping_alpha: 0.5
 
 # Scheduler: WSD
 scheduler:

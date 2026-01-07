@@ -411,12 +411,33 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         # Compute perplexity
         perplexity = torch.exp(loss)
 
-        # Log validation metrics
+        # Log validation metrics - both per-step and epoch-aggregated
+        # Per-step logging helps debug flatline issues
+        self.log("val/loss_step", loss, on_step=True, on_epoch=False, sync_dist=True)
         self.log("val/loss", loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("val/perplexity", perplexity, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True)
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True)  # For checkpoint callback
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)  # For checkpoint callback
+
+        # Debug: log batch info periodically to verify data is changing
+        if batch_idx == 0:
+            # Log first token IDs to verify different batches each validation run
+            first_tokens = batch["input_ids"][0, :5].tolist() if batch["input_ids"].numel() > 0 else []
+            logger.info(f"Val batch 0: loss={loss.item():.4f}, first_tokens={first_tokens}")
 
         return loss
+
+    def on_validation_start(self) -> None:
+        """Called at the start of validation."""
+        logger.info(f"=== Validation starting at global_step={self.global_step} ===")
+
+    def on_validation_end(self) -> None:
+        """Called at the end of validation."""
+        # Log final validation metrics summary
+        metrics = self.trainer.callback_metrics
+        val_loss = metrics.get("val/loss", metrics.get("val_loss"))
+        val_ppl = metrics.get("val/perplexity")
+        if val_loss is not None:
+            logger.info(f"=== Validation complete: loss={val_loss:.4f}, ppl={val_ppl:.2f if val_ppl else 'N/A'} ===")
 
     def configure_optimizers(self):
         """Configure optimizer and scheduler.
@@ -729,7 +750,11 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            if param.ndim >= 2 and "embed" not in name.lower():
+            # LRC params (lrc_U, lrc_V) should use AdamW, not Muon.
+            # Newton-Schulz orthogonalization destroys low-rank structure.
+            # See: https://arxiv.org/abs/2507.12142 (Riemannion paper)
+            is_lrc_param = "lrc_" in name.lower()
+            if param.ndim >= 2 and "embed" not in name.lower() and not is_lrc_param:
                 muon_params.append(param)
             else:
                 adam_params.append(param)
@@ -738,6 +763,11 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             {"params": muon_params, "lr": lr_muon, "use_muon": True},
             {"params": adam_params, "lr": lr_adam, "use_muon": False},
         ])
+
+        # Log LRC mode detection
+        lrc_count = sum(1 for n, p in self.model.named_parameters() if "lrc_" in n.lower() and p.requires_grad)
+        if lrc_count > 0:
+            logger.info(f"LRC mode: {lrc_count} LRC params using AdamW (excluded from Muon/Newton-Schulz)")
 
         logger.info(
             f"Created Muon FSDP optimizer: {len(muon_params)} Muon params, "
@@ -802,8 +832,12 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            # Muon: 2D+ weights, excluding embeddings and lm_head
-            if param.ndim >= 2 and "embed" not in name.lower() and "lm_head" not in name.lower():
+            # LRC params (lrc_U, lrc_V) should use AdamW, not Muon.
+            # Newton-Schulz orthogonalization destroys low-rank structure.
+            # See: https://arxiv.org/abs/2507.12142 (Riemannion paper)
+            is_lrc_param = "lrc_" in name.lower()
+            # Muon: 2D+ weights, excluding embeddings, lm_head, and LRC params
+            if param.ndim >= 2 and "embed" not in name.lower() and "lm_head" not in name.lower() and not is_lrc_param:
                 muon_params.append(param)
             else:
                 adam_params.append(param)
@@ -823,6 +857,11 @@ class WrinkleFreeLightningModule(pl.LightningModule):
 
         # Wrap both optimizers in a combined interface for Lightning
         combined = CombinedMuonAdamWOptimizer(muon_opt, adam_opt, lr_muon)
+
+        # Log LRC mode detection
+        lrc_count = sum(1 for n, p in self.model.named_parameters() if "lrc_" in n.lower() and p.requires_grad)
+        if lrc_count > 0:
+            logger.info(f"LRC mode: {lrc_count} LRC params using AdamW (excluded from Muon/Newton-Schulz)")
 
         logger.info(
             f"Created PyTorch Muon + AdamW: {len(muon_params)} Muon params (lr={lr_muon}), "
