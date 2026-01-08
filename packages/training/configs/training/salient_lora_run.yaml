@@ -177,11 +177,11 @@ memory:
   gradient_checkpointing: true
   clear_cache_interval: 100
 
-# Meta-optimization
+# Meta-optimization (disabled for this run)
 meta_optimization:
-  enabled: true
+  enabled: false
   ldc_mtl:
-    enabled: true
+    enabled: false
     lambda_penalty: 0.1
     hidden_dim: 32
     router_lr: 0.001
