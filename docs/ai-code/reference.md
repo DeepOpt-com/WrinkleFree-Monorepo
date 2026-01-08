@@ -50,7 +50,7 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=base \
 - All objectives work unchanged (DLM, LRC, distillation)
 - Custom callbacks: GCS upload, ZClip, TokenCount, QKClip, LambdaWarmup
 
-### Legacy Stages (Still Supported)
+### Training Stages
 
 ```
 Stage 1: SubLN Insertion (packages/training)
@@ -65,6 +65,9 @@ Stage 2: Continue Pre-training (packages/training)
 Stage 3: Knowledge Distillation (packages/training - objectives)
     │   BitDistill or TCS objectives with teacher guidance
     ▼
+SFT: Supervised Fine-Tuning (packages/training)
+    │   Instruction-following on Nemotron dataset (~1B tokens)
+    ▼
 LRC: Post-quantization Correction (packages/training)
     │   Low-Rank Correction for error recovery (~50M tokens)
     ▼
@@ -74,7 +77,25 @@ Export: Convert to GGUF (see root CLAUDE.md for workflow)
 Serve: Inference with BitNet.cpp (packages/inference)
 ```
 
-**Key insight**: All training stages are in `packages/training`. Distillation uses the objectives system.
+### SFT (Supervised Fine-Tuning)
+
+Add instruction-following via SFT on nvidia/Llama-Nemotron-Post-Training-Dataset:
+
+```bash
+# Standalone SFT
+uv run python scripts/train_lightning.py model=qwen3_4b training=sft_run
+
+# Pretrain-then-SFT curriculum (90% pretrain, 10% SFT)
+uv run python scripts/train_lightning.py model=qwen3_4b training=pretrain_then_sft
+```
+
+**Key features**:
+- Uses Qwen chat template to format conversations
+- Instruction tokens (system + user) masked with -100
+- Only assistant responses contribute to loss
+- ~3.9M examples across code, math, science, chat, safety
+
+**Key insight**: All training stages are in `packages/training`. Distillation and SFT use the objectives system.
 
 ## Package Map (Full)
 

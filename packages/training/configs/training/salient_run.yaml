@@ -13,6 +13,12 @@
 # - Simpler than LRC (no U, V matrices to train)
 # - Requires calibration step to identify salient columns
 # - End-to-end trainable (both FP16 and ternary weights updated)
+# - Final 10% is SFT on Nemotron dataset (instruction-following)
+#
+# Training schedule:
+# - 0-25%: Warmup on FineWeb
+# - 25-90%: Main training on mixed_pretrain (CE + DLM)
+# - 90-100%: SFT on nvidia/Llama-Nemotron-Post-Training-Dataset
 #
 # Usage:
 #   uv run python scripts/train_lightning.py \
@@ -94,7 +100,7 @@ resume:
   strict_model_load: true
 
 # === OBJECTIVES ===
-# Standard CE + DLM training
+# Standard CE + DLM training, with SFT for final phase
 objectives:
   continue_pretrain:
     enabled: true
@@ -109,10 +115,17 @@ objectives:
     mask_token_id: 151643
     use_complementary_masks: true
 
+  sft:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
   distill:
     enabled: false
 
-# Curriculum: 25% fineweb warmup -> 75% mixed_pretrain
+# Curriculum: 25% fineweb warmup -> 65% mixed_pretrain -> 10% SFT
+# Final SFT phase uses Nemotron dataset with Qwen chat template
 curriculum:
   enabled: true
   interpolation: step
@@ -123,12 +136,21 @@ curriculum:
       objectives:
         continue_pretrain: 0.5
         dlm: 0.5
+        sft: 0.0
     - name: main
-      end_ratio: 1.0
+      end_ratio: 0.90
       data_config: mixed_pretrain
       objectives:
         continue_pretrain: 0.5
         dlm: 0.5
+        sft: 0.0
+    - name: sft
+      end_ratio: 1.0
+      data_config: sft_nemotron
+      objectives:
+        continue_pretrain: 0.0
+        dlm: 0.0
+        sft: 1.0
 
 # Checkpointing
 checkpoint:
@@ -144,7 +166,7 @@ logging:
     project: wrinklefree_v2
     entity: null
     name: null
-    tags: [salient, bitnet, awq-style]
+    tags: [salient, bitnet, awq-style, sft, nemotron]
 
 # Validation
 validation:

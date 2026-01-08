@@ -1,0 +1,125 @@
+# SFT Smoke Test - Validate SFT objective on Nebius H100
+#
+# Tests SFT training with nvidia/Llama-Nemotron-Post-Training-Dataset:
+# 1. Loads SmolLM2-135M from HuggingFace
+# 2. Auto-converts to BitNet (insert BitLinear + SubLN)
+# 3. Trains 50 steps on Nemotron SFT dataset
+#
+# Launch:
+#   cd packages/deployer
+#   sky launch skypilot/smoke_test_sft.yaml -y --cluster wf-smoke-sft
+#
+# Monitor:
+#   sky logs wf-smoke-sft
+#
+# Down:
+#   sky down wf-smoke-sft -y
+
+name: wf-smoke-sft
+
+resources:
+  accelerators: H100:1
+  memory: 64+
+  use_spot: false
+  cloud: nebius
+
+# Run from monorepo root
+workdir: .
+
+file_mounts:
+  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  WANDB_PROJECT: wrinklefree
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  uv sync --all-packages
+
+  # Verify SFT imports
+  echo "Verifying SFT imports..."
+  uv run python -c "from wf_train.objectives import SFTObjective; print('SFTObjective import OK!')"
+  uv run python -c "from wf_data.data import SFTConfig, create_sft_dataloader; print('SFT data import OK!')"
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  set -a
+  source /tmp/credentials.env
+  source /tmp/global.env
+  set +a
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  echo "WANDB_API_KEY is set: $([ -n \"$WANDB_API_KEY\" ] && echo 'yes' || echo 'no')"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "=============================================="
+  echo "WrinkleFree SFT Smoke Test - Nebius 1x H100"
+  echo "=============================================="
+  echo "Model: ${MODEL}"
+  echo "Dataset: nvidia/Llama-Nemotron-Post-Training-Dataset"
+  echo ""
+  echo "What will happen:"
+  echo "  1. Load SmolLM2-135M from HuggingFace"
+  echo "  2. Auto-convert to BitNet (insert BitLinear + SubLN)"
+  echo "  3. Train 50 steps on Nemotron SFT dataset"
+  echo "=============================================="
+
+  # First verify the Nemotron dataset is accessible
+  echo ""
+  echo "=== Testing SFT Dataset Access ==="
+  uv run python -c "from datasets import load_dataset; ds = load_dataset('nvidia/Llama-Nemotron-Post-Training-Dataset', 'SFT', split='train', streaming=True); sample = next(iter(ds)); print(f'Sample keys: {sample.keys()}'); print('Dataset access OK!')"
+
+  # SFT training with 50 steps
+  echo ""
+  echo "=== SFT Training (50 steps) ==="
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=sft_run \
+    training.max_steps=50 \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=2 \
+    training.max_seq_length=1024 \
+    training.logging.log_interval=5 \
+    training.auto_batch_size=false \
+    training.checkpoint.save_interval=25 \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=sft_smoke_test \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    distributed=single_gpu \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT}
+
+  echo ""
+  echo "=============================================="
+  echo "SFT SMOKE TEST COMPLETE!"
+  echo ""
+  echo "What was tested:"
+  echo "  - SFT objective with Nemotron dataset"
+  echo "  - Auto BitNet conversion"
+  echo "  - WandB logging"
+  echo "  - GCS checkpoint upload"
+  echo ""
+  echo "Check W&B: https://wandb.ai/${WANDB_PROJECT}"
+  echo "Check GCS: gs://${GCS_BUCKET}/"
+  echo "=============================================="
