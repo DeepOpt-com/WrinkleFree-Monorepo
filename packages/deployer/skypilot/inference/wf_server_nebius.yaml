@@ -1,0 +1,107 @@
+# SkyPilot configuration for wf_server (Native BitNet Inference) on Nebius
+# Uses L40S instance for CPU inference benchmarking (smallest Nebius instance with AVX-512)
+#
+# This builds and benchmarks the pure Rust wf_server with native BitNet SIMD kernels.
+# No llama.cpp dependency - uses GGUF reader + native ternary kernels.
+
+name: wf-server-bench
+
+resources:
+  cloud: nebius
+  accelerators: L40S:1
+  instance_type: gpu-l40s-a_1gpu-8vcpu-32gb
+  disk_size: 100
+  use_spot: false
+
+workdir: ../../../..
+
+envs:
+  # Build configuration
+  NATIVE_SIMD: "1"
+  RUSTFLAGS: "-C target-cpu=native"
+
+  # Model path (will download if not present)
+  MODEL_URL: "https://huggingface.co/1bitLLM/bitnet_b1_58-3B/resolve/main/ggml-model-i2_s.gguf"
+  MODEL_PATH: "/workspace/models/bitnet-3b-i2s.gguf"
+
+setup: |
+  set -ex
+
+  echo "=== Nebius L40S Instance Setup ==="
+
+  # Show CPU info (should have AVX-512)
+  echo "=== CPU Information ==="
+  lscpu | grep -E "(Model name|CPU\(s\)|Thread|Core|Socket|Cache|AVX)" | head -20 || true
+  cat /proc/cpuinfo | grep -m1 "flags" | tr ' ' '\n' | grep -E "^avx" | head -10 || true
+
+  # Install build dependencies
+  sudo apt-get update && sudo apt-get install -y \
+    clang cmake ccache git curl build-essential \
+    pkg-config libssl-dev protobuf-compiler
+
+  # Install Rust if not present
+  if ! command -v rustc &> /dev/null; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  fi
+  source ~/.cargo/env
+
+  # Show Rust version
+  rustc --version
+  cargo --version
+
+  # Download model if not present
+  mkdir -p /workspace/models
+  if [ ! -f "$MODEL_PATH" ]; then
+    echo "Downloading model..."
+    curl -L -o "$MODEL_PATH" "$MODEL_URL"
+  fi
+  ls -lh /workspace/models/
+
+  # Build wf_server with native-inference feature
+  cd ~/sky_workdir/packages/inference/extern/sglang-bitnet/sgl-model-gateway
+
+  echo "=== Building wf_server ==="
+  echo "NATIVE_SIMD=$NATIVE_SIMD"
+  echo "RUSTFLAGS=$RUSTFLAGS"
+
+  # Build with native CPU optimizations
+  NATIVE_SIMD=1 RUSTFLAGS="-C target-cpu=native" \
+    cargo build --release --features native-inference --bin wf_server 2>&1 | tail -50
+
+  # Verify binary
+  ls -lh target/release/wf_server
+
+  echo "=== Setup Complete ==="
+
+run: |
+  set -ex
+  source ~/.cargo/env
+
+  cd ~/sky_workdir/packages/inference/extern/sglang-bitnet/sgl-model-gateway
+
+  echo "=========================================="
+  echo "WrinkleFree Native BitNet Inference Server"
+  echo "=========================================="
+  echo "Model: $MODEL_PATH"
+  echo ""
+
+  # Show CPU capabilities
+  echo "=== CPU Capabilities ==="
+  lscpu | grep -E "(Model name|CPU\(s\)|AVX)" || true
+
+  # Run benchmark
+  echo ""
+  echo "=== Running Benchmark ==="
+  ./target/release/wf_server \
+    --model-path "$MODEL_PATH" \
+    --benchmark \
+    --benchmark-iterations 20 \
+    --benchmark-max-tokens 64 \
+    --benchmark-prompt "The meaning of life is"
+
+  echo ""
+  echo "=== Benchmark Complete ==="
+
+  # Keep instance alive for debugging if needed
+  echo "Instance ready. Connect via: ssh wf-server-bench"
+  sleep 3600

@@ -77,13 +77,13 @@ packing:
 optimizer:
   type: adamw
   use_8bit: true  # Uses bitsandbytes AdamW8bit
-  learning_rate: 1e-4
+  learning_rate: 5e-5
   weight_decay: 0.01
 
 # Scheduler: WSD
 scheduler:
   type: wsd
-  warmup_steps: 500
+  warmup_steps: 200
   decay_ratio: 0.2
   decay_type: linear
   min_lr_ratio: 0.0
@@ -100,7 +100,7 @@ auto_batch_size: false
 # Lambda warmup (enabled for gradual salient quantization transition)
 lambda_warmup:
   enabled: true
-  warmup_steps: 1000
+  warmup_steps: 500
   schedule: linear
 
 # Resume configuration
@@ -130,13 +130,13 @@ objectives:
   distill:
     enabled: false
 
-# Curriculum: 25% warmup -> 75% main
+# Curriculum: 10% warmup -> 90% main
 curriculum:
   enabled: true
   interpolation: step
   phases:
     - name: warmup
-      end_ratio: 0.25
+      end_ratio: 0.10
       data_config: fineweb
       objectives:
         continue_pretrain: 0.5
