@@ -59,22 +59,35 @@ def cli():
     )
 )
 @click.option("--model", "-m", required=True, help="Model config (e.g., qwen3_4b)")
-@click.option("--stage", "-s", required=True, type=float, help="Training stage (1, 1.9, 2, 3)")
+@click.option("--training", "-t", default=None, help="Training config (e.g., base, bitdistill_full, lrc_run)")
+@click.option("--stage", "-s", default=None, type=float, help="[DEPRECATED] Training stage (1, 1.9, 2, 3). Use --training instead.")
 @click.option("--scale", default=None,
               type=click.Choice(["dev", "small", "medium", "large", "xlarge"]),
-              help="GPU scale: dev (1xA10G), small (1xH100), medium (2xH100), large (4xH100), xlarge (8xH100)")
+              help="GPU scale: dev (1xH100), small (1xH100), medium (2xH100), large (4xH100), xlarge (8xH100)")
+@click.option("--gpu-type", default=None,
+              type=click.Choice(["H100", "A100", "A100-80GB", "L40S", "A10G"]),
+              help="Override GPU type (default: H100)")
 @click.option("--resume", "-r", default=None, help="Resume from checkpoint (local path or gs://)")
 @click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod", "vast"]), help="Cloud provider")
 @click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
+@click.option("--dry-run", is_flag=True, help="Print SkyPilot config without launching")
 @click.pass_context
-def train(ctx, model: str, stage: float, scale: str, resume: str, cloud: str, detach: bool):
+def train(ctx, model: str, training: str | None, stage: float | None, scale: str, gpu_type: str | None, resume: str, cloud: str, detach: bool, dry_run: bool):
     """Launch a training job.
 
     Any extra arguments are passed directly to Hydra.
 
     \b
+    Training Configs (recommended):
+        base:           Combined CE + DLM (default)
+        bitdistill_full: Knowledge distillation
+        lrc_run:        Low-Rank Correction
+        salient_run:    AWQ-style salient columns
+        sft_run:        Supervised fine-tuning
+
+    \b
     Scales (GPU profiles):
-        dev:    1x A10G  (cheap, for testing)
+        dev:    1x H100  (cheap, for testing)
         small:  1x H100  (default)
         medium: 2x H100
         large:  4x H100
@@ -82,23 +95,72 @@ def train(ctx, model: str, stage: float, scale: str, resume: str, cloud: str, de
 
     \b
     Examples:
-        wf train -m qwen3_4b -s 2
-        wf train -m qwen3_4b -s 2 --scale large
-        wf train -m qwen3_4b -s 2 training.lr=1e-4
-        wf train -m smollm2_135m -s 1.9 --no-detach
-        wf train -m qwen3_4b -s 2 --resume gs://bucket/checkpoint.pt
+        wf train -m qwen3_4b -t base
+        wf train -m qwen3_4b -t bitdistill_full --scale large
+        wf train -m qwen3_4b -t base training.lr=1e-4
+        wf train -m smollm2_135m -t lrc_run --no-detach
+        wf train -m qwen3_4b -t base --resume gs://bucket/checkpoint.pt
+        wf train -m qwen3_4b -t base --dry-run  # Preview without launching
     """
+    # Handle deprecation of --stage
+    if stage is not None and training is None:
+        warnings.warn(
+            "--stage/-s is deprecated. Use --training/-t instead.\n"
+            "  Example: wf train -m qwen3_4b -t base",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        click.echo("⚠️  --stage is deprecated. Mapping to training config...", err=True)
+        # Map stage to training config
+        stage_to_training = {
+            1: "stage1_subln",
+            1.9: "stage1_9_layerwise",
+            2: "stage2_pretrain",
+            3: "stage3_distill",
+        }
+        training = stage_to_training.get(stage, "base")
+        click.echo(f"   Using training={training}", err=True)
+    elif stage is not None and training is not None:
+        click.echo("⚠️  Both --stage and --training provided. Using --training.", err=True)
+    elif training is None:
+        click.echo("Error: --training/-t is required.", err=True)
+        click.echo("  Example: wf train -m qwen3_4b -t base", err=True)
+        sys.exit(1)
+
+    # Validate training config
+    if training not in TRAINING_CONFIGS:
+        click.echo(f"Error: Unknown training config '{training}'", err=True)
+        click.echo(f"Available configs: {', '.join(sorted(TRAINING_CONFIGS))}", err=True)
+        sys.exit(1)
+
     # Extra args are Hydra overrides
     overrides = list(ctx.args)
 
+    # Add training config as Hydra override
+    overrides.insert(0, f"training={training}")
+
+    if dry_run:
+        click.echo("🔍 DRY RUN - would launch with:")
+        click.echo(f"   Model: {model}")
+        click.echo(f"   Training: {training}")
+        click.echo(f"   Scale: {scale or 'auto'}")
+        if gpu_type:
+            click.echo(f"   GPU Type: {gpu_type}")
+        click.echo(f"   Cloud: {cloud}")
+        click.echo(f"   Overrides: {overrides}")
+        if resume:
+            click.echo(f"   Resume: {resume}")
+        return
+
     core.train(
         model=model,
-        stage=stage,
+        stage=2.0,  # Default stage, actual config determined by training= override
         scale=scale,
         overrides=overrides,
         cloud=cloud,
         detach=detach,
-        resume_checkpoint=resume,  # Pass resume separately to avoid Hydra issues
+        resume_checkpoint=resume,
+        gpu_type=gpu_type,
     )
 
 
@@ -307,17 +369,72 @@ def runs(limit: int):
         click.echo(f"{job_id:<4} {name:<20} {status:<12} {resources:<15}")
 
 
-@cli.command()
+@cli.command(
+    context_settings=dict(
+        ignore_unknown_options=True,
+        allow_extra_args=True,
+    )
+)
 @click.option("--model", "-m", default=DEFAULT_SMOKE_TEST_MODEL, help="Model to test (default: smollm2_135m)")
-def smoke(model: str):
-    """Run a quick smoke test.
+@click.option("--objective", "-o", default="dlm",
+              type=click.Choice(list(SMOKE_OBJECTIVES)),
+              help="Smoke test objective (default: dlm)")
+@click.option("--gpu-type", default="L40S",
+              type=click.Choice(["H100", "A100", "L40S", "A10G"]),
+              help="GPU type (default: L40S)")
+@click.option("--gpu-count", default=1, type=int, help="Number of GPUs (default: 1)")
+@click.option("--cloud", "-c", default="nebius",
+              type=click.Choice(["nebius", "runpod", "vast"]),
+              help="Cloud provider (default: nebius)")
+@click.option("--dry-run", is_flag=True, help="Print SkyPilot config without launching")
+@click.pass_context
+def smoke(ctx, model: str, objective: str, gpu_type: str, gpu_count: int, cloud: str, dry_run: bool):
+    """Run a quick smoke test on cloud GPU.
+
+    Uses the unified smoke_test.yaml with dispatch_smoke.py to run
+    various training objectives for validation.
+
+    \b
+    Objectives:
+        ce:           Cross-entropy only
+        dlm:          CE + DLM (default)
+        bitdistill:   BitDistill distillation
+        lrc:          Low-Rank Correction
+        salient:      AWQ-style salient columns
+        salient_lora: Salient + LoRA
+        hadamard:     BitNet v2 Hadamard
+        sft:          Supervised fine-tuning
+        meta_opt:     Meta-optimization (LDC-MTL + ODM)
 
     \b
     Examples:
-        wf smoke
-        wf smoke -m qwen3_4b
+        wf smoke                          # Default: dlm on L40S
+        wf smoke -o bitdistill            # BitDistill smoke test
+        wf smoke -o lrc --gpu-type H100   # LRC on H100
+        wf smoke -o meta_opt --gpu-count 2  # Meta-opt with 2 GPUs
+        wf smoke --dry-run                # Preview without launching
     """
-    result = core.smoke_test(model=model)
+    # Extra args passed to dispatch_smoke.py
+    extra_overrides = list(ctx.args)
+
+    if dry_run:
+        click.echo("🔍 DRY RUN - would launch smoke test with:")
+        click.echo(f"   Model: {model}")
+        click.echo(f"   Objective: {objective}")
+        click.echo(f"   GPU: {gpu_count}x {gpu_type}")
+        click.echo(f"   Cloud: {cloud}")
+        if extra_overrides:
+            click.echo(f"   Extra overrides: {extra_overrides}")
+        return
+
+    result = core.smoke_test_unified(
+        model=model,
+        objective=objective,
+        gpu_type=gpu_type,
+        gpu_count=gpu_count,
+        cloud=cloud,
+        extra_overrides=extra_overrides,
+    )
     click.echo(f"Result: {result}")
 
 

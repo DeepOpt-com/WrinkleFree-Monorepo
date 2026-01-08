@@ -183,30 +183,7 @@ class BitLinearSalient(BitLinear):
             return F.linear(x_quant, w_quant, bias)
 
         # After calibration: mixed precision forward pass
-        # Debug: Check dimensions and devices
-        if not hasattr(self, "_debug_logged"):
-            logger.debug(
-                f"BitLinearSalient forward: w.shape={w.shape}, x.shape={x.shape}, "
-                f"salient_indices.shape={self.salient_indices.shape}, "
-                f"salient_indices.device={self.salient_indices.device}, "
-                f"salient_indices.max={self.salient_indices.max().item()}, "
-                f"nonsalient_indices.shape={self.nonsalient_indices.shape}, "
-                f"nonsalient_indices.max={self.nonsalient_indices.max().item()}, "
-                f"in_features={self.in_features}"
-            )
-            self._debug_logged = True
-
-        # Validate indices before indexing (only in debug mode)
-        if self.salient_indices.max() >= w.shape[1]:
-            raise RuntimeError(
-                f"salient_indices max ({self.salient_indices.max().item()}) >= "
-                f"weight columns ({w.shape[1]})"
-            )
-        if self.nonsalient_indices.max() >= w.shape[1]:
-            raise RuntimeError(
-                f"nonsalient_indices max ({self.nonsalient_indices.max().item()}) >= "
-                f"weight columns ({w.shape[1]})"
-            )
+        # Note: Debug logging removed for torch.compile compatibility
 
         # Split weight matrix by columns
         w_salient = w[:, self.salient_indices]  # (out_features, num_salient)

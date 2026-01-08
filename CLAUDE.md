@@ -27,9 +27,12 @@
 | Training with auto batch | `... training.auto_batch_size=true` (single GPU only!) |
 | Meta-optimization | `... training.meta_optimization.enabled=true` |
 | BitDistill distillation | `... training=bitdistill_full` |
-| LRC calibration | `... training=lrc_calibration` |
+| LRC calibration | `... training=lrc_run` |
 | Salient columns (AWQ-style) | `... training=salient_run` |
-| Deploy to cloud | `cd packages/deployer && wf train -m smollm2_135m -s 2 --cloud nebius` |
+| **Deploy to cloud** | `cd packages/deployer && wf train -m smollm2_135m -t base` |
+| Cloud with scale | `wf train -m qwen3_4b -t bitdistill_full --scale large` |
+| **Smoke test** | `cd packages/deployer && wf smoke -o dlm` |
+| Smoke test preview | `wf smoke -o bitdistill --dry-run` |
 | **Check sync status** | `./sync.sh --status --preset <preset>` |
 | **Start live sync** | `./sync.sh --preset <preset>` (runs in foreground with inotify) |
 | One-time sync | `./sync.sh --preset <preset> --no-watch` |

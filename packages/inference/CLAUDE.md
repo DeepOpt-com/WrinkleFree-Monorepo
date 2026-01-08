@@ -25,6 +25,7 @@ WrinkleFree Inference Engine serves **BitNet** models (1.58-bit quantized LLMs):
 | Build wf_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin wf_server --features=native-inference` |
 | Build dlm_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin dlm_server --features=native-inference` |
 | Benchmark wf_server | `./wf_server --model-path model.gguf --benchmark --benchmark-iterations 10` |
+| Benchmark (large models) | `./wf_server --model-path model.gguf --context-len 4096 --benchmark` |
 | Start DLM server | See "Running dlm_server" section below |
 | Test API | `curl http://localhost:30000/v1/chat/completions -d '{"messages":[{"role":"user","content":"Hello"}]}'` |
 
@@ -121,12 +122,15 @@ export OMP_NUM_THREADS=32
   --benchmark \
   --benchmark-iterations 10
 
-# With detailed profiling output
+# For large models (32B+), limit context length to reduce KV cache memory
 ./target/release/wf_server \
   --model-path /path/to/model-i2s.gguf \
+  --context-len 4096 \
   --benchmark \
   --benchmark-iterations 5
 ```
+
+**Note**: For models with large context (e.g., 128K), always use `--context-len` to limit KV cache allocation. Without it, the engine will allocate KV cache for the full context length which may exceed available RAM.
 
 ### Server Mode
 
@@ -386,6 +390,30 @@ export LD_LIBRARY_PATH="extern/sglang-bitnet/3rdparty/llama.cpp/build/src:extern
 curl http://localhost:30000/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
 ```
+
+## SkyPilot Development
+
+When iterating on Rust/C++ code with SkyPilot:
+
+**IMPORTANT**: `sky exec` syncs files to `~/sky_workdir`, but binaries built during `setup` are at `/opt/inference`. Always rebuild from the synced workdir in the `run` section to pick up code changes:
+
+```yaml
+run: |
+  # Use sky_workdir for latest code changes
+  WF_SERVER_WORKDIR="$HOME/sky_workdir/extern/sglang-bitnet/sgl-model-gateway"
+
+  # Rebuild if code changed
+  if [ -d "$WF_SERVER_WORKDIR" ]; then
+    cd "$WF_SERVER_WORKDIR"
+    cargo build --release --bin wf_server --features native-inference
+  fi
+
+  # Use the rebuilt binary
+  WF_SERVER="$WF_SERVER_WORKDIR/target/release/wf_server"
+```
+
+**Key flags:**
+- `--context-len 4096`: Override model's default context length to limit KV cache memory (critical for large models with 128K+ context)
 
 ## Monorepo Integration
 

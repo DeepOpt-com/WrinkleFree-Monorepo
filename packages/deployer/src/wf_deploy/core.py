@@ -92,30 +92,32 @@ def train(
     cloud: str = "nebius",
     detach: bool = True,
     resume_checkpoint: str | None = None,
+    gpu_type: str | None = None,
 ) -> str:
     """Launch a training job on SkyPilot.
 
     Args:
         model: Model config name (e.g., "qwen3_4b", "smollm2_135m")
-        stage: Training stage (1, 1.9, 2, or 3)
+        stage: Training stage (1, 1.9, 2, or 3) - legacy, use training= override instead
         scale: GPU scale profile ("dev", "small", "medium", "large", "xlarge").
                If None, uses model-specific defaults.
-        overrides: Hydra config overrides (e.g., ["training.lr=1e-4"])
+        overrides: Hydra config overrides (e.g., ["training.lr=1e-4", "training=base"])
         cloud: Cloud provider ("nebius", "gcp", or "runpod")
         detach: Return immediately (True) or wait for completion (False)
         resume_checkpoint: Path to checkpoint to resume from (local or gs://)
+        gpu_type: Override GPU type (e.g., "H100", "L40S", "A10G")
 
     Returns:
         Run ID (use with `wf logs <run_id>` to see logs)
 
     Example:
         >>> from wf_deploy import train
-        >>> run_id = train("qwen3_4b", stage=2)
+        >>> run_id = train("qwen3_4b", stage=2, overrides=["training=base"])
         >>> run_id = train("qwen3_4b", stage=2, scale="large")  # 4x H100
         >>> run_id = train("qwen3_4b", stage=2, overrides=["training.batch_size=8"])
     """
     overrides = overrides or []
-    return _train_skypilot(model, stage, scale, overrides, cloud, detach, resume_checkpoint)
+    return _train_skypilot(model, stage, scale, overrides, cloud, detach, resume_checkpoint, gpu_type)
 
 
 def _train_skypilot(
@@ -126,6 +128,7 @@ def _train_skypilot(
     cloud: str,
     detach: bool,
     resume_checkpoint: str | None,
+    gpu_type_override: str | None = None,
 ) -> str:
     """Launch training on SkyPilot."""
     try:
@@ -141,7 +144,8 @@ def _train_skypilot(
 
     scale_config = SCALES[scale]
     gpu_count = scale_config["gpus"]
-    gpu_type = scale_config["type"]
+    # Use override GPU type if provided, otherwise use scale default
+    gpu_type = gpu_type_override or scale_config["type"]
     accelerators = f"{gpu_type}:{gpu_count}"
 
     print(f"🚀 Launching {model} (Stage {stage}) on SkyPilot")
@@ -311,7 +315,7 @@ def list_runs(limit: int = 10) -> list[dict]:
 
 
 def smoke_test(model: str = DEFAULT_SMOKE_TEST_MODEL) -> dict:
-    """Run a quick smoke test to verify the pipeline.
+    """Run a quick smoke test to verify the pipeline (legacy).
 
     Args:
         model: Model to test with (default: smollm2_135m, smallest)
@@ -329,6 +333,95 @@ def smoke_test(model: str = DEFAULT_SMOKE_TEST_MODEL) -> dict:
         detach=False,
     )
     return {"status": "success", "run_id": run_id}
+
+
+def smoke_test_unified(
+    model: str = DEFAULT_SMOKE_TEST_MODEL,
+    objective: str = "dlm",
+    gpu_type: str = "L40S",
+    gpu_count: int = 1,
+    cloud: str = "nebius",
+    extra_overrides: list[str] | None = None,
+) -> dict:
+    """Run unified smoke test with specific objective.
+
+    Uses the new unified smoke_test.yaml with dispatch_smoke.py.
+
+    Args:
+        model: Model config name (default: smollm2_135m)
+        objective: Smoke test objective (ce, dlm, bitdistill, lrc, etc.)
+        gpu_type: GPU type (H100, L40S, A10G)
+        gpu_count: Number of GPUs
+        cloud: Cloud provider (nebius, runpod, vast)
+        extra_overrides: Additional Hydra overrides
+
+    Returns:
+        Test results dict with job name
+    """
+    try:
+        import sky
+    except ImportError:
+        raise ImportError(
+            "SkyPilot not installed. Install with: uv add 'skypilot[all]'"
+        )
+
+    accelerators = f"{gpu_type}:{gpu_count}"
+
+    print(f"🧪 Launching unified smoke test")
+    print(f"   Model: {model}")
+    print(f"   Objective: {objective}")
+    print(f"   GPU: {accelerators}")
+    print(f"   Cloud: {cloud}")
+
+    # Build environment variables
+    envs = {
+        "MODEL": model,
+        "OBJECTIVE": objective,
+        "GPU_TYPE": gpu_type,
+        "GPU_COUNT": str(gpu_count),
+        "CLOUD": cloud,
+    }
+
+    # Pass through W&B API key
+    wandb_key = os.environ.get("WANDB_API_KEY")
+    if wandb_key:
+        envs["WANDB_API_KEY"] = wandb_key
+    else:
+        print("   ⚠️  WANDB_API_KEY not set - logging may be disabled")
+
+    # HF_TOKEN
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token:
+        envs["HF_TOKEN"] = hf_token
+
+    # Create task from unified smoke test YAML
+    task = sky.Task.from_yaml("skypilot/smoke_test.yaml")
+    task.update_envs(envs)
+
+    # Select cloud provider
+    if cloud == "runpod":
+        cloud_obj = sky.RunPod()
+    elif cloud == "vast":
+        cloud_obj = sky.Vast()
+    else:
+        cloud_obj = sky.Nebius()
+
+    # Update resources
+    task.set_resources(
+        sky.Resources(accelerators=accelerators, cloud=cloud_obj, use_spot=False)
+    )
+
+    job_name = f"wf-smoke-{objective}"
+
+    # Launch as managed job (detached)
+    request_id = sky.jobs.launch(task)
+    job_id, _ = sky.get(request_id)
+
+    print(f"✓ Launched! Job ID: {job_id}")
+    print(f"  View logs: sky logs {job_name}")
+    print(f"  Cancel:    sky jobs cancel {job_name}")
+
+    return {"status": "launched", "job_name": job_name, "job_id": job_id}
 
 
 # =============================================================================

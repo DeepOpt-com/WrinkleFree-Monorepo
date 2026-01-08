@@ -11,24 +11,29 @@ Training job launcher for 1.58-bit quantized LLMs. Uses SkyPilot for managed GPU
 5. **CLEAN BEFORE RETRY**: Run `sky exec <cluster> "rm -rf /tmp/checkpoints/*"` before retrying failed jobs
 6. **FIX, DON'T FALL BACK**: When something breaks, FIX IT. Don't silently fall back to alternatives (e.g., don't switch from MuonClip to AdamW - fix MuonClip)
 7. **ALWAYS SET GCS PROJECT**: When creating SkyPilot YAMLs, ALWAYS include `GOOGLE_CLOUD_PROJECT: wrinklefree-481904` in envs section. The gcp-service-account.json is OAuth user creds (not service account), so the project ID must be set explicitly for GCS uploads to work.
+8. **USE TRAINING CONFIGS**: Use `--training/-t` flag (not `--stage/-s`). Training configs in `packages/training/configs/training/` are the source of truth.
 
-## Quick Smoke Test (Lightning)
+## Quick Commands
 
 ```bash
 cd packages/deployer
 source credentials/.env
 
-# Launch Lightning smoke test with auto batch size
-sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke --env OBJECTIVE_COMBO=dlm
+# Training with specific config
+wf train -m qwen3_4b -t base                       # Combined CE + DLM
+wf train -m qwen3_4b -t bitdistill_full --scale large  # BitDistill
+wf train -m smollm2_135m -t lrc_run                # Low-Rank Correction
+wf train -m qwen3_4b -t base --dry-run             # Preview without launching
 
-# Monitor
-sky logs lightning-smoke
+# Smoke tests
+wf smoke                          # Default: dlm on L40S
+wf smoke -o bitdistill            # BitDistill smoke test
+wf smoke -o lrc --gpu-type H100   # LRC on H100
+wf smoke --dry-run                # Preview without launching
 
-# Re-run on existing cluster (faster)
-sky exec lightning-smoke skypilot/smoke_test_lightning.yaml --env OBJECTIVE_COMBO=dlm
-
-# Teardown
-sky down lightning-smoke -y
+# Check logs
+wf logs <job_name>
+wf runs  # List recent jobs
 ```
 
 ## Monorepo Integration
@@ -53,58 +58,43 @@ source credentials/.env
 uv run --package wf-train-deployer wf train -m qwen3_4b -s 2
 ```
 
-## Quick Reference
+## Training Configs
 
-**Important:** Run all `wf` commands from `packages/deployer` directory.
+| Config | Purpose | Use Case |
+|--------|---------|----------|
+| `base` | Combined CE + DLM | Default training (recommended) |
+| `bitdistill_full` | Knowledge distillation | Stage 3 distillation |
+| `lrc_run` | Low-Rank Correction | Post-quant error recovery |
+| `salient_run` | AWQ-style salient | Selective precision |
+| `sft_run` | Supervised fine-tuning | Instruction-following |
+| `smoke_test` | Fast 30-step validation | CI/CD testing |
 
-```bash
-# Set up credentials and run from deployer directory
-cd packages/deployer
-source credentials/.env
+## Smoke Test Objectives
 
-# Launch training
-uv run --package wf-train-deployer wf train -m qwen3_4b -s 2 --cloud nebius
-
-# With specific scale (4x H100)
-uv run --package wf-train-deployer wf train -m qwen3_4b -s 2 --scale large
-
-# BitDistill distillation (via training objectives)
-uv run --package wf-train-deployer wf train -m qwen3_4b \
-  --training bitdistill_full --cloud nebius
-
-# LRC calibration (post-quantization recovery)
-uv run --package wf-train-deployer wf train -m qwen3_4b \
-  --training lrc_calibration --cloud nebius
-
-# Check logs
-uv run --package wf-train-deployer wf logs <run_id>
-
-# List recent runs
-uv run --package wf-train-deployer wf runs
-
-# Direct SkyPilot commands
-uv run --package wf-train-deployer sky check
-uv run --package wf-train-deployer sky jobs queue
-```
+| Objective | Description |
+|-----------|-------------|
+| `ce` | Cross-entropy only |
+| `dlm` | CE + DLM (default) |
+| `bitdistill` | BitDistill distillation |
+| `lrc` | Low-Rank Correction |
+| `salient` | AWQ-style salient columns |
+| `meta_opt` | Meta-optimization (LDC-MTL + ODM) |
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `src/wf_deploy/constants.py` | All magic strings, defaults, scales, GAR config |
-| `src/wf_deploy/core.py` | Main API: train(), logs() |
-| `src/wf_deploy/cli.py` | CLI commands |
+| `src/wf_deploy/constants.py` | All magic strings, defaults, scales, training configs |
+| `src/wf_deploy/core.py` | Main API: train(), smoke_test_unified(), logs() |
+| `src/wf_deploy/cli.py` | CLI commands: train, smoke, logs, runs |
 | `skypilot/train.yaml` | SkyPilot training job template |
+| `skypilot/smoke_test.yaml` | **Unified smoke test (use `wf smoke -o <objective>`)** |
 | `skypilot/service.yaml` | SkyServe inference template |
-| `skypilot/smoke_test_lightning.yaml` | **Smoke test: Lightning + auto batch (RECOMMENDED)** |
-| `skypilot/smoke_test_meta_opt_1gpu.yaml` | Smoke test: Meta-optimization (1x L40) |
-| `skypilot/smoke_test_meta_opt_2gpu.yaml` | Smoke test: Meta-optimization (2x L40 FSDP) |
-| `skypilot/smoke_test_unified_1gpu.yaml` | Smoke test: 1x L40 unified training (legacy) |
-| `skypilot/smoke_test_unified_2gpu.yaml` | Smoke test: 2x L40 with FSDP |
-| `skypilot/smoke_test_bitdistill.yaml` | Smoke test: BitDistill distillation |
-| `skypilot/smoke_test_lrc.yaml` | Smoke test: LRC calibration (1x L40) |
+| `skypilot/eval.yaml` | Model evaluation template |
+| `scripts/dispatch_smoke.py` | Maps objective to training config + overrides |
 | `credentials/.env` | Local credentials (gitignored) |
 | `credentials/gcp-service-account.json` | GCP service account for GCS + Docker auth |
+| `skypilot/_archived/` | Archived old YAMLs (for reference) |
 
 ## Smoke Tests
 
@@ -114,31 +104,20 @@ Quick validation of the training pipeline (~5 minutes):
 cd packages/deployer
 source credentials/.env
 
-# Lightning + auto batch (RECOMMENDED)
-sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
-  --env OBJECTIVE_COMBO=dlm
+# Run smoke test with specific objective
+wf smoke                          # Default: dlm on L40S
+wf smoke -o bitdistill            # BitDistill distillation
+wf smoke -o lrc --gpu-type H100   # LRC on H100
+wf smoke -o meta_opt --gpu-count 2  # Meta-opt with 2 GPUs
 
-# Meta-optimization (LDC-MTL + ODM, O(1) complexity)
-# References: arxiv:2502.08585 (LDC-MTL), arxiv:2312.02406 (ODM/EXP3)
-sky launch skypilot/smoke_test_meta_opt_1gpu.yaml -y --cluster meta-1gpu  # 1x L40
-sky launch skypilot/smoke_test_meta_opt_2gpu.yaml -y --cluster meta-2gpu  # 2x L40 FSDP
-
-# 1x L40 unified training (legacy)
-sky launch skypilot/smoke_test_unified_1gpu.yaml -y --cluster unified-1gpu
-
-# 2x L40 smoke test (FSDP data parallelism)
-sky launch skypilot/smoke_test_unified_2gpu.yaml -y --cluster unified-2gpu
-
-# LRC calibration smoke test (Low-Rank Correction)
-export SKYPILOT_DOCKER_PASSWORD=$(cat credentials/gcp-service-account.json)
-sky launch skypilot/smoke_test_lrc.yaml -y --secret WANDB_API_KEY --secret SKYPILOT_DOCKER_PASSWORD
+# Preview without launching
+wf smoke --dry-run
 
 # Monitor
-sky logs lightning-smoke
-sky logs unified-1gpu
+sky logs wf-smoke-dlm
 
 # Teardown
-sky down lightning-smoke meta-1gpu meta-2gpu unified-1gpu unified-2gpu wf-smoke-lrc -y
+sky down wf-smoke-dlm -y
 ```
 
 **Test Configuration**:
