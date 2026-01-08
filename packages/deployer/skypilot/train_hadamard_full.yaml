@@ -1,7 +1,7 @@
 # Full Hadamard Training - Nebius 1x H100
 #
 # IMPORTANT: auto_batch_size=false because torch_compile + BatchSizeFinder
-# is buggy and sets batch_size=1. Use fixed batch_size=64 for H100.
+# is buggy. Use batch_size=4 with grad_accum=16 for H100 (effective 64).
 #
 # Full training run with BitNet v2 Hadamard conversion:
 # - HBitLinear for o_proj and down_proj (online Hadamard)
@@ -110,7 +110,7 @@ run: |
   echo "=============================================="
 
   # Full training with Hadamard enabled
-  # NOTE: batch_size=4 with seq_len=1024 fits on H100 80GB
+  # NOTE: batch_size=4 with seq_len=1024 fits on H100 80GB (direct matmul Hadamard is memory-efficient)
   uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=base \

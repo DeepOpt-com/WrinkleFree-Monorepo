@@ -7,14 +7,12 @@ layers where activation outliers are most prominent. The Hadamard transform
 decorrelates activations, enabling better low-bit quantization.
 
 Optimizations:
-- Pre-computed scale as buffer (correct dtype/device)
-- torch.compile compatible via unrolled Hadamard
+- Direct matmul Hadamard uses cuBLAS (no graph breaks)
+- Normalization built into cached Hadamard matrix
 - BF16 consistent throughout forward pass
 """
 
 from __future__ import annotations
-
-import math
 
 import torch
 import torch.nn.functional as F
@@ -72,15 +70,6 @@ class HBitLinear(BitLinear):
         self.padded_in = next_power_of_2(in_features)
         self.needs_padding = self.padded_in != in_features
 
-        # Register hadamard_scale as buffer for correct dtype/device handling
-        # This avoids Python float -> tensor conversion in forward pass
-        hadamard_scale = 1.0 / math.sqrt(self.padded_in)
-        self.register_buffer(
-            "hadamard_scale",
-            torch.tensor(hadamard_scale, dtype=torch.float32),
-            persistent=False,  # Don't save in state_dict
-        )
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass with Hadamard-transformed activations.
@@ -102,10 +91,8 @@ class HBitLinear(BitLinear):
         if self.needs_padding:
             x = F.pad(x, (0, self.padded_in - self.in_features))
 
-        # 2. Apply Hadamard transform (decorrelates activations, reduces outliers)
-        # Scale is cast to input dtype for BF16 consistency
-        scale = self.hadamard_scale.to(x.dtype).item()
-        x_h = hadamard_transform(x, scale=scale)
+        # 2. Apply Hadamard transform (normalization built-in, uses cuBLAS)
+        x_h = hadamard_transform(x)
 
         # 3. Slice back to original dimension
         if self.needs_padding:
