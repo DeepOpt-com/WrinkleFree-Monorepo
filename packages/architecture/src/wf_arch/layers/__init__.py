@@ -5,6 +5,12 @@ from wf_arch.layers.bitlinear import (
     BitLinearNoActivationQuant,
     convert_linear_to_bitlinear,
 )
+from wf_arch.layers.hbitlinear import HBitLinear
+from wf_arch.layers.hadamard import (
+    hadamard_transform,
+    hadamard_transform_weights,
+    next_power_of_2,
+)
 from wf_arch.layers.bitlinear_salient import (
     BitLinearSalient,
     SalientConfig,
@@ -48,6 +54,11 @@ __all__ = [
     "SalientCalibrator",
     "SubLN",
     "RMSNorm",
+    # H-BitLinear (BitNet v2 with Hadamard transform)
+    "HBitLinear",
+    "hadamard_transform",
+    "hadamard_transform_weights",
+    "next_power_of_2",
     # Conversion utilities
     "convert_linear_to_bitlinear",
     "convert_bitlinear_to_salient",

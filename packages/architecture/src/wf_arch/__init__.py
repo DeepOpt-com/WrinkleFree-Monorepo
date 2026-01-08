@@ -20,6 +20,11 @@ from wf_arch.layers import (
     convert_bitlinear_to_salient,
     get_salient_stats,
     calibrate_salient_columns,
+    # H-BitLinear (BitNet v2 with Hadamard transform)
+    HBitLinear,
+    hadamard_transform,
+    hadamard_transform_weights,
+    next_power_of_2,
     # New LoRA adapter (recommended)
     LoRAAdapter,
     LoRAConfig,
@@ -61,6 +66,11 @@ __all__ = [
     "SubLN",
     "RMSNorm",
     "convert_linear_to_bitlinear",
+    # H-BitLinear (BitNet v2 with Hadamard transform)
+    "HBitLinear",
+    "hadamard_transform",
+    "hadamard_transform_weights",
+    "next_power_of_2",
     # Salient Columns (AWQ-style)
     "convert_bitlinear_to_salient",
     "get_salient_stats",

@@ -8,6 +8,7 @@ from wf_arch.conversion.convert import (
     insert_subln_before_projection,
     convert_attention_layer,
     convert_mlp_layer,
+    convert_linear_to_hbitlinear,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "insert_subln_before_projection",
     "convert_attention_layer",
     "convert_mlp_layer",
+    "convert_linear_to_hbitlinear",
 ]

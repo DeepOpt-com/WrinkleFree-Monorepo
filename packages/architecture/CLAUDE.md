@@ -6,6 +6,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 BitNet Architecture (`wf-arch`) is a shared library providing 1.58-bit quantized components:
 - **BitLinear**: Ternary weight quantization (-1, 0, 1) with 8-bit activation quantization
+- **HBitLinear**: BitLinear with online Hadamard transform (BitNet v2 style, for o_proj/down_proj)
 - **BitLinearLRC**: BitLinear with Low-Rank Correction for post-quantization recovery
 - **SubLN**: Sub-Layer Normalization for stable BitNet training
 - **LambdaWarmup**: Gradual quantization schedule manager
@@ -58,6 +59,7 @@ from wf_arch import convert_model_to_bitnet, auto_convert_if_needed
 | Component | Purpose |
 |-----------|---------|
 | `BitLinear` | Linear layer with ternary weights, 8-bit activation quant |
+| `HBitLinear` | BitLinear with online Hadamard transform (BitNet v2, for o_proj/down_proj) |
 | `BitLinearNoActivationQuant` | BitLinear without activation quantization |
 | `BitLinearLRC` | BitLinear with trainable low-rank correction (U, V matrices) |
 | `BitLinearSalient` | BitLinear with FP16 salient columns (AWQ-style) |
@@ -88,6 +90,7 @@ from wf_arch import convert_model_to_bitnet, auto_convert_if_needed
 | `is_bitnet_model` | Check if model is already BitNet |
 | `auto_convert_if_needed` | Convert only if not already BitNet |
 | `run_stage1` | Stage 1 SubLN insertion |
+| `convert_linear_to_hbitlinear` | Replace nn.Linear with HBitLinear (includes weight Hadamard transform) |
 
 ## Architecture
 
@@ -97,6 +100,8 @@ src/wf_arch/
 ├── layers/
 │   ├── __init__.py
 │   ├── bitlinear.py         # BitLinear implementation
+│   ├── hbitlinear.py        # HBitLinear with online Hadamard (BitNet v2)
+│   ├── hadamard.py          # Fast Walsh-Hadamard Transform utilities
 │   ├── bitlinear_lrc.py     # BitLinearLRC with low-rank correction
 │   ├── bitlinear_salient.py # BitLinearSalient with FP16 salient columns
 │   ├── salient_calibration.py # AWQ-style calibration utilities
@@ -137,6 +142,16 @@ bitnet_model = convert_model_to_bitnet(model)
 
 # Or auto-convert only if needed
 bitnet_model = auto_convert_if_needed(model)
+
+# Convert with Hadamard (BitNet v2 style)
+# HBitLinear is used for o_proj and down_proj only
+bitnet_model = convert_model_to_bitnet(
+    model,
+    hidden_size=576,
+    intermediate_size=1536,
+    insert_subln=True,   # Enable SubLN (default)
+    use_hadamard=True,   # Enable Hadamard transform
+)
 ```
 
 ### Lambda Warmup (Optional, Disabled by Default)
@@ -197,6 +212,42 @@ output = layer(x)
 ```
 
 **Key principle**: Only `lrc_U` and `lrc_V` are trainable. All other params (quantized weights, bias, embeddings, norms) are **frozen**.
+
+### HBitLinear (BitNet v2 Online Hadamard)
+
+Based on [BitNet v2](https://arxiv.org/abs/2504.18415).
+
+Applies **online Hadamard transformation** to activations before quantization, decorrelating values and reducing outliers for better quantization. Per the BitNet v2 paper, only `o_proj` and `down_proj` layers use HBitLinear (where activation outliers are most problematic).
+
+```python
+from wf_arch import HBitLinear, convert_model_to_bitnet
+
+# Direct usage
+layer = HBitLinear(768, 768)
+
+# Convert model with Hadamard
+model = convert_model_to_bitnet(
+    model, hidden_size=576, intermediate_size=1536,
+    insert_subln=True, use_hadamard=True
+)
+```
+
+**Key differences from BitLinear:**
+- **Hadamard transform**: Applies fast Walsh-Hadamard transform (FWHT) to activations before quantization
+- **Power-of-2 padding**: Non-power-of-2 dimensions are padded automatically
+- **Weight transformation**: During conversion, weights are transformed offline: `W' = W @ H`
+- **Normalized scaling**: Uses `scale = 1/sqrt(n)` for involutory property
+
+**Mathematical equivalence:**
+```
+Y = W @ X = (W @ H) @ (H @ X) = W' @ X'
+```
+Where `W' = W @ H` is computed offline during conversion, and `X' = H @ X` is computed online during forward pass.
+
+**When to use HBitLinear:**
+- Training with BitNet v2's improved activation quantization
+- Models where activation outliers in o_proj/down_proj hurt quantization quality
+- Combine with SubLN and LoRA for best results
 
 ### QLRC: Quantized LRC Adapters (QA-LoRA style)
 

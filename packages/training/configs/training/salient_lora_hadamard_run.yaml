@@ -1,29 +1,33 @@
-# Salient + LoRA: Combined AWQ-style saliency with low-rank correction
+# Salient + LoRA + Hadamard: Combined AWQ-style saliency with low-rank correction
+# and BitNet v2 online Hadamard quantization
 #
-# This config enables BOTH features orthogonally:
-# 1. Salient columns: Keep ~1% of columns in FP16 (AWQ-style)
-# 2. LoRA adapter: Add low-rank correction matrices (U, V)
+# This config enables ALL THREE features:
+# 1. Hadamard transform: Apply online Hadamard to o_proj and down_proj (BitNet v2)
+# 2. Salient columns: Keep ~1% of columns in FP16 (AWQ-style)
+# 3. LoRA adapter: Add low-rank correction matrices (U, V)
 #
 # The features are applied sequentially:
-#   model -> convert_to_bitnet -> convert_to_salient -> add_lora
+#   model -> convert_to_bitnet (with Hadamard) -> convert_to_salient -> add_lora
 #
 # Key benefits:
+# - Hadamard decorrelates activations, reducing outliers (BitNet v2)
 # - Salient columns preserve most important activations in FP16
 # - LoRA corrects remaining quantization errors via low-rank adapters
-# - Better accuracy than either method alone
+# - Best accuracy potential from combining all three approaches
 #
 # Usage:
 #   uv run python scripts/train_lightning.py \
-#     model=smollm2_135m training=salient_lora
+#     model=smollm2_135m training=salient_lora_hadamard_run
 #
 # Based on:
+# - BitNet v2: https://arxiv.org/abs/2504.18415 (online Hadamard)
 # - AWQ: https://arxiv.org/abs/2306.00978 (salient columns)
 # - LoRA: https://arxiv.org/abs/2106.09685 (low-rank adaptation)
 # - LRC: https://arxiv.org/abs/2412.07902 (quantization error correction)
 
-stage: salient_lora_run
+stage: salient_lora_hadamard_run
 
-# === SALIENT COLUMNS (Step 1) ===
+# === SALIENT COLUMNS (Step 2 - after Hadamard conversion) ===
 # AWQ-style: keep ~1% of columns in FP16 based on activation*weight magnitude
 salient:
   enabled: true
@@ -31,7 +35,7 @@ salient:
   calibration_samples: 128
   calibration_data: fineweb
 
-# === LORA ADAPTER (Step 2) ===
+# === LORA ADAPTER (Step 3) ===
 # Low-rank correction applied after salient conversion
 lora:
   enabled: true
@@ -56,11 +60,11 @@ lora:
   # Train WHOLE model (base + LoRA), not just LoRA adapters
   freeze_base: false
 
-# Auto-convert to BitNet first
+# Auto-convert to BitNet first WITH HADAMARD
 auto_convert:
   enabled: true
   insert_subln: true  # Add SubLN before projections (BitNet paper)
-  use_hadamard: false  # No Hadamard transform for now
+  use_hadamard: true  # NEW: Enable Hadamard transform for o_proj and down_proj (BitNet v2)
   exclude_layers:
     - embed_tokens
     - lm_head
@@ -101,7 +105,7 @@ gradient_accumulation_steps: 32
 gradient_clipping: 1.0
 auto_batch_size: false
 
-# Lambda warmup (enabled for gradual salient quantization transition)
+# Lambda warmup (enabled for gradual quantization transition)
 lambda_warmup:
   enabled: true
   warmup_steps: 500
@@ -166,7 +170,7 @@ logging:
     project: wrinklefree_v2
     entity: null
     name: null
-    tags: [salient, lora, bitnet, combined]
+    tags: [salient, lora, hadamard, bitnet_v2, combined]
 
 # Validation
 validation:

@@ -272,17 +272,19 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     # Auto-convert to BitNet if needed
     if cfg.training.get("auto_convert", {}).get("enabled", True):
         exclude_layers = cfg.training.get("auto_convert", {}).get("exclude_layers", None)
-        # insert_subln=False by default to preserve pretrained weights
-        # Set to True only if running Stage 1.9 layer-wise distillation afterward
+        # insert_subln: Add SubLN before projections (per BitNet paper)
         insert_subln = cfg.training.get("auto_convert", {}).get("insert_subln", False)
+        # use_hadamard: Use HBitLinear for o_proj/down_proj (BitNet v2)
+        use_hadamard = cfg.training.get("auto_convert", {}).get("use_hadamard", False)
         model = auto_convert_if_needed(
             model,
             hidden_size=cfg.model.hidden_size,
             intermediate_size=cfg.model.intermediate_size,
             exclude_layers=exclude_layers,
             insert_subln=insert_subln,
+            use_hadamard=use_hadamard,
         )
-        logger.info("Auto-converted model to BitNet")
+        logger.info(f"Auto-converted model to BitNet (insert_subln={insert_subln}, use_hadamard={use_hadamard})")
 
     # ===========================================================================
     # STEP 1: Handle Salient Columns (AWQ-style) if enabled
@@ -385,6 +387,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             quantized = lora_cfg.get("quantized", False)
             quant_bits = lora_cfg.get("quant_bits", 4)
             quant_group_size = lora_cfg.get("quant_group_size", 32)
+            freeze_base = lora_cfg.get("freeze_base", True)  # Default: freeze base, train only LoRA
 
             # Build LoRA config
             lora_config = LoRAConfig(
@@ -407,12 +410,17 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             # Add LoRA wrappers to model
             model = add_lora_to_model(model, lora_config)
 
-            # Freeze all non-LoRA parameters
-            freeze_stats = freeze_base_model(model)
-            logger.info(
-                f"LoRA: Trainable={freeze_stats['trainable']:,}, "
-                f"Frozen={freeze_stats['frozen']:,}"
-            )
+            # Optionally freeze base parameters (train only LoRA)
+            if freeze_base:
+                freeze_stats = freeze_base_model(model)
+                logger.info(
+                    f"LoRA: Trainable={freeze_stats['trainable']:,}, "
+                    f"Frozen={freeze_stats['frozen']:,}"
+                )
+            else:
+                # Count all trainable params
+                trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                logger.info(f"LoRA: Full model trainable ({trainable:,} params) - base NOT frozen")
 
             # Log LoRA statistics
             lora_stats = get_lora_stats(model)

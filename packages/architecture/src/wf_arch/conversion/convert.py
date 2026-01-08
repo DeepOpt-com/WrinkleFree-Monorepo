@@ -16,9 +16,39 @@ import torch
 import torch.nn as nn
 
 from wf_arch.layers.bitlinear import BitLinear
+from wf_arch.layers.hbitlinear import HBitLinear
+from wf_arch.layers.hadamard import hadamard_transform_weights
 from wf_arch.layers.subln import SubLN
 
 logger = logging.getLogger(__name__)
+
+
+def convert_linear_to_hbitlinear(linear: nn.Linear) -> HBitLinear:
+    """
+    Convert nn.Linear to HBitLinear with Hadamard weight transformation.
+
+    This applies the Hadamard transform to weights during conversion so that
+    the forward pass only needs to apply Hadamard to activations.
+
+    Mathematical equivalence:
+        Y = W @ X = (W @ H) @ (H @ X) = W' @ X'
+
+    Args:
+        linear: The linear layer to convert
+
+    Returns:
+        HBitLinear layer with Hadamard-transformed weights
+    """
+    new_layer = HBitLinear(
+        linear.in_features,
+        linear.out_features,
+        bias=linear.bias is not None,
+    )
+    # CRITICAL: Transform weights with Hadamard
+    new_layer.weight.data = hadamard_transform_weights(linear.weight.data.clone())
+    if linear.bias is not None:
+        new_layer.bias.data = linear.bias.data.clone()
+    return new_layer
 
 
 def is_bitnet_model(model: nn.Module) -> bool:
@@ -44,7 +74,8 @@ def auto_convert_if_needed(
     hidden_size: int,
     intermediate_size: int,
     exclude_layers: Optional[list[str]] = None,
-    insert_subln: bool = False,
+    insert_subln: bool = True,
+    use_hadamard: bool = False,
 ) -> nn.Module:
     """
     Convert model to BitNet on-the-fly if not already converted.
@@ -57,9 +88,11 @@ def auto_convert_if_needed(
         hidden_size: Model hidden dimension
         intermediate_size: FFN intermediate dimension
         exclude_layers: Layer names to exclude from conversion
-        insert_subln: Whether to insert SubLN before o_proj/down_proj.
-            Default False - SubLN disrupts pretrained weights and requires
-            Stage 1.9 layer-wise distillation to realign.
+        insert_subln: Whether to insert SubLN before projections.
+            Default True - recommended for training stability.
+        use_hadamard: Whether to use HBitLinear with online Hadamard
+            transformation for o_proj and down_proj layers (BitNet v2).
+            Default False.
 
     Returns:
         The model (converted if needed, unchanged if already BitNet)
@@ -75,6 +108,7 @@ def auto_convert_if_needed(
         intermediate_size=intermediate_size,
         exclude_layers=exclude_layers,
         insert_subln=insert_subln,
+        use_hadamard=use_hadamard,
     )
 
 
@@ -130,6 +164,7 @@ def convert_attention_layer(
     hidden_size: int,
     exclude_layers: list[str],
     insert_subln: bool = True,
+    use_hadamard: bool = False,
 ) -> None:
     """
     Convert attention layer to BitNet, with SubLN before EVERY projection.
@@ -137,13 +172,17 @@ def convert_attention_layer(
     Per BitNet 1.58b paper: "we add LN immediately before the quantization function"
     This means SubLN before ALL BitLinear layers, not just output projections.
 
+    When use_hadamard=True, o_proj uses HBitLinear (per BitNet v2 paper).
+
     Args:
         attention_module: The attention module to convert
         hidden_size: Model hidden size
         exclude_layers: Layer names to exclude from conversion
         insert_subln: Whether to insert SubLN before each projection.
+        use_hadamard: Whether to use HBitLinear for o_proj (BitNet v2).
     """
     # Convert Q, K, V projections to BitLinear WITH SubLN
+    # These always use standard BitLinear (not HBitLinear)
     for proj_name in ["q_proj", "k_proj", "v_proj"]:
         if hasattr(attention_module, proj_name) and proj_name not in exclude_layers:
             proj = getattr(attention_module, proj_name)
@@ -165,20 +204,26 @@ def convert_attention_layer(
                 else:
                     setattr(attention_module, proj_name, new_proj)
 
-    # Convert o_proj to BitLinear WITH SubLN
+    # Convert o_proj to BitLinear or HBitLinear (with optional SubLN)
+    # o_proj uses HBitLinear when use_hadamard=True (BitNet v2)
     if hasattr(attention_module, "o_proj") and "o_proj" not in exclude_layers:
         o_proj = attention_module.o_proj
 
         if isinstance(o_proj, nn.Linear) and not isinstance(o_proj, BitLinear):
-            new_o_proj = BitLinear(
-                o_proj.in_features,
-                o_proj.out_features,
-                bias=o_proj.bias is not None,
-            )
-            # Preserve dtype/device for FSDP compatibility
-            new_o_proj.weight.data = o_proj.weight.data.clone()
-            if o_proj.bias is not None:
-                new_o_proj.bias.data = o_proj.bias.data.clone()
+            if use_hadamard:
+                # HBitLinear with Hadamard-transformed weights (BitNet v2)
+                new_o_proj = convert_linear_to_hbitlinear(o_proj)
+            else:
+                # Standard BitLinear
+                new_o_proj = BitLinear(
+                    o_proj.in_features,
+                    o_proj.out_features,
+                    bias=o_proj.bias is not None,
+                )
+                # Preserve dtype/device for FSDP compatibility
+                new_o_proj.weight.data = o_proj.weight.data.clone()
+                if o_proj.bias is not None:
+                    new_o_proj.bias.data = o_proj.bias.data.clone()
         else:
             new_o_proj = o_proj
 
@@ -196,6 +241,7 @@ def convert_mlp_layer(
     hidden_size: int,
     exclude_layers: list[str],
     insert_subln: bool = True,
+    use_hadamard: bool = False,
 ) -> None:
     """
     Convert MLP/FFN layer to BitNet, with SubLN before EVERY projection.
@@ -203,13 +249,17 @@ def convert_mlp_layer(
     Per BitNet 1.58b paper: "we add LN immediately before the quantization function"
     This means SubLN before ALL BitLinear layers, not just output projections.
 
+    When use_hadamard=True, down_proj uses HBitLinear (per BitNet v2 paper).
+
     Args:
         mlp_module: The MLP module to convert
         hidden_size: Model hidden size
         exclude_layers: Layer names to exclude from conversion
         insert_subln: Whether to insert SubLN before each projection.
+        use_hadamard: Whether to use HBitLinear for down_proj (BitNet v2).
     """
     # Convert gate and up projections WITH SubLN
+    # These always use standard BitLinear (not HBitLinear)
     for proj_name in ["gate_proj", "up_proj"]:
         if hasattr(mlp_module, proj_name) and proj_name not in exclude_layers:
             proj = getattr(mlp_module, proj_name)
@@ -231,20 +281,26 @@ def convert_mlp_layer(
                 else:
                     setattr(mlp_module, proj_name, new_proj)
 
-    # Convert down_proj to BitLinear WITH SubLN
+    # Convert down_proj to BitLinear or HBitLinear (with optional SubLN)
+    # down_proj uses HBitLinear when use_hadamard=True (BitNet v2)
     if hasattr(mlp_module, "down_proj") and "down_proj" not in exclude_layers:
         down_proj = mlp_module.down_proj
 
         if isinstance(down_proj, nn.Linear) and not isinstance(down_proj, BitLinear):
-            new_down_proj = BitLinear(
-                down_proj.in_features,
-                down_proj.out_features,
-                bias=down_proj.bias is not None,
-            )
-            # Preserve dtype/device for FSDP compatibility
-            new_down_proj.weight.data = down_proj.weight.data.clone()
-            if down_proj.bias is not None:
-                new_down_proj.bias.data = down_proj.bias.data.clone()
+            if use_hadamard:
+                # HBitLinear with Hadamard-transformed weights (BitNet v2)
+                new_down_proj = convert_linear_to_hbitlinear(down_proj)
+            else:
+                # Standard BitLinear
+                new_down_proj = BitLinear(
+                    down_proj.in_features,
+                    down_proj.out_features,
+                    bias=down_proj.bias is not None,
+                )
+                # Preserve dtype/device for FSDP compatibility
+                new_down_proj.weight.data = down_proj.weight.data.clone()
+                if down_proj.bias is not None:
+                    new_down_proj.bias.data = down_proj.bias.data.clone()
         else:
             new_down_proj = down_proj
 
@@ -263,6 +319,7 @@ def convert_model_to_bitnet(
     intermediate_size: int,
     exclude_layers: Optional[list[str]] = None,
     insert_subln: bool = True,
+    use_hadamard: bool = False,
 ) -> nn.Module:
     """
     Convert a HuggingFace model to BitNet architecture.
@@ -272,9 +329,11 @@ def convert_model_to_bitnet(
         hidden_size: Model hidden dimension
         intermediate_size: FFN intermediate dimension
         exclude_layers: Layer names to exclude from conversion
-        insert_subln: Whether to insert SubLN before o_proj/down_proj.
+        insert_subln: Whether to insert SubLN before projections.
             True: Full BitDistill Stage 1 (requires Stage 1.9 to realign)
             False: Direct BitLinear replacement (preserves pretrained weights)
+        use_hadamard: Whether to use HBitLinear with online Hadamard transformation
+            for o_proj and down_proj layers (BitNet v2). Default False.
 
     Returns:
         Converted model
@@ -291,17 +350,23 @@ def convert_model_to_bitnet(
         # Convert attention layers
         if "self_attn" in name or "attention" in name:
             if hasattr(module, "q_proj"):  # LLaMA-style attention
-                convert_attention_layer(module, hidden_size, exclude_layers, insert_subln)
+                convert_attention_layer(
+                    module, hidden_size, exclude_layers, insert_subln, use_hadamard
+                )
 
         # Convert MLP layers
         if "mlp" in name or "feed_forward" in name:
             if hasattr(module, "gate_proj"):  # LLaMA-style MLP
-                convert_mlp_layer(module, intermediate_size, exclude_layers, insert_subln)
+                convert_mlp_layer(
+                    module, intermediate_size, exclude_layers, insert_subln, use_hadamard
+                )
 
     logger.info("Converted model to BitNet architecture")
     logger.info("  - Replaced Linear -> BitLinear")
+    if use_hadamard:
+        logger.info("  - Using HBitLinear (Hadamard) for o_proj and down_proj (BitNet v2)")
     if insert_subln:
-        logger.info("  - Inserted SubLN before o_proj and down_proj")
+        logger.info("  - Inserted SubLN before projections")
     else:
         logger.info("  - SubLN disabled (preserving pretrained weight compatibility)")
 
