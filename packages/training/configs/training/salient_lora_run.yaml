@@ -101,9 +101,9 @@ gradient_accumulation_steps: 32
 gradient_clipping: 1.0
 auto_batch_size: false
 
-# Lambda warmup (enabled for gradual salient quantization transition)
+# Lambda warmup (disabled - start with full quantization)
 lambda_warmup:
-  enabled: true
+  enabled: false
   warmup_steps: 500
   schedule: linear
 

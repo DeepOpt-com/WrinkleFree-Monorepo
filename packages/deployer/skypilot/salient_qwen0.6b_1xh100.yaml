@@ -96,7 +96,7 @@ run: |
   echo "Key features:"
   echo "  - ~1% of columns kept in FP16 (AWQ-style saliency)"
   echo "  - End-to-end trainable (both FP16 and ternary)"
-  echo "  - Lambda warmup for gradual quantization transition"
+  echo "  - Full ternary quantization from start (no lambda warmup)"
   echo "  - AdamW optimizer"
   echo "  - LDC-MTL: Auto objective weight learning (reinits on phase changes)"
   echo "  - ODM: Auto dataset weight learning (after warmup)"

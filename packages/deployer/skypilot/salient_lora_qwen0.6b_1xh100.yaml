@@ -47,6 +47,7 @@ envs:
   WANDB_PROJECT: wrinklefree
   HF_HUB_ENABLE_HF_TRANSFER: "1"
   TOTAL_TOKENS: "1_000_000_000"  # 1B tokens
+  PYTHONUNBUFFERED: "1"  # Disable stdout buffering for real-time logs
 
 setup: |
   set -e
@@ -103,8 +104,8 @@ run: |
     model=${MODEL} \
     training=salient_lora_run \
     training.total_tokens=${TOTAL_TOKENS} \
-    training.batch_size=6 \
-    training.gradient_accumulation_steps=22 \
+    training.batch_size=16 \
+    training.gradient_accumulation_steps=8 \
     training.max_seq_length=1024 \
     training.logging.log_interval=2 \
     training.auto_batch_size=false \

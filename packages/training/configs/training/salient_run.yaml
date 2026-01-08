@@ -59,13 +59,13 @@ packing:
 optimizer:
   type: adamw
   use_8bit: true  # Uses bitsandbytes AdamW8bit
-  learning_rate: 1e-4
+  learning_rate: 5e-5
   weight_decay: 0.01
 
 # Scheduler: WSD
 scheduler:
   type: wsd
-  warmup_steps: 500
+  warmup_steps: 100
   decay_ratio: 0.2
   decay_type: linear
   min_lr_ratio: 0.0
@@ -79,10 +79,10 @@ gradient_accumulation_steps: 32
 gradient_clipping: 1.0
 auto_batch_size: false
 
-# Lambda warmup (enabled for gradual quantization transition)
+# Lambda warmup (DISABLED - start with full quantization)
 # At lambda=0, all columns are FP16; at lambda=1, only salient columns are FP16
 lambda_warmup:
-  enabled: true
+  enabled: false
   warmup_steps: 1000
   schedule: linear
 
