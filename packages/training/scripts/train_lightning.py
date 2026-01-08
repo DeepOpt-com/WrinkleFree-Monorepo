@@ -307,6 +307,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 get_salient_stats,
             )
             from wf_data.data.factory import create_dataloader
+            from wf_data.data import load_data_config
             print("[DEBUG] Imports complete", flush=True)
 
             salient_ratio = salient_cfg.get("ratio", 0.01)
@@ -315,25 +316,20 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
 
             print(f"[DEBUG] Salient config: ratio={salient_ratio}, samples={calibration_samples}", flush=True)
 
-            # Use synthetic data for fast calibration (random tokens)
-            # This avoids slow streaming dataset startup while still providing
-            # representative activation statistics for saliency scoring
-            vocab_size = tokenizer.vocab_size
+            # Load real calibration data - synthetic data produces meaningless saliency scores
             seq_len = cfg.training.max_seq_length
             batch_size = 4
-            print(f"[DEBUG] Synthetic data: vocab={vocab_size}, seq_len={seq_len}, batch={batch_size}", flush=True)
 
-            def synthetic_dataloader():
-                """Generate random token batches for calibration."""
-                while True:
-                    # Random tokens from vocabulary
-                    input_ids = torch.randint(
-                        0, vocab_size, (batch_size, seq_len), dtype=torch.long
-                    )
-                    yield {"input_ids": input_ids}
+            print(f"[DEBUG] Loading calibration data config: {calibration_data}", flush=True)
+            calib_config = load_data_config(calibration_data)
 
-            calib_dataloader = synthetic_dataloader()
-            print("[DEBUG] Created synthetic dataloader", flush=True)
+            calib_dataloader, _ = create_dataloader(
+                config=calib_config,
+                tokenizer=tokenizer,
+                batch_size=batch_size,
+                max_length=seq_len,
+            )
+            print(f"[DEBUG] Using calibration data: {calibration_data}", flush=True)
 
             # Run calibration on GPU in float32 to avoid dtype mismatches
             # (BitLinear outputs float32, but lm_head may be bfloat16)

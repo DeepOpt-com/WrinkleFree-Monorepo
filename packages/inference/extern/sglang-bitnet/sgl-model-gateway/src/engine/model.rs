@@ -183,33 +183,67 @@ impl std::error::Error for EngineError {}
 impl BitNetEngine {
     /// Load a model from a GGUF file.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, EngineError> {
+        Self::load_with_context_len(path, None)
+    }
+
+    /// Load a model from a GGUF file with optional context length override.
+    ///
+    /// Use `context_len` to limit KV cache memory for large models with
+    /// very long default context lengths (e.g., 128K).
+    pub fn load_with_context_len<P: AsRef<Path>>(
+        path: P,
+        context_len: Option<usize>,
+    ) -> Result<Self, EngineError> {
         let reader = GgufReader::open(path)?;
         reader.print_summary();
 
+        // Load embeddings first to infer vocab_size if needed
+        let embed_tokens = load_f32_tensor(&reader, "token_embd.weight")?;
+
         // Extract configuration
         let gguf_config = &reader.config;
+        let hidden_size = gguf_config.hidden_size as usize;
+
+        // Infer vocab_size from embedding tensor shape if not in metadata
+        // embed_tokens shape is [hidden_size, vocab_size]
+        let vocab_size = if gguf_config.vocab_size > 0 {
+            gguf_config.vocab_size as usize
+        } else {
+            embed_tokens.len() / hidden_size
+        };
+        tracing::info!("Vocab size: {} (inferred from embedding shape)", vocab_size);
+
+        // Use context_len override if provided, otherwise use model's default
+        let max_seq_len = context_len.unwrap_or(gguf_config.max_seq_len as usize);
+        if context_len.is_some() {
+            tracing::info!(
+                "Context length: {} (overridden from model default {})",
+                max_seq_len,
+                gguf_config.max_seq_len
+            );
+        } else {
+            tracing::info!("Context length: {} (from model)", max_seq_len);
+        }
+
         let config = BitNetConfig {
-            vocab_size: gguf_config.vocab_size as usize,
-            hidden_size: gguf_config.hidden_size as usize,
+            vocab_size,
+            hidden_size,
             num_layers: gguf_config.num_layers as usize,
             num_heads: gguf_config.num_heads as usize,
             num_kv_heads: gguf_config.num_kv_heads as usize,
             intermediate_size: gguf_config.intermediate_size as usize,
-            max_seq_len: gguf_config.max_seq_len as usize,
+            max_seq_len,
             rms_norm_eps: gguf_config.rms_norm_eps,
             rope_theta: gguf_config.rope_theta,
             head_dim: gguf_config.hidden_size as usize / gguf_config.num_heads as usize,
         };
 
         // Validate config
-        if config.hidden_size == 0 || config.num_layers == 0 {
+        if config.hidden_size == 0 || config.num_layers == 0 || config.vocab_size == 0 {
             return Err(EngineError::InvalidConfig(
                 "Missing required model dimensions".to_string(),
             ));
         }
-
-        // Load embeddings
-        let embed_tokens = load_f32_tensor(&reader, "token_embd.weight")?;
 
         // Load output norm
         let output_norm = load_f32_tensor(&reader, "output_norm.weight")?;
@@ -232,6 +266,10 @@ impl BitNetEngine {
             max_seq_len: config.max_seq_len,
         };
         let kv_cache = KVCache::new(kv_config);
+
+        // Log KV cache memory usage
+        let kv_memory_mb = kv_cache.memory_bytes() / (1024 * 1024);
+        tracing::info!("KV cache allocated: {} MB", kv_memory_mb);
 
         // Load vocabulary
         let vocab = reader.get_vocab();

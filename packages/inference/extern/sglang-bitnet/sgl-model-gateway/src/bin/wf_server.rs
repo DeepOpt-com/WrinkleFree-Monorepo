@@ -72,6 +72,11 @@ struct Args {
     /// Prompt for benchmark
     #[arg(long, default_value = "What is the meaning of life?")]
     benchmark_prompt: String,
+
+    /// Context length (max sequence length). Overrides model default.
+    /// Use this to limit KV cache memory for large models.
+    #[arg(short, long)]
+    context_len: Option<usize>,
 }
 
 // OpenAI-compatible request/response types
@@ -333,7 +338,10 @@ async fn main() {
     {
         // Load model
         info!("Loading model...");
-        let engine = match BitNetEngine::load(&args.model_path) {
+        if let Some(ctx_len) = args.context_len {
+            info!("Context length override: {}", ctx_len);
+        }
+        let engine = match BitNetEngine::load_with_context_len(&args.model_path, args.context_len) {
             Ok(e) => e,
             Err(e) => {
                 error!("Failed to load model: {}", e);

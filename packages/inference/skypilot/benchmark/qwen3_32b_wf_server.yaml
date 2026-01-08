@@ -22,8 +22,8 @@ resources:
   use_spot: false
 
 envs:
-  MODEL_REPO: Qwen/Qwen3-32B-Base
-  MODEL_NAME: Qwen3-32B-Base
+  MODEL_REPO: Qwen/Qwen2.5-32B
+  MODEL_NAME: Qwen2.5-32B
   NUM_THREADS: "64"
   CMAKE_BUILD_PARALLEL_LEVEL: "64"
   HF_HUB_ENABLE_HF_TRANSFER: "1"
@@ -144,9 +144,11 @@ run: |
   echo ""
   echo "=== Step 5: wf_server Benchmark ==="
   echo "Running native Rust inference engine..."
+  echo "Note: Using --context-len 4096 to limit KV cache (model default is 128K)"
 
   $WF_SERVER \
     --model-path $MODEL_PATH \
+    --context-len 4096 \
     --benchmark \
     --benchmark-iterations 5 \
     --benchmark-max-tokens 32

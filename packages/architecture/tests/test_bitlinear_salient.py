@@ -329,6 +329,178 @@ class TestSalientCalibration:
         with pytest.raises(RuntimeError, match="No activations collected"):
             collector.get_mean_abs()
 
+    def test_calibration_end_to_end(self):
+        """Test full calibration pipeline runs and produces meaningful results."""
+        from wf_arch.layers.salient_calibration import calibrate_salient_columns
+
+        # Create simple model with BitLinear (mimics a transformer layer structure)
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer1 = BitLinear(64, 128)
+                self.relu = nn.ReLU()
+                self.layer2 = BitLinear(128, 64)
+
+            def forward(self, x):
+                # x shape: (batch, seq, features)
+                x = self.layer1(x)
+                x = self.relu(x)
+                x = self.layer2(x)
+                return x
+
+        model = SimpleModel()
+
+        # Create calibration data as generator (mimics real dataloader)
+        def dataloader():
+            for _ in range(10):
+                # Yield dict with "input_ids" key (tensor features)
+                yield {"input_ids": torch.randn(4, 8, 64)}
+
+        # Run calibration
+        saliency_scores, salient_indices = calibrate_salient_columns(
+            model, dataloader(), salient_ratio=0.1, num_samples=40
+        )
+
+        # Verify results for both layers
+        assert len(saliency_scores) == 2, f"Expected 2 layers, got {len(saliency_scores)}"
+        assert len(salient_indices) == 2
+
+        # Saliency scores should be non-zero (hooks fired and captured activations)
+        for name, scores in saliency_scores.items():
+            assert scores.sum() > 0, f"Saliency scores all zero for {name}"
+            assert scores.shape[0] > 0, f"Empty scores for {name}"
+
+        # Indices should be in valid range and have correct count
+        assert "layer1" in salient_indices
+        assert "layer2" in salient_indices
+
+        # layer1: 10% of 64 = 6 salient columns
+        assert salient_indices["layer1"].numel() == 6
+        assert salient_indices["layer1"].max() < 64
+
+        # layer2: 10% of 128 = 12 salient columns
+        assert salient_indices["layer2"].numel() == 12
+        assert salient_indices["layer2"].max() < 128
+
+    def test_hooks_capture_activations(self):
+        """Verify forward hooks actually capture activations."""
+        from wf_arch.layers.salient_calibration import SalientCalibrator
+
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = BitLinear(32, 16)
+
+            def forward(self, x):
+                return self.linear(x)
+
+        model = SimpleModel()
+        calibrator = SalientCalibrator(model, salient_ratio=0.1)
+
+        # Check hooks are registered
+        calibrator._register_hooks()
+        assert len(calibrator.hooks) == 1, "Hook not registered"
+
+        # Run forward pass directly on model
+        x = torch.randn(2, 4, 32)
+        model(x)
+
+        # Verify activations were collected
+        for name, collector in calibrator.collectors.items():
+            assert collector.activation_count > 0, f"No activations collected for {name}"
+            # Should have 2*4 = 8 tokens
+            assert collector.activation_count == 8
+
+        calibrator._remove_hooks()
+
+    def test_saliency_formula_correctness(self):
+        """Verify saliency = mean(|activation|) * ||weight||_2 selects correct columns."""
+        from wf_arch.layers.salient_calibration import SalientCalibrator
+
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer = BitLinear(8, 4)
+
+            def forward(self, x):
+                return self.layer(x)
+
+        model = SimpleModel()
+
+        # Set known weights: column 0 has large weights
+        with torch.no_grad():
+            model.layer.weight.fill_(1.0)
+            model.layer.weight[:, 0] = 10.0  # Column 0: weight norm = sqrt(4*100) = 20
+
+        # Create input with large activation in column 0
+        x = torch.ones(1, 1, 8)
+        x[0, 0, 0] = 100.0  # Column 0 has large activation
+
+        # Expected saliency:
+        # Column 0: mean_abs=100, weight_norm=20 → saliency = 2000
+        # Other columns: mean_abs=1, weight_norm=2 → saliency = 2
+
+        calibrator = SalientCalibrator(model, salient_ratio=0.25)  # Select top 2/8
+
+        def dataloader():
+            yield {"input_ids": x}
+
+        scores = calibrator.calibrate(dataloader(), num_samples=1)
+        indices = calibrator.get_salient_indices(scores)
+
+        # Column 0 should be among the salient columns (highest score)
+        assert 0 in indices["layer"].tolist(), "Column 0 should be selected as salient"
+        # Column 0 should have much higher score
+        assert scores["layer"][0] > scores["layer"][1] * 10, "Column 0 should dominate"
+
+    def test_calibration_depends_on_input_pattern(self):
+        """Verify calibration selects different columns for different input patterns."""
+        from wf_arch.layers.salient_calibration import calibrate_salient_columns
+
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer = BitLinear(64, 32)
+
+            def forward(self, x):
+                return self.layer(x)
+
+        # Pattern A: High activation in first half of columns
+        def dataloader_pattern_a():
+            x = torch.zeros(4, 8, 64)
+            x[:, :, :32] = 10.0  # First 32 columns active
+            for _ in range(5):
+                yield {"input_ids": x}
+
+        # Pattern B: High activation in second half of columns
+        def dataloader_pattern_b():
+            x = torch.zeros(4, 8, 64)
+            x[:, :, 32:] = 10.0  # Last 32 columns active
+            for _ in range(5):
+                yield {"input_ids": x}
+
+        # Test with pattern A
+        model_a = SimpleModel()
+        _, indices_a = calibrate_salient_columns(model_a, dataloader_pattern_a(), 0.1, 20)
+
+        # Test with pattern B (fresh model to ensure same weights)
+        model_b = SimpleModel()
+        # Copy weights to ensure only input differs
+        model_b.load_state_dict(model_a.state_dict())
+        _, indices_b = calibrate_salient_columns(model_b, dataloader_pattern_b(), 0.1, 20)
+
+        # Indices should differ based on input pattern
+        # Pattern A should select from first 32 columns
+        # Pattern B should select from last 32 columns
+        assert not torch.equal(indices_a["layer"], indices_b["layer"]), \
+            "Calibration should select different columns for different input patterns"
+
+        # More specific: pattern A indices should be mostly < 32
+        assert (indices_a["layer"] < 32).sum() > (indices_a["layer"] >= 32).sum(), \
+            "Pattern A should favor first 32 columns"
+        assert (indices_b["layer"] >= 32).sum() > (indices_b["layer"] < 32).sum(), \
+            "Pattern B should favor last 32 columns"
+
 
 class TestSalientVsNonSalientPaths:
     """Test that salient and non-salient paths work correctly."""
