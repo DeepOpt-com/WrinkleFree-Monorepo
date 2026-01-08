@@ -164,13 +164,17 @@ class SalientCalibrator:
         Returns:
             Dict mapping layer names to saliency scores (shape: in_features per layer)
         """
+        print("[CALIB DEBUG] calibrate() called", flush=True)
         if device is None:
             device = next(self.model.parameters()).device
+        print(f"[CALIB DEBUG] device={device}", flush=True)
 
         # Save and restore training mode
         was_training = self.model.training
         self.model.eval()
+        print("[CALIB DEBUG] model.eval() done", flush=True)
         self._register_hooks()
+        print(f"[CALIB DEBUG] hooks registered ({len(self.hooks)} hooks)", flush=True)
 
         try:
             samples_processed = 0
@@ -182,14 +186,18 @@ class SalientCalibrator:
                 total=num_samples,
                 unit="samples",
             )
+            print("[CALIB DEBUG] tqdm created", flush=True)
 
             dataloader_iter = iter(dataloader)
+            print("[CALIB DEBUG] dataloader iter created", flush=True)
             while samples_processed < num_samples:
+                print(f"[CALIB DEBUG] getting batch {batch_count}...", flush=True)
                 try:
                     batch = next(dataloader_iter)
                 except StopIteration:
                     logger.warning("Dataloader exhausted before reaching num_samples")
                     break
+                print(f"[CALIB DEBUG] got batch {batch_count}", flush=True)
 
                 # Handle different batch formats
                 if isinstance(batch, dict):
@@ -205,13 +213,18 @@ class SalientCalibrator:
 
                 input_ids = input_ids.to(device)
                 batch_size = input_ids.shape[0]
+                print(f"[CALIB DEBUG] batch {batch_count}: shape={input_ids.shape}", flush=True)
 
                 # Forward pass to collect activations
                 try:
+                    print(f"[CALIB DEBUG] batch {batch_count}: forward pass...", flush=True)
                     _ = self.model(input_ids)
+                    print(f"[CALIB DEBUG] batch {batch_count}: forward done", flush=True)
                 except Exception as e:
-                    logger.warning(f"Forward pass failed: {e}")
-                    continue
+                    print(f"[CALIB ERROR] Forward pass failed: {e}", flush=True)
+                    import traceback
+                    traceback.print_exc()
+                    raise  # Don't silently continue - surface the error
 
                 samples_processed += batch_size
                 batch_count += 1
@@ -219,6 +232,7 @@ class SalientCalibrator:
                 pbar.set_postfix({"batches": batch_count})
 
             pbar.close()
+            print(f"[CALIB DEBUG] loop done, {samples_processed} samples", flush=True)
 
         finally:
             self._remove_hooks()

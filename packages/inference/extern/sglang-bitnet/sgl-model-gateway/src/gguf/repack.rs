@@ -82,11 +82,11 @@ fn decode_gguf_ternary(
     }
 }
 
-/// Decode I2_S format: 2-bit signed integer, similar to TQ2_0 but with 4-byte scale.
-/// Block: 256 elements = 64 bytes data + 4 bytes scale/min
+/// Decode I2_S format: pure 2-bit signed integer, no scale factors.
+/// Block: 256 elements = 64 bytes (4 weights per byte)
 fn decode_i2_s(data: &[u8], n_elements: usize) -> Result<Vec<i8>, GgufError> {
     const BLOCK_SIZE: usize = 256;
-    const BLOCK_BYTES: usize = 68; // 64 data + 4 scale
+    const BLOCK_BYTES: usize = 64; // Pure 2-bit packing, no scale
 
     let n_blocks = (n_elements + BLOCK_SIZE - 1) / BLOCK_SIZE;
     let mut output = Vec::with_capacity(n_elements);

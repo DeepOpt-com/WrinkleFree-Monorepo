@@ -193,8 +193,9 @@ impl GgmlQuantType {
             Self::TQ1_0 => (256, 64 + 4 + 2),  // 256 elements, 70 bytes
             // TQ2_0: 2-bit ternary (00=-1, 01=0, 10=+1), 4 weights per byte
             Self::TQ2_0 => (256, 64 + 2),  // 256 elements, 66 bytes
-            // I2_S: 2-bit signed integer, optimized for BitNet inference
-            Self::I2_S => (256, 64 + 4),   // 256 elements, 68 bytes
+            // I2_S: 2-bit signed integer, pure 2-bit packing (no scale)
+            // 256 elements / 4 elements per byte = 64 bytes
+            Self::I2_S => (256, 64),
             Self::TL1 => (256, 70),
             Self::TL2 => (256, 66),
         }

@@ -1,0 +1,123 @@
+# Full Hadamard Training - Nebius 1x H100
+#
+# Full training run with BitNet v2 Hadamard conversion:
+# - HBitLinear for o_proj and down_proj (online Hadamard)
+# - SubLN for training stability
+# - CE + DLM objectives
+# - Full quantization from step 0 (no lambda warmup)
+#
+# Launch:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/train_hadamard_full.yaml -y --cluster wf-hadamard-full
+#
+# Monitor:
+#   sky logs wf-hadamard-full
+#
+# Down:
+#   sky down wf-hadamard-full -y
+
+name: wf-hadamard-full-train
+
+resources:
+  accelerators: H100:1
+  memory: 64+
+  disk_size: 200
+  use_spot: false
+  cloud: nebius
+
+# Run from monorepo root
+workdir: ../..
+
+file_mounts:
+  /tmp/gcp-creds.json: credentials/gcp-service-account.json
+  /tmp/credentials.env: credentials/.env
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GOOGLE_CLOUD_PROJECT: wrinklefree-481904
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  WANDB_PROJECT: wrinklefree_v2
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  EXPERIMENT_NAME: hadamard_subln_full
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  uv sync --all-packages
+
+  # Verify Hadamard imports
+  printf "Verifying Hadamard imports...\n"
+  uv run python -c "from wf_arch import HBitLinear, hadamard_transform, hadamard_transform_weights; print('Hadamard imports OK')"
+
+  printf "Setup complete\n"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  set -a
+  source /tmp/credentials.env
+  set +a
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  echo "WANDB_API_KEY is set: $([ -n \"$WANDB_API_KEY\" ] && echo 'yes' || echo 'no')"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "=============================================="
+  echo "FULL HADAMARD + SubLN Training"
+  echo "=============================================="
+  echo "Model: ${MODEL}"
+  echo "Experiment: ${EXPERIMENT_NAME}"
+  echo ""
+  echo "Configuration:"
+  echo "  - HBitLinear for o_proj, down_proj (BitNet v2)"
+  echo "  - SubLN before all projections (BitNet paper)"
+  echo "  - CE + DLM objectives"
+  echo "  - Full quantization from step 0 (no lambda warmup)"
+  echo "  - 10B tokens total"
+  echo "=============================================="
+
+  # Full training with Hadamard enabled
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=base \
+    training.auto_convert.use_hadamard=true \
+    training.auto_convert.insert_subln=true \
+    training.total_tokens=10_000_000_000 \
+    training.max_steps=null \
+    training.batch_size=32 \
+    training.gradient_accumulation_steps=16 \
+    training.max_seq_length=2048 \
+    training.logging.log_interval=10 \
+    training.auto_batch_size=true \
+    training.torch_compile.enabled=true \
+    training.lambda_warmup.enabled=false \
+    training.meta_optimization.enabled=false \
+    training.checkpoint.save_interval=500 \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=${EXPERIMENT_NAME} \
+    distributed=single_gpu \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.wandb.tags="[hadamard,subln,bitnet_v2,full_training]"
+
+  echo ""
+  echo "=============================================="
+  echo "FULL TRAINING COMPLETE!"
+  echo ""
+  echo "Check W&B: https://wandb.ai/${WANDB_PROJECT}"
+  echo "Check GCS: gs://${GCS_BUCKET}/"
+  echo "=============================================="

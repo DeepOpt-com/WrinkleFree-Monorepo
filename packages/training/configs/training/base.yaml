@@ -7,6 +7,8 @@ stage: unified
 # Auto-convert: Converts model to BitNet on-the-fly if not already converted
 auto_convert:
   enabled: true
+  insert_subln: true  # Add SubLN before projections (BitNet paper)
+  use_hadamard: false  # Enable online Hadamard for o_proj/down_proj (BitNet v2)
   exclude_layers:
     - embed_tokens
     - lm_head

@@ -67,6 +67,8 @@ from wf_train.utils.logging_setup import setup_logging
 
 logger = logging.getLogger(__name__)
 
+print("[DEBUG] Imports complete, script loaded!", flush=True)
+
 
 def resolve_checkpoint_path(
     cfg: DictConfig,
@@ -254,6 +256,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     if model_path is None:
         model_path = cfg.model.name
 
+    print(f"[DEBUG] Loading model from: {model_path}", flush=True)
     logger.info(f"Loading model from: {model_path}")
 
     # Convert Path to string for transformers compatibility
@@ -284,31 +287,33 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             insert_subln=insert_subln,
             use_hadamard=use_hadamard,
         )
+        print(f"[DEBUG] Auto-converted to BitNet", flush=True)
         logger.info(f"Auto-converted model to BitNet (insert_subln={insert_subln}, use_hadamard={use_hadamard})")
 
     # ===========================================================================
     # STEP 1: Handle Salient Columns (AWQ-style) if enabled
     # Must be applied BEFORE LoRA so LoRA can wrap BitLinearSalient layers
     # ===========================================================================
+    print("[DEBUG] Starting salient/LoRA setup...", flush=True)
     salient_cfg = cfg.training.get("salient", {})
     salient_enabled = salient_cfg.get("enabled", False)
     if salient_enabled:
+        print("[DEBUG] Salient enabled, starting calibration...", flush=True)
         try:
+            print("[DEBUG] Importing salient modules...", flush=True)
             from wf_arch import (
                 calibrate_salient_columns,
                 convert_bitlinear_to_salient,
                 get_salient_stats,
             )
             from wf_data.data.factory import create_dataloader
+            print("[DEBUG] Imports complete", flush=True)
 
             salient_ratio = salient_cfg.get("ratio", 0.01)
             calibration_samples = salient_cfg.get("calibration_samples", 128)
             calibration_data = salient_cfg.get("calibration_data", "fineweb")
 
-            logger.info(
-                f"Salient: Calibrating with {calibration_samples} samples "
-                f"(ratio={salient_ratio*100:.1f}%)"
-            )
+            print(f"[DEBUG] Salient config: ratio={salient_ratio}, samples={calibration_samples}", flush=True)
 
             # Use synthetic data for fast calibration (random tokens)
             # This avoids slow streaming dataset startup while still providing
@@ -316,6 +321,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             vocab_size = tokenizer.vocab_size
             seq_len = cfg.training.max_seq_length
             batch_size = 4
+            print(f"[DEBUG] Synthetic data: vocab={vocab_size}, seq_len={seq_len}, batch={batch_size}", flush=True)
 
             def synthetic_dataloader():
                 """Generate random token batches for calibration."""
@@ -327,10 +333,15 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                     yield {"input_ids": input_ids}
 
             calib_dataloader = synthetic_dataloader()
+            print("[DEBUG] Created synthetic dataloader", flush=True)
 
-            # Run calibration on GPU for speed
+            # Run calibration on GPU in float32 to avoid dtype mismatches
+            # (BitLinear outputs float32, but lm_head may be bfloat16)
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = model.to(device)
+            original_dtype = next(model.parameters()).dtype
+            print(f"[DEBUG] Moving model to {device} (float32 for calibration, was {original_dtype})...", flush=True)
+            model = model.to(device=device, dtype=torch.float32)
+            print(f"[DEBUG] Model on {device}, starting calibration...", flush=True)
             saliency_scores, salient_indices = calibrate_salient_columns(
                 model,
                 calib_dataloader,
@@ -338,6 +349,10 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 num_samples=calibration_samples,
                 device=device,
             )
+            print("[DEBUG] Calibration complete!", flush=True)
+            # Convert back to original dtype after calibration
+            model = model.to(dtype=original_dtype)
+            print(f"[DEBUG] Model back to {original_dtype}", flush=True)
 
             # Convert BitLinear -> BitLinearSalient with calibrated indices
             model = convert_bitlinear_to_salient(
@@ -366,6 +381,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     # Applied AFTER salient so LoRA can wrap BitLinearSalient layers
     # This is the NEW composable wrapper pattern (replaces legacy BitLinearLRC)
     # ===========================================================================
+    print("[DEBUG] Salient setup complete, starting LoRA setup...", flush=True)
     lora_cfg = cfg.training.get("lora", {})
     lora_enabled = lora_cfg.get("enabled", False)
 
@@ -948,8 +964,10 @@ def create_trainer(cfg: DictConfig, callbacks: list, max_steps: int) -> pl.Train
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main training function."""
+    print("[DEBUG] main() started!", flush=True)
     # Get rank for distributed
     rank = int(os.environ.get("RANK", 0))
+    print(f"[DEBUG] Setting up logging for rank {rank}...", flush=True)
     setup_logging(rank=rank, output_dir=Path(cfg.output_dir))
 
     # Enable TF32 for Ampere+ GPUs (A100, H100, RTX 30xx/40xx)

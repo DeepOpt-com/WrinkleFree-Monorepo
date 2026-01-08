@@ -37,8 +37,9 @@ salient:
 
 # === LORA ADAPTER (Step 3) ===
 # Low-rank correction applied after salient conversion
+# DISABLED for faster smoke test (SVD init is slow)
 lora:
-  enabled: true
+  enabled: false
   # Rank as percentage of min(in_features, out_features)
   # 2% for smaller adapters
   rank_percentage: 0.02

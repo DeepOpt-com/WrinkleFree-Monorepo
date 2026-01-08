@@ -104,8 +104,8 @@ run: |
     model=${MODEL} \
     training=salient_lora_run \
     training.total_tokens=${TOTAL_TOKENS} \
-    training.batch_size=16 \
-    training.gradient_accumulation_steps=8 \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=32 \
     training.max_seq_length=1024 \
     training.logging.log_interval=2 \
     training.auto_batch_size=false \
