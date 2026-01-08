@@ -141,7 +141,9 @@ class BitLinearSalient(BitLinear):
         all_indices = torch.arange(self.in_features, device=device)
         mask = torch.ones(self.in_features, dtype=torch.bool, device=device)
         mask[self.salient_indices] = False
-        self.nonsalient_indices = all_indices[mask]
+        nonsalient = all_indices[mask]
+        # Re-register buffer with correct size (may differ from init size)
+        self.register_buffer("nonsalient_indices", nonsalient)
 
         # Store saliency scores if provided
         if saliency_scores is not None:
@@ -181,6 +183,31 @@ class BitLinearSalient(BitLinear):
             return F.linear(x_quant, w_quant, bias)
 
         # After calibration: mixed precision forward pass
+        # Debug: Check dimensions and devices
+        if not hasattr(self, "_debug_logged"):
+            logger.debug(
+                f"BitLinearSalient forward: w.shape={w.shape}, x.shape={x.shape}, "
+                f"salient_indices.shape={self.salient_indices.shape}, "
+                f"salient_indices.device={self.salient_indices.device}, "
+                f"salient_indices.max={self.salient_indices.max().item()}, "
+                f"nonsalient_indices.shape={self.nonsalient_indices.shape}, "
+                f"nonsalient_indices.max={self.nonsalient_indices.max().item()}, "
+                f"in_features={self.in_features}"
+            )
+            self._debug_logged = True
+
+        # Validate indices before indexing (only in debug mode)
+        if self.salient_indices.max() >= w.shape[1]:
+            raise RuntimeError(
+                f"salient_indices max ({self.salient_indices.max().item()}) >= "
+                f"weight columns ({w.shape[1]})"
+            )
+        if self.nonsalient_indices.max() >= w.shape[1]:
+            raise RuntimeError(
+                f"nonsalient_indices max ({self.nonsalient_indices.max().item()}) >= "
+                f"weight columns ({w.shape[1]})"
+            )
+
         # Split weight matrix by columns
         w_salient = w[:, self.salient_indices]  # (out_features, num_salient)
         w_nonsalient = w[:, self.nonsalient_indices]  # (out_features, in - num_salient)
@@ -261,6 +288,42 @@ class BitLinearSalient(BitLinear):
 
         return stats
 
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Override to handle buffer size mismatch during checkpoint loading.
+
+        The nonsalient_indices buffer changes size after calibration (from in_features
+        to in_features - num_salient), so we need to resize it before loading.
+        """
+        nonsalient_key = prefix + "nonsalient_indices"
+        if nonsalient_key in state_dict:
+            # Resize buffer to match checkpoint
+            loaded_size = state_dict[nonsalient_key].numel()
+            if loaded_size != self.nonsalient_indices.numel():
+                self.nonsalient_indices = torch.zeros(
+                    loaded_size,
+                    dtype=self.nonsalient_indices.dtype,
+                    device=self.nonsalient_indices.device,
+                )
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
     def extra_repr(self) -> str:
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
@@ -329,6 +392,11 @@ def convert_bitlinear_to_salient(
                     eps=child.eps,
                     salient_ratio=salient_ratio,
                 )
+
+                # Move layer to same device as original BEFORE copying weights
+                # This ensures buffers (salient_indices, etc.) are on correct device
+                device = child.weight.device
+                salient_layer = salient_layer.to(device)
 
                 # Copy weights (preserve dtype/device for FSDP compatibility)
                 salient_layer.weight.data = child.weight.data.clone()

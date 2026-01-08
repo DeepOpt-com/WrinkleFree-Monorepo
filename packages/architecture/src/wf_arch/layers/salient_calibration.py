@@ -167,19 +167,28 @@ class SalientCalibrator:
         if device is None:
             device = next(self.model.parameters()).device
 
+        # Save and restore training mode
+        was_training = self.model.training
         self.model.eval()
         self._register_hooks()
 
         try:
             samples_processed = 0
+            batch_count = 0
+            # Don't wrap streaming dataloader with tqdm - iterate manually
+            # This prevents tqdm from prefetching infinitely from streaming datasets
             pbar = tqdm(
-                dataloader,
                 desc="Calibrating salient columns",
-                total=min(num_samples, len(dataloader)),
+                total=num_samples,
+                unit="samples",
             )
 
-            for batch in pbar:
-                if samples_processed >= num_samples:
+            dataloader_iter = iter(dataloader)
+            while samples_processed < num_samples:
+                try:
+                    batch = next(dataloader_iter)
+                except StopIteration:
+                    logger.warning("Dataloader exhausted before reaching num_samples")
                     break
 
                 # Handle different batch formats
@@ -195,6 +204,7 @@ class SalientCalibrator:
                     continue
 
                 input_ids = input_ids.to(device)
+                batch_size = input_ids.shape[0]
 
                 # Forward pass to collect activations
                 try:
@@ -203,11 +213,18 @@ class SalientCalibrator:
                     logger.warning(f"Forward pass failed: {e}")
                     continue
 
-                samples_processed += input_ids.shape[0]
-                pbar.set_postfix({"samples": samples_processed})
+                samples_processed += batch_size
+                batch_count += 1
+                pbar.update(batch_size)
+                pbar.set_postfix({"batches": batch_count})
+
+            pbar.close()
 
         finally:
             self._remove_hooks()
+            # Restore original training mode
+            if was_training:
+                self.model.train()
 
         if samples_processed == 0:
             raise RuntimeError("No samples processed during calibration")

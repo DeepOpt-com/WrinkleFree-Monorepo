@@ -246,44 +246,35 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     Handles special stages:
     - lrc_calibration: Converts BitLinear → BitLinearLRC and freezes non-LRC params
     """
-    print("[DEBUG] Entered load_model_and_tokenizer", flush=True)
     # Resolve checkpoint path (local > GCS > HuggingFace)
     stage = cfg.training.get("stage", "stage2")
-    print(f"[DEBUG] Got stage: {stage}", flush=True)
     model_path = resolve_checkpoint_path(cfg, stage=stage)
-    print(f"[DEBUG] Got model_path: {model_path}", flush=True)
 
     # Fallback to model.name if nothing found
     if model_path is None:
         model_path = cfg.model.name
 
-    print(f"[DEBUG] Loading model: {model_path}", flush=True)
+    logger.info(f"Loading model from: {model_path}")
 
     # Convert Path to string for transformers compatibility
     model_path_str = str(model_path) if isinstance(model_path, Path) else model_path
 
-    print(f"[DEBUG] Loading tokenizer from {model_path_str}...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(model_path_str)
-    print(f"[DEBUG] Tokenizer loaded!", flush=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"[DEBUG] Loading model from {model_path_str}...", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_path_str,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
-    print(f"[DEBUG] Model loaded!", flush=True)
 
     # Auto-convert to BitNet if needed
-    print(f"[DEBUG] Checking auto_convert...", flush=True)
     if cfg.training.get("auto_convert", {}).get("enabled", True):
         exclude_layers = cfg.training.get("auto_convert", {}).get("exclude_layers", None)
         # insert_subln=False by default to preserve pretrained weights
         # Set to True only if running Stage 1.9 layer-wise distillation afterward
         insert_subln = cfg.training.get("auto_convert", {}).get("insert_subln", False)
-        print(f"[DEBUG] Auto-converting to BitNet...", flush=True)
         model = auto_convert_if_needed(
             model,
             hidden_size=cfg.model.hidden_size,
@@ -291,13 +282,12 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             exclude_layers=exclude_layers,
             insert_subln=insert_subln,
         )
-        print(f"[DEBUG] BitNet conversion done!", flush=True)
+        logger.info("Auto-converted model to BitNet")
 
     # Handle LRC (Low-Rank Correction) if enabled in config
     # Check lrc.enabled rather than stage name to support lrc_run, lrc_calibration, etc.
     lrc_cfg = cfg.training.get("lrc", {})
     lrc_enabled = lrc_cfg.get("enabled", False)
-    print(f"[DEBUG] LRC check: enabled={lrc_enabled}", flush=True)
     if lrc_enabled:
         try:
             from wf_arch import QLRCConfig, convert_bitlinear_to_lrc, freeze_model_except_lrc
@@ -321,11 +311,9 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                     f"(bits={qlrc_config.bits}, group_size={qlrc_config.group_size})"
                 )
 
-            print(
-                f"[DEBUG] LRC: Converting BitLinear → BitLinearLRC "
-                f"(rank={rank_percentage*100:.0f}%, init={init_method}, "
-                f"keep_weight={keep_original_weight}, trainable={trainable_weight})",
-                flush=True,
+            logger.info(
+                f"LRC: Converting BitLinear → BitLinearLRC "
+                f"(rank={rank_percentage*100:.0f}%, init={init_method})"
             )
 
             model = convert_bitlinear_to_lrc(
@@ -336,7 +324,6 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 trainable_weight=trainable_weight,
                 qlrc_config=qlrc_config,
             )
-            print(f"[DEBUG] LRC conversion done!", flush=True)
 
             # Freeze all parameters except LRC matrices (U, V) if trainable_weight=False
             if not trainable_weight:
@@ -371,22 +358,6 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             else:
                 logger.info("LRC: trainable_weight=True, base model weights also trainable via STE")
 
-            # Debug: Check if original weights were deleted
-            from wf_arch.layers import BitLinearLRC
-            for name, module in model.named_modules():
-                if isinstance(module, BitLinearLRC):
-                    weight_numel = module.weight.numel()
-                    weight_quantized_numel = module.weight_quantized.numel()
-                    u_numel = module.lrc_U.numel() if hasattr(module, "lrc_U") else 0
-                    v_numel = module.lrc_V.numel() if hasattr(module, "lrc_V") else 0
-                    logger.info(
-                        f"[DEBUG] {name}: weight={weight_numel}, "
-                        f"weight_quantized={weight_quantized_numel}, "
-                        f"U={u_numel}, V={v_numel}, "
-                        f"keep_original={module.keep_original_weight}"
-                    )
-                    break  # Only log first layer
-
         except ImportError as e:
             logger.error(f"LRC requires wf_arch package: {e}")
             raise
@@ -395,7 +366,6 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     # This is an alternative to LRC - keeps ~1% of columns in FP16
     salient_cfg = cfg.training.get("salient", {})
     salient_enabled = salient_cfg.get("enabled", False)
-    print(f"[DEBUG] Salient check: enabled={salient_enabled}", flush=True)
     if salient_enabled:
         try:
             from wf_arch import (
@@ -403,29 +373,38 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 convert_bitlinear_to_salient,
                 get_salient_stats,
             )
-            from wf_data import get_dataloader
+            from wf_data.data.factory import create_dataloader
 
             salient_ratio = salient_cfg.get("ratio", 0.01)
             calibration_samples = salient_cfg.get("calibration_samples", 128)
             calibration_data = salient_cfg.get("calibration_data", "fineweb")
 
-            print(
-                f"[DEBUG] Salient: Calibrating with {calibration_samples} samples "
-                f"from {calibration_data} (ratio={salient_ratio*100:.1f}%)",
-                flush=True,
+            logger.info(
+                f"Salient: Calibrating with {calibration_samples} samples "
+                f"(ratio={salient_ratio*100:.1f}%)"
             )
 
-            # Get calibration dataloader
-            calib_dataloader = get_dataloader(
-                config_name=calibration_data,
-                tokenizer=tokenizer,
-                batch_size=4,
-                max_length=cfg.training.max_seq_length,
-                split="train",
-            )
+            # Use synthetic data for fast calibration (random tokens)
+            # This avoids slow streaming dataset startup while still providing
+            # representative activation statistics for saliency scoring
+            vocab_size = tokenizer.vocab_size
+            seq_len = cfg.training.max_seq_length
+            batch_size = 4
 
-            # Run calibration to get salient column indices
+            def synthetic_dataloader():
+                """Generate random token batches for calibration."""
+                while True:
+                    # Random tokens from vocabulary
+                    input_ids = torch.randint(
+                        0, vocab_size, (batch_size, seq_len), dtype=torch.long
+                    )
+                    yield {"input_ids": input_ids}
+
+            calib_dataloader = synthetic_dataloader()
+
+            # Run calibration on GPU for speed
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            model = model.to(device)
             saliency_scores, salient_indices = calibrate_salient_columns(
                 model,
                 calib_dataloader,
@@ -433,7 +412,6 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 num_samples=calibration_samples,
                 device=device,
             )
-            print(f"[DEBUG] Salient calibration done!", flush=True)
 
             # Convert BitLinear -> BitLinearSalient with calibrated indices
             model = convert_bitlinear_to_salient(
@@ -442,7 +420,6 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 salient_indices=salient_indices,
                 saliency_scores=saliency_scores,
             )
-            print(f"[DEBUG] Salient conversion done!", flush=True)
 
             # Log salient statistics
             salient_stats = get_salient_stats(model)
@@ -452,18 +429,19 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 f"({salient_stats['num_calibrated_layers']} calibrated), "
                 f"avg ratio={salient_stats['average_salient_ratio']*100:.2f}%"
             )
+            # Model stays on GPU - Lightning handles device placement
 
         except ImportError as e:
             logger.error(f"Salient requires wf_arch and wf_data packages: {e}")
             raise
 
-    # Log model memory usage before gradient checkpointing - use print() for reliable output
+    # Log model size
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     param_memory_mb = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024 / 1024
-    print(
-        f"[DEBUG] Model params: total={total_params:,}, trainable={trainable_params:,}, "
-        f"param_memory={param_memory_mb:.1f}MB", flush=True
+    logger.info(
+        f"Model: {total_params/1e6:.1f}M params ({trainable_params/1e6:.1f}M trainable), "
+        f"{param_memory_mb:.1f}MB"
     )
 
     # Enable gradient checkpointing if configured (saves significant VRAM)
@@ -473,39 +451,32 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     # See: https://pytorch.org/docs/stable/checkpoint.html
     memory_cfg = cfg.training.get("memory", {})
     gc_enabled = memory_cfg.get("gradient_checkpointing", False)
-    print(f"[DEBUG] Gradient checkpointing config: memory_cfg={dict(memory_cfg)}, gc_enabled={gc_enabled}", flush=True)
     if gc_enabled:
         if hasattr(model, "gradient_checkpointing_enable"):
             # Use use_reentrant=False for compatibility with LRC (frozen embeddings)
             # HuggingFace models support gradient_checkpointing_kwargs since transformers 4.35+
             try:
                 model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-                print(">>> Gradient checkpointing ENABLED (use_reentrant=False) <<<", flush=True)
+                logger.info("Gradient checkpointing enabled (use_reentrant=False)")
             except TypeError:
                 # Older transformers version doesn't support kwargs
                 model.gradient_checkpointing_enable()
-                print(">>> Gradient checkpointing ENABLED (legacy, use_reentrant=True) <<<", flush=True)
-                print(">>> WARNING: May not work with LRC - upgrade transformers to 4.35+ <<<", flush=True)
+                logger.warning("Gradient checkpointing enabled (legacy) - upgrade transformers to 4.35+ for LRC")
         else:
-            print(">>> WARNING: Model does not support gradient_checkpointing_enable() <<<", flush=True)
+            logger.warning("Model does not support gradient_checkpointing_enable()")
 
     # Apply torch.compile if enabled (38% speedup on most hardware)
-    # Now works with LRC after enable_input_require_grads() fix
     torch_compile_cfg = cfg.training.get("torch_compile", {})
     if torch_compile_cfg.get("enabled", False):
         compile_mode = torch_compile_cfg.get("mode", "default")
         fullgraph = torch_compile_cfg.get("fullgraph", False)
-        print(f">>> Applying torch.compile(mode={compile_mode}, fullgraph={fullgraph}) <<<", flush=True)
 
         try:
-            # Set inductor cache dir via environment variable for cloud training
             os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", "/tmp/torch_compile_cache")
-
             model = torch.compile(model, mode=compile_mode, fullgraph=fullgraph)
-            print(">>> torch.compile ENABLED <<<", flush=True)
+            logger.info(f"torch.compile enabled (mode={compile_mode})")
         except Exception as e:
-            print(f">>> WARNING: torch.compile failed: {e} <<<", flush=True)
-            print(">>> Continuing without torch.compile <<<", flush=True)
+            logger.warning(f"torch.compile failed: {e} - continuing without")
 
     return model, tokenizer
 
@@ -635,23 +606,17 @@ def load_teacher_model(cfg: DictConfig) -> HiddenStateTeacher | None:
         HiddenStateTeacher or None if not needed immediately
     """
     needs_teacher, needs_lazy_load, initial_weight = _get_distill_status(cfg)
-    logger.info(f"[DEBUG] load_teacher_model: needs_teacher={needs_teacher}, needs_lazy_load={needs_lazy_load}, initial_weight={initial_weight}")
 
     if not needs_teacher:
-        logger.info("[DEBUG] load_teacher_model: returning None because needs_teacher=False")
         return None
 
     if needs_lazy_load:
-        logger.info(
-            "Teacher will be lazy loaded when distill weight becomes non-zero "
-            "(saving memory during initial training phases)"
-        )
+        logger.info("Teacher will be lazy loaded when distill weight becomes non-zero")
         return None
 
     # Load teacher immediately
     teacher_config = prepare_teacher_config(cfg)
     if teacher_config is None:
-        logger.info("[DEBUG] load_teacher_model: returning None because teacher_config is None")
         return None
 
     logger.info(f"Loading teacher model: {teacher_config['model_name']}")
@@ -932,7 +897,7 @@ def main(cfg: DictConfig) -> None:
             allocated = torch.cuda.memory_allocated() / 1024**3
             reserved = torch.cuda.memory_reserved() / 1024**3
             max_allocated = torch.cuda.max_memory_allocated() / 1024**3
-            print(f"[GPU MEM] {label}: allocated={allocated:.2f}GB, reserved={reserved:.2f}GB, max={max_allocated:.2f}GB", flush=True)
+            logger.debug(f"GPU MEM {label}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
     # Log config
     if rank == 0:
@@ -965,10 +930,8 @@ def main(cfg: DictConfig) -> None:
 
     # Load model and tokenizer
     log_gpu_memory("before model load")
-    print("[DEBUG] About to call load_model_and_tokenizer", flush=True)
     model, tokenizer = load_model_and_tokenizer(cfg)
-    print("[DEBUG] Returned from load_model_and_tokenizer", flush=True)
-    log_gpu_memory("after model load (on CPU)")
+    log_gpu_memory("after model load")
 
     # Load teacher if needed immediately, or prepare config for lazy loading
     teacher = load_teacher_model(cfg)

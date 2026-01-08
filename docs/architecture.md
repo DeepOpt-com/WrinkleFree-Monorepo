@@ -19,12 +19,13 @@
                    └────────┬────────┘
                             │
                             ▼
-                  ┌─────────────────┐
-                  │  architecture   │  (Shared Library)
-                  │  - BitLinear    │
-                  │  - BitLinearLRC │
-                  │  - SubLN        │
-                  └─────────────────┘
+                  ┌──────────────────────┐
+                  │     architecture     │  (Shared Library)
+                  │  - BitLinear         │
+                  │  - BitLinearLRC      │
+                  │  - BitLinearSalient  │
+                  │  - SubLN             │
+                  └──────────────────────┘
                             │
                             │ produces checkpoints
                             ▼
@@ -44,7 +45,7 @@
 | Package | Type | Description |
 |---------|------|-------------|
 | `wf_data` | **Library** | Shared data loading, influence functions |
-| `architecture` | **Library** | BitNet layers (BitLinear, BitLinearLRC, SubLN) & model conversion |
+| `architecture` | **Library** | BitNet layers (BitLinear, BitLinearLRC, BitLinearSalient, SubLN) & model conversion |
 | `training` | Application | 1.58-bit training pipeline (Stages 1-3) + distillation objectives |
 | `inference` | Application | Model serving application |
 | `eval` | Application | Evaluation scripts |
@@ -85,6 +86,7 @@ The training package supports multiple distillation modes via the objectives sys
 - **BitDistill** (`training=bitdistill_full`): Logits + attention relation distillation
 - **TCS** (`tcs_distill` objective): Target Concrete Score for DLM students
 - **LRC** (`training=lrc_calibration`): Low-Rank Correction for post-quantization recovery
+- **Salient** (`training=salient_run`): AWQ-style salient columns (~1% FP16 weights)
 - **Logits-only** (`logits_distill` objective): KL divergence without attention
 
 ### Deployment Flow

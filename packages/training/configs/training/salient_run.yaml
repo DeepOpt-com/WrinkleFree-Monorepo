@@ -112,7 +112,7 @@ objectives:
     enabled: true
     weight: 0.5
     mask_prob: 0.5
-    mask_token_id: 151643
+    mask_token_id: 0  # Use 0 (pad token) as mask - works across tokenizers
     use_complementary_masks: true
 
   sft:

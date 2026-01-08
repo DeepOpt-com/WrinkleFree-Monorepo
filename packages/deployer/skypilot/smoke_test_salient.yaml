@@ -1,0 +1,136 @@
+# Salient Columns (AWQ-style) Smoke Test - Nebius 1x H100
+#
+# Tests BitLinearSalient training with AWQ-style activation-aware saliency:
+# 1. Auto-converts model to BitNet (if needed)
+# 2. Calibrates salient columns using activation statistics
+# 3. Converts BitLinear -> BitLinearSalient (~1% columns in FP16)
+# 4. Trains end-to-end with MuonClip optimizer
+#
+# Based on:
+# - AWQ: https://arxiv.org/abs/2306.00978
+# - SqueezeLLM: https://arxiv.org/abs/2306.07629
+# - SpQR: https://arxiv.org/abs/2306.03078
+#
+# Launch:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/smoke_test_salient.yaml -y --cluster wf-smoke-salient
+#
+# Monitor:
+#   sky logs wf-smoke-salient
+#
+# Down:
+#   sky down wf-smoke-salient -y
+
+name: wf-smoke-salient
+
+resources:
+  accelerators: H100:1
+  memory: 64+
+  use_spot: false
+  cloud: nebius
+
+# Run from deployer directory
+workdir: ../..
+
+file_mounts:
+  /tmp/gcp-creds.json: credentials/gcp-service-account.json
+  /tmp/credentials.env: credentials/.env
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  WANDB_PROJECT: wrinklefree
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  uv sync --all-packages
+
+  # Verify salient imports (use printf to avoid bash history expansion issues)
+  printf "Verifying BitLinearSalient imports...\n"
+  uv run python -c "from wf_arch import BitLinearSalient, convert_bitlinear_to_salient, calibrate_salient_columns; print('Salient imports OK')"
+  uv run python -c "from muon import MuonClip, MuonConfig; print('MuonClip imports OK')"
+
+  printf "Setup complete\n"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  set -a
+  source /tmp/credentials.env
+  set +a
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  echo "WANDB_API_KEY is set: $([ -n \"$WANDB_API_KEY\" ] && echo 'yes' || echo 'no')"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "=============================================="
+  echo "BitLinearSalient (AWQ-style) Smoke Test"
+  echo "=============================================="
+  echo "Model: ${MODEL}"
+  echo ""
+  echo "What will happen:"
+  echo "  1. Load SmolLM2-135M from HuggingFace"
+  echo "  2. Auto-convert to BitNet (insert BitLinear + SubLN)"
+  echo "  3. Calibrate salient columns (16 samples, fast)"
+  echo "  4. Convert BitLinear -> BitLinearSalient (~1% FP16 columns)"
+  echo "  5. Train 100 steps with MuonClip"
+  echo ""
+  echo "Key features:"
+  echo "  - ~1% of columns kept in FP16 (AWQ-style saliency)"
+  echo "  - End-to-end trainable (both FP16 and ternary)"
+  echo "  - Lambda warmup for gradual quantization transition"
+  echo "=============================================="
+
+  # Enable CUDA_LAUNCH_BLOCKING for accurate error locations (debug mode)
+  export CUDA_LAUNCH_BLOCKING=1
+
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=salient_run \
+    training.max_steps=100 \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=1 \
+    training.max_seq_length=256 \
+    training.logging.log_interval=10 \
+    training.auto_batch_size=false \
+    training.torch_compile.enabled=false \
+    training.salient.calibration_samples=16 \
+    training.meta_optimization.enabled=false \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=salient_smoke_test \
+    distributed=single_gpu \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT}
+
+  echo ""
+  echo "=============================================="
+  echo "SALIENT SMOKE TEST COMPLETE!"
+  echo ""
+  echo "What was tested:"
+  echo "  - Auto BitNet conversion"
+  echo "  - AWQ-style salient column calibration"
+  echo "  - BitLinearSalient layer forward/backward"
+  echo "  - Mixed-precision training (FP16 salient + ternary)"
+  echo "  - MuonClip optimizer"
+  echo "  - WandB logging"
+  echo "  - GCS checkpoint upload"
+  echo ""
+  echo "Check W&B: https://wandb.ai/${WANDB_PROJECT}"
+  echo "Check GCS: gs://${GCS_BUCKET}/"
+  echo "=============================================="

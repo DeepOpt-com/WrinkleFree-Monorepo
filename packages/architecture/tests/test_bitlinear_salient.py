@@ -532,7 +532,7 @@ class TestGradientCheckpointingCompatibility:
         """Test basic gradient checkpointing works."""
         from torch.utils.checkpoint import checkpoint
 
-        layer = BitLinearSalient(64, 32)
+        layer = BitLinearSalient(64, 32, salient_ratio=0.1)  # 10% = 6 columns
         indices = torch.arange(6)
         layer.set_salient_columns(indices)
 
