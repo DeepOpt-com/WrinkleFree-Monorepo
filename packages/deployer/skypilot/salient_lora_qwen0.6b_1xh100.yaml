@@ -109,7 +109,7 @@ run: |
     training.max_seq_length=1024 \
     training.logging.log_interval=2 \
     training.auto_batch_size=false \
-    training.torch_compile.enabled=false \
+    training.torch_compile.enabled=true \
     training.salient.calibration_samples=128 \
     training.checkpoint.save_interval=500 \
     training.validation.val_check_interval=500 \
