@@ -15,6 +15,7 @@ import logging
 from typing import Any
 
 import pytorch_lightning as pl
+import torch
 from pytorch_lightning.callbacks import Callback
 
 from wf_train.meta.config import MetaOptimizationConfig
@@ -86,6 +87,10 @@ class MetaOptimizerCallback(Callback):
         # LayerLR deferred init - stored for on_train_start
         self._layer_lr_pending_init = False
 
+        # Track active objectives for LDC-MTL reinitialization on curriculum changes
+        self._current_active_objectives: list[str] | None = None
+        self._ldc_mtl_device: torch.device | None = None
+
     def setup(
         self,
         trainer: pl.Trainer,
@@ -115,20 +120,31 @@ class MetaOptimizerCallback(Callback):
         self._total_steps = trainer.max_steps if trainer.max_steps else 100000
 
         # Initialize LDC-MTL for objective weights
+        # IMPORTANT: Initialize with ACTIVE objectives only (non-zero curriculum weight)
+        # This avoids issues where inactive objectives (e.g., SFT during warmup) get
+        # router weight assigned, causing instability when they're padded with 0 loss.
         if self.config.ldc_mtl.enabled:
-            objective_names = self._get_objective_names(pl_module)
-            if objective_names and len(objective_names) > 1:
+            # Store device for later reinitialization on curriculum phase changes
+            self._ldc_mtl_device = device
+            # Get only active objectives for current curriculum phase
+            active_objectives = self._get_active_objectives(pl_module)
+            all_objectives = self._get_objective_names(pl_module)
+
+            if active_objectives and len(active_objectives) > 1:
                 self.ldc_mtl = LDCMTLManager(
-                    objective_names,
+                    active_objectives,
                     self.config.ldc_mtl,
                     device,
                 )
+                self._current_active_objectives = active_objectives
                 logger.info(
-                    f"MetaOptimizerCallback: LDC-MTL enabled for {objective_names}"
+                    f"MetaOptimizerCallback: LDC-MTL enabled for ACTIVE objectives: "
+                    f"{active_objectives} (all objectives: {all_objectives})"
                 )
             else:
                 logger.info(
-                    "MetaOptimizerCallback: LDC-MTL disabled (need >1 objective)"
+                    f"MetaOptimizerCallback: LDC-MTL disabled for current phase "
+                    f"(need >1 active objective, have: {active_objectives})"
                 )
 
         # Initialize ODM for dataset weights
@@ -191,6 +207,74 @@ class MetaOptimizerCallback(Callback):
             if hasattr(manager, "get_objective_names"):
                 return manager.get_objective_names()
         return []
+
+    def _get_active_objectives(self, pl_module: pl.LightningModule) -> list[str]:
+        """Get currently active objectives (non-zero curriculum weight).
+
+        Returns only objectives with non-zero curriculum weight in the current
+        phase. This is used to initialize LDC-MTL with only relevant objectives,
+        avoiding issues where inactive objectives (e.g., SFT during warmup) get
+        router weight assigned to them.
+
+        Args:
+            pl_module: The Lightning module being trained.
+
+        Returns:
+            List of active objective names, sorted for consistent ordering.
+        """
+        if not hasattr(pl_module, "objective_manager"):
+            return []
+
+        manager = pl_module.objective_manager
+        if not hasattr(manager, "get_current_weights"):
+            # Fallback to all objectives if curriculum weights not available
+            return self._get_objective_names(pl_module)
+
+        weights = manager.get_current_weights()
+        active = [name for name, weight in weights.items() if weight > 0]
+        return sorted(active)  # Sorted for consistent ordering
+
+    def _reinit_ldc_mtl(
+        self,
+        pl_module: pl.LightningModule,
+        new_objectives: list[str],
+    ) -> None:
+        """Reinitialize LDC-MTL manager with new set of active objectives.
+
+        Called when curriculum phase changes and the set of active objectives
+        changes. This ensures the router network dimensions match the number of
+        objectives being optimized, preventing issues where inactive objectives
+        get weight assigned.
+
+        Args:
+            pl_module: The Lightning module being trained.
+            new_objectives: New list of active objective names.
+        """
+        if len(new_objectives) < 2:
+            # Single objective - disable LDC-MTL
+            logger.info(
+                f"LDC-MTL: Disabling for single objective phase "
+                f"(only {new_objectives} active)"
+            )
+            self.ldc_mtl = None
+            self._current_active_objectives = new_objectives
+            return
+
+        # Get device (use cached or get from model)
+        if self._ldc_mtl_device is None:
+            self._ldc_mtl_device = next(pl_module.model.parameters()).device
+
+        # Create new LDC-MTL manager
+        self.ldc_mtl = LDCMTLManager(
+            new_objectives,
+            self.config.ldc_mtl,
+            self._ldc_mtl_device,
+        )
+        self._current_active_objectives = new_objectives
+        logger.info(
+            f"LDC-MTL: Reinitialized for curriculum phase change "
+            f"(now optimizing {new_objectives})"
+        )
 
     def on_train_start(
         self,
@@ -293,11 +377,27 @@ class MetaOptimizerCallback(Callback):
 
         For ODM: Updates dataset weights based on per-domain losses from outputs.
         For LDC-MTL: Steps the router optimizer (gradients computed during forward).
+        Also checks for curriculum phase changes and reinitializes LDC-MTL if the set
+        of active objectives changed.
         """
         if not self._is_enabled:
             return
 
         step = trainer.global_step
+
+        # Check for curriculum phase changes - reinitialize LDC-MTL if needed
+        # This ensures the router dimensions match the current active objectives
+        if self.config.ldc_mtl.enabled:
+            current_active = self._get_active_objectives(pl_module)
+            if (
+                self._current_active_objectives is not None
+                and set(current_active) != set(self._current_active_objectives)
+            ):
+                logger.info(
+                    f"Curriculum phase change detected: objectives changed from "
+                    f"{self._current_active_objectives} to {current_active}"
+                )
+                self._reinit_ldc_mtl(pl_module, current_active)
 
         # Update ODM with per-domain losses (if available)
         if self.odm is not None:

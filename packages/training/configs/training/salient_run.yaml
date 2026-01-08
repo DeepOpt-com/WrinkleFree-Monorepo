@@ -54,18 +54,13 @@ torch_compile:
 packing:
   enabled: true
 
-# Optimizer: MuonClip
-# Salient columns get full precision gradients (more signal)
-# Ternary columns get STE gradients
+# Optimizer: AdamW 8-bit (via bitsandbytes)
+# Simple and stable for all model sizes, memory efficient
 optimizer:
-  type: muonclip
-  lr_muon: 0.005  # Reduced for 0.6B+ models (0.02 causes divergence)
-  lr_adam: 1e-4
+  type: adamw
+  use_8bit: true  # Uses bitsandbytes AdamW8bit
+  learning_rate: 3e-4
   weight_decay: 0.01
-  momentum: 0.95
-  enable_clipping: true
-  clipping_threshold: 50.0
-  clipping_alpha: 0.5
 
 # Scheduler: WSD
 scheduler:
