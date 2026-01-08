@@ -38,6 +38,7 @@ file_mounts:
 
 envs:
   GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GOOGLE_CLOUD_PROJECT: wrinklefree-481904
   GCS_BUCKET: wrinklefree-checkpoints
   MODEL: qwen3_0.6b
   WANDB_PROJECT: wrinklefree_v2
@@ -116,12 +117,15 @@ run: |
     distributed=single_gpu \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=lrc_run_qwen3_0.6b \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=64 \
+    training.torch_compile.enabled=false \
     training.checkpoint.save_interval=500 \
     training.logging.log_interval=10 \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
-    training.logging.wandb.name=lrc-run-qwen3-0.6b-h100 \
-    training.logging.wandb.tags="[lrc,dlm,25pct-rank,h100,qwen3-0.6b]" \
+    training.logging.wandb.name=lrc-run-qwen3-0.6b-h100-trainable \
+    "training.logging.wandb.tags=[lrc,dlm,15pct-rank,h100,qwen3-0.6b,trainable-weight]" \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET}
 
