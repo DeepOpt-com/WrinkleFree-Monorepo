@@ -284,86 +284,10 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
         )
         logger.info("Auto-converted model to BitNet")
 
-    # Handle LRC (Low-Rank Correction) if enabled in config
-    # Check lrc.enabled rather than stage name to support lrc_run, lrc_calibration, etc.
-    lrc_cfg = cfg.training.get("lrc", {})
-    lrc_enabled = lrc_cfg.get("enabled", False)
-    if lrc_enabled:
-        try:
-            from wf_arch import QLRCConfig, convert_bitlinear_to_lrc, freeze_model_except_lrc
-
-            rank_percentage = lrc_cfg.get("rank_percentage", 0.1)
-            init_method = lrc_cfg.get("init_method", "zeros")
-            keep_original_weight = lrc_cfg.get("keep_original_weight", True)
-            trainable_weight = lrc_cfg.get("trainable_weight", False)
-
-            # Parse QLRC (QA-LoRA style quantized adapters) config
-            qlrc_cfg = lrc_cfg.get("qlrc", {})
-            qlrc_config = None
-            if qlrc_cfg.get("enabled", False):
-                qlrc_config = QLRCConfig(
-                    enabled=True,
-                    bits=qlrc_cfg.get("bits", 4),
-                    group_size=qlrc_cfg.get("group_size", 32),
-                )
-                logger.info(
-                    f"QLRC: Using STE quantized adapters "
-                    f"(bits={qlrc_config.bits}, group_size={qlrc_config.group_size})"
-                )
-
-            logger.info(
-                f"LRC: Converting BitLinear → BitLinearLRC "
-                f"(rank={rank_percentage*100:.0f}%, init={init_method})"
-            )
-
-            model = convert_bitlinear_to_lrc(
-                model,
-                rank_percentage=rank_percentage,
-                init_method=init_method,
-                keep_original_weight=keep_original_weight,
-                trainable_weight=trainable_weight,
-                qlrc_config=qlrc_config,
-            )
-
-            # Freeze all parameters except LRC matrices (U, V) if trainable_weight=False
-            if not trainable_weight:
-                freeze_stats = freeze_model_except_lrc(model)
-                logger.info(
-                    f"LRC: Trainable={freeze_stats['trainable']:,}, "
-                    f"Frozen={freeze_stats['frozen']:,}"
-                )
-
-                # CRITICAL: Enable input require grads for LRC training!
-                # When embeddings are frozen, the embedding output has requires_grad=False.
-                # This breaks gradient flow because downstream layers (including LRC) see
-                # inputs without gradient tracking. This hook ensures the embedding output
-                # has requires_grad=True, allowing gradients to flow to LRC U/V matrices.
-                # See: https://huggingface.co/docs/peft/developer_guides/troubleshooting#valueerror-requires_grad
-                if hasattr(model, "enable_input_require_grads"):
-                    model.enable_input_require_grads()
-                    logger.info("LRC: Enabled input_require_grads for frozen embedding support")
-                else:
-                    # Manual fallback: add hook to embedding layer
-                    def make_inputs_require_grad(module, input, output):
-                        output.requires_grad_(True)
-
-                    if hasattr(model, "get_input_embeddings"):
-                        model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-                        logger.info("LRC: Added require_grad hook to embedding layer (fallback)")
-                    else:
-                        logger.warning(
-                            "LRC: Could not enable input_require_grads! "
-                            "Training may fail with frozen embeddings."
-                        )
-            else:
-                logger.info("LRC: trainable_weight=True, base model weights also trainable via STE")
-
-        except ImportError as e:
-            logger.error(f"LRC requires wf_arch package: {e}")
-            raise
-
-    # Handle Salient Columns (AWQ-style) if enabled in config
-    # This is an alternative to LRC - keeps ~1% of columns in FP16
+    # ===========================================================================
+    # STEP 1: Handle Salient Columns (AWQ-style) if enabled
+    # Must be applied BEFORE LoRA so LoRA can wrap BitLinearSalient layers
+    # ===========================================================================
     salient_cfg = cfg.training.get("salient", {})
     salient_enabled = salient_cfg.get("enabled", False)
     if salient_enabled:
@@ -433,6 +357,144 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
 
         except ImportError as e:
             logger.error(f"Salient requires wf_arch and wf_data packages: {e}")
+            raise
+
+    # ===========================================================================
+    # STEP 2: Handle LoRA (Low-Rank Adaptation) if enabled
+    # Applied AFTER salient so LoRA can wrap BitLinearSalient layers
+    # This is the NEW composable wrapper pattern (replaces legacy BitLinearLRC)
+    # ===========================================================================
+    lora_cfg = cfg.training.get("lora", {})
+    lora_enabled = lora_cfg.get("enabled", False)
+
+    # Also check legacy lrc.enabled for backward compatibility
+    lrc_cfg = cfg.training.get("lrc", {})
+    lrc_enabled = lrc_cfg.get("enabled", False)
+
+    if lora_enabled:
+        # New LoRA adapter pattern (recommended)
+        try:
+            from wf_arch import LoRAConfig, add_lora_to_model, freeze_base_model, get_lora_stats
+
+            rank_percentage = lora_cfg.get("rank_percentage", 0.1)
+            rank = lora_cfg.get("rank", None)
+            init_method = lora_cfg.get("init_method", "kaiming")
+            alpha = lora_cfg.get("alpha", 1.0)
+            dropout = lora_cfg.get("dropout", 0.0)
+            target_modules = lora_cfg.get("target_modules", None)
+            quantized = lora_cfg.get("quantized", False)
+            quant_bits = lora_cfg.get("quant_bits", 4)
+            quant_group_size = lora_cfg.get("quant_group_size", 32)
+
+            # Build LoRA config
+            lora_config = LoRAConfig(
+                rank=rank,
+                rank_percentage=rank_percentage,
+                alpha=alpha,
+                dropout=dropout,
+                init_method=init_method,
+                quantized=quantized,
+                quant_bits=quant_bits,
+                quant_group_size=quant_group_size,
+                target_modules=target_modules,
+            )
+
+            logger.info(
+                f"LoRA: Adding adapters (rank={rank or f'{rank_percentage*100:.0f}%'}, "
+                f"init={init_method}, alpha={alpha})"
+            )
+
+            # Add LoRA wrappers to model
+            model = add_lora_to_model(model, lora_config)
+
+            # Freeze all non-LoRA parameters
+            freeze_stats = freeze_base_model(model)
+            logger.info(
+                f"LoRA: Trainable={freeze_stats['trainable']:,}, "
+                f"Frozen={freeze_stats['frozen']:,}"
+            )
+
+            # Log LoRA statistics
+            lora_stats = get_lora_stats(model)
+            logger.info(
+                f"LoRA: {lora_stats['num_lora_layers']} layers, "
+                f"avg_rank={lora_stats['average_rank']:.1f}, "
+                f"params={lora_stats['total_lora_params']:,}"
+            )
+
+            # Enable input require grads for frozen embedding support
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+                logger.info("LoRA: Enabled input_require_grads for frozen embedding support")
+            else:
+                def make_inputs_require_grad(module, input, output):
+                    output.requires_grad_(True)
+                if hasattr(model, "get_input_embeddings"):
+                    model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+                    logger.info("LoRA: Added require_grad hook to embedding layer")
+
+        except ImportError as e:
+            logger.error(f"LoRA requires wf_arch package: {e}")
+            raise
+
+    elif lrc_enabled:
+        # Legacy LRC path (backward compatibility)
+        # Deprecated: Use lora.enabled instead
+        logger.warning(
+            "DEPRECATED: lrc.enabled is deprecated. Use lora.enabled instead. "
+            "The old BitLinearLRC has been moved to wf_arch.layers._legacy"
+        )
+        try:
+            from wf_arch import QLRCConfig, convert_bitlinear_to_lrc, freeze_model_except_lrc
+
+            rank_percentage = lrc_cfg.get("rank_percentage", 0.1)
+            init_method = lrc_cfg.get("init_method", "zeros")
+            keep_original_weight = lrc_cfg.get("keep_original_weight", True)
+            trainable_weight = lrc_cfg.get("trainable_weight", False)
+
+            # Parse QLRC config
+            qlrc_cfg = lrc_cfg.get("qlrc", {})
+            qlrc_config = None
+            if qlrc_cfg.get("enabled", False):
+                qlrc_config = QLRCConfig(
+                    enabled=True,
+                    bits=qlrc_cfg.get("bits", 4),
+                    group_size=qlrc_cfg.get("group_size", 32),
+                )
+
+            logger.info(
+                f"LRC (legacy): Converting BitLinear → BitLinearLRC "
+                f"(rank={rank_percentage*100:.0f}%, init={init_method})"
+            )
+
+            model = convert_bitlinear_to_lrc(
+                model,
+                rank_percentage=rank_percentage,
+                init_method=init_method,
+                keep_original_weight=keep_original_weight,
+                trainable_weight=trainable_weight,
+                qlrc_config=qlrc_config,
+            )
+
+            if not trainable_weight:
+                freeze_stats = freeze_model_except_lrc(model)
+                logger.info(
+                    f"LRC: Trainable={freeze_stats['trainable']:,}, "
+                    f"Frozen={freeze_stats['frozen']:,}"
+                )
+
+                if hasattr(model, "enable_input_require_grads"):
+                    model.enable_input_require_grads()
+                    logger.info("LRC: Enabled input_require_grads for frozen embedding support")
+                else:
+                    def make_inputs_require_grad(module, input, output):
+                        output.requires_grad_(True)
+                    if hasattr(model, "get_input_embeddings"):
+                        model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+                        logger.info("LRC: Added require_grad hook to embedding layer")
+
+        except ImportError as e:
+            logger.error(f"LRC requires wf_arch package: {e}")
             raise
 
     # Log model size

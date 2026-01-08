@@ -8,22 +8,33 @@ This package provides the core building blocks for BitNet models:
 """
 
 from wf_arch.layers import (
+    # Base layers
     BitLinear,
     BitLinearNoActivationQuant,
-    BitLinearLRC,
-    QLRCConfig,
     BitLinearSalient,
     SalientConfig,
     SalientCalibrator,
     SubLN,
     RMSNorm,
     convert_linear_to_bitlinear,
-    convert_bitlinear_to_lrc,
-    freeze_model_except_lrc,
-    get_lrc_stats,
     convert_bitlinear_to_salient,
     get_salient_stats,
     calibrate_salient_columns,
+    # New LoRA adapter (recommended)
+    LoRAAdapter,
+    LoRAConfig,
+    add_lora_to_model,
+    freeze_base_model,
+    remove_lora_from_model,
+    merge_lora_weights,
+    get_lora_stats,
+    remap_legacy_checkpoint,
+    # Legacy LRC (backward compatibility)
+    BitLinearLRC,
+    QLRCConfig,
+    convert_bitlinear_to_lrc,
+    freeze_model_except_lrc,
+    get_lrc_stats,
 )
 from wf_arch.quantization import (
     LambdaWarmup,
@@ -41,25 +52,33 @@ from wf_arch.conversion import (
 __version__ = "0.1.0"
 
 __all__ = [
-    # Layers
+    # Base Layers
     "BitLinear",
     "BitLinearNoActivationQuant",
-    "BitLinearLRC",
-    "QLRCConfig",
     "BitLinearSalient",
     "SalientConfig",
     "SalientCalibrator",
     "SubLN",
     "RMSNorm",
     "convert_linear_to_bitlinear",
-    # LRC (Low-Rank Correction)
-    "convert_bitlinear_to_lrc",
-    "freeze_model_except_lrc",
-    "get_lrc_stats",
     # Salient Columns (AWQ-style)
     "convert_bitlinear_to_salient",
     "get_salient_stats",
     "calibrate_salient_columns",
+    # LoRA Adapter (recommended for low-rank correction)
+    "LoRAAdapter",
+    "LoRAConfig",
+    "add_lora_to_model",
+    "freeze_base_model",
+    "remove_lora_from_model",
+    "merge_lora_weights",
+    "get_lora_stats",
+    "remap_legacy_checkpoint",
+    # Legacy LRC (backward compatibility - use LoRAAdapter instead)
+    "BitLinearLRC",
+    "QLRCConfig",
+    "convert_bitlinear_to_lrc",
+    "freeze_model_except_lrc",
     # Quantization
     "LambdaWarmup",
     "get_global_lambda_warmup",
