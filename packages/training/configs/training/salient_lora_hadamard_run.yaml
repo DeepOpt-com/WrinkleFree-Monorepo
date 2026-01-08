@@ -110,8 +110,8 @@ auto_batch_size: false
 # Per architecture CLAUDE.md: "Without warmup (default): get_current_lambda() returns 1.0"
 lambda_warmup:
   # TODO: enable??
-  enabled: false
-  warmup_steps: 100
+  enabled: true
+  warmup_steps: 50
   schedule: linear
 
 # Resume configuration

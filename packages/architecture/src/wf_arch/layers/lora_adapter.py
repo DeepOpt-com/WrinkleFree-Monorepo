@@ -251,7 +251,9 @@ class LoRAAdapter(nn.Module):
                 nn.init.zeros_(self.lora_B.weight)
 
             elif method == "svd_residual":
+                print(f"[DEBUG] SVD init requested for layer (in={self.in_features}, out={self.out_features})", flush=True)
                 if original_weight is None:
+                    print("[DEBUG] WARNING: svd_residual init requires original_weight, falling back to kaiming", flush=True)
                     logger.warning(
                         "svd_residual init requires original_weight, "
                         "falling back to kaiming"
@@ -259,6 +261,7 @@ class LoRAAdapter(nn.Module):
                     self._initialize_weights("kaiming", None)
                     return
 
+                print(f"[DEBUG] Calling _init_from_svd with original_weight shape={original_weight.shape}", flush=True)
                 self._init_from_svd(original_weight)
 
     def _init_from_svd(
@@ -270,16 +273,21 @@ class LoRAAdapter(nn.Module):
     ) -> None:
         """Initialize from SVD of quantization residual."""
         # Get the effective quantized weight from base layer
+        print(f"[DEBUG] _init_from_svd: Getting effective quantized weight...", flush=True)
         effective_quant_weight = self._get_effective_quantized_weight()
 
         if effective_quant_weight is None:
+            print("[DEBUG] WARNING: Could not get effective quantized weight, using original weight for SVD", flush=True)
             logger.warning(
                 "Could not get effective quantized weight from base layer, "
                 "using original weight directly for SVD"
             )
             residual = original_weight.float()
         else:
+            print(f"[DEBUG] Got quantized weight, computing residual (quantization error)...", flush=True)
             residual = (original_weight - effective_quant_weight).float()
+            residual_norm = residual.norm().item()
+            print(f"[DEBUG] Residual (quantization error) norm: {residual_norm:.4f}", flush=True)
 
         k = self.rank
 
@@ -303,6 +311,8 @@ class LoRAAdapter(nn.Module):
             self.lora_A.weight.data[:k, :].copy_(A_init.to(self.lora_A.weight.dtype))
             # lora_B.weight: (out_features, rank)
             self.lora_B.weight.data[:, :k].copy_(B_init.to(self.lora_B.weight.dtype))
+
+        print(f"[DEBUG] SVD init complete! rank={k}, top singular values: {S[:min(3, len(S))].tolist()}", flush=True)
 
     def _get_effective_quantized_weight(self) -> Optional[torch.Tensor]:
         """Get the effective quantized weight from base layer.

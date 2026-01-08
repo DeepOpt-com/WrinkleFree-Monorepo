@@ -287,7 +287,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             insert_subln=insert_subln,
             use_hadamard=use_hadamard,
         )
-        print(f"[DEBUG] Auto-converted to BitNet", flush=True)
+        print(f"[DEBUG] Auto-converted to BitNet (insert_subln={insert_subln}, use_hadamard={use_hadamard})", flush=True)
         logger.info(f"Auto-converted model to BitNet (insert_subln={insert_subln}, use_hadamard={use_hadamard})")
 
     # ===========================================================================
@@ -384,6 +384,7 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
     print("[DEBUG] Salient setup complete, starting LoRA setup...", flush=True)
     lora_cfg = cfg.training.get("lora", {})
     lora_enabled = lora_cfg.get("enabled", False)
+    print(f"[DEBUG] LoRA enabled: {lora_enabled}", flush=True)
 
     # Also check legacy lrc.enabled for backward compatibility
     lrc_cfg = cfg.training.get("lrc", {})
@@ -418,13 +419,19 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
                 target_modules=target_modules,
             )
 
+            print(
+                f"[DEBUG] LoRA: Adding adapters (rank={rank or f'{rank_percentage*100:.0f}%'}, "
+                f"init={init_method}, alpha={alpha}, freeze_base={freeze_base})", flush=True
+            )
             logger.info(
                 f"LoRA: Adding adapters (rank={rank or f'{rank_percentage*100:.0f}%'}, "
                 f"init={init_method}, alpha={alpha})"
             )
 
             # Add LoRA wrappers to model
+            print("[DEBUG] Calling add_lora_to_model...", flush=True)
             model = add_lora_to_model(model, lora_config)
+            print("[DEBUG] add_lora_to_model complete!", flush=True)
 
             # Optionally freeze base parameters (train only LoRA)
             if freeze_base:
@@ -440,6 +447,11 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
 
             # Log LoRA statistics
             lora_stats = get_lora_stats(model)
+            print(
+                f"[DEBUG] LoRA: {lora_stats['num_lora_layers']} layers, "
+                f"avg_rank={lora_stats['average_rank']:.1f}, "
+                f"params={lora_stats['total_lora_params']:,}", flush=True
+            )
             logger.info(
                 f"LoRA: {lora_stats['num_lora_layers']} layers, "
                 f"avg_rank={lora_stats['average_rank']:.1f}, "
