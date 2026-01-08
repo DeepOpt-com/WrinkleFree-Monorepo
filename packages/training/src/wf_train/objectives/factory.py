@@ -17,10 +17,9 @@ from wf_train.objectives.dlm import DLMObjective
 from wf_train.objectives.sft import SFTObjective
 from wf_train.objectives.distill import (
     DistillObjective,
-    HiddenConfig,
+    LayerWiseConfig,
     LogitsConfig,
     AttentionConfig,
-    LRCConfig,
 )
 from wf_train.objectives.manager import (
     CurriculumPhase,
@@ -76,11 +75,13 @@ def _create_distill_objective(config: dict[str, Any]) -> DistillObjective:
     hidden = None
     if "hidden" in config:
         hidden_cfg = config["hidden"]
-        hidden = HiddenConfig(
+        hidden = LayerWiseConfig(
+            name="hidden",
             enabled=hidden_cfg.get("enabled", False),
             weight=hidden_cfg.get("weight", 1.0),
             loss_type=hidden_cfg.get("loss_type", "mse_normalized"),
             layer_weights=hidden_cfg.get("layer_weights"),
+            temperature=hidden_cfg.get("temperature", 1.0),
             normalize=hidden_cfg.get("normalize", True),
         )
 
@@ -112,7 +113,8 @@ def _create_distill_objective(config: dict[str, Any]) -> DistillObjective:
     lrc = None
     if "lrc" in config:
         lrc_cfg = config["lrc"]
-        lrc = LRCConfig(
+        lrc = LayerWiseConfig(
+            name="lrc",
             enabled=lrc_cfg.get("enabled", False),
             weight=lrc_cfg.get("weight", 1.0),
             loss_type=lrc_cfg.get("loss_type", "mse"),

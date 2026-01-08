@@ -21,7 +21,7 @@ use crate::protocols::{
     responses::{ResponsesGetParams, ResponsesRequest},
 };
 
-#[cfg(feature = "native-inference")]
+#[cfg(feature = "llama-inference")]
 pub mod batch;
 pub mod conversations;
 pub mod error;
@@ -36,8 +36,8 @@ pub mod router_manager;
 pub use factory::RouterFactory;
 // Re-export HTTP routers for convenience
 pub use http::{pd_router, pd_types, router};
-// Re-export batch router (requires native-inference feature)
-#[cfg(feature = "native-inference")]
+// Re-export batch router (requires llama-inference feature)
+#[cfg(feature = "llama-inference")]
 pub use batch::BatchRouter;
 
 /// Core trait for all router implementations

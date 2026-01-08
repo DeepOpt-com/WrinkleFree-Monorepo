@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from wf_train.objectives.base import Objective, ObjectiveOutput
 from wf_train.objectives.continue_pretrain import ContinuePretrainObjective
-from wf_train.objectives.layerwise import LayerwiseDistillationObjective, LayerwiseLossType
+from wf_train.objectives.distill import DistillObjective, LayerWiseConfig, HiddenLossType
 from wf_train.objectives.manager import (
     CurriculumPhase,
     CurriculumScheduler,
@@ -109,19 +109,23 @@ class TestContinuePretrainObjective:
 
 
 class TestLayerwiseDistillationObjective:
-    """Test LayerwiseDistillationObjective."""
+    """Test DistillObjective with hidden states component (formerly LayerwiseDistillationObjective)."""
 
     def test_init(self):
-        """Test initialization."""
-        obj = LayerwiseDistillationObjective()
-        assert obj.name == "layerwise_distill"
+        """Test initialization with hidden component enabled."""
+        obj = DistillObjective(
+            hidden=LayerWiseConfig(name="hidden", enabled=True, loss_type="mse_normalized", normalize=True)
+        )
+        assert obj.name == "distill"
         assert obj.requires_teacher
         assert obj.requires_hidden_states
         assert not obj.modifies_input
 
     def test_requires_teacher_outputs(self):
         """Test that it raises without teacher outputs."""
-        obj = LayerwiseDistillationObjective()
+        obj = DistillObjective(
+            hidden=LayerWiseConfig(name="hidden", enabled=True)
+        )
 
         model_outputs = {"logits": torch.randn(2, 10, 100), "hidden_states": (torch.randn(2, 10, 64),)}
         batch = {}
@@ -131,7 +135,9 @@ class TestLayerwiseDistillationObjective:
 
     def test_hidden_state_alignment(self):
         """Test hidden state alignment loss."""
-        obj = LayerwiseDistillationObjective(loss_type=LayerwiseLossType.MSE_NORMALIZED)
+        obj = DistillObjective(
+            hidden=LayerWiseConfig(name="hidden", enabled=True, loss_type="mse_normalized", normalize=True)
+        )
 
         batch_size, seq_len, hidden_size = 2, 10, 64
         num_layers = 4
@@ -148,13 +154,15 @@ class TestLayerwiseDistillationObjective:
 
         assert output.loss.shape == ()
         assert output.loss.item() > 0
-        assert "mean_layer_loss" in output.metrics
+        assert "hidden_mean_layer_loss" in output.metrics
 
     def test_layer_weights_progressive(self):
         """Test progressive layer weights."""
-        obj = LayerwiseDistillationObjective(layer_weights="progressive")
+        obj = DistillObjective(
+            hidden=LayerWiseConfig(name="hidden", enabled=True, layer_weights="progressive")
+        )
 
-        weights = obj._get_layer_weights(4)
+        weights = obj._get_layer_weights(4, "progressive")
 
         # Progressive weights should increase
         for i in range(len(weights) - 1):
@@ -164,9 +172,11 @@ class TestLayerwiseDistillationObjective:
 
     def test_layer_weights_exponential(self):
         """Test exponential layer weights."""
-        obj = LayerwiseDistillationObjective(layer_weights="exponential")
+        obj = DistillObjective(
+            hidden=LayerWiseConfig(name="hidden", enabled=True, layer_weights="exponential")
+        )
 
-        weights = obj._get_layer_weights(4)
+        weights = obj._get_layer_weights(4, "exponential")
 
         # Exponential weights should increase faster
         assert weights[-1] > weights[0] * 4
@@ -175,7 +185,9 @@ class TestLayerwiseDistillationObjective:
 
     def test_mse_normalized_loss(self):
         """Test MSE normalized loss computation."""
-        obj = LayerwiseDistillationObjective(loss_type=LayerwiseLossType.MSE_NORMALIZED)
+        obj = DistillObjective(
+            hidden=LayerWiseConfig(name="hidden", enabled=True, loss_type="mse_normalized", normalize=True)
+        )
 
         batch_size, seq_len, hidden_size = 2, 10, 64
 
@@ -324,11 +336,11 @@ class TestObjectiveManager:
         """Test requires_teacher is correctly aggregated."""
         objectives = {
             "cp": ContinuePretrainObjective(),
-            "lw": LayerwiseDistillationObjective(),
+            "distill": DistillObjective(hidden=LayerWiseConfig(name="hidden", enabled=True)),
         }
         manager = ObjectiveManager(objectives)
 
-        assert manager.requires_teacher  # Because layerwise needs it
+        assert manager.requires_teacher  # Because distill with hidden enabled needs it
         assert manager.requires_hidden_states
 
     def test_wandb_metrics_format(self):

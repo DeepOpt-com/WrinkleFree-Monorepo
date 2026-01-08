@@ -16,7 +16,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from wf_train.objectives import (
     ObjectiveManager,
     ContinuePretrainObjective,
-    LayerwiseDistillationObjective,
+    DistillObjective,
+    LayerWiseConfig,
     create_objective_manager,
 )
 from wf_train.training._legacy.continued_pretraining import ContinuedPretrainingTrainer

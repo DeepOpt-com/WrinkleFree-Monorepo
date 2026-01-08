@@ -1197,3 +1197,92 @@ TileConfig auto_tune_tiles(int M, int K) {
 
 }  // namespace bitnet
 }  // namespace sgl_kernel
+
+// ============================================================================
+// C API for FFI (extern "C" wrappers)
+// ============================================================================
+
+// C-compatible structs that match Rust FFI definitions
+struct CPUCapabilitiesC {
+    bool has_avx2;
+    bool has_avx512;
+    bool has_neon;
+    bool has_dotprod;
+};
+
+struct TileConfigC {
+    int bm;
+    int bk;
+};
+
+extern "C" {
+
+/// Detect CPU capabilities.
+CPUCapabilitiesC detect_cpu_capabilities() {
+    auto cpp_caps = sgl_kernel::bitnet::detect_cpu_capabilities();
+    CPUCapabilitiesC c_caps;
+    c_caps.has_avx2 = cpp_caps.has_avx2;
+    c_caps.has_avx512 = cpp_caps.has_avx512;
+    c_caps.has_neon = cpp_caps.has_neon;
+    c_caps.has_dotprod = cpp_caps.has_dotprod;
+    return c_caps;
+}
+
+/// BitNet GEMV: y = W * x
+void bitnet_vec_dot_i2_i8(
+    int n,
+    float* result,
+    const uint8_t* packed_weights,
+    const int8_t* activations
+) {
+    sgl_kernel::bitnet::bitnet_vec_dot_i2_i8(n, result, packed_weights, activations);
+}
+
+/// BitNet GEMM: Y = W * X (batched)
+///
+/// @param m Output features
+/// @param n Batch size
+/// @param k Input features (must be multiple of 128)
+/// @param output Output matrix [M x N]
+/// @param packed_weights Packed ternary weights [M x K/4]
+/// @param activations INT8 activations [K x N]
+/// @param scale Weight scale factor
+/// @param config Pointer to tile configuration (or nullptr for defaults)
+void bitnet_gemm_i2_i8(
+    int m,
+    int n,
+    int k,
+    float* output,
+    const uint8_t* packed_weights,
+    const int8_t* activations,
+    float scale,
+    const TileConfigC* config
+) {
+    sgl_kernel::bitnet::TileConfig cpp_config;
+    if (config != nullptr) {
+        cpp_config.BM = config->bm;
+        cpp_config.BK = config->bk;
+    }
+    sgl_kernel::bitnet::bitnet_gemm_i2_i8(m, n, k, output, packed_weights, activations, scale, cpp_config);
+}
+
+/// Quantize activations to INT8.
+void quantize_activations_i8(
+    int n,
+    int8_t* output,
+    const float* input,
+    float* scale
+) {
+    sgl_kernel::bitnet::quantize_activations_i8(n, output, input, scale);
+}
+
+/// Auto-tune tile sizes for the current CPU.
+TileConfigC auto_tune_tiles(int m, int k) {
+    auto cpp_config = sgl_kernel::bitnet::auto_tune_tiles(m, k);
+    TileConfigC c_config;
+    c_config.bm = cpp_config.BM;
+    c_config.bk = cpp_config.BK;
+    return c_config;
+}
+
+}  // extern "C"

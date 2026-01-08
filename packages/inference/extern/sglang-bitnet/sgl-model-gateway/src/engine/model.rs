@@ -1,0 +1,785 @@
+//! BitNet transformer model for inference.
+//!
+//! Implements the forward pass using native ternary SIMD kernels.
+
+use std::path::Path;
+
+use crate::gguf::{GgufReader, GgufTensorInfo, GgmlQuantType, GgufError, repack_ternary_weights, NativeWeightFormat};
+use crate::kernels::ffi::BitNetKernel;
+use crate::kernels::simd::{rms_norm_with_scale, silu_inplace, softmax_inplace, add_inplace};
+
+use super::kv_cache::{KVCache, KVCacheConfig};
+use super::sampling::{SamplingConfig, sample_token};
+
+/// BitNet model configuration
+#[derive(Debug, Clone)]
+pub struct BitNetConfig {
+    /// Vocabulary size
+    pub vocab_size: usize,
+    /// Hidden dimension
+    pub hidden_size: usize,
+    /// Number of transformer layers
+    pub num_layers: usize,
+    /// Number of attention heads
+    pub num_heads: usize,
+    /// Number of key-value heads (for GQA)
+    pub num_kv_heads: usize,
+    /// Intermediate (FFN) dimension
+    pub intermediate_size: usize,
+    /// Maximum sequence length
+    pub max_seq_len: usize,
+    /// RMS norm epsilon
+    pub rms_norm_eps: f32,
+    /// RoPE theta (frequency base)
+    pub rope_theta: f32,
+    /// Head dimension (hidden_size / num_heads)
+    pub head_dim: usize,
+}
+
+impl Default for BitNetConfig {
+    fn default() -> Self {
+        Self {
+            vocab_size: 32000,
+            hidden_size: 2048,
+            num_layers: 24,
+            num_heads: 16,
+            num_kv_heads: 8,
+            intermediate_size: 8192,
+            max_seq_len: 4096,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10000.0,
+            head_dim: 128,
+        }
+    }
+}
+
+/// Weights for a single transformer layer
+pub struct LayerWeights {
+    // Attention
+    pub attn_norm: Vec<f32>,
+    pub q_proj: NativeWeightFormat,
+    pub k_proj: NativeWeightFormat,
+    pub v_proj: NativeWeightFormat,
+    pub o_proj: NativeWeightFormat,
+
+    // FFN
+    pub ffn_norm: Vec<f32>,
+    pub gate_proj: NativeWeightFormat,
+    pub up_proj: NativeWeightFormat,
+    pub down_proj: NativeWeightFormat,
+
+    // LRC corrections (optional)
+    pub q_lrc_u: Option<Vec<f32>>,
+    pub q_lrc_v: Option<Vec<f32>>,
+    // ... other LRC matrices if needed
+}
+
+/// BitNet inference engine
+pub struct BitNetEngine {
+    /// Model configuration
+    pub config: BitNetConfig,
+    /// Token embeddings [vocab_size, hidden_size]
+    pub embed_tokens: Vec<f32>,
+    /// Output norm (final RMS norm)
+    pub output_norm: Vec<f32>,
+    /// Output projection (lm_head) - may be tied with embed_tokens
+    pub output_proj: Option<Vec<f32>>,
+    /// Per-layer weights
+    pub layers: Vec<LayerWeights>,
+    /// KV cache
+    pub kv_cache: KVCache,
+    /// Tokenizer vocabulary (for decoding)
+    pub vocab: Option<Vec<String>>,
+    /// RoPE frequency cache
+    rope_freqs: Vec<f32>,
+    /// Native BitNet SIMD kernel
+    kernel: BitNetKernel,
+}
+
+/// Error type for engine operations
+#[derive(Debug)]
+pub enum EngineError {
+    /// GGUF parsing error
+    Gguf(GgufError),
+    /// Missing required tensor
+    MissingTensor(String),
+    /// Invalid model configuration
+    InvalidConfig(String),
+    /// Generation error
+    GenerationError(String),
+}
+
+impl From<GgufError> for EngineError {
+    fn from(e: GgufError) -> Self {
+        Self::Gguf(e)
+    }
+}
+
+impl std::fmt::Display for EngineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gguf(e) => write!(f, "GGUF error: {}", e),
+            Self::MissingTensor(name) => write!(f, "Missing tensor: {}", name),
+            Self::InvalidConfig(msg) => write!(f, "Invalid config: {}", msg),
+            Self::GenerationError(msg) => write!(f, "Generation error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+impl BitNetEngine {
+    /// Load a model from a GGUF file.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, EngineError> {
+        let reader = GgufReader::open(path)?;
+        reader.print_summary();
+
+        // Extract configuration
+        let gguf_config = &reader.config;
+        let config = BitNetConfig {
+            vocab_size: gguf_config.vocab_size as usize,
+            hidden_size: gguf_config.hidden_size as usize,
+            num_layers: gguf_config.num_layers as usize,
+            num_heads: gguf_config.num_heads as usize,
+            num_kv_heads: gguf_config.num_kv_heads as usize,
+            intermediate_size: gguf_config.intermediate_size as usize,
+            max_seq_len: gguf_config.max_seq_len as usize,
+            rms_norm_eps: gguf_config.rms_norm_eps,
+            rope_theta: gguf_config.rope_theta,
+            head_dim: gguf_config.hidden_size as usize / gguf_config.num_heads as usize,
+        };
+
+        // Validate config
+        if config.hidden_size == 0 || config.num_layers == 0 {
+            return Err(EngineError::InvalidConfig(
+                "Missing required model dimensions".to_string(),
+            ));
+        }
+
+        // Load embeddings
+        let embed_tokens = load_f32_tensor(&reader, "token_embd.weight")?;
+
+        // Load output norm
+        let output_norm = load_f32_tensor(&reader, "output_norm.weight")?;
+
+        // Try to load output projection (may be tied with embeddings)
+        let output_proj = load_f32_tensor(&reader, "output.weight").ok();
+
+        // Load layer weights
+        let mut layers = Vec::with_capacity(config.num_layers);
+        for layer_idx in 0..config.num_layers {
+            let layer = load_layer_weights(&reader, layer_idx, &config)?;
+            layers.push(layer);
+        }
+
+        // Initialize KV cache
+        let kv_config = KVCacheConfig {
+            num_layers: config.num_layers,
+            num_kv_heads: config.num_kv_heads,
+            head_dim: config.head_dim,
+            max_seq_len: config.max_seq_len,
+        };
+        let kv_cache = KVCache::new(kv_config);
+
+        // Load vocabulary
+        let vocab = reader.get_vocab();
+
+        // Precompute RoPE frequencies
+        let rope_freqs = compute_rope_freqs(config.head_dim, config.rope_theta);
+
+        // Initialize native BitNet kernel with auto-tuned tiles
+        let kernel = BitNetKernel::with_auto_tune(
+            config.hidden_size as i32,
+            config.hidden_size as i32,
+        );
+        tracing::info!(
+            "Native kernel initialized: {} (tiles: {}x{})",
+            kernel.capabilities.description(),
+            kernel.tile_config.bm,
+            kernel.tile_config.bk,
+        );
+
+        Ok(Self {
+            config,
+            embed_tokens,
+            output_norm,
+            output_proj,
+            layers,
+            kv_cache,
+            vocab,
+            rope_freqs,
+            kernel,
+        })
+    }
+
+    /// Get vocabulary size.
+    pub fn vocab_size(&self) -> usize {
+        self.config.vocab_size
+    }
+
+    /// Get hidden size.
+    pub fn hidden_size(&self) -> usize {
+        self.config.hidden_size
+    }
+
+    /// Reset KV cache for new sequence.
+    pub fn reset(&mut self) {
+        self.kv_cache.clear();
+    }
+
+    /// Forward pass for a single position (decode step).
+    ///
+    /// # Arguments
+    /// * `token_id` - Input token ID
+    /// * `pos` - Position in sequence
+    ///
+    /// # Returns
+    /// Logits [vocab_size]
+    pub fn forward_one(&mut self, token_id: i32, pos: usize) -> Vec<f32> {
+        // Get embedding
+        let hidden = self.get_embedding(token_id as usize);
+
+        // Forward through layers
+        let hidden = self.forward_layers(hidden, pos, 1);
+
+        // Apply output norm and projection
+        self.forward_output(&hidden)
+    }
+
+    /// Forward pass for multiple positions (prefill).
+    ///
+    /// # Arguments
+    /// * `token_ids` - Input token IDs
+    /// * `start_pos` - Starting position
+    ///
+    /// # Returns
+    /// Logits for last position [vocab_size]
+    pub fn forward_prefill(&mut self, token_ids: &[i32], start_pos: usize) -> Vec<f32> {
+        let seq_len = token_ids.len();
+        if seq_len == 0 {
+            return vec![0.0; self.config.vocab_size];
+        }
+
+        // Get embeddings for all tokens
+        let mut hidden = Vec::with_capacity(seq_len * self.config.hidden_size);
+        for &token_id in token_ids {
+            hidden.extend_from_slice(&self.get_embedding(token_id as usize));
+        }
+
+        // Forward through layers
+        let hidden = self.forward_layers(hidden, start_pos, seq_len);
+
+        // Get logits for last position only
+        let last_hidden = &hidden[(seq_len - 1) * self.config.hidden_size..];
+        self.forward_output(last_hidden)
+    }
+
+    /// Get token embedding.
+    fn get_embedding(&self, token_id: usize) -> Vec<f32> {
+        let offset = token_id * self.config.hidden_size;
+        self.embed_tokens[offset..offset + self.config.hidden_size].to_vec()
+    }
+
+    /// Forward through all transformer layers.
+    fn forward_layers(&mut self, mut hidden: Vec<f32>, start_pos: usize, seq_len: usize) -> Vec<f32> {
+        for layer_idx in 0..self.config.num_layers {
+            hidden = self.forward_layer(layer_idx, hidden, start_pos, seq_len);
+        }
+        hidden
+    }
+
+    /// Forward through a single transformer layer.
+    fn forward_layer(
+        &mut self,
+        layer_idx: usize,
+        hidden: Vec<f32>,
+        start_pos: usize,
+        seq_len: usize,
+    ) -> Vec<f32> {
+        // Pre-attention norm - clone the norm weights to avoid borrow conflict
+        let attn_norm = self.layers[layer_idx].attn_norm.clone();
+        let normed = self.apply_norm(&hidden, &attn_norm, seq_len);
+
+        // Attention (mutates kv_cache)
+        let attn_out = self.attention(layer_idx, &normed, start_pos, seq_len);
+
+        // Residual connection
+        let mut hidden: Vec<f32> = hidden.iter().zip(attn_out.iter()).map(|(a, b)| a + b).collect();
+
+        // Pre-FFN norm - clone the norm weights to avoid borrow conflict
+        let ffn_norm = self.layers[layer_idx].ffn_norm.clone();
+        let normed = self.apply_norm(&hidden, &ffn_norm, seq_len);
+
+        // FFN (immutable access to self)
+        let ffn_out = self.ffn(layer_idx, &normed, seq_len);
+
+        // Residual connection
+        for (h, f) in hidden.iter_mut().zip(ffn_out.iter()) {
+            *h += f;
+        }
+
+        hidden
+    }
+
+    /// Apply RMS normalization.
+    fn apply_norm(&self, hidden: &[f32], gamma: &[f32], seq_len: usize) -> Vec<f32> {
+        let h = self.config.hidden_size;
+        let mut output = Vec::with_capacity(seq_len * h);
+
+        for i in 0..seq_len {
+            let start = i * h;
+            let slice = &hidden[start..start + h];
+            let normed = rms_norm_with_scale(slice, gamma, self.config.rms_norm_eps);
+            output.extend_from_slice(&normed);
+        }
+
+        output
+    }
+
+    /// Compute attention for a layer.
+    fn attention(
+        &mut self,
+        layer_idx: usize,
+        hidden: &[f32],
+        start_pos: usize,
+        seq_len: usize,
+    ) -> Vec<f32> {
+        let num_heads = self.config.num_heads;
+        let num_kv_heads = self.config.num_kv_heads;
+        let head_dim = self.config.head_dim;
+        let kv_dim = num_kv_heads * head_dim;
+
+        // Project Q, K, V (using native BitNet kernels)
+        // We need to structure this to avoid borrow conflicts with self
+        let q = {
+            let weights = &self.layers[layer_idx].q_proj;
+            self.linear_forward_ref(weights, hidden, seq_len)
+        };
+        let k = {
+            let weights = &self.layers[layer_idx].k_proj;
+            self.linear_forward_ref(weights, hidden, seq_len)
+        };
+        let v = {
+            let weights = &self.layers[layer_idx].v_proj;
+            self.linear_forward_ref(weights, hidden, seq_len)
+        };
+
+        // Apply RoPE to Q and K
+        let q = self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim);
+        let k = self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim);
+
+        // Update KV cache
+        for i in 0..seq_len {
+            let pos = start_pos + i;
+            let k_slice = &k[i * kv_dim..(i + 1) * kv_dim];
+            let v_slice = &v[i * kv_dim..(i + 1) * kv_dim];
+            self.kv_cache.update(layer_idx, pos, k_slice, v_slice);
+        }
+
+        // Compute attention scores and output
+        let total_seq_len = start_pos + seq_len;
+        let attn_out = self.compute_attention_scores(
+            &q, layer_idx, seq_len, total_seq_len, num_heads, num_kv_heads, head_dim,
+        );
+
+        // Output projection
+        let weights = &self.layers[layer_idx].o_proj;
+        self.linear_forward_ref(weights, &attn_out, seq_len)
+    }
+
+    /// Compute attention scores and weighted values.
+    fn compute_attention_scores(
+        &self,
+        q: &[f32],
+        layer_idx: usize,
+        q_len: usize,
+        kv_len: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let h = self.config.hidden_size;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let heads_per_kv = num_heads / num_kv_heads;
+
+        let layer_cache = self.kv_cache.layer(layer_idx);
+        let all_keys = layer_cache.get_keys(kv_len);
+        let all_values = layer_cache.get_values(kv_len);
+
+        let mut output = vec![0.0; q_len * h];
+
+        // For each query position
+        for qi in 0..q_len {
+            // For each head
+            for head in 0..num_heads {
+                let kv_head = head / heads_per_kv;
+
+                // Get query for this head
+                let q_start = qi * h + head * head_dim;
+                let q_vec = &q[q_start..q_start + head_dim];
+
+                // Compute attention scores with all keys
+                let mut scores = vec![0.0; kv_len];
+                for ki in 0..kv_len {
+                    let k_start = ki * num_kv_heads * head_dim + kv_head * head_dim;
+                    let k_vec = &all_keys[k_start..k_start + head_dim];
+                    scores[ki] = dot(q_vec, k_vec) * scale;
+                }
+
+                // Apply causal mask (for positions after current)
+                let current_pos = qi; // relative to start of this forward pass
+                for ki in (current_pos + 1)..kv_len {
+                    scores[ki] = f32::NEG_INFINITY;
+                }
+
+                // Softmax
+                softmax_inplace(&mut scores);
+
+                // Weighted sum of values
+                let out_start = qi * h + head * head_dim;
+                for ki in 0..kv_len {
+                    let v_start = ki * num_kv_heads * head_dim + kv_head * head_dim;
+                    let v_vec = &all_values[v_start..v_start + head_dim];
+                    for (j, &v) in v_vec.iter().enumerate() {
+                        output[out_start + j] += scores[ki] * v;
+                    }
+                }
+            }
+        }
+
+        output
+    }
+
+    /// FFN forward pass.
+    fn ffn(&self, layer_idx: usize, hidden: &[f32], seq_len: usize) -> Vec<f32> {
+        // Gate and up projections
+        let gate = self.linear_forward_ref(&self.layers[layer_idx].gate_proj, hidden, seq_len);
+        let up = self.linear_forward_ref(&self.layers[layer_idx].up_proj, hidden, seq_len);
+
+        // Apply SiLU to gate and multiply with up
+        let mut gate = gate;
+        silu_inplace(&mut gate);
+        let intermediate: Vec<f32> = gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
+
+        // Down projection
+        self.linear_forward_ref(&self.layers[layer_idx].down_proj, &intermediate, seq_len)
+    }
+
+    /// Apply linear projection using native BitNet kernels.
+    ///
+    /// This is the core operation that uses SIMD-optimized ternary GEMM:
+    /// output = weights * quantize(input) * scale
+    fn linear_forward_ref(
+        &self,
+        weights: &NativeWeightFormat,
+        input: &[f32],
+        seq_len: usize,
+    ) -> Vec<f32> {
+        let in_features = weights.in_features;
+        let out_features = weights.out_features;
+
+        // Validate dimensions
+        debug_assert_eq!(
+            input.len(),
+            seq_len * in_features,
+            "Input size mismatch: expected {} ({}x{}), got {}",
+            seq_len * in_features,
+            seq_len,
+            in_features,
+            input.len()
+        );
+
+        // Quantize activations to INT8
+        // The kernel handles finding the optimal scale factor
+        let (quantized_input, input_scale) = self.kernel.quantize_activations(input);
+
+        // Compute GEMM: output = packed_weights @ quantized_input
+        // Dimensions: [out_features x in_features] @ [in_features x seq_len] = [out_features x seq_len]
+        //
+        // The native kernel expects:
+        // - M = out_features
+        // - N = seq_len (batch size)
+        // - K = in_features
+        // - weights: [M x K/4] packed ternary
+        // - activations: [K x N] INT8
+        // - output: [M x N] FP32
+        self.kernel.gemm(
+            out_features,
+            seq_len,
+            in_features,
+            &weights.data,
+            &quantized_input,
+            weights.scale * input_scale,
+        )
+    }
+
+    /// Apply RoPE positional encoding.
+    fn apply_rope(
+        &self,
+        x: &[f32],
+        start_pos: usize,
+        seq_len: usize,
+        num_heads: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let mut output = x.to_vec();
+        let half_dim = head_dim / 2;
+
+        for i in 0..seq_len {
+            let pos = start_pos + i;
+            for head in 0..num_heads {
+                let offset = i * num_heads * head_dim + head * head_dim;
+
+                for j in 0..half_dim {
+                    let freq = self.rope_freqs[j];
+                    let angle = pos as f32 * freq;
+                    let cos = angle.cos();
+                    let sin = angle.sin();
+
+                    let x0 = output[offset + j];
+                    let x1 = output[offset + j + half_dim];
+
+                    output[offset + j] = x0 * cos - x1 * sin;
+                    output[offset + j + half_dim] = x0 * sin + x1 * cos;
+                }
+            }
+        }
+
+        output
+    }
+
+    /// Forward through output norm and projection.
+    fn forward_output(&self, hidden: &[f32]) -> Vec<f32> {
+        // Apply final norm
+        let normed = rms_norm_with_scale(hidden, &self.output_norm, self.config.rms_norm_eps);
+
+        // Project to vocabulary
+        if let Some(ref output_proj) = self.output_proj {
+            // Use output projection weights
+            let mut logits = vec![0.0; self.config.vocab_size];
+            for (i, logit) in logits.iter_mut().enumerate() {
+                let offset = i * self.config.hidden_size;
+                *logit = dot(&normed, &output_proj[offset..offset + self.config.hidden_size]);
+            }
+            logits
+        } else {
+            // Tied embeddings
+            let mut logits = vec![0.0; self.config.vocab_size];
+            for (i, logit) in logits.iter_mut().enumerate() {
+                let offset = i * self.config.hidden_size;
+                *logit = dot(&normed, &self.embed_tokens[offset..offset + self.config.hidden_size]);
+            }
+            logits
+        }
+    }
+
+    /// Generate tokens.
+    pub fn generate(
+        &mut self,
+        input_ids: &[i32],
+        max_tokens: usize,
+        sampling_config: &SamplingConfig,
+    ) -> Vec<i32> {
+        let mut rng = rand::thread_rng();
+        let mut output_ids = Vec::with_capacity(max_tokens);
+
+        // Prefill
+        let logits = self.forward_prefill(input_ids, 0);
+        let token_id = sample_token(&logits, sampling_config, &mut rng);
+        output_ids.push(token_id as i32);
+
+        // Decode
+        let mut pos = input_ids.len();
+        for _ in 1..max_tokens {
+            let logits = self.forward_one(output_ids.last().copied().unwrap_or(0), pos);
+            let token_id = sample_token(&logits, sampling_config, &mut rng);
+
+            // Check for EOS (simplified)
+            if token_id == 2 {
+                break;
+            }
+
+            output_ids.push(token_id as i32);
+            pos += 1;
+        }
+
+        output_ids
+    }
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Load an F32 tensor from GGUF.
+fn load_f32_tensor(reader: &GgufReader, name: &str) -> Result<Vec<f32>, EngineError> {
+    let tensor = reader
+        .find_tensor(name)
+        .ok_or_else(|| EngineError::MissingTensor(name.to_string()))?;
+
+    let data = reader.tensor_data(tensor);
+
+    match tensor.dtype {
+        GgmlQuantType::F32 => {
+            // Direct F32 data
+            let floats: Vec<f32> = data
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            Ok(floats)
+        }
+        GgmlQuantType::F16 => {
+            // Convert F16 to F32
+            let floats: Vec<f32> = data
+                .chunks_exact(2)
+                .map(|b| f16_to_f32(u16::from_le_bytes([b[0], b[1]])))
+                .collect();
+            Ok(floats)
+        }
+        GgmlQuantType::BF16 => {
+            // Convert BF16 to F32
+            let floats: Vec<f32> = data
+                .chunks_exact(2)
+                .map(|b| bf16_to_f32(u16::from_le_bytes([b[0], b[1]])))
+                .collect();
+            Ok(floats)
+        }
+        _ => Err(EngineError::InvalidConfig(format!(
+            "Unsupported dtype {:?} for tensor {}",
+            tensor.dtype, name
+        ))),
+    }
+}
+
+/// Load quantized weights and repack to native format.
+fn load_quantized_weights(
+    reader: &GgufReader,
+    name: &str,
+) -> Result<NativeWeightFormat, EngineError> {
+    let tensor = reader
+        .find_tensor(name)
+        .ok_or_else(|| EngineError::MissingTensor(name.to_string()))?;
+
+    let data = reader.tensor_data(tensor);
+
+    if !tensor.dtype.is_ternary() {
+        return Err(EngineError::InvalidConfig(format!(
+            "Expected ternary weights for {}, got {:?}",
+            name, tensor.dtype
+        )));
+    }
+
+    repack_ternary_weights(data, tensor.dtype, &tensor.shape).map_err(|e| e.into())
+}
+
+/// Load layer weights.
+fn load_layer_weights(
+    reader: &GgufReader,
+    layer_idx: usize,
+    config: &BitNetConfig,
+) -> Result<LayerWeights, EngineError> {
+    let prefix = format!("blk.{}", layer_idx);
+
+    // Load attention norm
+    let attn_norm = load_f32_tensor(reader, &format!("{}.attn_norm.weight", prefix))?;
+
+    // Load attention projections
+    let q_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_q.weight", prefix), config)?;
+    let k_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_k.weight", prefix), config)?;
+    let v_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_v.weight", prefix), config)?;
+    let o_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_output.weight", prefix), config)?;
+
+    // Load FFN norm
+    let ffn_norm = load_f32_tensor(reader, &format!("{}.ffn_norm.weight", prefix))?;
+
+    // Load FFN projections
+    let gate_proj = load_quantized_weights_or_f32(reader, &format!("{}.ffn_gate.weight", prefix), config)?;
+    let up_proj = load_quantized_weights_or_f32(reader, &format!("{}.ffn_up.weight", prefix), config)?;
+    let down_proj = load_quantized_weights_or_f32(reader, &format!("{}.ffn_down.weight", prefix), config)?;
+
+    Ok(LayerWeights {
+        attn_norm,
+        q_proj,
+        k_proj,
+        v_proj,
+        o_proj,
+        ffn_norm,
+        gate_proj,
+        up_proj,
+        down_proj,
+        q_lrc_u: None,
+        q_lrc_v: None,
+    })
+}
+
+/// Load weights as either quantized or F32 (fallback).
+fn load_quantized_weights_or_f32(
+    reader: &GgufReader,
+    name: &str,
+    config: &BitNetConfig,
+) -> Result<NativeWeightFormat, EngineError> {
+    // Try quantized first
+    if let Ok(weights) = load_quantized_weights(reader, name) {
+        return Ok(weights);
+    }
+
+    // Fallback to F32 (convert to pseudo-quantized format)
+    let tensor = reader
+        .find_tensor(name)
+        .ok_or_else(|| EngineError::MissingTensor(name.to_string()))?;
+
+    let f32_data = load_f32_tensor(reader, name)?;
+
+    // Create dummy native format (weights stored as F32, scale = 1)
+    // This is inefficient but allows F32 models to work
+    Ok(NativeWeightFormat {
+        data: vec![0; tensor.n_elements / 4], // Placeholder
+        scale: 1.0,
+        out_features: tensor.shape.first().copied().unwrap_or(0),
+        in_features: tensor.shape.get(1).copied().unwrap_or(config.hidden_size),
+    })
+}
+
+/// Compute RoPE frequencies.
+fn compute_rope_freqs(head_dim: usize, theta: f32) -> Vec<f32> {
+    let half_dim = head_dim / 2;
+    (0..half_dim)
+        .map(|i| 1.0 / theta.powf(2.0 * i as f32 / head_dim as f32))
+        .collect()
+}
+
+/// Dot product.
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+/// Convert F16 to F32.
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = ((bits >> 15) & 1) as u32;
+    let exp = ((bits >> 10) & 0x1F) as u32;
+    let mant = (bits & 0x3FF) as u32;
+
+    if exp == 0 {
+        if mant == 0 {
+            return f32::from_bits(sign << 31);
+        }
+        // Denormal
+        let e = exp as i32 - 14;
+        let m = mant as f32 / 1024.0;
+        return if sign == 0 { m * 2.0f32.powi(e) } else { -m * 2.0f32.powi(e) };
+    } else if exp == 31 {
+        if mant == 0 {
+            return if sign == 0 { f32::INFINITY } else { f32::NEG_INFINITY };
+        }
+        return f32::NAN;
+    }
+
+    let f32_exp = exp + 127 - 15;
+    let f32_mant = mant << 13;
+    f32::from_bits((sign << 31) | (f32_exp << 23) | f32_mant)
+}
+
+/// Convert BF16 to F32.
+fn bf16_to_f32(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}

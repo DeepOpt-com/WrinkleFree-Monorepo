@@ -20,10 +20,11 @@ from wf_train.objectives.dlm import DLMObjective
 from wf_train.objectives.sft import SFTObjective
 from wf_train.objectives.distill import (
     DistillObjective,
-    HiddenConfig,
+    LayerWiseConfig,
+    HiddenConfig,  # Deprecated alias for LayerWiseConfig
+    LRCConfig,  # Deprecated alias for LayerWiseConfig
     LogitsConfig,
     AttentionConfig,
-    LRCConfig,
     HiddenLossType,
     LogitsMode,
     AttentionMode,
@@ -41,10 +42,11 @@ __all__ = [
     "SFTObjective",
     "DistillObjective",
     # Distill configs
-    "HiddenConfig",
+    "LayerWiseConfig",  # Unified config for hidden/lrc
+    "HiddenConfig",  # Deprecated alias
+    "LRCConfig",  # Deprecated alias
     "LogitsConfig",
     "AttentionConfig",
-    "LRCConfig",
     # Distill enums
     "HiddenLossType",
     "LogitsMode",

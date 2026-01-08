@@ -49,14 +49,25 @@ class AttentionMode(Enum):
 
 
 @dataclass
-class HiddenConfig:
-    """Configuration for hidden states distillation component."""
+class LayerWiseConfig:
+    """Unified config for Hidden States and LRC layer-wise alignment.
 
+    Used for both hidden state distillation and LRC reconstruction loss.
+    The `name` field controls metric naming (e.g., "hidden" or "lrc").
+    """
+
+    name: str = "hidden"  # "hidden" or "lrc" - controls metric naming
     enabled: bool = False
     weight: float = 1.0
-    loss_type: str = "mse_normalized"  # mse, mse_normalized, cosine, inner_product
+    loss_type: str = "mse"  # mse, mse_normalized, cosine, inner_product
     layer_weights: Optional[str | list[float]] = None  # null, progressive, exponential, or list
-    normalize: bool = True
+    temperature: float = 1.0  # Applied at end (1.0 = no scaling for hidden)
+    normalize: bool = False
+
+
+# Backward compatibility aliases (deprecated)
+HiddenConfig = LayerWiseConfig
+LRCConfig = LayerWiseConfig
 
 
 @dataclass
@@ -82,18 +93,6 @@ class AttentionConfig:
     mode: str = "relation"  # "relation" (standard) or "block" (block-wise for DLM)
     block_size: int = 32  # Only used when mode="block"
     temperature: float = 1.0
-
-
-@dataclass
-class LRCConfig:
-    """Configuration for LRC (Low-Rank Correction) component."""
-
-    enabled: bool = False
-    weight: float = 1.0
-    loss_type: str = "mse"  # mse, mse_normalized, cosine
-    layer_weights: Optional[str | list[float]] = None
-    temperature: float = 1.0
-    normalize: bool = False
 
 
 class DistillObjective(Objective):
@@ -122,28 +121,49 @@ class DistillObjective(Objective):
 
     def __init__(
         self,
-        hidden: Optional[HiddenConfig | dict] = None,
+        hidden: Optional[LayerWiseConfig | dict] = None,
         logits: Optional[LogitsConfig | dict] = None,
         attention: Optional[AttentionConfig | dict] = None,
-        lrc: Optional[LRCConfig | dict] = None,
+        lrc: Optional[LayerWiseConfig | dict] = None,
         ignore_index: int = -100,
     ):
         super().__init__()
 
         # Convert dicts to dataclasses if needed
+        # For hidden: default name="hidden", loss_type="mse_normalized", normalize=True
         if isinstance(hidden, dict):
-            hidden = HiddenConfig(**hidden)
+            hidden = LayerWiseConfig(
+                name=hidden.get("name", "hidden"),
+                enabled=hidden.get("enabled", False),
+                weight=hidden.get("weight", 1.0),
+                loss_type=hidden.get("loss_type", "mse_normalized"),
+                layer_weights=hidden.get("layer_weights"),
+                temperature=hidden.get("temperature", 1.0),
+                normalize=hidden.get("normalize", True),
+            )
         if isinstance(logits, dict):
             logits = LogitsConfig(**logits)
         if isinstance(attention, dict):
             attention = AttentionConfig(**attention)
+        # For lrc: default name="lrc", loss_type="mse", normalize=False
         if isinstance(lrc, dict):
-            lrc = LRCConfig(**lrc)
+            lrc = LayerWiseConfig(
+                name=lrc.get("name", "lrc"),
+                enabled=lrc.get("enabled", False),
+                weight=lrc.get("weight", 1.0),
+                loss_type=lrc.get("loss_type", "mse"),
+                layer_weights=lrc.get("layer_weights"),
+                temperature=lrc.get("temperature", 1.0),
+                normalize=lrc.get("normalize", False),
+            )
 
-        self.hidden_config = hidden or HiddenConfig()
+        # Set defaults with appropriate names for each component
+        self.hidden_config = hidden or LayerWiseConfig(
+            name="hidden", loss_type="mse_normalized", normalize=True
+        )
         self.logits_config = logits or LogitsConfig()
         self.attention_config = attention or AttentionConfig()
-        self.lrc_config = lrc or LRCConfig()
+        self.lrc_config = lrc or LayerWiseConfig(name="lrc")
         self.ignore_index = ignore_index
 
     @property
@@ -188,11 +208,11 @@ class DistillObjective(Objective):
 
         # Hidden states component
         if self.hidden_config.enabled:
-            hidden_loss, hidden_metrics = self._compute_hidden_loss(
-                model_outputs, batch, teacher_outputs
+            hidden_loss, hidden_metrics = self._compute_layerwise_loss(
+                self.hidden_config, model_outputs, teacher_outputs, batch
             )
             total_loss = total_loss + self.hidden_config.weight * hidden_loss
-            metrics.update({f"hidden_{k}": v for k, v in hidden_metrics.items()})
+            metrics.update(hidden_metrics)
             metrics["hidden_loss"] = hidden_loss.detach()
 
         # Logits component
@@ -215,26 +235,37 @@ class DistillObjective(Objective):
 
         # LRC component
         if self.lrc_config.enabled:
-            lrc_loss, lrc_metrics = self._compute_lrc_loss(
-                model_outputs, batch, teacher_outputs
+            lrc_loss, lrc_metrics = self._compute_layerwise_loss(
+                self.lrc_config, model_outputs, teacher_outputs, batch
             )
             total_loss = total_loss + self.lrc_config.weight * lrc_loss
-            metrics.update({f"lrc_{k}": v for k, v in lrc_metrics.items()})
+            metrics.update(lrc_metrics)
             metrics["lrc_loss"] = lrc_loss.detach()
 
         return ObjectiveOutput(loss=total_loss, metrics=metrics)
 
     # =========================================================================
-    # Hidden States Component (from LayerwiseDistillationObjective)
+    # Unified Layer-wise Alignment (Hidden States + LRC)
     # =========================================================================
 
-    def _compute_hidden_loss(
+    def _compute_layerwise_loss(
         self,
+        config: LayerWiseConfig,
         model_outputs: dict[str, Any],
-        batch: dict[str, Any],
         teacher_outputs: dict[str, Any],
+        batch: dict[str, Any],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Hidden state distillation loss."""
+        """Unified layer-wise alignment loss for hidden states or LRC.
+
+        Args:
+            config: LayerWiseConfig with name, loss_type, layer_weights, temperature, normalize
+            model_outputs: Student model outputs containing "hidden_states"
+            teacher_outputs: Teacher model outputs containing "hidden_states"
+            batch: Batch dict with optional "attention_mask"
+
+        Returns:
+            Tuple of (loss, metrics_dict) where metrics are prefixed with config.name
+        """
         student_hidden = model_outputs.get("hidden_states")
         teacher_hidden = teacher_outputs.get("hidden_states")
 
@@ -259,31 +290,41 @@ class DistillObjective(Objective):
             device = model_outputs["logits"].device
             return (
                 torch.tensor(0.0, device=device),
-                {"mean_layer_loss": torch.tensor(0.0, device=device)},
+                {f"{config.name}_mean_layer_loss": torch.tensor(0.0, device=device)},
             )
 
         attention_mask = batch.get("attention_mask")
-        weights = self._get_layer_weights(num_layers, self.hidden_config.layer_weights)
+        weights = self._get_layer_weights(num_layers, config.layer_weights)
         device = student_hidden[0].device
 
         layer_losses = []
         total_loss = torch.tensor(0.0, device=device, dtype=student_hidden[0].dtype)
 
-        loss_type = HiddenLossType(self.hidden_config.loss_type)
+        loss_type = HiddenLossType(config.loss_type)
 
         for idx, (s_hidden, t_hidden) in enumerate(zip(student_hidden, teacher_hidden)):
             layer_loss = self._compute_hidden_layer_loss(
-                s_hidden, t_hidden, attention_mask, loss_type, self.hidden_config.normalize
+                s_hidden, t_hidden, attention_mask, loss_type, config.normalize
             )
             layer_losses.append(layer_loss.detach())
             total_loss = total_loss + weights[idx] * layer_loss
 
+        # Apply temperature scaling (1.0 = no effect for hidden, configurable for LRC)
+        total_loss = total_loss / config.temperature
+
         mean_layer_loss = torch.stack(layer_losses).mean()
 
-        return total_loss, {
-            "mean_layer_loss": mean_layer_loss,
-            "num_layers": torch.tensor(float(num_layers), device=device),
+        # Prefix all metrics with config.name for distinction
+        metrics = {
+            f"{config.name}_mean_layer_loss": mean_layer_loss,
+            f"{config.name}_num_layers": torch.tensor(float(num_layers), device=device),
         }
+        if config.temperature != 1.0:
+            metrics[f"{config.name}_temperature"] = torch.tensor(
+                config.temperature, device=device
+            )
+
+        return total_loss, metrics
 
     def _compute_hidden_layer_loss(
         self,
@@ -417,6 +458,57 @@ class DistillObjective(Objective):
     #                      BlockAttentionDistillationObjective)
     # =========================================================================
 
+    def _validate_and_extract_attention(
+        self,
+        model_outputs: dict[str, Any],
+        teacher_outputs: dict[str, Any],
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        """Validate attention outputs and extract specified layer.
+
+        Args:
+            model_outputs: Student model outputs containing "attentions"
+            teacher_outputs: Teacher model outputs containing "attentions"
+
+        Returns:
+            Tuple of (student_attn, teacher_attn, normalized_layer_idx)
+
+        Raises:
+            ValueError: If attentions are missing or None at specified layer
+        """
+        student_attentions = model_outputs.get("attentions")
+        teacher_attentions = teacher_outputs.get("attentions")
+
+        if student_attentions is None or len(student_attentions) == 0:
+            raise ValueError(
+                "Student model must return attention weights. "
+                "Use output_attentions=True and eager attention implementation."
+            )
+        if teacher_attentions is None or len(teacher_attentions) == 0:
+            raise ValueError(
+                "Teacher model must return attention weights. "
+                "Load teacher with attn_implementation='eager'."
+            )
+
+        layer_idx = self.attention_config.distill_layer
+        student_attn = student_attentions[layer_idx]
+        teacher_attn = teacher_attentions[layer_idx]
+
+        if student_attn is None:
+            raise ValueError(
+                f"Student attention at layer {layer_idx} is None. "
+                "Ensure output_attentions=True and use eager attention."
+            )
+        if teacher_attn is None:
+            raise ValueError(
+                f"Teacher attention at layer {layer_idx} is None. "
+                "Load teacher with attn_implementation='eager'."
+            )
+
+        # Normalize negative index for metrics
+        normalized_idx = layer_idx % len(student_attentions)
+
+        return student_attn, teacher_attn, normalized_idx
+
     def _compute_attention_loss(
         self,
         model_outputs: dict[str, Any],
@@ -437,35 +529,9 @@ class DistillObjective(Objective):
         teacher_outputs: dict[str, Any],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Attention relation distillation (from AttentionRelationDistillationObjective)."""
-        student_attentions = model_outputs.get("attentions")
-        teacher_attentions = teacher_outputs.get("attentions")
-
-        if student_attentions is None or len(student_attentions) == 0:
-            raise ValueError(
-                "Student model must return attention weights. "
-                "Use output_attentions=True and eager attention implementation."
-            )
-        if teacher_attentions is None or len(teacher_attentions) == 0:
-            raise ValueError(
-                "Teacher model must return attention weights. "
-                "Load teacher with attn_implementation='eager'."
-            )
-
-        # Select single layer
-        layer_idx = self.attention_config.distill_layer
-        student_attn = student_attentions[layer_idx]
-        teacher_attn = teacher_attentions[layer_idx]
-
-        if student_attn is None:
-            raise ValueError(
-                f"Student attention at layer {layer_idx} is None. "
-                "Ensure output_attentions=True and use eager attention."
-            )
-        if teacher_attn is None:
-            raise ValueError(
-                f"Teacher attention at layer {layer_idx} is None. "
-                "Load teacher with attn_implementation='eager'."
-            )
+        student_attn, teacher_attn, layer_idx = self._validate_and_extract_attention(
+            model_outputs, teacher_outputs
+        )
 
         attention_mask = batch.get("attention_mask")
 
@@ -510,9 +576,7 @@ class DistillObjective(Objective):
 
         return loss, {
             "attention_kl": loss.detach(),
-            "distill_layer": torch.tensor(
-                layer_idx % len(student_attentions), device=loss.device
-            ),
+            "distill_layer": torch.tensor(layer_idx, device=loss.device),
         }
 
     def _compute_block_attention_loss(
@@ -522,34 +586,9 @@ class DistillObjective(Objective):
         teacher_outputs: dict[str, Any],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Block-wise attention distillation (from BlockAttentionDistillationObjective)."""
-        student_attentions = model_outputs.get("attentions")
-        teacher_attentions = teacher_outputs.get("attentions")
-
-        if student_attentions is None or len(student_attentions) == 0:
-            raise ValueError(
-                "Student model must return attention weights. "
-                "Use output_attentions=True and eager attention."
-            )
-        if teacher_attentions is None or len(teacher_attentions) == 0:
-            raise ValueError(
-                "Teacher model must return attention weights. "
-                "Load teacher with attn_implementation='eager'."
-            )
-
-        layer_idx = self.attention_config.distill_layer
-        student_attn = student_attentions[layer_idx]
-        teacher_attn = teacher_attentions[layer_idx]
-
-        if student_attn is None:
-            raise ValueError(
-                f"Student attention at layer {layer_idx} is None. "
-                "Ensure output_attentions=True and use eager attention."
-            )
-        if teacher_attn is None:
-            raise ValueError(
-                f"Teacher attention at layer {layer_idx} is None. "
-                "Load teacher with attn_implementation='eager'."
-            )
+        student_attn, teacher_attn, _ = self._validate_and_extract_attention(
+            model_outputs, teacher_outputs
+        )
 
         # Get response mask
         labels = batch.get("dlm_labels", batch["labels"])
@@ -613,71 +652,6 @@ class DistillObjective(Objective):
         return loss, {
             "block_attention_loss": loss.detach(),
             "num_valid_blocks": torch.tensor(float(num_valid_blocks), device=loss.device),
-        }
-
-    # =========================================================================
-    # LRC Component (from LRCReconstructionObjective)
-    # =========================================================================
-
-    def _compute_lrc_loss(
-        self,
-        model_outputs: dict[str, Any],
-        batch: dict[str, Any],
-        teacher_outputs: dict[str, Any],
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """LRC reconstruction loss (from LRCReconstructionObjective)."""
-        student_hidden = model_outputs.get("hidden_states")
-        teacher_hidden = teacher_outputs.get("hidden_states")
-
-        if student_hidden is None or teacher_hidden is None:
-            raise ValueError(
-                "Both student and teacher must output hidden_states. "
-                "Set output_hidden_states=True in model config."
-            )
-
-        # Skip embedding layer
-        student_hidden = student_hidden[1:]
-        teacher_hidden = teacher_hidden[1:]
-
-        if len(student_hidden) != len(teacher_hidden):
-            raise ValueError(
-                f"Layer count mismatch: student={len(student_hidden)}, "
-                f"teacher={len(teacher_hidden)}"
-            )
-
-        num_layers = len(student_hidden)
-        if num_layers == 0:
-            device = model_outputs["logits"].device
-            return (
-                torch.tensor(0.0, device=device),
-                {"mean_layer_loss": torch.tensor(0.0, device=device)},
-            )
-
-        attention_mask = batch.get("attention_mask")
-        weights = self._get_layer_weights(num_layers, self.lrc_config.layer_weights)
-        device = student_hidden[0].device
-
-        layer_losses = []
-        total_loss = torch.tensor(0.0, device=device, dtype=student_hidden[0].dtype)
-
-        loss_type = HiddenLossType(self.lrc_config.loss_type)
-
-        for idx, (s_h, t_h) in enumerate(zip(student_hidden, teacher_hidden)):
-            layer_loss = self._compute_hidden_layer_loss(
-                s_h, t_h, attention_mask, loss_type, self.lrc_config.normalize
-            )
-            layer_losses.append(layer_loss.detach())
-            total_loss = total_loss + weights[idx] * layer_loss
-
-        # Apply temperature scaling
-        total_loss = total_loss / self.lrc_config.temperature
-
-        mean_layer_loss = torch.stack(layer_losses).mean()
-
-        return total_loss, {
-            "mean_layer_loss": mean_layer_loss,
-            "num_layers": torch.tensor(float(num_layers), device=device),
-            "temperature": torch.tensor(self.lrc_config.temperature, device=device),
         }
 
     # =========================================================================

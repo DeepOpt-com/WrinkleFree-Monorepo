@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-#[cfg(feature = "native-inference")]
+#[cfg(feature = "llama-inference")]
 use crate::inference::{NativeEngine as CppEngine, SamplingParams as CppSamplingParams};
 
 use crate::protocols::sampling_params::SamplingParams;
@@ -18,7 +18,7 @@ pub type NativeEngineResult<T> = Result<T, NativeEngineError>;
 /// Errors from the native engine
 #[derive(Debug, thiserror::Error)]
 pub enum NativeEngineError {
-    #[error("Native inference not enabled. Compile with --features native-inference")]
+    #[error("Native inference not enabled. Compile with --features llama-inference")]
     NotEnabled,
 
     #[error("Engine creation failed: {0}")]
@@ -59,10 +59,10 @@ pub struct GenerateResult {
 /// the native C++ engine instead of gRPC to Python.
 #[derive(Clone)]
 pub struct NativeEngineClient {
-    #[cfg(feature = "native-inference")]
+    #[cfg(feature = "llama-inference")]
     engine: Arc<Mutex<Option<CppEngine>>>,
 
-    #[cfg(not(feature = "native-inference"))]
+    #[cfg(not(feature = "llama-inference"))]
     _phantom: std::marker::PhantomData<()>,
 
     model_info: Arc<Mutex<Option<ModelInfo>>>,
@@ -74,7 +74,7 @@ impl NativeEngineClient {
     ///
     /// Unlike the gRPC client, this needs a model path to load the model directly.
     pub async fn new(model_path: &str) -> NativeEngineResult<Self> {
-        #[cfg(feature = "native-inference")]
+        #[cfg(feature = "llama-inference")]
         {
             info!("Creating native BitNet engine for: {}", model_path);
 
@@ -105,7 +105,7 @@ impl NativeEngineClient {
             })
         }
 
-        #[cfg(not(feature = "native-inference"))]
+        #[cfg(not(feature = "llama-inference"))]
         {
             let _ = model_path;
             Err(NativeEngineError::NotEnabled)
@@ -168,7 +168,7 @@ impl NativeEngineClient {
     }
 
     /// Generate text from a prompt.
-    #[cfg(feature = "native-inference")]
+    #[cfg(feature = "llama-inference")]
     pub async fn generate(
         &self,
         prompt: &str,
@@ -240,7 +240,7 @@ impl NativeEngineClient {
         })
     }
 
-    #[cfg(not(feature = "native-inference"))]
+    #[cfg(not(feature = "llama-inference"))]
     pub async fn generate(
         &self,
         _prompt: &str,
@@ -257,18 +257,18 @@ impl NativeEngineClient {
 
     /// Health check - returns true if engine is loaded.
     pub async fn health_check(&self) -> bool {
-        #[cfg(feature = "native-inference")]
+        #[cfg(feature = "llama-inference")]
         {
             let guard = self.engine.lock().await;
             guard.is_some()
         }
 
-        #[cfg(not(feature = "native-inference"))]
+        #[cfg(not(feature = "llama-inference"))]
         false
     }
 
     /// Encode text to token IDs.
-    #[cfg(feature = "native-inference")]
+    #[cfg(feature = "llama-inference")]
     pub async fn encode(&self, text: &str) -> NativeEngineResult<Vec<i32>> {
         let tokenizer_guard = self.tokenizer.lock().await;
         let tokenizer = tokenizer_guard
@@ -282,13 +282,13 @@ impl NativeEngineClient {
         Ok(encoding.get_ids().iter().map(|&id| id as i32).collect())
     }
 
-    #[cfg(not(feature = "native-inference"))]
+    #[cfg(not(feature = "llama-inference"))]
     pub async fn encode(&self, _text: &str) -> NativeEngineResult<Vec<i32>> {
         Err(NativeEngineError::NotEnabled)
     }
 
     /// Decode token IDs to text.
-    #[cfg(feature = "native-inference")]
+    #[cfg(feature = "llama-inference")]
     pub async fn decode(&self, token_ids: &[i32]) -> NativeEngineResult<String> {
         let tokenizer_guard = self.tokenizer.lock().await;
         let tokenizer = tokenizer_guard
@@ -301,13 +301,13 @@ impl NativeEngineClient {
             .map_err(|e| NativeEngineError::TokenizerError(e.to_string()))
     }
 
-    #[cfg(not(feature = "native-inference"))]
+    #[cfg(not(feature = "llama-inference"))]
     pub async fn decode(&self, _token_ids: &[i32]) -> NativeEngineResult<String> {
         Err(NativeEngineError::NotEnabled)
     }
 
     /// Prefill phase - process input tokens and populate KV cache.
-    #[cfg(feature = "native-inference")]
+    #[cfg(feature = "llama-inference")]
     pub async fn prefill(&self, token_ids: &[i32]) -> NativeEngineResult<()> {
         let mut engine_guard = self.engine.lock().await;
         let engine = engine_guard
@@ -319,13 +319,13 @@ impl NativeEngineClient {
             .map_err(|e| NativeEngineError::GenerationFailed(e.to_string()))
     }
 
-    #[cfg(not(feature = "native-inference"))]
+    #[cfg(not(feature = "llama-inference"))]
     pub async fn prefill(&self, _token_ids: &[i32]) -> NativeEngineResult<()> {
         Err(NativeEngineError::NotEnabled)
     }
 
     /// Single decode step - generate one token.
-    #[cfg(feature = "native-inference")]
+    #[cfg(feature = "llama-inference")]
     pub async fn decode_step(&self, position: i32, params: &SamplingParams) -> NativeEngineResult<i32> {
         let mut engine_guard = self.engine.lock().await;
         let engine = engine_guard
@@ -345,13 +345,13 @@ impl NativeEngineClient {
             .map_err(|e| NativeEngineError::GenerationFailed(e.to_string()))
     }
 
-    #[cfg(not(feature = "native-inference"))]
+    #[cfg(not(feature = "llama-inference"))]
     pub async fn decode_step(&self, _position: i32, _params: &SamplingParams) -> NativeEngineResult<i32> {
         Err(NativeEngineError::NotEnabled)
     }
 
     /// Reset the KV cache (start new sequence).
-    #[cfg(feature = "native-inference")]
+    #[cfg(feature = "llama-inference")]
     pub async fn reset_cache(&self) {
         let mut engine_guard = self.engine.lock().await;
         if let Some(engine) = engine_guard.as_mut() {
@@ -359,11 +359,11 @@ impl NativeEngineClient {
         }
     }
 
-    #[cfg(not(feature = "native-inference"))]
+    #[cfg(not(feature = "llama-inference"))]
     pub async fn reset_cache(&self) {}
 
     /// Get the EOS token ID.
-    #[cfg(feature = "native-inference")]
+    #[cfg(feature = "llama-inference")]
     pub async fn eos_token_id(&self) -> NativeEngineResult<i32> {
         let tokenizer_guard = self.tokenizer.lock().await;
         let tokenizer = tokenizer_guard
@@ -385,7 +385,7 @@ impl NativeEngineClient {
         Ok(2)
     }
 
-    #[cfg(not(feature = "native-inference"))]
+    #[cfg(not(feature = "llama-inference"))]
     pub async fn eos_token_id(&self) -> NativeEngineResult<i32> {
         Err(NativeEngineError::NotEnabled)
     }
@@ -394,10 +394,10 @@ impl NativeEngineClient {
 impl Default for NativeEngineClient {
     fn default() -> Self {
         Self {
-            #[cfg(feature = "native-inference")]
+            #[cfg(feature = "llama-inference")]
             engine: Arc::new(Mutex::new(None)),
 
-            #[cfg(not(feature = "native-inference"))]
+            #[cfg(not(feature = "llama-inference"))]
             _phantom: std::marker::PhantomData,
 
             model_info: Arc::new(Mutex::new(None)),
@@ -414,7 +414,7 @@ mod tests {
     #[ignore = "Requires model to be downloaded"]
     async fn test_native_engine_creation() {
         let result = NativeEngineClient::new("microsoft/bitnet-b1.58-2B-4T").await;
-        // Should succeed with native-inference feature, or return NotEnabled without
+        // Should succeed with llama-inference feature, or return NotEnabled without
         assert!(result.is_ok() || matches!(result, Err(NativeEngineError::NotEnabled)));
     }
 }

@@ -349,17 +349,37 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         final_loss = manager_output.loss
         meta_callback = getattr(self, "_meta_optimizer_callback", None)
         if meta_callback is not None and meta_callback.ldc_mtl is not None:
-            # Use LDC-MTL to recompute weighted loss with learned weights
-            individual_losses = {
+            # Get curriculum weights to determine which objectives are active
+            # (e.g., SFT is 0 during pretrain phases, should not affect LDC-MTL)
+            curriculum_weights = self.objective_manager.get_current_weights()
+
+            # Only include objectives with non-zero curriculum weight
+            active_losses = {
                 name: obj_out.loss
                 for name, obj_out in manager_output.objective_outputs.items()
+                if curriculum_weights.get(name, 0.0) > 0
             }
-            if len(individual_losses) > 1:
+
+            if len(active_losses) > 1:
+                # Use LDC-MTL only for active objectives
                 final_loss, ldc_weights = meta_callback.ldc_mtl.compute_weighted_loss(
-                    individual_losses
+                    active_losses
                 )
-                # Log LDC-MTL weights
-                for name, weight in ldc_weights.items():
+                # Log LDC-MTL weights (0 for inactive objectives)
+                for name in manager_output.objective_outputs.keys():
+                    weight = ldc_weights.get(name, 0.0)
+                    self.log(
+                        f"meta/ldc_mtl/objective_weight_{name}",
+                        weight,
+                        on_step=True,
+                        prog_bar=False,
+                        sync_dist=True,
+                    )
+            elif len(active_losses) == 1:
+                # Single active objective - use it directly (no LDC-MTL needed)
+                final_loss = list(active_losses.values())[0]
+                for name in manager_output.objective_outputs.keys():
+                    weight = 1.0 if name in active_losses else 0.0
                     self.log(
                         f"meta/ldc_mtl/objective_weight_{name}",
                         weight,

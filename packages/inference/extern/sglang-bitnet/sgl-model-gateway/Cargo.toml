@@ -7,7 +7,8 @@ edition = "2021"
 default = ["grpc-client"]
 grpc-client = []
 grpc-server = []
-native-inference = []  # Enable native C++ inference engine
+native-inference = []  # Enable native BitNet kernels (standalone, no llama.cpp)
+llama-inference = ["native-inference"]  # Enable llama.cpp-based inference engine (requires building llama.cpp)
 
 vendored-openssl = ["openssl/vendored"]
 
@@ -33,21 +34,27 @@ path = "src/main.rs"
 [[bin]]
 name = "test_native"
 path = "src/bin/test_native.rs"
-required-features = ["native-inference"]
+required-features = ["llama-inference"]
 
 [[bin]]
 name = "native_server"
 path = "src/bin/native_server.rs"
-required-features = ["native-inference"]
+required-features = ["llama-inference"]
 
 [[bin]]
 name = "batch_server"
 path = "src/bin/batch_server.rs"
-required-features = ["native-inference"]
+required-features = ["llama-inference"]
 
 [[bin]]
 name = "dlm_server"
 path = "src/bin/dlm_server.rs"
+required-features = ["llama-inference"]
+
+# wf_server uses pure Rust GGUF + native BitNet kernels (no llama.cpp)
+[[bin]]
+name = "wf_server"
+path = "src/bin/wf_server.rs"
 required-features = ["native-inference"]
 
 [dependencies]
@@ -132,6 +139,9 @@ arc-swap = "1.7.1"
 
 # C++ FFI for native inference
 libc = "0.2"
+
+# Pure Rust GGUF reader
+memmap2 = "0.9"
 
 # gRPC and Protobuf dependencies
 tonic = { version = "0.14.2", features = ["gzip", "transport"] }

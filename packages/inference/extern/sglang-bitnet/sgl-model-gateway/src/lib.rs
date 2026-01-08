@@ -19,6 +19,17 @@ pub mod version;
 pub mod wasm;
 pub mod workflow;
 
-// Native inference engine (optional, requires C++ library)
-#[cfg(feature = "native-inference")]
+// Native inference engine (requires llama.cpp, optional)
+#[cfg(feature = "llama-inference")]
 pub mod inference;
+
+// Pure Rust GGUF reader (no C++ dependency)
+pub mod gguf;
+
+// Native BitNet kernel FFI (requires C++ library, optional)
+#[cfg(feature = "native-inference")]
+pub mod kernels;
+
+// Native BitNet inference engine
+#[cfg(feature = "native-inference")]
+pub mod engine;
