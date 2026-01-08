@@ -1,0 +1,146 @@
+# Full Hadamard Training - Nebius 1x H100
+#
+# IMPORTANT: auto_batch_size=false because torch_compile + BatchSizeFinder
+# is buggy. Use batch_size=4 with grad_accum=16 for H100 (effective 64).
+#
+# Full training run with BitNet v2 Hadamard conversion:
+# - HBitLinear for o_proj and down_proj (online Hadamard)
+# - SubLN for training stability
+# - CE only (no DLM)
+# - Lambda warmup: 50 steps
+#
+# Launch:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/train_hadamard_full.yaml -y --cluster wf-hadamard-full
+#
+# Monitor:
+#   sky logs wf-hadamard-full
+#
+# Down:
+#   sky down wf-hadamard-full -y
+
+name: wf-hadamard-full-train
+
+resources:
+  accelerators: H100:1
+  memory: 64+
+  disk_size: 200
+  use_spot: false
+  cloud: nebius
+
+# Run from monorepo root
+workdir: ../..
+
+file_mounts:
+  /tmp/gcp-creds.json: credentials/gcp-service-account.json
+  /tmp/credentials.env: credentials/.env
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GOOGLE_CLOUD_PROJECT: wrinklefree-481904
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: qwen3_0.6b
+  WANDB_PROJECT: wrinklefree_v2
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  EXPERIMENT_NAME: hadamard_qwen3_0.6b_ce_only
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Install gcloud for GCS uploads
+  if ! command -v gcloud &> /dev/null; then
+    printf "Installing gcloud CLI...\n"
+    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
+    export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  fi
+
+  # Authenticate gcloud with OAuth credentials (not service account)
+  gcloud auth login --cred-file=/tmp/gcp-creds.json --quiet
+  gcloud config set project wrinklefree-481904
+
+  uv sync --all-packages
+
+  # Verify Hadamard imports
+  printf "Verifying Hadamard imports...\n"
+  uv run python -c "from wf_arch import HBitLinear, hadamard_transform, hadamard_transform_weights; print('Hadamard imports OK')"
+
+  # Verify gcloud works
+  printf "Verifying GCS access...\n"
+  gcloud storage ls gs://wrinklefree-checkpoints/ | head -3
+
+  printf "Setup complete\n"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$HOME/google-cloud-sdk/bin:$PATH"
+
+  set -a
+  source /tmp/credentials.env
+  set +a
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  echo "WANDB_API_KEY is set: $([ -n \"$WANDB_API_KEY\" ] && echo 'yes' || echo 'no')"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "=============================================="
+  echo "FULL HADAMARD + SubLN Training"
+  echo "=============================================="
+  echo "Model: ${MODEL}"
+  echo "Experiment: ${EXPERIMENT_NAME}"
+  echo ""
+  echo "Configuration:"
+  echo "  - HBitLinear for o_proj, down_proj (BitNet v2)"
+  echo "  - SubLN before all projections (BitNet paper)"
+  echo "  - CE + DLM objectives (meta-optimization enabled)"
+  echo "  - Lambda warmup: 50 steps (gradual quantization)"
+  echo "  - LR: 1e-4 (AdamW)"
+  echo "  - Batch: 4 x 16 grad_accum = 64 effective (65K tokens/step)"
+  echo "  - 10B tokens total"
+  echo "  - GCS uploads enabled"
+  echo "=============================================="
+
+  # Full training with Hadamard enabled
+  # NOTE: batch_size=4 with seq_len=1024 fits on H100 80GB (direct matmul Hadamard is memory-efficient)
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=base \
+    training.auto_convert.use_hadamard=true \
+    training.auto_convert.insert_subln=true \
+    training.total_tokens=10_000_000_000 \
+    training.max_steps=null \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=16 \
+    training.max_seq_length=1024 \
+    training.logging.log_interval=10 \
+    training.auto_batch_size=false \
+    training.torch_compile.enabled=true \
+    training.optimizer.type=adamw \
+    +training.optimizer.learning_rate=5e-5 \
+    training.meta_optimization.enabled=true \
+    training.checkpoint.save_interval=500 \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=${EXPERIMENT_NAME} \
+    distributed=single_gpu \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.wandb.tags="[hadamard,subln,bitnet_v2,optimized_v2]"
+
+  echo ""
+  echo "=============================================="
+  echo "FULL TRAINING COMPLETE!"
+  echo ""
+  echo "Check W&B: https://wandb.ai/${WANDB_PROJECT}"
+  echo "Check GCS: gs://${GCS_BUCKET}/"
+  echo "=============================================="
