@@ -200,7 +200,12 @@ class LDCMTLManager:
               weights (floats, for logging purposes)
         """
         # Stack losses in consistent order
-        loss_vec = torch.stack([losses[n] for n in self.objective_names])
+        # Handle missing objectives (e.g., SFT has weight 0 during pretrain phases)
+        # by using 0 loss for missing objectives
+        loss_vec = torch.stack([
+            losses.get(n, torch.tensor(0.0, device=next(iter(losses.values())).device))
+            for n in self.objective_names
+        ])
 
         # Move router to same device as losses if needed (handles lazy GPU init)
         loss_device = loss_vec.device

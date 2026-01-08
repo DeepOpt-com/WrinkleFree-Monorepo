@@ -41,6 +41,7 @@ file_mounts:
 
 envs:
   GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GOOGLE_CLOUD_PROJECT: wrinklefree-481904
   GCS_BUCKET: wrinklefree-checkpoints
   MODEL: qwen3_0.6b
   WANDB_PROJECT: wrinklefree
@@ -96,6 +97,8 @@ run: |
   echo "  - End-to-end trainable (both FP16 and ternary)"
   echo "  - Lambda warmup for gradual quantization transition"
   echo "  - MuonClip optimizer with QK clipping"
+  echo "  - LDC-MTL: Auto objective weight learning"
+  echo "  - ODM: Auto dataset weight learning (after warmup)"
   echo "=============================================="
 
   uv run --package wf-train python packages/training/scripts/train_lightning.py \
@@ -105,17 +108,19 @@ run: |
     training.batch_size=8 \
     training.gradient_accumulation_steps=16 \
     training.max_seq_length=1024 \
-    training.logging.log_interval=10 \
+    training.logging.log_interval=2 \
     training.auto_batch_size=false \
     training.torch_compile.enabled=false \
     training.salient.calibration_samples=128 \
-    training.meta_optimization.enabled=false \
+    training.meta_optimization.enabled=true \
+    training.meta_optimization.ldc_mtl.enabled=true \
+    training.meta_optimization.odm.enabled=true \
     training.optimizer.lr_muon=0.005 \
     training.optimizer.lr_adam=1e-4 \
     training.checkpoint.save_interval=500 \
     training.validation.val_check_interval=500 \
     output_dir=$CHECKPOINT_DIR \
-    experiment_name=salient_qwen0.6b_2.5B \
+    experiment_name=salient_qwen0.6b_2.5B_meta \
     distributed=single_gpu \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET} \

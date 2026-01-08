@@ -1,0 +1,150 @@
+# Quick optimization test: TQ1_0 + ubatch + flash attention
+# Target: >100 tok/s prefill
+
+name: qwen32b-optim
+
+resources:
+  cloud: nebius
+  cpus: 64+
+  memory: 256+
+  disk_size: 300
+  use_spot: false
+
+envs:
+  MODEL_REPO: Qwen/Qwen2.5-32B
+  MODEL_NAME: Qwen2.5-32B
+  NUM_THREADS: "48"
+  CMAKE_BUILD_PARALLEL_LEVEL: "64"
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+file_mounts:
+  /opt/inference: .
+
+setup: |
+  set -ex
+  echo "=== Prefill Optimization Test ==="
+
+  # System deps
+  sudo apt-get update && sudo apt-get install -y clang cmake git curl python3-pip ccache
+
+  # Python packages
+  pip install --upgrade pip
+  pip install "huggingface_hub[cli]" hf_transfer safetensors torch numpy "transformers>=4.40.0"
+
+  # Directories
+  sudo mkdir -p /results /models
+  sudo chown $(whoami) /results /models
+
+  # Build llama.cpp with flash attention support
+  cd /opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp
+  cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+    -DGGML_NATIVE=ON -DGGML_AVX512=ON -DGGML_AVX512_VBMI=ON -DGGML_AVX512_VNNI=ON \
+    -DGGML_FLASH_ATTN=ON \
+    -DCMAKE_C_FLAGS="-march=native" -DCMAKE_CXX_FLAGS="-march=native"
+  cmake --build build -j${CMAKE_BUILD_PARALLEL_LEVEL}
+
+  ls -lh build/bin/llama-cli build/bin/llama-quantize
+  echo "=== Setup Complete ==="
+
+run: |
+  set -ex
+
+  LLAMA_CPP="/opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp"
+  LLAMA_CLI="$LLAMA_CPP/build/bin/llama-cli"
+  LLAMA_QUANT="$LLAMA_CPP/build/bin/llama-quantize"
+
+  echo "============================================"
+  echo "Prefill Optimization Test"
+  echo "Target: >100 tok/s"
+  echo "============================================"
+
+  # Download model if not exists
+  if [ ! -f /models/$MODEL_NAME/model-f16.gguf ]; then
+    echo "=== Downloading Model ==="
+    python3 -c 'from huggingface_hub import snapshot_download; import os; snapshot_download(os.environ["MODEL_REPO"], local_dir="/models/"+os.environ["MODEL_NAME"], allow_patterns=["*.safetensors", "*.json", "*.model", "*.txt", "*.tiktoken"])'
+
+    echo "=== Converting to F16 GGUF ==="
+    pip install sentencepiece gguf transformers
+    python3 $LLAMA_CPP/convert_hf_to_gguf.py /models/$MODEL_NAME --outfile /models/$MODEL_NAME/model-f16.gguf --outtype f16
+  fi
+
+  # Create test prompt (~600 tokens)
+  python3 -c "print('The quick brown fox jumps over the lazy dog. ' * 60)" > /tmp/test_prompt.txt
+  echo "Prompt size: $(wc -c /tmp/test_prompt.txt)"
+
+  # Function to run benchmark
+  run_bench() {
+    local model=$1
+    local name=$2
+    local extra_args=$3
+    echo ""
+    echo "=== Testing: $name ==="
+    echo "Model: $model"
+    echo "Args: $extra_args"
+    $LLAMA_CLI -m "$model" -f /tmp/test_prompt.txt -n 1 -t $NUM_THREADS -c 4096 --temp 0 --no-display-prompt $extra_args 2>&1 | grep -E "(prompt eval|eval time|model size)"
+  }
+
+  # ============================================
+  # TEST 1: Baseline I2_S (from previous run)
+  # ============================================
+  echo ""
+  echo "########################################"
+  echo "# TEST 1: I2_S Baseline"
+  echo "########################################"
+
+  if [ ! -f /models/$MODEL_NAME/model-i2s.gguf ]; then
+    echo "Quantizing to I2_S..."
+    $LLAMA_QUANT /models/$MODEL_NAME/model-f16.gguf /models/$MODEL_NAME/model-i2s.gguf I2_S
+  fi
+  ls -lh /models/$MODEL_NAME/model-i2s.gguf
+
+  run_bench "/models/$MODEL_NAME/model-i2s.gguf" "I2_S baseline" ""
+  run_bench "/models/$MODEL_NAME/model-i2s.gguf" "I2_S + ubatch 2048" "--ubatch-size 2048"
+  run_bench "/models/$MODEL_NAME/model-i2s.gguf" "I2_S + flash-attn" "--flash-attn"
+  run_bench "/models/$MODEL_NAME/model-i2s.gguf" "I2_S + ubatch 2048 + flash-attn" "--ubatch-size 2048 --flash-attn"
+
+  # ============================================
+  # TEST 2: TQ1_0 (optimized ternary)
+  # ============================================
+  echo ""
+  echo "########################################"
+  echo "# TEST 2: TQ1_0 (Optimized Ternary)"
+  echo "########################################"
+
+  if [ ! -f /models/$MODEL_NAME/model-tq1.gguf ]; then
+    echo "Quantizing to TQ1_0..."
+    $LLAMA_QUANT /models/$MODEL_NAME/model-f16.gguf /models/$MODEL_NAME/model-tq1.gguf TQ1_0
+  fi
+  ls -lh /models/$MODEL_NAME/model-tq1.gguf
+
+  run_bench "/models/$MODEL_NAME/model-tq1.gguf" "TQ1_0 baseline" ""
+  run_bench "/models/$MODEL_NAME/model-tq1.gguf" "TQ1_0 + ubatch 2048" "--ubatch-size 2048"
+  run_bench "/models/$MODEL_NAME/model-tq1.gguf" "TQ1_0 + flash-attn" "--flash-attn"
+  run_bench "/models/$MODEL_NAME/model-tq1.gguf" "TQ1_0 + ubatch 2048 + flash-attn" "--ubatch-size 2048 --flash-attn"
+
+  # ============================================
+  # TEST 3: Thread count sweep with best config
+  # ============================================
+  echo ""
+  echo "########################################"
+  echo "# TEST 3: Thread Sweep (TQ1_0 + optimizations)"
+  echo "########################################"
+
+  for T in 24 32 48 64; do
+    echo ""
+    echo "--- Threads: $T ---"
+    $LLAMA_CLI -m /models/$MODEL_NAME/model-tq1.gguf -f /tmp/test_prompt.txt -n 1 -t $T -c 4096 --temp 0 --no-display-prompt --ubatch-size 2048 --flash-attn 2>&1 | grep "prompt eval"
+  done
+
+  # ============================================
+  # SUMMARY
+  # ============================================
+  echo ""
+  echo "########################################"
+  echo "# SUMMARY"
+  echo "########################################"
+  echo "Model sizes:"
+  ls -lh /models/$MODEL_NAME/*.gguf
+
+  echo ""
+  echo "=== Done ==="

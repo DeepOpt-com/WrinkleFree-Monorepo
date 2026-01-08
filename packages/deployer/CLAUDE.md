@@ -10,6 +10,7 @@ Training job launcher for 1.58-bit quantized LLMs. Uses SkyPilot for managed GPU
 4. **USE NEBIUS**: Prefer Nebius over RunPod/GCP (better availability, lower cost)
 5. **CLEAN BEFORE RETRY**: Run `sky exec <cluster> "rm -rf /tmp/checkpoints/*"` before retrying failed jobs
 6. **FIX, DON'T FALL BACK**: When something breaks, FIX IT. Don't silently fall back to alternatives (e.g., don't switch from MuonClip to AdamW - fix MuonClip)
+7. **ALWAYS SET GCS PROJECT**: When creating SkyPilot YAMLs, ALWAYS include `GOOGLE_CLOUD_PROJECT: wrinklefree-481904` in envs section. The gcp-service-account.json is OAuth user creds (not service account), so the project ID must be set explicitly for GCS uploads to work.
 
 ## Quick Smoke Test (Lightning)
 
