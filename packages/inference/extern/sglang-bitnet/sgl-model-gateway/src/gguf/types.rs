@@ -100,6 +100,7 @@ pub enum GgmlQuantType {
     Q4_0_8_8 = 33,
     TQ1_0 = 34,
     TQ2_0 = 35,
+    I2_S = 36,  // 2-bit signed integer (BitNet optimized)
     TL1 = 38,
     TL2 = 39,
 }
@@ -143,6 +144,7 @@ impl TryFrom<u32> for GgmlQuantType {
             33 => Ok(Self::Q4_0_8_8),
             34 => Ok(Self::TQ1_0),
             35 => Ok(Self::TQ2_0),
+            36 => Ok(Self::I2_S),
             38 => Ok(Self::TL1),
             39 => Ok(Self::TL2),
             _ => Err(GgufError::InvalidQuantType(value)),
@@ -191,6 +193,8 @@ impl GgmlQuantType {
             Self::TQ1_0 => (256, 64 + 4 + 2),  // 256 elements, 70 bytes
             // TQ2_0: 2-bit ternary (00=-1, 01=0, 10=+1), 4 weights per byte
             Self::TQ2_0 => (256, 64 + 2),  // 256 elements, 66 bytes
+            // I2_S: 2-bit signed integer, optimized for BitNet inference
+            Self::I2_S => (256, 64 + 4),   // 256 elements, 68 bytes
             Self::TL1 => (256, 70),
             Self::TL2 => (256, 66),
         }
@@ -205,7 +209,7 @@ impl GgmlQuantType {
 
     /// Returns true if this is a ternary quantization type.
     pub fn is_ternary(&self) -> bool {
-        matches!(self, Self::TQ1_0 | Self::TQ2_0 | Self::IQ2_S | Self::TL1 | Self::TL2)
+        matches!(self, Self::TQ1_0 | Self::TQ2_0 | Self::IQ2_S | Self::I2_S | Self::TL1 | Self::TL2)
     }
 }
 

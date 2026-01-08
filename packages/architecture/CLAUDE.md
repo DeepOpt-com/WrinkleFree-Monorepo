@@ -355,6 +355,7 @@ print(f"Total salient columns: {stats['total_salient_columns']}")
 
 - [BitDistill Paper](https://arxiv.org/abs/2510.13998) - 1.58-bit training approach
 - [BitNet Paper](https://arxiv.org/abs/2310.11453) - Ternary weight quantization
+- [BitNet v2 Paper](https://arxiv.org/abs/2504.18415) - Online Hadamard for native 4-bit activations
 - [LRC Paper](https://arxiv.org/abs/2412.07902) - Low-Rank Correction for quantized LLMs
 - [QA-LoRA Paper](https://arxiv.org/abs/2309.14717) - Quantization-Aware LoRA with STE (ICLR 2024)
 - [AWQ Paper](https://arxiv.org/abs/2306.00978) - Activation-aware Weight Quantization (salient columns)

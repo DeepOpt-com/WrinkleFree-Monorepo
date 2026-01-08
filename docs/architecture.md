@@ -22,6 +22,7 @@
                   ┌──────────────────────┐
                   │     architecture     │  (Shared Library)
                   │  - BitLinear         │
+                  │  - HBitLinear        │  ← BitNet v2 Hadamard
                   │  - BitLinearLRC      │
                   │  - BitLinearSalient  │
                   │  - SubLN             │
@@ -45,7 +46,7 @@
 | Package | Type | Description |
 |---------|------|-------------|
 | `wf_data` | **Library** | Shared data loading, influence functions |
-| `architecture` | **Library** | BitNet layers (BitLinear, BitLinearLRC, BitLinearSalient, SubLN) & model conversion |
+| `architecture` | **Library** | BitNet layers (BitLinear, HBitLinear, BitLinearLRC, BitLinearSalient, SubLN) & model conversion |
 | `training` | Application | 1.58-bit training pipeline (Stages 1-3) + distillation objectives |
 | `inference` | Application | Model serving application |
 | `eval` | Application | Evaluation scripts |
@@ -87,6 +88,7 @@ The training package supports multiple distillation modes via the objectives sys
 - **TCS** (`tcs_distill` objective): Target Concrete Score for DLM students
 - **LRC** (`training=lrc_calibration`): Low-Rank Correction for post-quantization recovery
 - **Salient** (`training=salient_run`): AWQ-style salient columns (~1% FP16 weights)
+- **Salient + LoRA + Hadamard** (`training=salient_lora_hadamard_run`): Combined approach with BitNet v2 online Hadamard
 - **Logits-only** (`logits_distill` objective): KL divergence without attention
 
 ### Deployment Flow

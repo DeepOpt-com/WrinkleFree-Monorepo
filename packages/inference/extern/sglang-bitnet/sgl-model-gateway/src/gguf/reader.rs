@@ -113,16 +113,10 @@ impl GgufReader {
         }
         self.data_offset = offset;
 
-        // Calculate actual tensor data offsets
-        let mut data_ptr = self.data_offset;
+        // Convert relative tensor offsets to absolute offsets
+        // GGUF stores offsets relative to tensor data start
         for tensor in &mut self.tensors {
-            tensor.data_offset = data_ptr;
-            data_ptr += tensor.n_bytes;
-            // Align next tensor
-            let padding = data_ptr % self.alignment;
-            if padding != 0 {
-                data_ptr += self.alignment - padding;
-            }
+            tensor.data_offset += self.data_offset;
         }
 
         Ok(())
@@ -219,7 +213,7 @@ impl GgufReader {
         consumed += 4;
 
         // Read data offset (relative to tensor data start)
-        let _relative_offset = self.read_u64(offset + consumed);
+        let relative_offset = self.read_u64(offset + consumed) as usize;
         consumed += 8;
 
         let n_bytes = dtype.bytes_for_elements(n_elements);
@@ -230,7 +224,7 @@ impl GgufReader {
                 shape,
                 n_elements,
                 dtype,
-                data_offset: 0, // Will be set later
+                data_offset: relative_offset, // Store relative offset temporarily
                 n_bytes,
             },
             consumed,
