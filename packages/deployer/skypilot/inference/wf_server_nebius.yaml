@@ -1,5 +1,5 @@
 # SkyPilot configuration for wf_server (Native BitNet Inference) on Nebius
-# Uses L40S instance for CPU inference benchmarking (smallest Nebius instance with AVX-512)
+# Uses AMD EPYC CPU-only instance for inference benchmarking
 #
 # This builds and benchmarks the pure Rust wf_server with native BitNet SIMD kernels.
 # No llama.cpp dependency - uses GGUF reader + native ternary kernels.
@@ -8,12 +8,15 @@ name: wf-server-bench
 
 resources:
   cloud: nebius
-  accelerators: L40S:1
-  instance_type: gpu-l40s-a_1gpu-8vcpu-32gb
+  instance_type: cpu-d3_32vcpu-128gb  # 32 vCPUs, 128GB RAM, AMD EPYC
+  region: eu-north1
   disk_size: 100
   use_spot: false
 
-workdir: ../../../..
+file_mounts:
+  # Sync source tarballs (direct file mounts - no bucket needed)
+  /workspace/sgl-model-gateway-src.tar.gz: /tmp/sgl-model-gateway-src.tar.gz
+  /workspace/sgl-kernel.tar.gz: /tmp/sgl-kernel.tar.gz
 
 envs:
   # Build configuration
@@ -27,7 +30,7 @@ envs:
 setup: |
   set -ex
 
-  echo "=== Nebius L40S Instance Setup ==="
+  echo "=== Nebius AMD EPYC CPU Instance Setup ==="
 
   # Show CPU info (should have AVX-512)
   echo "=== CPU Information ==="
@@ -53,12 +56,20 @@ setup: |
   mkdir -p /workspace/models
   if [ ! -f "$MODEL_PATH" ]; then
     echo "Downloading model..."
-    curl -L -o "$MODEL_PATH" "$MODEL_URL"
+    curl -L -o "$MODEL_PATH" "$MODEL_URL" || wget -O "$MODEL_PATH" "$MODEL_URL"
   fi
   ls -lh /workspace/models/
 
+  # Extract source code
+  cd /workspace
+  tar -xzf sgl-model-gateway-src.tar.gz
+  tar -xzf sgl-kernel.tar.gz
+  ls -la
+
+  # Kernel source is now at /workspace/sgl-kernel (expected by build.rs)
+
   # Build wf_server with native-inference feature
-  cd ~/sky_workdir/packages/inference/extern/sglang-bitnet/sgl-model-gateway
+  cd /workspace/sgl-model-gateway
 
   echo "=== Building wf_server ==="
   echo "NATIVE_SIMD=$NATIVE_SIMD"
@@ -66,7 +77,7 @@ setup: |
 
   # Build with native CPU optimizations
   NATIVE_SIMD=1 RUSTFLAGS="-C target-cpu=native" \
-    cargo build --release --features native-inference --bin wf_server 2>&1 | tail -50
+    cargo build --release --features native-inference --bin wf_server 2>&1 | tail -100
 
   # Verify binary
   ls -lh target/release/wf_server
@@ -77,7 +88,7 @@ run: |
   set -ex
   source ~/.cargo/env
 
-  cd ~/sky_workdir/packages/inference/extern/sglang-bitnet/sgl-model-gateway
+  cd /workspace/sgl-model-gateway
 
   echo "=========================================="
   echo "WrinkleFree Native BitNet Inference Server"
