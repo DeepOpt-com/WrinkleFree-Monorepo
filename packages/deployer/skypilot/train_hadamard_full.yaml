@@ -43,7 +43,7 @@ envs:
   MODEL: qwen3_0.6b
   WANDB_PROJECT: wrinklefree_v2
   HF_HUB_ENABLE_HF_TRANSFER: "1"
-  EXPERIMENT_NAME: hadamard_qwen3_0.6b
+  EXPERIMENT_NAME: hadamard_qwen3_0.6b_v2
 
 setup: |
   set -e
@@ -125,7 +125,7 @@ run: |
     training.auto_batch_size=false \
     training.torch_compile.enabled=true \
     training.optimizer.type=adamw \
-    +training.optimizer.learning_rate=1e-4 \
+    +training.optimizer.learning_rate=5e-5 \
     training.meta_optimization.enabled=true \
     training.checkpoint.save_interval=500 \
     output_dir=$CHECKPOINT_DIR \
@@ -135,7 +135,7 @@ run: |
     gcs.bucket=${GCS_BUCKET} \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
-    training.logging.wandb.tags="[hadamard,subln,bitnet_v2,full_training]"
+    training.logging.wandb.tags="[hadamard,subln,bitnet_v2,optimized_v2]"
 
   echo ""
   echo "=============================================="
