@@ -104,13 +104,13 @@ run: |
   echo "  - CE + DLM objectives"
   echo "  - Full quantization from step 0 (no lambda warmup)"
   echo "  - LR: 1e-4 (AdamW)"
-  echo "  - Batch: 2 x 256 grad_accum = 512 effective"
+  echo "  - Batch: 8 x 32 grad_accum x 1024 seq = 256K tokens/step"
   echo "  - 10B tokens total"
   echo "  - GCS uploads enabled"
   echo "=============================================="
 
   # Full training with Hadamard enabled
-  # NOTE: Qwen3-0.6B needs batch_size=2 due to Hadamard overhead
+  # NOTE: Using seq_len=1024 to fit batch_size=8 on H100 80GB
   uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=base \
@@ -118,9 +118,9 @@ run: |
     training.auto_convert.insert_subln=true \
     training.total_tokens=10_000_000_000 \
     training.max_steps=null \
-    training.batch_size=2 \
-    training.gradient_accumulation_steps=256 \
-    training.max_seq_length=2048 \
+    training.batch_size=8 \
+    training.gradient_accumulation_steps=32 \
+    training.max_seq_length=1024 \
     training.logging.log_interval=10 \
     training.auto_batch_size=false \
     training.torch_compile.enabled=false \

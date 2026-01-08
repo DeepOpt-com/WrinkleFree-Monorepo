@@ -154,18 +154,22 @@ bitnet_model = convert_model_to_bitnet(
 )
 ```
 
-### Lambda Warmup (Optional, Disabled by Default)
+### Lambda Warmup (Enabled by Default, 50 Steps)
 
-Lambda warmup gradually increases quantization strength from 0 to 1. When disabled (default), `get_current_lambda()` returns 1.0 and the model trains with full quantization from step 0.
+Lambda warmup gradually increases quantization strength from 0 to 1 over `warmup_steps`. This helps stabilize early training before full ternary quantization kicks in.
+
+**Default**: Enabled with 50 warmup steps (configurable via `training.lambda_warmup.warmup_steps`).
 
 ```python
 from wf_arch import LambdaWarmup, set_global_lambda_warmup, get_current_lambda
 
-# Without warmup (default): get_current_lambda() returns 1.0
-# Full ternary quantization from the start
+# Default behavior: 50 steps of warmup, then full quantization
+# Step 0: lambda=0.0 (no quantization)
+# Step 25: lambda=0.5 (half quantization)
+# Step 50+: lambda=1.0 (full ternary quantization)
 
-# To enable gradual warmup:
-warmup = LambdaWarmup(warmup_steps=1000)
+# Custom warmup:
+warmup = LambdaWarmup(warmup_steps=100)  # Longer warmup
 set_global_lambda_warmup(warmup)
 
 # In training loop
@@ -173,6 +177,9 @@ for step in range(total_steps):
     warmup.step()  # Update lambda
     lambda_val = get_current_lambda()  # 0.0 → 1.0
     # ... training code uses lambda_val for quantization strength
+
+# To disable warmup entirely:
+# training.lambda_warmup.enabled=false (full quant from step 0)
 ```
 
 ## Testing

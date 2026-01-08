@@ -64,11 +64,12 @@ gradient_clipping: 1.0
 auto_batch_size: true  # Auto batch size probing enabled (single GPU only!)
 auto_batch_size_max_val: 128  # Starting batch size (halves on OOM)
 
-# Lambda warmup for gradual quantization (disabled by default)
-# When disabled, model trains with full quantization from step 0
+# Lambda warmup for gradual quantization
+# Ramps quantization strength from 0 to 1 over warmup_steps
+# Helps stabilize early training before full ternary quantization kicks in
 lambda_warmup:
-  enabled: false
-  warmup_steps: 500
+  enabled: true
+  warmup_steps: 50
   schedule: linear
 
 # === RESUME CONFIGURATION ===
