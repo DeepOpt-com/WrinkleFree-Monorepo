@@ -35,7 +35,7 @@ from pytorch_lightning.callbacks import (
     ModelCheckpoint,
     RichProgressBar,
 )
-from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.strategies import FSDPStrategy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from omegaconf.base import ContainerMetadata
@@ -63,6 +63,7 @@ from wf_train.lightning import (
 from wf_train.meta import MetaOptimizerCallback, MetaOptimizationConfig
 from wf_train.objectives import create_objective_manager
 from wf_train.teachers import HiddenStateTeacher
+from wf_train.utils.logging_setup import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -234,15 +235,6 @@ def find_lightning_resume_checkpoint(cfg: DictConfig) -> str | None:
 
     logger.info("No resume checkpoint found - starting fresh")
     return None
-
-
-def setup_logging(rank: int) -> None:
-    """Setup logging configuration."""
-    log_level = logging.INFO if rank == 0 else logging.WARNING
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
 
 
 def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):

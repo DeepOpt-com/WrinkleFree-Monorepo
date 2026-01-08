@@ -1,24 +1,23 @@
-# LRC Full Run - Qwen3-0.6B on Nebius H100
+# LRC 1x H100 Smoke Test - Curriculum validation
 #
-# Full LRC (Low-Rank Correction) + DLM training run:
-# - Model: Qwen3-0.6B (auto-converted to BitNet)
-# - LRC rank: 25% (better error recovery than 10% calibration)
-# - Objectives: CE (weight=1.0) + DLM (weight=0.5)
-# - Total tokens: 1B
-# - Fixed batch size: 32 (no auto-sizing for faster iteration)
+# Validates curriculum switching:
+# - Steps 0-2 (25%): fineweb warmup
+# - Steps 3-9 (75%): mixed_pretrain
+#
+# ~40 samples total (batch_size=4, 10 steps)
 #
 # Launch:
 #   cd packages/deployer
 #   source credentials/.env
-#   sky launch skypilot/lrc_run.yaml -y --cluster lrc-run
+#   sky launch skypilot/lrc_smoke_1xh100.yaml -y --cluster lrc-smoke-1h100
 #
 # Monitor:
-#   sky logs lrc-run
+#   sky logs lrc-smoke-1h100
 #
 # Down:
-#   sky down lrc-run -y
+#   sky down lrc-smoke-1h100 -y
 
-name: wf-lrc-run
+name: wf-lrc-smoke-1h100
 
 resources:
   accelerators: H100:1
@@ -27,23 +26,18 @@ resources:
   cloud: nebius
   disk_size: 100
 
-# Sync entire monorepo (workdir is relative to where sky launch is run)
-# Run from packages/deployer, sync ../../ to get monorepo root
 workdir: ../..
 
-# File mounts - use system credentials
 file_mounts:
   /tmp/gcp-creds.json: ~/.config/gcloud/application_default_credentials.json
   /tmp/global.env: ~/.config/.env.global
 
 envs:
   GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
-  GOOGLE_CLOUD_PROJECT: wrinklefree-481904
   GCS_BUCKET: wrinklefree-checkpoints
   MODEL: qwen3_0.6b
   WANDB_PROJECT: wrinklefree_v2
   HF_HUB_ENABLE_HF_TRANSFER: "1"
-  # Fix Python stdout buffering so logs appear in real-time
   PYTHONUNBUFFERED: "1"
 
 setup: |
@@ -55,7 +49,6 @@ setup: |
     export PATH="$HOME/.cargo/bin:$PATH"
   fi
 
-  # Install gcloud SDK for GCS uploads
   if ! command -v gcloud &> /dev/null; then
     echo "Installing Google Cloud SDK..."
     rm -rf $HOME/google-cloud-sdk
@@ -63,7 +56,6 @@ setup: |
     export PATH="$HOME/google-cloud-sdk/bin:$PATH"
   fi
 
-  # Configure gcloud with application default credentials
   if [ -f /tmp/gcp-creds.json ]; then
     echo "Setting up GCP credentials..."
     export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json
@@ -72,7 +64,6 @@ setup: |
 
   uv sync --all-packages
 
-  # Verify imports
   echo "Verifying LRC imports..."
   uv run python -c "from wf_arch import BitLinearLRC, convert_bitlinear_to_lrc; print('LRC imports OK!')"
 
@@ -94,52 +85,48 @@ run: |
   mkdir -p $CHECKPOINT_DIR
 
   echo "=============================================="
-  echo "LRC Full Run - Qwen3-0.6B on H100"
+  echo "LRC 1x H100 Smoke Test - Curriculum Validation"
   echo "=============================================="
   echo "Model: ${MODEL}"
-  echo "Training: lrc_run (LRC 25% + CE + DLM)"
-  echo "Total tokens: 1B"
-  echo "Batch size: 32 (fixed, no auto-sizing)"
+  echo "Training: lrc_run (LRC 15% + CE + DLM)"
+  echo "Distributed: single GPU"
   echo ""
-  echo "Objectives:"
-  echo "  - CE (continue_pretrain): weight=1.0"
-  echo "  - DLM: weight=0.5, mask_prob=0.15"
+  echo "Curriculum phases:"
+  echo "  - Steps 0-2 (25%): fineweb warmup"
+  echo "  - Steps 3-9 (75%): mixed_pretrain"
   echo ""
-  echo "Logging:"
-  echo "  - WandB: ${WANDB_PROJECT}"
-  echo "  - GCS: gs://${GCS_BUCKET}/"
+  echo "Batch config:"
+  echo "  - Batch size: 4"
+  echo "  - Gradient accumulation: 1"
+  echo "  - Max steps: 10"
+  echo "  - Total samples: ~40"
   echo "=============================================="
 
   uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=lrc_run \
-    data.config_name=mixed_pretrain \
     distributed=single_gpu \
     output_dir=$CHECKPOINT_DIR \
-    experiment_name=lrc_run_qwen3_0.6b \
-    training.batch_size=8 \
-    training.gradient_accumulation_steps=8 \
-    training.torch_compile.enabled=false \
-    training.optimizer.lr_muon=0.01 \
-    training.optimizer.lr_adam=1e-4 \
-    training.checkpoint.save_interval=500 \
+    experiment_name=lrc_smoke_curriculum \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=1 \
+    training.max_steps=10 \
+    training.checkpoint.save_interval=10 \
     training.logging.log_interval=1 \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
-    training.logging.wandb.name=lrc-run-qwen3-0.6b-h100-trainable-halflr \
-    "training.logging.wandb.tags=[lrc,dlm,15pct-rank,h100,qwen3-0.6b,trainable-weight]" \
+    training.logging.wandb.name=lrc-1xh100-curriculum-smoke \
+    "training.logging.wandb.tags=[lrc,dlm,curriculum,1xh100,smoke]" \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET}
 
   echo ""
   echo "=============================================="
-  echo "LRC Run Training Complete!"
+  echo "LRC Curriculum Smoke Test Complete!"
   echo "=============================================="
   echo ""
-  echo "Checkpoints:"
-  ls -la $CHECKPOINT_DIR/lrc_run_qwen3_0.6b/checkpoints/ 2>/dev/null || echo "No local checkpoints"
+  echo "Expected behavior:"
+  echo "  - Steps 0-2: Used 'fineweb' data config"
+  echo "  - Steps 3-9: Used 'mixed_pretrain' data config"
   echo ""
-  echo "GCS checkpoints:"
-  gcloud storage ls "gs://${GCS_BUCKET}/experiments/" 2>/dev/null | grep lrc | head -10 || echo "GCS listing failed"
-  echo ""
-  echo "WandB: https://wandb.ai/${WANDB_PROJECT}"
+  echo "REMEMBER: Run 'sky down lrc-smoke-1h100 -y' to save money!"

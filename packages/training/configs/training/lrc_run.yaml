@@ -22,9 +22,10 @@ stage: lrc_dlm_run
 lrc:
   enabled: true
   # Rank as percentage of min(in_features, out_features)
+  # CURRENT: try 5% rank with full fine-tuning of the base model as well
   # 15% provides good error recovery while fitting in H100 memory
   # (25% caused OOM with batch_size=32, 161M trainable params)
-  rank_percentage: 0.15
+  rank_percentage: 0.05
   # Initialization options:
   # - "kaiming": LoRA-style (V=Kaiming, U=zeros). Fast, good gradients. (recommended)
   # - "svd_residual": SVD of quantization error. Slow but best quality.
@@ -145,9 +146,23 @@ objectives:
   distill:
     enabled: false
 
-# No curriculum (fixed CE+DLM weights)
+# Curriculum: 25% fineweb warmup → 75% mixed_pretrain
 curriculum:
-  enabled: false
+  enabled: true
+  interpolation: step
+  phases:
+    - name: warmup
+      end_ratio: 0.25
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 0.5
+        dlm: 0.5
+    - name: main
+      end_ratio: 1.0
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 0.5
+        dlm: 0.5
 
 # Teacher model configuration (for LRC layer matching if needed)
 teacher:
