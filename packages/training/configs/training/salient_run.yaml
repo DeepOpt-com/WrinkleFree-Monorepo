@@ -15,101 +15,53 @@
 # - End-to-end trainable (both FP16 and ternary weights updated)
 # - Final 10% is SFT on Nemotron dataset (instruction-following)
 #
-# Training schedule:
-# - 0-25%: Warmup on FineWeb
-# - 25-90%: Main training on mixed_pretrain (CE + DLM)
-# - 90-100%: SFT on nvidia/Llama-Nemotron-Post-Training-Dataset
-#
 # Usage:
 #   uv run python scripts/train_lightning.py \
 #     model=qwen3_0.6b training=salient_run
+
+defaults:
+  - base
 
 stage: salient_run
 
 # Salient Column Configuration
 salient:
   enabled: true
-  # Fraction of columns to keep in FP16 (1% based on AWQ/SpQR research)
-  ratio: 0.01
-  # Number of calibration samples for saliency detection
+  ratio: 0.01  # 1% of columns in FP16
   calibration_samples: 128
-  # Dataset for calibration (should match training distribution)
   calibration_data: fineweb
 
-# Auto-convert to BitNet first (will then convert to BitLinearSalient)
-auto_convert:
-  enabled: true
-  insert_subln: true  # Add SubLN before projections (BitNet paper)
-  exclude_layers:
-    - embed_tokens
-    - lm_head
-    - embed_positions
-
-# torch.compile for training speedup
-torch_compile:
-  enabled: true
-  mode: default
-  fullgraph: false
-
-# Sequence packing
-packing:
-  enabled: true
-
-# Optimizer: AdamW 8-bit (via bitsandbytes)
-# Simple and stable for all model sizes, memory efficient
+# AdamW 8-bit optimizer (stable for all model sizes)
 optimizer:
   type: adamw
-  use_8bit: true  # Uses bitsandbytes AdamW8bit
+  use_8bit: true
   learning_rate: 5e-4
   weight_decay: 0.01
 
-# Scheduler: WSD
+# Shorter warmup
 scheduler:
-  type: wsd
   warmup_steps: 100
-  decay_ratio: 0.2
-  decay_type: linear
-  min_lr_ratio: 0.0
 
 # Training parameters
 total_tokens: 1_000_000_000
-max_steps: null
 max_seq_length: 1024
 batch_size: 16
 gradient_accumulation_steps: 32
-gradient_clipping: 1.0
 auto_batch_size: false
 
-# Lambda warmup (ENABLED - fast 100-step warmup to full quantization)
-# At lambda=0, all columns are FP16; at lambda=1, only salient columns are FP16
+# Lambda warmup (fast 100-step warmup to full quantization)
 lambda_warmup:
-  enabled: true
   warmup_steps: 100
-  schedule: linear
-
-# Resume configuration
-resume:
-  checkpoint_path: null
-  load_optimizer_state: true
-  load_scheduler_state: true
-  load_training_state: true
-  strict_model_load: true
 
 # === OBJECTIVES ===
-# Standard CE + DLM training, with SFT for final phase
+# CE + DLM + SFT (for final phase)
 objectives:
   continue_pretrain:
-    enabled: true
     weight: 0.5
-    ignore_index: -100
-    label_smoothing: 0.0
 
   dlm:
-    enabled: true
     weight: 0.5
     mask_prob: 0.5
-    mask_token_id: 0  # Use 0 (pad token) as mask - works across tokenizers
-    use_complementary_masks: true
 
   sft:
     enabled: true
@@ -117,14 +69,8 @@ objectives:
     ignore_index: -100
     label_smoothing: 0.0
 
-  distill:
-    enabled: false
-
-# Curriculum: 25% fineweb warmup -> 65% mixed_pretrain -> 10% SFT
-# Final SFT phase uses Nemotron dataset with Qwen chat template
+# Curriculum: 25% warmup -> 65% main -> 10% SFT
 curriculum:
-  enabled: true
-  interpolation: step
   phases:
     - name: warmup
       end_ratio: 0.25
@@ -148,29 +94,12 @@ curriculum:
         dlm: 0.0
         sft: 1.0
 
-# Checkpointing
-checkpoint:
-  save_interval: 200
-  keep_last_n: 5
-  save_optimizer: true
-
 # Logging
 logging:
   log_interval: 2
   wandb:
-    enabled: true
     project: wrinklefree_v2
-    entity: null
-    name: null
     tags: [salient, bitnet, awq-style, sft, nemotron]
-
-# Validation
-validation:
-  enabled: true
-  config_name: c4_validation
-  val_check_interval: 500
-  limit_val_batches: 50
-  batch_size: 8
 
 # Memory optimization
 memory:
@@ -182,11 +111,7 @@ meta_optimization:
   enabled: true
   ldc_mtl:
     enabled: true
-    lambda_penalty: 0.1
-    hidden_dim: 32
-    router_lr: 0.001
   odm:
     enabled: false
   layer_lr:
     enabled: false
-  log_interval: 100

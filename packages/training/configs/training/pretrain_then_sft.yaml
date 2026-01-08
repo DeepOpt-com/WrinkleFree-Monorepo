@@ -8,92 +8,18 @@
 # Phase 1 (0-90%): Pretrain on FineWeb with CE + DLM objectives
 # Phase 2 (90-100%): SFT on Nemotron dataset with Qwen chat template
 
+defaults:
+  - base
+
 stage: unified_sft
 
-# Auto-convert: Converts model to BitNet on-the-fly if not already converted
-auto_convert:
-  enabled: true
-  exclude_layers:
-    - embed_tokens
-    - lm_head
-    - embed_positions
-
-# torch.compile for training speedup
-torch_compile:
-  enabled: true
-  mode: default
-
-# FP8 acceleration (H100/H200 only)
-fp8:
-  enabled: true
-  recipe: rowwise
-  accumulator_dtype: bfloat16
-  min_gemm_size: 512
-  exclude_patterns:
-    - embed_tokens
-    - lm_head
-    - norm
-    - subln
-
-# Sequence packing
-packing:
-  enabled: true
-
-# Optimizer: Muon for 2D weights, AdamW for embeddings
-optimizer:
-  type: muon
-  lr_muon: 0.02
-  lr_adam: 3e-4
-  weight_decay: 0.01
-  momentum: 0.95
-
-scheduler:
-  type: wsd
-  warmup_steps: 550
-  decay_ratio: 0.2
-  decay_type: linear
-  min_lr_ratio: 0.0
-
-# Training parameters
-total_tokens: 10_000_000_000  # 10B tokens total
-max_steps: null
-max_seq_length: 2048
-batch_size: 32
-gradient_accumulation_steps: 16
-gradient_clipping: 1.0
-auto_batch_size: true
-auto_batch_size_max_val: 128
-
-# Lambda warmup for gradual quantization
+# Lambda warmup disabled (start with full quantization)
 lambda_warmup:
   enabled: false
-  warmup_steps: 500
-  schedule: linear
 
-# Resume configuration
-resume:
-  checkpoint_path: null
-  load_optimizer_state: true
-  load_scheduler_state: true
-  load_training_state: true
-  strict_model_load: true
-
-# === OBJECTIVES SYSTEM ===
+# === OBJECTIVES ===
 # All objectives available - curriculum controls which are active
 objectives:
-  continue_pretrain:
-    enabled: true
-    weight: 1.0
-    ignore_index: -100
-    label_smoothing: 0.0
-
-  dlm:
-    enabled: true
-    weight: 0.5
-    mask_prob: 0.15
-    mask_token_id: 0
-    use_complementary_masks: true
-
   sft:
     enabled: true  # Will be activated in SFT phase
     weight: 1.0
@@ -103,8 +29,6 @@ objectives:
 # === CURRICULUM SCHEDULE ===
 # Two-phase: Pretrain -> SFT
 curriculum:
-  enabled: true
-  interpolation: step
   phases:
     # Phase 1: Pretrain with CE + DLM (90% of training)
     - name: pretrain
@@ -124,59 +48,7 @@ curriculum:
         dlm: 0.0
         sft: 1.0
 
-# Teacher model (only loaded if an objective requires_teacher)
-teacher:
-  fp16: true
-  offload_to_cpu: false
-  load_in_4bit: false
-  use_flash_attention: false
-
-# Checkpointing
-checkpoint:
-  save_interval: 200
-  keep_last_n: 5
-  save_optimizer: true
-
 # Logging
 logging:
-  log_interval: 10
   wandb:
-    enabled: true
-    project: wrinklefree
-    entity: null
-    name: null
     tags: [unified, bitnet, sft, nemotron]
-
-# Early stopping
-early_stopping:
-  enabled: false
-  patience: 5
-  min_delta: 0.01
-  min_evals: 10
-
-# Validation (C4 perplexity during pretrain)
-validation:
-  enabled: true
-  config_name: c4_validation
-  val_check_interval: 500
-  limit_val_batches: 50
-  batch_size: 8
-
-# Meta-optimization (for pretrain phase)
-meta_optimization:
-  enabled: false
-  ldc_mtl:
-    enabled: true
-    lambda_penalty: 0.1
-    hidden_dim: 32
-    router_lr: 0.001
-    step_interval: 1
-  odm:
-    enabled: true
-    reward_smoothing: 0.9
-    warmup_ratio: 0.01
-    min_weight: 0.05
-    max_weight: 0.60
-  layer_lr:
-    enabled: false
-  log_interval: 100

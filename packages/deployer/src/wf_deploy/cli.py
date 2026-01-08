@@ -27,11 +27,17 @@ from dotenv import load_dotenv
 load_dotenv()  # .env in current directory
 load_dotenv(Path.home() / ".config" / ".env.global")  # Global fallback
 
+import sys
+import warnings
+
 from wf_deploy import core
 from wf_deploy.constants import (
     DEFAULT_SMOKE_TEST_MODEL,
     DEFAULT_WANDB_PROJECT,
     DEFAULT_CONTEXT_SIZE,
+    TRAINING_CONFIGS,
+    SMOKE_OBJECTIVES,
+    SCALES,
     get_wandb_entity,
 )
 

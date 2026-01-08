@@ -1,0 +1,109 @@
+# Unified WrinkleFree Smoke Test
+#
+# Single YAML for all smoke test objectives. Set OBJECTIVE env var to select:
+#   - ce: Cross-entropy only
+#   - dlm: CE + DLM (diffusion language model)
+#   - bitdistill: BitDistill (logits + attention distillation)
+#   - lrc: LRC (Low-Rank Correction)
+#   - salient: AWQ-style salient columns
+#   - salient_lora: Salient + LoRA combined
+#   - hadamard: BitNet v2 Hadamard transform
+#   - sft: Supervised fine-tuning
+#   - meta_opt: Meta-optimization (LDC-MTL + ODM)
+#
+# Usage:
+#   cd packages/deployer
+#   source credentials/.env
+#
+#   # Default (DLM)
+#   sky launch skypilot/smoke_test.yaml -y --cluster smoke
+#
+#   # Specific objective
+#   sky launch skypilot/smoke_test.yaml -y --cluster smoke --env OBJECTIVE=bitdistill
+#
+#   # Different model
+#   sky launch skypilot/smoke_test.yaml -y --cluster smoke \
+#     --env OBJECTIVE=lrc --env MODEL=qwen3_0.6b
+#
+#   # Different GPU
+#   sky launch skypilot/smoke_test.yaml -y --cluster smoke-h100 \
+#     --env OBJECTIVE=salient --env GPU_TYPE=H100
+#
+# Monitor:
+#   sky logs smoke
+#
+# Teardown:
+#   sky down smoke -y
+
+name: wf-smoke-${OBJECTIVE}
+
+resources:
+  accelerators: ${GPU_TYPE}:${GPU_COUNT}
+  memory: 64+
+  use_spot: false
+  cloud: ${CLOUD}
+
+# Run from monorepo root
+workdir: .
+
+file_mounts:
+  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GOOGLE_CLOUD_PROJECT: wrinklefree-481904
+  GCS_BUCKET: wrinklefree-checkpoints
+  # Configurable via --env
+  MODEL: smollm2_135m
+  OBJECTIVE: dlm
+  GPU_TYPE: L40S
+  GPU_COUNT: "1"
+  CLOUD: nebius
+  # Fixed
+  WANDB_PROJECT: wrinklefree
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  PYTHONUNBUFFERED: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  uv sync --all-packages
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  # Run dispatch script
+  python packages/deployer/scripts/dispatch_smoke.py \
+    --objective $OBJECTIVE \
+    --model $MODEL \
+    --checkpoint-dir $CHECKPOINT_DIR \
+    --gcs-bucket $GCS_BUCKET \
+    --wandb-project $WANDB_PROJECT
+
+  echo ""
+  echo "================================================"
+  echo "Smoke Test Complete!"
+  echo "================================================"
+
+  # Verify checkpoints
+  echo ""
+  echo "[Verify] Checkpoints:"
+  find $CHECKPOINT_DIR -type f -name "*.ckpt" 2>/dev/null | head -10 || echo "No checkpoints found"

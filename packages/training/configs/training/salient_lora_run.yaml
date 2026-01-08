@@ -7,137 +7,71 @@
 # The features are applied sequentially:
 #   model -> convert_to_bitnet -> convert_to_salient -> add_lora
 #
-# Key benefits:
-# - Salient columns preserve most important activations in FP16
-# - LoRA corrects remaining quantization errors via low-rank adapters
-# - Better accuracy than either method alone
-#
 # Usage:
 #   uv run python scripts/train_lightning.py \
-#     model=smollm2_135m training=salient_lora
+#     model=smollm2_135m training=salient_lora_run
 #
 # Based on:
 # - AWQ: https://arxiv.org/abs/2306.00978 (salient columns)
 # - LoRA: https://arxiv.org/abs/2106.09685 (low-rank adaptation)
 # - LRC: https://arxiv.org/abs/2412.07902 (quantization error correction)
 
+defaults:
+  - base
+
 stage: salient_lora_run
 
-# === SALIENT COLUMNS (Step 1) ===
-# AWQ-style: keep ~1% of columns in FP16 based on activation*weight magnitude
+# === SALIENT COLUMNS ===
 salient:
   enabled: true
-  ratio: 0.01  # 1% of columns in FP16
+  ratio: 0.01
   calibration_samples: 128
   calibration_data: fineweb
 
-# === LORA ADAPTER (Step 2) ===
-# Low-rank correction applied after salient conversion
+# === LORA ADAPTER ===
 lora:
   enabled: true
-  # Rank as percentage of min(in_features, out_features)
-  # 2% for smaller adapters
   rank_percentage: 0.02
-  # Initialization method:
-  # - "kaiming": LoRA-style (A=Kaiming, B=zeros). Fast, good gradients.
-  # - "svd_residual": SVD of quantization error (uses fast randomized SVD).
-  # - "zeros": Both A,B=zeros. DON'T USE - causes zero gradients!
   init_method: svd_residual
-  # LoRA scaling factor (alpha/rank)
   alpha: 1.0
-  # Dropout for LoRA path (0.0 = no dropout)
   dropout: 0.0
-  # Target layers (regex patterns). null = all BitLinear/BitLinearSalient layers
   target_modules: null
-  # Quantized adapters (QA-LoRA style, optional)
   quantized: false
-  quant_bits: 4
-  quant_group_size: 32
-  # Train WHOLE model (base + LoRA), not just LoRA adapters
-  freeze_base: false
+  freeze_base: false  # Train WHOLE model (base + LoRA)
 
-# Auto-convert to BitNet first
-auto_convert:
-  enabled: true
-  insert_subln: true  # Add SubLN before projections (BitNet paper)
-  use_hadamard: false  # No Hadamard transform for now
-  exclude_layers:
-    - embed_tokens
-    - lm_head
-    - embed_positions
-
-# torch.compile for training speedup
-torch_compile:
-  enabled: true
-  mode: default
-  fullgraph: false
-
-# Sequence packing
-packing:
-  enabled: true
-
-# Optimizer: AdamW 8-bit (via bitsandbytes)
-# Simple and stable for LoRA training, memory efficient
+# AdamW 8-bit optimizer
 optimizer:
   type: adamw
-  use_8bit: true  # Uses bitsandbytes AdamW8bit
+  use_8bit: true
   learning_rate: 5e-5
   weight_decay: 0.01
 
-# Scheduler: WSD
+# Very short warmup
 scheduler:
-  type: wsd
   warmup_steps: 10
-  decay_ratio: 0.2
-  decay_type: linear
-  min_lr_ratio: 0.0
 
 # Training parameters
 total_tokens: 1_000_000_000
-max_steps: null
 max_seq_length: 1024
 batch_size: 16
 gradient_accumulation_steps: 32
-gradient_clipping: 1.0
 auto_batch_size: false
 
-# Lambda warmup (disabled - start with full quantization)
+# Lambda warmup disabled (start with full quantization)
 lambda_warmup:
   enabled: false
-  warmup_steps: 500
-  schedule: linear
-
-# Resume configuration
-resume:
-  checkpoint_path: null
-  load_optimizer_state: true
-  load_scheduler_state: true
-  load_training_state: true
-  strict_model_load: true
 
 # === OBJECTIVES ===
-# CE + DLM training
 objectives:
   continue_pretrain:
-    enabled: true
     weight: 0.5
-    ignore_index: -100
-    label_smoothing: 0.0
 
   dlm:
-    enabled: true
     weight: 0.5
     mask_prob: 0.5
-    mask_token_id: 0  # Use 0 (pad token) as mask
-    use_complementary_masks: true
-
-  distill:
-    enabled: false
 
 # Curriculum: 10% warmup -> 90% main
 curriculum:
-  enabled: true
-  interpolation: step
   phases:
     - name: warmup
       end_ratio: 0.10
@@ -152,45 +86,14 @@ curriculum:
         continue_pretrain: 0.5
         dlm: 0.5
 
-# Checkpointing
-checkpoint:
-  save_interval: 200
-  keep_last_n: 5
-  save_optimizer: true
-
 # Logging
 logging:
   log_interval: 2
   wandb:
-    enabled: true
     project: wrinklefree_v2
-    entity: null
-    name: null
     tags: [salient, lora, bitnet, combined]
-
-# Validation
-validation:
-  enabled: true
-  config_name: c4_validation
-  val_check_interval: 500
-  limit_val_batches: 50
-  batch_size: 8
 
 # Memory optimization
 memory:
   gradient_checkpointing: true
   clear_cache_interval: 100
-
-# Meta-optimization (disabled for this run)
-meta_optimization:
-  enabled: false
-  ldc_mtl:
-    enabled: false
-    lambda_penalty: 0.1
-    hidden_dim: 32
-    router_lr: 0.001
-  odm:
-    enabled: false
-  layer_lr:
-    enabled: false
-  log_interval: 100

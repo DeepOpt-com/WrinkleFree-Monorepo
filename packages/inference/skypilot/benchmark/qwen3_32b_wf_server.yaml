@@ -81,8 +81,20 @@ run: |
   set -ex
   source "$HOME/.cargo/env"
 
+  # IMPORTANT: Use sky_workdir paths for wf_server to pick up code changes from `sky exec`
+  # llama.cpp is built once during setup, but wf_server should be rebuilt for code changes
   LLAMA_CPP="/opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp"
-  WF_SERVER="/opt/inference/extern/sglang-bitnet/sgl-model-gateway/target/release/wf_server"
+  WF_SERVER_WORKDIR="$HOME/sky_workdir/extern/sglang-bitnet/sgl-model-gateway"
+  WF_SERVER="$WF_SERVER_WORKDIR/target/release/wf_server"
+
+  # Rebuild wf_server if code has changed (use sky_workdir for latest code)
+  if [ -d "$WF_SERVER_WORKDIR" ]; then
+    echo "=== Rebuilding wf_server from synced workdir ==="
+    cd "$WF_SERVER_WORKDIR"
+    cargo build --release --bin wf_server --features native-inference
+    ls -lh target/release/wf_server
+    cd -
+  fi
 
   echo "============================================"
   echo "Qwen3-32B wf_server Benchmark"

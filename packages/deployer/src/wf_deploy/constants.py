@@ -200,3 +200,46 @@ def get_wandb_entity() -> str | None:
         W&B entity (user or team name), or None if not set.
     """
     return os.environ.get(EnvVars.WANDB_ENTITY)
+
+
+# =============================================================================
+# Training Configs (packages/training/configs/training/)
+# =============================================================================
+
+TRAINING_CONFIGS: Final[frozenset[str]] = frozenset({
+    "base",                      # Combined CE + DLM (recommended)
+    "smoke_test",                # Fast 30-step validation
+    "bitdistill_full",           # Knowledge distillation
+    "lrc_run",                   # Low-Rank Correction
+    "salient_run",               # AWQ-style salient columns
+    "salient_lora_run",          # Salient + LoRA
+    "salient_lora_hadamard_run", # Salient + LoRA + Hadamard
+    "sft_run",                   # Supervised fine-tuning
+    "pretrain_then_sft",         # Pretrain -> SFT curriculum
+    "dlm_distill",               # DLM + TCS distillation
+    "full_run",                  # Legacy full pipeline
+    # Legacy stage-based configs (still supported)
+    "stage1_subln",
+    "stage1_9_layerwise",
+    "stage2_pretrain",
+    "stage3_distill",
+})
+"""Valid training config names that map to Hydra configs."""
+
+
+# =============================================================================
+# Smoke Test Objectives
+# =============================================================================
+
+SMOKE_OBJECTIVES: Final[frozenset[str]] = frozenset({
+    "ce",           # Cross-entropy only
+    "dlm",          # CE + DLM (diffusion language model)
+    "bitdistill",   # BitDistill (logits + attention distillation)
+    "lrc",          # LRC (Low-Rank Correction)
+    "salient",      # AWQ-style salient columns
+    "salient_lora", # Salient + LoRA combined
+    "hadamard",     # BitNet v2 Hadamard transform
+    "sft",          # Supervised fine-tuning
+    "meta_opt",     # Meta-optimization (LDC-MTL + ODM)
+})
+"""Valid smoke test objectives for unified smoke_test.yaml."""

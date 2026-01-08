@@ -1,0 +1,67 @@
+# LRC (Low-Rank Correction) Training Configuration
+# Adds trainable low-rank matrices (U, V) to correct quantization errors
+# Based on https://arxiv.org/abs/2412.07902
+#
+# Usage:
+#   uv run --package wf-train python scripts/train_lightning.py \
+#     model=qwen3_0.6b training=lrc_run
+
+defaults:
+  - base
+
+stage: lrc_run
+
+# LRC Configuration
+lrc:
+  enabled: true
+  rank_percentage: 0.15  # 15% rank for production
+  init_method: zeros
+
+# Training parameters
+total_tokens: 1_000_000_000  # 1B tokens
+max_seq_length: 1024
+batch_size: 8
+gradient_accumulation_steps: 8
+
+# === OBJECTIVES ===
+# CE + DLM + LRC distillation
+objectives:
+  dlm:
+    weight: 0.5
+
+  distill:
+    enabled: true
+    weight: 1.0
+    hidden:
+      enabled: false
+    logits:
+      enabled: false
+    attention:
+      enabled: false
+    lrc:
+      enabled: true
+      loss_type: mse
+      layer_weights: progressive
+
+# Two phases: warmup -> main
+curriculum:
+  phases:
+    - name: warmup
+      end_ratio: 0.1
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0
+        dlm: 0.5
+        distill: 0.5
+    - name: main
+      end_ratio: 1.0
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 1.0
+        dlm: 0.5
+        distill: 1.0
+
+# Logging
+logging:
+  wandb:
+    tags: [lrc, bitnet]
