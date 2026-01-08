@@ -1,5 +1,8 @@
 # LRC Training Fixes - 2026-01-07
 
+### Findings
+- Saliency (1%) gets us to start with loss at 3.6 already! But we have to cut LRs way down otherwise we diverge
+
 ## Summary
 Fixed multiple issues blocking LRC (Low-Rank Correction) training on H100.
 

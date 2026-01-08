@@ -81,8 +81,8 @@ packing:
 # Muon's Newton-Schulz orthogonalization still benefits the U/V matrices.
 optimizer:
   type: muonclip
-  lr_muon: 0.02          # Muon LR for 2D trainable params (U,V matrices)
-  lr_adam: 2e-4          # AdamW LR for 1D params (biases, weights etc)
+  lr_muon: 0.005         # Muon LR for 2D trainable params (U,V matrices) - reduced 4x
+  lr_adam: 5e-5          # AdamW LR for 1D params (biases, weights etc) - reduced 4x
   weight_decay: 0.01
   momentum: 0.95
   enable_clipping: false  # Disabled for LRC - only works with full attention training

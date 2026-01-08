@@ -46,8 +46,32 @@ setup: |
   echo "Instance: Nebius cpu-d3 (AMD EPYC)"
   echo "============================================"
 
-  # Common setup (system deps, uv, pip packages)
-  source /opt/inference/scripts/skypilot_common_setup.sh
+  # System info
+  lscpu | grep -E "(Model name|CPU\(s\)|Thread|Core|Socket|Cache)" | head -15 || true
+  free -h
+
+  # System deps
+  sudo apt-get update && sudo apt-get install -y clang cmake git curl python3-pip ccache
+
+  # Install uv
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
+
+  # Install Python packages with modern versions (avoid building tokenizers from source)
+  pip install --upgrade pip
+  pip install \
+    "huggingface_hub[cli]" \
+    hf_transfer \
+    safetensors \
+    torch \
+    numpy \
+    "transformers>=4.40.0"
+
+  # Create directories
+  sudo mkdir -p /results /models
+  sudo chown $(whoami) /results /models 2>/dev/null || true
 
   # Install perf tools
   sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r) || true

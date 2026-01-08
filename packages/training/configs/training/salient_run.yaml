@@ -59,8 +59,8 @@ packing:
 # Ternary columns get STE gradients
 optimizer:
   type: muonclip
-  lr_muon: 0.02
-  lr_adam: 2e-4
+  lr_muon: 0.005  # Reduced for 0.6B+ models (0.02 causes divergence)
+  lr_adam: 1e-4
   weight_decay: 0.01
   momentum: 0.95
   enable_clipping: true
