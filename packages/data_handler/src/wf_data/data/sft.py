@@ -23,7 +23,8 @@ class SFTConfig:
     Attributes:
         path: HuggingFace dataset path
         subset: Dataset subset/config name (e.g., "SFT")
-        split: Dataset split (e.g., "train")
+        split: Dataset split. Use "all" to interleave all splits,
+               or specify one: code, math, science, chat, safety
         input_column: Column containing conversation turns (list of dicts)
         output_column: Column containing final assistant response
         system_prompt_column: Column containing system prompt (optional)
@@ -33,7 +34,7 @@ class SFTConfig:
 
     path: str = "nvidia/Llama-Nemotron-Post-Training-Dataset"
     subset: str = "SFT"
-    split: str = "train"
+    split: str = "all"  # "all" interleaves code, math, science, chat, safety
     input_column: str = "input"
     output_column: str = "output"
     system_prompt_column: str = "system_prompt"
@@ -93,19 +94,37 @@ class SFTDataset(IterableDataset):
         if self._dataset is not None:
             return
 
-        from datasets import load_dataset
+        from datasets import load_dataset, interleave_datasets
 
-        logger.info(
-            f"Loading SFT dataset: {self.config.path} "
-            f"(subset={self.config.subset}, split={self.config.split})"
-        )
-
-        self._dataset = load_dataset(
-            self.config.path,
-            self.config.subset,
-            split=self.config.split,
-            streaming=self.streaming,
-        )
+        # Handle "all" split by interleaving all available splits
+        if self.config.split == "all":
+            # Nemotron dataset has these splits
+            all_splits = ["code", "math", "science", "chat", "safety"]
+            logger.info(
+                f"Loading SFT dataset: {self.config.path} "
+                f"(subset={self.config.subset}, splits={all_splits})"
+            )
+            datasets = []
+            for split in all_splits:
+                ds = load_dataset(
+                    self.config.path,
+                    self.config.subset,
+                    split=split,
+                    streaming=self.streaming,
+                )
+                datasets.append(ds)
+            self._dataset = interleave_datasets(datasets)
+        else:
+            logger.info(
+                f"Loading SFT dataset: {self.config.path} "
+                f"(subset={self.config.subset}, split={self.config.split})"
+            )
+            self._dataset = load_dataset(
+                self.config.path,
+                self.config.subset,
+                split=self.config.split,
+                streaming=self.streaming,
+            )
 
         # Apply distributed sharding
         if self.world_size > 1:

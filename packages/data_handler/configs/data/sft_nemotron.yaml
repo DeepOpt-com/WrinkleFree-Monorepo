@@ -7,7 +7,7 @@
 # License: CC-BY-4.0
 #
 # The dataset has 5 splits: code, math, science, chat, safety (~3.9M total examples)
-# Use data_split override to select specific splits.
+# Use split: "all" to interleave all splits, or specify one (e.g., "code", "math")
 
 name: sft_nemotron
 
@@ -16,7 +16,8 @@ sft:
   enabled: true
   path: nvidia/Llama-Nemotron-Post-Training-Dataset
   subset: SFT
-  split: train
+  # Use "all" to interleave all splits, or specify one: code, math, science, chat, safety
+  split: all
   input_column: input
   output_column: output
   system_prompt_column: system_prompt

@@ -103,7 +103,7 @@ run: |
     training=salient_run \
     training.total_tokens=${TOTAL_TOKENS} \
     training.batch_size=8 \
-    training.gradient_accumulation_steps=64 \
+    training.gradient_accumulation_steps=16 \
     training.max_seq_length=1024 \
     training.logging.log_interval=10 \
     training.auto_batch_size=false \
