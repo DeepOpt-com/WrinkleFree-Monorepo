@@ -77,7 +77,7 @@ def _butterfly_step(x: torch.Tensor, h: int) -> torch.Tensor:
     return x.view(*x.shape[:-3], -1)
 
 
-@torch.compile(mode="reduce-overhead", disable=not torch.cuda.is_available())
+@torch.compile(mode="default", disable=not torch.cuda.is_available())
 def _hadamard_1024(x: torch.Tensor) -> torch.Tensor:
     """Unrolled Hadamard for 1024-dim (Qwen3-0.6B hidden size).
 
@@ -96,7 +96,7 @@ def _hadamard_1024(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-@torch.compile(mode="reduce-overhead", disable=not torch.cuda.is_available())
+@torch.compile(mode="default", disable=not torch.cuda.is_available())
 def _hadamard_2048(x: torch.Tensor) -> torch.Tensor:
     """Unrolled Hadamard for 2048-dim (common hidden size).
 
@@ -116,7 +116,7 @@ def _hadamard_2048(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-@torch.compile(mode="reduce-overhead", disable=not torch.cuda.is_available())
+@torch.compile(mode="default", disable=not torch.cuda.is_available())
 def _hadamard_4096(x: torch.Tensor) -> torch.Tensor:
     """Unrolled Hadamard for 4096-dim (Llama 7B hidden size).
 

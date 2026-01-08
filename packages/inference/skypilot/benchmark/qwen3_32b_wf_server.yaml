@@ -43,7 +43,7 @@ setup: |
   # System dependencies
   sudo apt-get update && sudo apt-get install -y \
     clang cmake git curl python3-pip ccache libgomp1 build-essential \
-    pkg-config libssl-dev
+    pkg-config libssl-dev protobuf-compiler
 
   # Install Rust (for wf_server)
   if ! command -v cargo &> /dev/null; then
