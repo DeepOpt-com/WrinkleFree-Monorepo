@@ -9,6 +9,7 @@ WrinkleFree Inference Engine serves **BitNet** models (1.58-bit quantized LLMs):
 - **Model Format**: GGUF (converted from training checkpoints)
 - **Architecture Support**: BitNet with SubLN (Sub-Layer Normalization)
 - **Inference Options**:
+  - **wf_server**: Native Rust server with SIMD-optimized ternary kernels (fastest for prefill)
   - **llama-cli**: Standard autoregressive decoding (works for all models)
   - **dlm_server**: Fast-dLLM v2 block diffusion (speed optimization for DLM-trained models)
 
@@ -21,7 +22,9 @@ WrinkleFree Inference Engine serves **BitNet** models (1.58-bit quantized LLMs):
 | Task | Command |
 |------|---------|
 | Convert checkpoint to GGUF | `python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o model.gguf` |
+| Build wf_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin wf_server --features=native-inference` |
 | Build dlm_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin dlm_server --features=native-inference` |
+| Benchmark wf_server | `./wf_server --model-path model.gguf --benchmark --benchmark-iterations 10` |
 | Start DLM server | See "Running dlm_server" section below |
 | Test API | `curl http://localhost:30000/v1/chat/completions -d '{"messages":[{"role":"user","content":"Hello"}]}'` |
 
@@ -64,6 +67,113 @@ python scripts/convert_checkpoint_to_gguf.py \
 | "BitnetForCausalLM not found" | Arch name mismatch | Script auto-fixes this |
 | TQ1_0 shape error | Model too small | Use F16 (default) |
 | Missing tokenizer | Incomplete checkpoint | Copy `tokenizer.json` + `tokenizer_config.json` |
+
+## Running wf_server (Native Inference)
+
+The `wf_server` is a pure Rust inference server with native SIMD-optimized BitNet kernels. It provides the fastest prefill performance for BitNet models.
+
+### Benchmarks (BitNet 2B, I2_S format)
+
+Tested on AMD EPYC Genoa (32 cores), OMP_NUM_THREADS=32:
+
+| Metric | Performance |
+|--------|-------------|
+| **Prefill throughput** | **106.2 tok/s** |
+| Decode throughput | 7.2 tok/s |
+| Model size | 1.1 GB (I2_S) |
+
+#### Time Breakdown (per forward pass)
+
+| Component | Time % | Notes |
+|-----------|--------|-------|
+| FFN | 49% | 3 GEMM ops per layer (gate, up, down) |
+| Q/K/V projection | 20% | 3 GEMM ops per layer |
+| Output projection | 17% | 128K vocab, parallelized + SIMD |
+| O projection | 8% | 1 GEMM op per layer |
+| Attention scores | 5% | Softmax + weighted sum |
+| RoPE + Norms | <1% | Negligible |
+
+### Building wf_server
+
+```bash
+cd extern/sglang-bitnet/sgl-model-gateway
+
+# Build with native CPU optimizations
+cargo build --release --bin wf_server --features=native-inference
+
+# Binary location
+ls target/release/wf_server
+```
+
+**Requirements**:
+- `libgomp1` for OpenMP parallelism: `sudo apt-get install libgomp1`
+- AVX2 or AVX-512 capable CPU (runtime detection)
+
+### Running Benchmarks
+
+```bash
+# Set thread count for OpenMP (C++ kernels)
+export OMP_NUM_THREADS=32
+
+# Run benchmark
+./target/release/wf_server \
+  --model-path /path/to/model-i2s.gguf \
+  --benchmark \
+  --benchmark-iterations 10
+
+# With detailed profiling output
+./target/release/wf_server \
+  --model-path /path/to/model-i2s.gguf \
+  --benchmark \
+  --benchmark-iterations 5
+```
+
+### Server Mode
+
+```bash
+# Start HTTP server (OpenAI-compatible API)
+./target/release/wf_server \
+  --model-path /path/to/model-i2s.gguf \
+  --port 30000
+
+# Test endpoint
+curl http://localhost:30000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
+```
+
+### Architecture
+
+The native engine uses:
+
+1. **GGUF Reader** (`src/gguf/`) - Pure Rust GGUF parser with mmap
+2. **Native Kernels** (`sgl-kernel/csrc/bitnet/`) - AVX2/AVX-512 SIMD:
+   - `bitnet_gemm_i2_i8`: Ternary weight × INT8 activation GEMM
+   - `quantize_activations_i8`: FP32 → INT8 quantization
+3. **Rust Engine** (`src/engine/model.rs`) - Transformer forward pass:
+   - Fused Q/K/V quantization (single quantize for 3 projections)
+   - Parallel output projection (rayon + AVX2 FMA)
+   - KV cache management
+
+### Key Optimizations
+
+| Optimization | Impact | Details |
+|--------------|--------|---------|
+| **Parallel output projection** | 10.8x faster | rayon + SIMD dot products for 128K vocab |
+| **Fused activation quantization** | Minor | Quantize once for Q/K/V instead of 3x |
+| **AVX2/AVX-512 GEMM** | Baseline | Native ternary SIMD kernels |
+| **OpenMP parallelization** | Significant | C++ GEMM kernel uses all cores |
+
+### Comparison with llama.cpp
+
+| Feature | wf_server | llama.cpp |
+|---------|-----------|-----------|
+| Prefill (2B) | ~106 tok/s | ~63 tok/s |
+| Language | Rust + C++ | C++ |
+| GGUF support | I2_S only | All formats |
+| Decode | ~7 tok/s | ~2.7 tok/s |
+
+**Note**: wf_server is optimized for BitNet I2_S format. For other formats, use llama.cpp.
 
 ## Running dlm_server
 

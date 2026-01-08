@@ -101,7 +101,7 @@ run: |
   echo "Configuration:"
   echo "  - HBitLinear for o_proj, down_proj (BitNet v2)"
   echo "  - SubLN before all projections (BitNet paper)"
-  echo "  - CE + DLM objectives"
+  echo "  - CE + DLM objectives (meta-optimization enabled)"
   echo "  - Lambda warmup: 50 steps (gradual quantization)"
   echo "  - LR: 1e-4 (AdamW)"
   echo "  - Batch: 4 x 16 grad_accum = 64 effective (65K tokens/step)"
@@ -123,10 +123,10 @@ run: |
     training.max_seq_length=1024 \
     training.logging.log_interval=10 \
     training.auto_batch_size=false \
-    training.torch_compile.enabled=false \
+    training.torch_compile.enabled=true \
     training.optimizer.type=adamw \
     +training.optimizer.learning_rate=1e-4 \
-    training.meta_optimization.enabled=false \
+    training.meta_optimization.enabled=true \
     training.checkpoint.save_interval=500 \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
