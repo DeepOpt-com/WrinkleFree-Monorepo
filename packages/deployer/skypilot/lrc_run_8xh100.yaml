@@ -84,12 +84,18 @@ run: |
   cd ~/sky_workdir
   export PATH="$HOME/.cargo/bin:$HOME/google-cloud-sdk/bin:$PATH"
 
+  # Set GCP credentials for GCS uploads
+  export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json
+  export GOOGLE_CLOUD_PROJECT=wrinklefree-481904
+  gcloud config set project wrinklefree-481904 2>/dev/null || true
+
   set -a
   source /tmp/global.env
   set +a
   export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
 
   echo "WANDB_API_KEY is set: $([ -n \"$WANDB_API_KEY\" ] && echo 'yes' || echo 'no')"
+  echo "GCS credentials: $([ -f /tmp/gcp-creds.json ] && echo 'present' || echo 'MISSING')"
 
   CHECKPOINT_DIR="/tmp/checkpoints"
   mkdir -p $CHECKPOINT_DIR
