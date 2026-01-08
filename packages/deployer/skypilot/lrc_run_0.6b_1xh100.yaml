@@ -1,0 +1,149 @@
+# LRC Training Run - Qwen3 0.6B on 1x H100
+#
+# Real training run with:
+# - Fast SVD initialization (10-100x faster than full SVD)
+# - LRC 5% rank with svd_residual init
+# - CE + DLM objectives
+# - GCS checkpointing + WandB logging
+#
+# Launch:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/lrc_run_0.6b_1xh100.yaml -y --cluster lrc-0.6b
+#
+# Monitor:
+#   sky logs lrc-0.6b
+#
+# Down:
+#   sky down lrc-0.6b -y
+
+name: wf-lrc-0.6b-1xh100
+
+resources:
+  accelerators: H100:1
+  memory: 64+
+  use_spot: false
+  cloud: nebius
+  disk_size: 100
+
+workdir: ../..
+
+file_mounts:
+  /tmp/gcp-creds.json: ~/.config/gcloud/application_default_credentials.json
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: qwen3_0.6b
+  WANDB_PROJECT: wrinklefree_v2
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  PYTHONUNBUFFERED: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  if ! command -v gcloud &> /dev/null; then
+    echo "Installing Google Cloud SDK..."
+    rm -rf $HOME/google-cloud-sdk
+    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
+    export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  fi
+
+  if [ -f /tmp/gcp-creds.json ]; then
+    echo "Setting up GCP credentials..."
+    export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json
+    gcloud config set project wrinklefree-481904 2>/dev/null || true
+  fi
+
+  uv sync --all-packages
+
+  echo "Verifying LRC imports..."
+  uv run python -c "from wf_arch import BitLinearLRC, convert_bitlinear_to_lrc; print('LRC imports OK!')"
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$HOME/google-cloud-sdk/bin:$PATH"
+
+  # Set GCP credentials for GCS uploads
+  export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json
+  export GOOGLE_CLOUD_PROJECT=wrinklefree-481904
+  gcloud config set project wrinklefree-481904 2>/dev/null || true
+
+  set -a
+  source /tmp/global.env
+  set +a
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  echo "=============================================="
+  echo "Credential Check"
+  echo "=============================================="
+  echo "WANDB_API_KEY is set: $([ -n \"$WANDB_API_KEY\" ] && echo 'YES' || echo 'MISSING!')"
+  echo "GCS credentials: $([ -f /tmp/gcp-creds.json ] && echo 'present' || echo 'MISSING!')"
+
+  # Verify GCS access
+  echo ""
+  echo "Testing GCS access..."
+  gsutil ls gs://${GCS_BUCKET}/ > /dev/null && echo "GCS access: OK" || echo "GCS access: FAILED!"
+  echo "=============================================="
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo ""
+  echo "=============================================="
+  echo "LRC Training Run - Qwen3 0.6B on 1x H100"
+  echo "=============================================="
+  echo "Model: ${MODEL}"
+  echo "Training: lrc_run (LRC 5% + SVD init + CE + DLM)"
+  echo "Init method: svd_residual (fast=True)"
+  echo "Distributed: single GPU"
+  echo ""
+  echo "Training config:"
+  echo "  - Max steps: 1000"
+  echo "  - Batch size: 4"
+  echo "  - Gradient accumulation: 32"
+  echo "  - Effective batch: 128"
+  echo "  - Checkpoint interval: 100 steps"
+  echo "=============================================="
+  echo ""
+
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=lrc_run \
+    distributed=single_gpu \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=lrc_0.6b_fastsvd \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=32 \
+    training.max_steps=1000 \
+    training.checkpoint.save_interval=100 \
+    training.checkpoint.keep_last_n=3 \
+    training.logging.log_interval=5 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.wandb.name=lrc-0.6b-fastsvd-1xh100 \
+    "training.logging.wandb.tags=[lrc,dlm,fast-svd,0.6b,1xh100]" \
+    training.validation.enabled=true \
+    training.validation.val_check_interval=200 \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET}
+
+  echo ""
+  echo "=============================================="
+  echo "LRC Training Complete!"
+  echo "=============================================="
+  echo ""
+  echo "Checkpoints saved to: gs://${GCS_BUCKET}/checkpoints/lrc_0.6b_fastsvd/"
+  echo "WandB run: https://wandb.ai/umd-leans-well/${WANDB_PROJECT}"
+  echo ""
+  echo "REMEMBER: Run 'sky down lrc-0.6b -y' to save money!"

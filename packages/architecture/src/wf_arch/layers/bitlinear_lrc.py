@@ -372,7 +372,13 @@ class BitLinearLRC(BitLinear):
 
         return quant_output + lrc_output
 
-    def init_lrc_from_svd(self, original_weight: torch.Tensor) -> None:
+    def init_lrc_from_svd(
+        self,
+        original_weight: torch.Tensor,
+        fast_svd: bool = True,
+        fast_svd_oversampling: int = 10,
+        fast_svd_niter: int = 2,
+    ) -> None:
         """
         Initialize U, V using SVD of the quantization residual (W - W_quant).
 
@@ -381,21 +387,38 @@ class BitLinearLRC(BitLinear):
 
         Args:
             original_weight: Original unquantized weight tensor
+            fast_svd: Use randomized SVD (torch.svd_lowrank) for 10-100x speedup.
+                Based on Halko et al. 2009. Default: True.
+            fast_svd_oversampling: Extra dimensions beyond target rank for accuracy.
+                q = rank + oversampling. Default: 10.
+            fast_svd_niter: Number of power iterations for convergence. Default: 2.
         """
         with torch.no_grad():
             w_quant = self.weight_quant(original_weight.to(self.weight.dtype))
             residual = original_weight.to(self.weight.dtype) - w_quant
 
-            # SVD: residual = U @ S @ V^T
-            U, S, Vh = torch.linalg.svd(residual.float(), full_matrices=False)
+            k = self.rank
+
+            if fast_svd:
+                # Randomized SVD - O(m*n*q) instead of O(min(m,n)² × max(m,n))
+                # Based on Halko et al. 2009 (Algorithm 5.1)
+                q = min(k + fast_svd_oversampling, min(residual.shape))
+                # torch.svd_lowrank returns (U, S, V) not (U, S, Vh)!
+                U, S, V = torch.svd_lowrank(residual.float(), q=q, niter=fast_svd_niter)
+                # V is already (in_features, q) shape - no transpose needed
+            else:
+                # Full SVD - accurate but slow for large matrices
+                # SVD: residual = U @ S @ V^T
+                U, S, Vh = torch.linalg.svd(residual.float(), full_matrices=False)
+                V = Vh.t()  # Convert Vh to V for consistency
 
             # Take top-k components, distribute sqrt(S) to both U and V
-            k = min(self.rank, len(S))
+            k = min(k, len(S))
             sqrt_S = S[:k].sqrt()
 
             # U_init: (out_features, rank), V_init: (in_features, rank)
             U_init = (U[:, :k] * sqrt_S.unsqueeze(0)).to(original_weight.dtype)
-            V_init = (Vh[:k, :].t() * sqrt_S.unsqueeze(0)).to(original_weight.dtype)
+            V_init = (V[:, :k] * sqrt_S.unsqueeze(0)).to(original_weight.dtype)
 
             if self._use_quantized_lrc:
                 # For STE-based QLRC, weights are stored in full precision
@@ -478,6 +501,9 @@ def convert_bitlinear_to_lrc(
     keep_original_weight: bool = True,
     trainable_weight: bool = False,
     qlrc_config: Optional[QLRCConfig] = None,
+    fast_svd: bool = True,
+    fast_svd_oversampling: int = 10,
+    fast_svd_niter: int = 2,
 ) -> nn.Module:
     """
     Convert all BitLinear layers in a module to BitLinearLRC.
@@ -490,7 +516,7 @@ def convert_bitlinear_to_lrc(
         module: Module containing BitLinear layers
         rank: Explicit rank for all layers (overrides rank_percentage)
         rank_percentage: Rank as fraction of min(in, out) per layer
-        init_method: "zeros" (default) or "svd_residual"
+        init_method: "zeros" (default), "svd_residual", or "kaiming"
         exclude_names: Layer names to exclude from conversion
         keep_original_weight: If False, delete original weights after
             quantization to save memory. Default True for compatibility.
@@ -498,6 +524,11 @@ def convert_bitlinear_to_lrc(
             weights via STE for joint training. Default False.
         qlrc_config: Optional QLRC config for quantized adapters.
             When enabled, U and V are stored as quantized linear layers.
+        fast_svd: Use randomized SVD (torch.svd_lowrank) for 10-100x speedup.
+            Only used when init_method="svd_residual". Default: True.
+        fast_svd_oversampling: Extra dimensions beyond target rank for accuracy.
+            q = rank + oversampling. Default: 10.
+        fast_svd_niter: Number of power iterations for convergence. Default: 2.
 
     Returns:
         Module with BitLinear layers replaced by BitLinearLRC
@@ -547,8 +578,13 @@ def convert_bitlinear_to_lrc(
             # Initialize LRC matrices (must be before compute_quantized_weights
             # if keep_original_weight=False, since SVD needs original weight)
             if init_method == "svd_residual":
-                print(f"      SVD init...", flush=True)
-                lrc_layer.init_lrc_from_svd(original_weight)
+                print(f"      SVD init (fast={fast_svd})...", flush=True)
+                lrc_layer.init_lrc_from_svd(
+                    original_weight,
+                    fast_svd=fast_svd,
+                    fast_svd_oversampling=fast_svd_oversampling,
+                    fast_svd_niter=fast_svd_niter,
+                )
                 print(f"      SVD done!", flush=True)
             elif init_method == "kaiming":
                 # LoRA-style: V=Kaiming, U=zeros. Fast and effective.
@@ -570,6 +606,9 @@ def convert_bitlinear_to_lrc(
                 keep_original_weight=keep_original_weight,
                 trainable_weight=trainable_weight,
                 qlrc_config=qlrc_config,
+                fast_svd=fast_svd,
+                fast_svd_oversampling=fast_svd_oversampling,
+                fast_svd_niter=fast_svd_niter,
             )
 
     return module

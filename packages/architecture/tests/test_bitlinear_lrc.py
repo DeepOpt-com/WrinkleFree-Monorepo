@@ -1257,3 +1257,179 @@ class TestEnableInputRequireGrads:
         # Gradients should flow through all frozen layers to LRC
         assert model.lrc.lrc_U.grad is not None
         assert model.lrc.lrc_V.grad is not None
+
+
+class TestFastSVD:
+    """Test fast SVD initialization using torch.svd_lowrank."""
+
+    def test_fast_svd_produces_valid_result(self):
+        """Test fast SVD produces non-zero U, V matrices."""
+        layer = BitLinearLRC(512, 256, rank=32)
+        original_weight = torch.randn(256, 512)
+
+        layer.init_lrc_from_svd(original_weight, fast_svd=True)
+
+        assert not torch.allclose(layer.lrc_U, torch.zeros_like(layer.lrc_U))
+        assert not torch.allclose(layer.lrc_V, torch.zeros_like(layer.lrc_V))
+
+    def test_fast_svd_vs_full_svd_quality(self):
+        """Test fast SVD quality is comparable to full SVD."""
+        torch.manual_seed(42)
+        original_weight = torch.randn(128, 256)
+
+        layer_fast = BitLinearLRC(256, 128, rank=16)
+        layer_full = BitLinearLRC(256, 128, rank=16)
+
+        # Copy weights to both
+        layer_fast.weight.data.copy_(original_weight)
+        layer_full.weight.data.copy_(original_weight)
+
+        layer_fast.init_lrc_from_svd(original_weight, fast_svd=True, fast_svd_oversampling=10)
+        layer_full.init_lrc_from_svd(original_weight, fast_svd=False)
+
+        # Compute residuals
+        w_quant = layer_fast.weight_quant(original_weight)
+        true_residual = original_weight - w_quant
+
+        lrc_fast = layer_fast.lrc_U @ layer_fast.lrc_V.t()
+        lrc_full = layer_full.lrc_U @ layer_full.lrc_V.t()
+
+        error_fast = (true_residual - lrc_fast).norm().item()
+        error_full = (true_residual - lrc_full).norm().item()
+
+        # Fast should be within 10% of full SVD quality
+        assert error_fast < error_full * 1.10, f"Fast SVD error {error_fast:.4f} > 1.1 * full SVD error {error_full:.4f}"
+
+    def test_fast_svd_default_is_true(self):
+        """Test that fast_svd defaults to True."""
+        layer = BitLinearLRC(64, 32, rank=8)
+        original_weight = torch.randn(32, 64)
+
+        # Should work without explicitly passing fast_svd (defaults to True)
+        layer.init_lrc_from_svd(original_weight)
+
+        assert not torch.allclose(layer.lrc_U, torch.zeros_like(layer.lrc_U))
+
+    def test_fast_svd_with_convert_function(self):
+        """Test fast SVD works through convert_bitlinear_to_lrc."""
+        linear = BitLinear(256, 128)
+        linear.weight.data.normal_()
+        model = nn.Sequential(linear)
+
+        # Convert with SVD init using fast SVD
+        model = convert_bitlinear_to_lrc(
+            model,
+            init_method="svd_residual",
+            fast_svd=True,
+        )
+        lrc_layer = model[0]
+
+        # LRC matrices should be non-zero
+        assert not torch.allclose(lrc_layer.lrc_U, torch.zeros_like(lrc_layer.lrc_U))
+        assert not torch.allclose(lrc_layer.lrc_V, torch.zeros_like(lrc_layer.lrc_V))
+
+    def test_fast_svd_oversampling_effect(self):
+        """Test that more oversampling can improve accuracy."""
+        torch.manual_seed(42)
+        original_weight = torch.randn(128, 256)
+
+        errors = []
+        for oversampling in [2, 5, 10, 20]:
+            layer = BitLinearLRC(256, 128, rank=16)
+            layer.weight.data.copy_(original_weight)
+            layer.init_lrc_from_svd(
+                original_weight,
+                fast_svd=True,
+                fast_svd_oversampling=oversampling,
+            )
+
+            w_quant = layer.weight_quant(original_weight)
+            residual = original_weight - w_quant
+            lrc_approx = layer.lrc_U @ layer.lrc_V.t()
+            error = (residual - lrc_approx).norm().item()
+            errors.append(error)
+
+        # More oversampling should generally give better (lower) error
+        # Allow some tolerance since it's randomized
+        assert errors[-1] <= errors[0] * 1.05, "More oversampling should not significantly increase error"
+
+    def test_fast_svd_niter_effect(self):
+        """Test that more power iterations can improve accuracy."""
+        torch.manual_seed(42)
+        original_weight = torch.randn(128, 256)
+
+        errors = []
+        for niter in [0, 1, 2, 4]:
+            layer = BitLinearLRC(256, 128, rank=16)
+            layer.weight.data.copy_(original_weight)
+            layer.init_lrc_from_svd(
+                original_weight,
+                fast_svd=True,
+                fast_svd_niter=niter,
+            )
+
+            w_quant = layer.weight_quant(original_weight)
+            residual = original_weight - w_quant
+            lrc_approx = layer.lrc_U @ layer.lrc_V.t()
+            error = (residual - lrc_approx).norm().item()
+            errors.append(error)
+
+        # More iterations should generally give better (lower) error
+        assert errors[-1] <= errors[0] * 1.05, "More iterations should not significantly increase error"
+
+    def test_fast_svd_produces_nonzero_gradients(self):
+        """Test that fast SVD init produces non-zero gradients."""
+        linear = BitLinear(64, 32)
+        linear.weight.data.normal_()
+        model = nn.Sequential(linear)
+
+        # Convert with fast SVD init
+        model = convert_bitlinear_to_lrc(model, init_method="svd_residual", fast_svd=True)
+        lrc_layer = model[0]
+
+        # Forward pass
+        x = torch.randn(2, 8, 64, requires_grad=True)
+        output = model(x)
+        loss = output.sum()
+
+        # Backward pass
+        loss.backward()
+
+        # Gradients should be non-zero
+        assert lrc_layer.lrc_U.grad is not None
+        assert lrc_layer.lrc_V.grad is not None
+        assert lrc_layer.lrc_U.grad.abs().sum() > 0, "U gradient is zero with fast SVD init!"
+        assert lrc_layer.lrc_V.grad.abs().sum() > 0, "V gradient is zero with fast SVD init!"
+
+    def test_fast_svd_small_rank(self):
+        """Test fast SVD works when rank is very small."""
+        layer = BitLinearLRC(256, 128, rank=2)
+        original_weight = torch.randn(128, 256)
+
+        # Should work without errors
+        layer.init_lrc_from_svd(original_weight, fast_svd=True)
+
+        assert layer.lrc_U.shape == (128, 2)
+        assert layer.lrc_V.shape == (256, 2)
+
+    def test_fast_svd_rank_larger_than_min_dim(self):
+        """Test fast SVD handles edge case when rank approaches matrix dimensions."""
+        layer = BitLinearLRC(32, 16, rank=14)  # rank close to min(32, 16)
+        original_weight = torch.randn(16, 32)
+
+        # Should work - q will be clamped to min(residual.shape)
+        layer.init_lrc_from_svd(original_weight, fast_svd=True, fast_svd_oversampling=10)
+
+        assert not torch.allclose(layer.lrc_U, torch.zeros_like(layer.lrc_U))
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    def test_fast_svd_on_cuda(self):
+        """Test fast SVD works on CUDA tensors."""
+        layer = BitLinearLRC(256, 128, rank=16).cuda()
+        original_weight = torch.randn(128, 256).cuda()
+
+        layer.init_lrc_from_svd(original_weight, fast_svd=True)
+
+        assert layer.lrc_U.device.type == "cuda"
+        assert layer.lrc_V.device.type == "cuda"
+        assert not torch.allclose(layer.lrc_U, torch.zeros_like(layer.lrc_U))
