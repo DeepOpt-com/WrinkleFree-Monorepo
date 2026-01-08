@@ -87,7 +87,7 @@ optimizer:
 # Scheduler: WSD
 scheduler:
   type: wsd
-  warmup_steps: 200
+  warmup_steps: 10
   decay_ratio: 0.2
   decay_type: linear
   min_lr_ratio: 0.0

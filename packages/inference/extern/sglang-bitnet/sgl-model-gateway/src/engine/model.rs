@@ -1,12 +1,8 @@
 //! BitNet transformer model for inference.
 //!
 //! Implements the forward pass using native ternary SIMD kernels.
-//! Optimized with rayon for parallel projections.
 
 use std::path::Path;
-use std::sync::Arc;
-
-use rayon::prelude::*;
 
 use crate::gguf::{GgufReader, GgufTensorInfo, GgmlQuantType, GgufError, repack_ternary_weights, NativeWeightFormat};
 use crate::kernels::ffi::BitNetKernel;
@@ -340,7 +336,7 @@ impl BitNetEngine {
         output
     }
 
-    /// Compute attention for a layer with parallel Q/K/V projections.
+    /// Compute attention for a layer.
     fn attention(
         &mut self,
         layer_idx: usize,
@@ -353,32 +349,23 @@ impl BitNetEngine {
         let head_dim = self.config.head_dim;
         let kv_dim = num_kv_heads * head_dim;
 
-        // Get references to all projection weights
-        let q_proj = &self.layers[layer_idx].q_proj;
-        let k_proj = &self.layers[layer_idx].k_proj;
-        let v_proj = &self.layers[layer_idx].v_proj;
+        // Quantize input ONCE for all Q/K/V projections (3x speedup on quantization)
+        let (quantized_hidden, hidden_scale) = self.kernel.quantize_activations(hidden);
 
-        // Parallel Q, K, V projections using rayon::join
-        let ((q, k), v) = rayon::join(
-            || rayon::join(
-                || self.linear_forward_ref(q_proj, hidden, seq_len),
-                || self.linear_forward_ref(k_proj, hidden, seq_len),
-            ),
-            || self.linear_forward_ref(v_proj, hidden, seq_len),
+        // Project Q, K, V using pre-quantized activations
+        let q = self.linear_forward_quantized(
+            &self.layers[layer_idx].q_proj, &quantized_hidden, hidden_scale, seq_len
+        );
+        let k = self.linear_forward_quantized(
+            &self.layers[layer_idx].k_proj, &quantized_hidden, hidden_scale, seq_len
+        );
+        let v = self.linear_forward_quantized(
+            &self.layers[layer_idx].v_proj, &quantized_hidden, hidden_scale, seq_len
         );
 
-        // Apply RoPE to Q and K (can be parallelized for long sequences)
-        let (q, k) = if seq_len > 32 {
-            rayon::join(
-                || self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim),
-                || self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim),
-            )
-        } else {
-            (
-                self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim),
-                self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim),
-            )
-        };
+        // Apply RoPE to Q and K
+        let q = self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim);
+        let k = self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim);
 
         // Update KV cache
         for i in 0..seq_len {
@@ -395,8 +382,7 @@ impl BitNetEngine {
         );
 
         // Output projection
-        let weights = &self.layers[layer_idx].o_proj;
-        self.linear_forward_ref(weights, &attn_out, seq_len)
+        self.linear_forward_ref(&self.layers[layer_idx].o_proj, &attn_out, seq_len)
     }
 
     /// Compute attention scores and weighted values.
@@ -462,33 +448,25 @@ impl BitNetEngine {
         output
     }
 
-    /// FFN forward pass with parallel gate/up projections.
+    /// FFN forward pass.
     fn ffn(&self, layer_idx: usize, hidden: &[f32], seq_len: usize) -> Vec<f32> {
-        let gate_proj = &self.layers[layer_idx].gate_proj;
-        let up_proj = &self.layers[layer_idx].up_proj;
+        // Quantize input ONCE for gate and up projections (2x speedup on quantization)
+        let (quantized_hidden, hidden_scale) = self.kernel.quantize_activations(hidden);
 
-        // Parallel gate and up projections using rayon
-        let (gate, up) = rayon::join(
-            || self.linear_forward_ref(gate_proj, hidden, seq_len),
-            || self.linear_forward_ref(up_proj, hidden, seq_len),
+        // Gate and up projections using pre-quantized activations
+        let gate = self.linear_forward_quantized(
+            &self.layers[layer_idx].gate_proj, &quantized_hidden, hidden_scale, seq_len
+        );
+        let up = self.linear_forward_quantized(
+            &self.layers[layer_idx].up_proj, &quantized_hidden, hidden_scale, seq_len
         );
 
-        // Apply SiLU to gate and multiply with up (parallelized for large vectors)
-        let intermediate: Vec<f32> = if gate.len() > 4096 {
-            gate.par_iter()
-                .zip(up.par_iter())
-                .map(|(&g, &u)| {
-                    let silu_g = g / (1.0 + (-g).exp());
-                    silu_g * u
-                })
-                .collect()
-        } else {
-            let mut gate = gate;
-            silu_inplace(&mut gate);
-            gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect()
-        };
+        // Apply SiLU to gate and multiply with up
+        let mut gate = gate;
+        silu_inplace(&mut gate);
+        let intermediate: Vec<f32> = gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
 
-        // Down projection
+        // Down projection (new input, must quantize fresh)
         self.linear_forward_ref(&self.layers[layer_idx].down_proj, &intermediate, seq_len)
     }
 
@@ -536,6 +514,37 @@ impl BitNetEngine {
             in_features,
             &weights.data,
             &quantized_input,
+            weights.scale * input_scale,
+        )
+    }
+
+    /// Apply linear projection with pre-quantized activations.
+    ///
+    /// Use this when the same input is used for multiple projections
+    /// (e.g., Q/K/V in attention, gate/up in FFN) to avoid redundant quantization.
+    #[inline]
+    fn linear_forward_quantized(
+        &self,
+        weights: &NativeWeightFormat,
+        quantized_input: &[i8],
+        input_scale: f32,
+        seq_len: usize,
+    ) -> Vec<f32> {
+        let in_features = weights.in_features;
+        let out_features = weights.out_features;
+
+        debug_assert_eq!(
+            quantized_input.len(),
+            seq_len * in_features,
+            "Quantized input size mismatch"
+        );
+
+        self.kernel.gemm(
+            out_features,
+            seq_len,
+            in_features,
+            &weights.data,
+            quantized_input,
             weights.scale * input_scale,
         )
     }

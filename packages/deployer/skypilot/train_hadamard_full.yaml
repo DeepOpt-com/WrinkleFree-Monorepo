@@ -61,8 +61,8 @@ setup: |
     export PATH="$HOME/google-cloud-sdk/bin:$PATH"
   fi
 
-  # Authenticate gcloud with service account
-  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  # Authenticate gcloud with OAuth credentials (not service account)
+  gcloud auth login --cred-file=/tmp/gcp-creds.json --quiet
   gcloud config set project wrinklefree-481904
 
   uv sync --all-packages
@@ -104,12 +104,13 @@ run: |
   echo "  - CE + DLM objectives"
   echo "  - Full quantization from step 0 (no lambda warmup)"
   echo "  - LR: 1e-4 (AdamW)"
-  echo "  - Batch: 16 x 32 grad_accum = 512 effective"
+  echo "  - Batch: 2 x 256 grad_accum = 512 effective"
   echo "  - 10B tokens total"
   echo "  - GCS uploads enabled"
   echo "=============================================="
 
   # Full training with Hadamard enabled
+  # NOTE: Qwen3-0.6B needs batch_size=2 due to Hadamard overhead
   uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
     training=base \
@@ -117,14 +118,14 @@ run: |
     training.auto_convert.insert_subln=true \
     training.total_tokens=10_000_000_000 \
     training.max_steps=null \
-    training.batch_size=16 \
-    training.gradient_accumulation_steps=32 \
+    training.batch_size=2 \
+    training.gradient_accumulation_steps=256 \
     training.max_seq_length=2048 \
     training.logging.log_interval=10 \
     training.auto_batch_size=false \
-    training.torch_compile.enabled=true \
+    training.torch_compile.enabled=false \
     training.optimizer.type=adamw \
-    training.optimizer.learning_rate=1e-4 \
+    +training.optimizer.learning_rate=1e-4 \
     training.lambda_warmup.enabled=false \
     training.meta_optimization.enabled=false \
     training.checkpoint.save_interval=500 \
