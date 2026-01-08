@@ -354,6 +354,27 @@ class ObjectiveManager(nn.Module):
         if self.curriculum is not None:
             self.curriculum.step()
 
+    def get_current_data_config(self) -> Optional[str]:
+        """Get current data config from curriculum scheduler.
+
+        Returns:
+            Current data config name, or None if no curriculum or no data_config set.
+        """
+        if self.curriculum is not None:
+            return self.curriculum.get_data_config()
+        return None
+
+    def get_current_phase_name(self) -> Optional[str]:
+        """Get current curriculum phase name.
+
+        Returns:
+            Current phase name, or None if no curriculum.
+        """
+        if self.curriculum is not None:
+            phase = self.curriculum.get_current_phase()
+            return phase.name if phase else None
+        return None
+
     def get_wandb_metrics(self, output: ManagerOutput, prefix: str = "train") -> dict[str, float]:
         """Generate wandb-compatible metrics dictionary.
 

@@ -241,14 +241,15 @@ class BitLinearLRC(BitLinear):
             self.bias.requires_grad = False
 
         # Initialize LRC matrices - either quantized (bitsandbytes) or full precision
+        # CRITICAL: Use same dtype as weight for FSDP compatibility (uniform dtypes required)
         if self._use_quantized_lrc:
             self._init_quantized_lrc()
         else:
-            # Trainable low-rank correction matrices (full precision)
+            # Trainable low-rank correction matrices (same dtype as weight for FSDP)
             # U @ V^T has shape (out_features, in_features)
             # U: (out_features, rank), V: (in_features, rank)
-            self.lrc_U = nn.Parameter(torch.zeros(out_features, rank))
-            self.lrc_V = nn.Parameter(torch.zeros(in_features, rank))
+            self.lrc_U = nn.Parameter(torch.zeros(out_features, rank, dtype=self.weight.dtype, device=self.weight.device))
+            self.lrc_V = nn.Parameter(torch.zeros(in_features, rank, dtype=self.weight.dtype, device=self.weight.device))
 
         # Pre-computed quantized weights (frozen, saves recomputation each forward)
         self.weight_quantized = nn.Parameter(
@@ -532,6 +533,16 @@ def convert_bitlinear_to_lrc(
             lrc_layer.weight.data = child.weight.data.clone()
             if child.bias is not None:
                 lrc_layer.bias.data = child.bias.data.clone()
+
+            # CRITICAL: Convert all parameters to same dtype as weights for FSDP compatibility
+            # FSDP requires uniform dtypes across all parameters
+            target_dtype = child.weight.dtype
+            target_device = child.weight.device
+            if not lrc_layer._use_quantized_lrc:
+                lrc_layer.lrc_U.data = lrc_layer.lrc_U.data.to(dtype=target_dtype, device=target_device)
+                lrc_layer.lrc_V.data = lrc_layer.lrc_V.data.to(dtype=target_dtype, device=target_device)
+            # Also convert weight_quantized
+            lrc_layer.weight_quantized.data = lrc_layer.weight_quantized.data.to(dtype=target_dtype, device=target_device)
 
             # Initialize LRC matrices (must be before compute_quantized_weights
             # if keep_original_weight=False, since SVD needs original weight)

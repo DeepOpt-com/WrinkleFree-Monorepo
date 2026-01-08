@@ -106,6 +106,7 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=base
 The `ObjectiveManager` runs multiple objectives on the same batch:
 - `continue_pretrain`: Standard next-token prediction loss
 - `dlm`: Diffusion Language Model masking loss
+- `sft`: Supervised fine-tuning (instruction-masked CE loss)
 
 When DLM is enabled, the batch is preprocessed:
 1. Original labels stored in `batch["_original_labels"]`
@@ -338,6 +339,57 @@ objectives:
       loss_type: mse
       layer_weights: progressive
 ```
+
+### SFT (Supervised Fine-Tuning)
+
+Add instruction-following capabilities via SFT training on the nvidia/Llama-Nemotron-Post-Training-Dataset.
+Uses Qwen chat template formatting with instruction token masking.
+
+```bash
+# Standalone SFT training
+uv run python scripts/train_lightning.py model=qwen3_4b training=sft_run
+
+# Pretrain-then-SFT curriculum (90% pretrain, 10% SFT)
+uv run python scripts/train_lightning.py model=qwen3_4b training=pretrain_then_sft
+
+# Key features:
+# - Uses nvidia/Llama-Nemotron-Post-Training-Dataset (~3.9M examples)
+# - Applies Qwen chat template to format conversations
+# - Instruction tokens (system + user) masked with -100
+# - Only assistant responses contribute to loss
+```
+
+**How SFT Works**:
+- Data is loaded from HuggingFace with `input` (conversation turns) and `output` (assistant response)
+- Tokenizer's `apply_chat_template()` formats conversations in Qwen style
+- Labels are created with -100 for instruction portions, valid token IDs for responses
+- Cross-entropy loss is computed only on assistant response tokens
+
+**Curriculum Integration**:
+SFT can be added as a phase in the curriculum schedule:
+
+```yaml
+curriculum:
+  phases:
+    - name: pretrain
+      end_ratio: 0.9
+      data_config: fineweb
+      objectives: {continue_pretrain: 1.0, dlm: 1.0}
+    - name: sft
+      end_ratio: 1.0
+      data_config: sft_nemotron
+      objectives: {sft: 1.0}
+```
+
+**Available Configs**:
+| Config | Purpose |
+|--------|---------|
+| `sft_run` | Standalone SFT training |
+| `pretrain_then_sft` | 90% pretrain + 10% SFT curriculum |
+
+**Data Config** (`sft_nemotron.yaml`):
+The SFT data config loads from nvidia/Llama-Nemotron-Post-Training-Dataset with 5 splits:
+code, math, science, chat, safety (~3.9M total examples). License: CC-BY-4.0.
 
 ### Legacy Stages (Still Supported)
 

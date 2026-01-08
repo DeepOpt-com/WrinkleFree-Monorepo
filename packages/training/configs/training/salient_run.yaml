@@ -1,0 +1,196 @@
+# Salient Column Training: AWQ-style activation-aware quantization
+#
+# Uses BitLinearSalient layers which keep ~1% of columns in FP16
+# based on AWQ-style saliency scoring: activation_magnitude * weight_magnitude
+#
+# Based on:
+# - AWQ: https://arxiv.org/abs/2306.00978 (Activation-aware Weight Quantization)
+# - SqueezeLLM: https://arxiv.org/abs/2306.07629 (Dense-and-Sparse Quantization)
+# - SpQR: https://arxiv.org/abs/2306.03078 (Sparse-Quantized Representation)
+#
+# Key features:
+# - ~1% of columns kept in FP16 (most important for output quality)
+# - Simpler than LRC (no U, V matrices to train)
+# - Requires calibration step to identify salient columns
+# - End-to-end trainable (both FP16 and ternary weights updated)
+# - Final 10% is SFT on Nemotron dataset (instruction-following)
+#
+# Training schedule:
+# - 0-25%: Warmup on FineWeb
+# - 25-90%: Main training on mixed_pretrain (CE + DLM)
+# - 90-100%: SFT on nvidia/Llama-Nemotron-Post-Training-Dataset
+#
+# Usage:
+#   uv run python scripts/train_lightning.py \
+#     model=qwen3_0.6b training=salient_run
+
+stage: salient_run
+
+# Salient Column Configuration
+salient:
+  enabled: true
+  # Fraction of columns to keep in FP16 (1% based on AWQ/SpQR research)
+  ratio: 0.01
+  # Number of calibration samples for saliency detection
+  calibration_samples: 128
+  # Dataset for calibration (should match training distribution)
+  calibration_data: fineweb
+
+# Auto-convert to BitNet first (will then convert to BitLinearSalient)
+auto_convert:
+  enabled: true
+  exclude_layers:
+    - embed_tokens
+    - lm_head
+    - embed_positions
+
+# torch.compile for training speedup
+torch_compile:
+  enabled: true
+  mode: default
+  fullgraph: false
+
+# Sequence packing
+packing:
+  enabled: true
+
+# Optimizer: MuonClip
+# Salient columns get full precision gradients (more signal)
+# Ternary columns get STE gradients
+optimizer:
+  type: muonclip
+  lr_muon: 0.02
+  lr_adam: 2e-4
+  weight_decay: 0.01
+  momentum: 0.95
+  enable_clipping: true
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
+
+# Scheduler: WSD
+scheduler:
+  type: wsd
+  warmup_steps: 500
+  decay_ratio: 0.2
+  decay_type: linear
+  min_lr_ratio: 0.0
+
+# Training parameters
+total_tokens: 1_000_000_000
+max_steps: null
+max_seq_length: 1024
+batch_size: 16
+gradient_accumulation_steps: 32
+gradient_clipping: 1.0
+auto_batch_size: false
+
+# Lambda warmup (enabled for gradual quantization transition)
+# At lambda=0, all columns are FP16; at lambda=1, only salient columns are FP16
+lambda_warmup:
+  enabled: true
+  warmup_steps: 1000
+  schedule: linear
+
+# Resume configuration
+resume:
+  checkpoint_path: null
+  load_optimizer_state: true
+  load_scheduler_state: true
+  load_training_state: true
+  strict_model_load: true
+
+# === OBJECTIVES ===
+# Standard CE + DLM training, with SFT for final phase
+objectives:
+  continue_pretrain:
+    enabled: true
+    weight: 0.5
+    ignore_index: -100
+    label_smoothing: 0.0
+
+  dlm:
+    enabled: true
+    weight: 0.5
+    mask_prob: 0.5
+    mask_token_id: 151643
+    use_complementary_masks: true
+
+  sft:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+  distill:
+    enabled: false
+
+# Curriculum: 25% fineweb warmup -> 65% mixed_pretrain -> 10% SFT
+# Final SFT phase uses Nemotron dataset with Qwen chat template
+curriculum:
+  enabled: true
+  interpolation: step
+  phases:
+    - name: warmup
+      end_ratio: 0.25
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 0.5
+        dlm: 0.5
+        sft: 0.0
+    - name: main
+      end_ratio: 0.90
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 0.5
+        dlm: 0.5
+        sft: 0.0
+    - name: sft
+      end_ratio: 1.0
+      data_config: sft_nemotron
+      objectives:
+        continue_pretrain: 0.0
+        dlm: 0.0
+        sft: 1.0
+
+# Checkpointing
+checkpoint:
+  save_interval: 200
+  keep_last_n: 5
+  save_optimizer: true
+
+# Logging
+logging:
+  log_interval: 2
+  wandb:
+    enabled: true
+    project: wrinklefree_v2
+    entity: null
+    name: null
+    tags: [salient, bitnet, awq-style, sft, nemotron]
+
+# Validation
+validation:
+  enabled: true
+  config_name: c4_validation
+  val_check_interval: 500
+  limit_val_batches: 50
+  batch_size: 8
+
+# Memory optimization
+memory:
+  gradient_checkpointing: true
+  clear_cache_interval: 100
+
+# Meta-optimization
+meta_optimization:
+  enabled: true
+  ldc_mtl:
+    enabled: true
+    lambda_penalty: 0.1
+    hidden_dim: 32
+    router_lr: 0.001
+  odm:
+    enabled: false
+  layer_lr:
+    enabled: false
+  log_interval: 100

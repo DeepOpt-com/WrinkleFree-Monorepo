@@ -60,12 +60,16 @@ from wf_arch import convert_model_to_bitnet, auto_convert_if_needed
 | `BitLinear` | Linear layer with ternary weights, 8-bit activation quant |
 | `BitLinearNoActivationQuant` | BitLinear without activation quantization |
 | `BitLinearLRC` | BitLinear with trainable low-rank correction (U, V matrices) |
+| `BitLinearSalient` | BitLinear with FP16 salient columns (AWQ-style) |
 | `SubLN` | Sub-layer RMSNorm for training stability |
 | `RMSNorm` | Root Mean Square Layer Normalization |
 | `convert_linear_to_bitlinear` | Replace nn.Linear with BitLinear |
 | `convert_bitlinear_to_lrc` | Replace BitLinear with BitLinearLRC (adds U, V, freezes weights) |
+| `convert_bitlinear_to_salient` | Replace BitLinear with BitLinearSalient (after calibration) |
 | `freeze_model_except_lrc` | Freeze all params except LRC matrices |
 | `get_lrc_stats` | Get statistics about LRC layers in a model |
+| `get_salient_stats` | Get statistics about salient layers in a model |
+| `calibrate_salient_columns` | Calibrate salient columns using activation statistics |
 
 ### Quantization (`wf_arch.quantization`)
 
@@ -94,6 +98,8 @@ src/wf_arch/
 │   ├── __init__.py
 │   ├── bitlinear.py         # BitLinear implementation
 │   ├── bitlinear_lrc.py     # BitLinearLRC with low-rank correction
+│   ├── bitlinear_salient.py # BitLinearSalient with FP16 salient columns
+│   ├── salient_calibration.py # AWQ-style calibration utilities
 │   └── subln.py             # SubLN/RMSNorm
 ├── quantization/
 │   ├── __init__.py
@@ -230,6 +236,62 @@ model = convert_bitlinear_to_lrc(
 - Models will be deployed with quantized adapters
 - Research into quantization-aware fine-tuning
 
+### BitLinearSalient (AWQ-style Salient Columns)
+
+Based on [AWQ: Activation-aware Weight Quantization](https://arxiv.org/abs/2306.00978).
+
+Alternative to LRC for recovering quantization error. Instead of low-rank correction matrices,
+keeps ~1% of weight columns in FP16 based on activation-aware saliency scoring.
+
+```python
+from wf_arch import (
+    BitLinearSalient,
+    SalientCalibrator,
+    calibrate_salient_columns,
+    convert_bitlinear_to_salient,
+    get_salient_stats,
+)
+
+# 1. Calibrate salient columns using activation statistics
+saliency_scores, salient_indices = calibrate_salient_columns(
+    model,
+    calibration_dataloader,
+    salient_ratio=0.01,  # 1% of columns in FP16
+    num_samples=128,
+)
+
+# 2. Convert BitLinear -> BitLinearSalient with calibrated indices
+model = convert_bitlinear_to_salient(
+    model,
+    salient_ratio=0.01,
+    salient_indices=salient_indices,
+)
+
+# 3. Check statistics
+stats = get_salient_stats(model)
+print(f"Salient layers: {stats['num_salient_layers']}")
+print(f"Total salient columns: {stats['total_salient_columns']}")
+```
+
+**How it works:**
+1. **Calibration**: Collect activation magnitudes from calibration data
+2. **Scoring**: `saliency[col] = mean(|activation[:, col]|) * ||weight[:, col]||_2`
+3. **Selection**: Top 1% columns marked as "salient"
+4. **Forward**: Salient columns use FP16, rest use ternary quantization
+
+**Salient Columns vs LRC:**
+| Aspect | Salient Columns | LRC |
+|--------|-----------------|-----|
+| Extra params | None | U, V matrices (10% rank) |
+| Accuracy recovery | ~1% FP16 weights | Low-rank correction |
+| Calibration | Required (128 samples) | Optional (SVD init) |
+| Complexity | Simple | More complex |
+
+**When to use Salient Columns:**
+- Simpler alternative to LRC with no extra parameters
+- When calibration data is available
+- Production inference (no adapter overhead)
+
 ## Notes
 
 - This is a **pure library** - no CLI or scripts
@@ -244,3 +306,6 @@ model = convert_bitlinear_to_lrc(
 - [BitNet Paper](https://arxiv.org/abs/2310.11453) - Ternary weight quantization
 - [LRC Paper](https://arxiv.org/abs/2412.07902) - Low-Rank Correction for quantized LLMs
 - [QA-LoRA Paper](https://arxiv.org/abs/2309.14717) - Quantization-Aware LoRA with STE (ICLR 2024)
+- [AWQ Paper](https://arxiv.org/abs/2306.00978) - Activation-aware Weight Quantization (salient columns)
+- [SqueezeLLM Paper](https://arxiv.org/abs/2306.07629) - Dense-and-Sparse Quantization
+- [SpQR Paper](https://arxiv.org/abs/2306.03078) - Sparse-Quantized Representation

@@ -102,9 +102,29 @@ objectives:
     layer_weights: progressive
     normalize: true
 
+  # SFT objective for instruction-following (used with sft_nemotron data config)
+  # Uses nvidia/Llama-Nemotron-Post-Training-Dataset with Qwen chat template
+  sft:
+    enabled: false  # Enable for SFT phase
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
 # === CURRICULUM SCHEDULE ===
 # Phase-based training with objective weight transitions
 # DLM enabled from the start (no warmup phase)
+#
+# To add an SFT phase at the end of training, use a multi-phase curriculum:
+#   phases:
+#     - name: pretrain
+#       end_ratio: 0.9
+#       data_config: fineweb
+#       objectives: {continue_pretrain: 1.0, dlm: 1.0}
+#     - name: sft
+#       end_ratio: 1.0
+#       data_config: sft_nemotron
+#       objectives: {sft: 1.0}
+#
 curriculum:
   enabled: true
   interpolation: step  # "step" (immediate jump), "linear", or "cosine"

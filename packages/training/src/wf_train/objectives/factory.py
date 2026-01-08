@@ -14,6 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 from wf_train.objectives.base import Objective
 from wf_train.objectives.continue_pretrain import ContinuePretrainObjective
 from wf_train.objectives.dlm import DLMObjective
+from wf_train.objectives.sft import SFTObjective
 from wf_train.objectives.distill import (
     DistillObjective,
     HiddenConfig,
@@ -51,6 +52,11 @@ def create_objective(name: str, config: dict[str, Any]) -> Objective:
             mask_prob=config.get("mask_prob", 0.15),
             ignore_index=config.get("ignore_index", -100),
             use_complementary_masks=config.get("use_complementary_masks", True),
+        )
+    elif name == "sft":
+        return SFTObjective(
+            ignore_index=config.get("ignore_index", -100),
+            label_smoothing=config.get("label_smoothing", 0.0),
         )
     elif name == "distill":
         return _create_distill_objective(config)

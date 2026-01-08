@@ -22,18 +22,24 @@ stage: lrc_dlm_run
 lrc:
   enabled: true
   # Rank as percentage of min(in_features, out_features)
+  # CURRENT: try 5% rank with full fine-tuning of the base model as well
   # 15% provides good error recovery while fitting in H100 memory
   # (25% caused OOM with batch_size=32, 161M trainable params)
-  rank_percentage: 0.15
+  rank_percentage: 0.05
   # Initialization options:
-  # - "kaiming": LoRA-style (V=Kaiming, U=zeros). Fast, good gradients. (recommended)
-  # - "svd_residual": SVD of quantization error. Slow but best quality.
+  # - "kaiming": LoRA-style (V=Kaiming, U=zeros). Fast, good gradients.
+  # - "svd_residual": SVD of quantization error. Best quality, now fast with randomized SVD. (recommended)
   # - "zeros": Both U,V=zeros. DON'T USE - causes zero gradients!
-  init_method: kaiming
+  init_method: svd_residual
   # Freeze base model - only U, V matrices trainable
-  trainable_weight: false
+  trainable_weight: true
   # Delete original weights to save memory (kaiming init doesn't need them)
-  keep_original_weight: false
+  keep_original_weight: true
+  # Fast SVD options (only used when init_method=svd_residual)
+  # Uses torch.svd_lowrank (Halko et al. 2009) for 10-100x speedup over full SVD
+  fast_svd: true             # Use randomized SVD instead of full SVD
+  fast_svd_oversampling: 10  # Extra dimensions for accuracy (q = rank + this)
+  fast_svd_niter: 2          # Power iterations for convergence
   # QLRC: QA-LoRA style quantized adapters with STE (trainable!)
   # Uses Straight-Through Estimator for gradient flow through quantized adapters.
   # Based on QA-LoRA: https://arxiv.org/abs/2309.14717 (ICLR 2024)
@@ -145,9 +151,23 @@ objectives:
   distill:
     enabled: false
 
-# No curriculum (fixed CE+DLM weights)
+# Curriculum: 25% fineweb warmup → 75% mixed_pretrain
 curriculum:
-  enabled: false
+  enabled: true
+  interpolation: step
+  phases:
+    - name: warmup
+      end_ratio: 0.25
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 0.5
+        dlm: 0.5
+    - name: main
+      end_ratio: 1.0
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 0.5
+        dlm: 0.5
 
 # Teacher model configuration (for LRC layer matching if needed)
 teacher:
@@ -201,14 +221,14 @@ meta_optimization:
   enabled: true
 
   ldc_mtl:
-    enabled: true  # Disabled - investigate instability with LRC
+    enabled: true              # Adaptive objective weighting (CE vs DLM)
     lambda_penalty: 0.1        # Discrepancy penalty (encourages balanced losses)
     hidden_dim: 32             # Router MLP hidden size
     router_lr: 0.001           # Router learning rate
     step_interval: 1           # Update router every step
 
   odm:
-    enabled: false             # Single dataset, not needed
+    enabled: true              # Adaptive dataset weighting for mixed_pretrain
 
   layer_lr:
     enabled: false             # Not using per-layer LR for LRC

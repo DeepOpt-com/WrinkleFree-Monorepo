@@ -6,6 +6,7 @@ combined additively with configurable weights.
 Objectives:
 - ContinuePretrainObjective: Cross-entropy language modeling
 - DLMObjective: Block-wise masked language modeling for Fast-dLLM
+- SFTObjective: Supervised fine-tuning (instruction-masked CE loss)
 - DistillObjective: Unified distillation (hidden, logits, attention, LRC)
 
 Manager:
@@ -16,6 +17,7 @@ Manager:
 from wf_train.objectives.base import Objective, ObjectiveOutput
 from wf_train.objectives.continue_pretrain import ContinuePretrainObjective
 from wf_train.objectives.dlm import DLMObjective
+from wf_train.objectives.sft import SFTObjective
 from wf_train.objectives.distill import (
     DistillObjective,
     HiddenConfig,
@@ -36,6 +38,7 @@ __all__ = [
     # Objectives
     "ContinuePretrainObjective",
     "DLMObjective",
+    "SFTObjective",
     "DistillObjective",
     # Distill configs
     "HiddenConfig",
