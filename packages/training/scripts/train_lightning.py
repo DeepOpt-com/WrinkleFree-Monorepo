@@ -391,6 +391,72 @@ def load_model_and_tokenizer(cfg: DictConfig, device: str = "cuda"):
             logger.error(f"LRC requires wf_arch package: {e}")
             raise
 
+    # Handle Salient Columns (AWQ-style) if enabled in config
+    # This is an alternative to LRC - keeps ~1% of columns in FP16
+    salient_cfg = cfg.training.get("salient", {})
+    salient_enabled = salient_cfg.get("enabled", False)
+    print(f"[DEBUG] Salient check: enabled={salient_enabled}", flush=True)
+    if salient_enabled:
+        try:
+            from wf_arch import (
+                calibrate_salient_columns,
+                convert_bitlinear_to_salient,
+                get_salient_stats,
+            )
+            from wf_data import get_dataloader
+
+            salient_ratio = salient_cfg.get("ratio", 0.01)
+            calibration_samples = salient_cfg.get("calibration_samples", 128)
+            calibration_data = salient_cfg.get("calibration_data", "fineweb")
+
+            print(
+                f"[DEBUG] Salient: Calibrating with {calibration_samples} samples "
+                f"from {calibration_data} (ratio={salient_ratio*100:.1f}%)",
+                flush=True,
+            )
+
+            # Get calibration dataloader
+            calib_dataloader = get_dataloader(
+                config_name=calibration_data,
+                tokenizer=tokenizer,
+                batch_size=4,
+                max_length=cfg.training.max_seq_length,
+                split="train",
+            )
+
+            # Run calibration to get salient column indices
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            saliency_scores, salient_indices = calibrate_salient_columns(
+                model,
+                calib_dataloader,
+                salient_ratio=salient_ratio,
+                num_samples=calibration_samples,
+                device=device,
+            )
+            print(f"[DEBUG] Salient calibration done!", flush=True)
+
+            # Convert BitLinear -> BitLinearSalient with calibrated indices
+            model = convert_bitlinear_to_salient(
+                model,
+                salient_ratio=salient_ratio,
+                salient_indices=salient_indices,
+                saliency_scores=saliency_scores,
+            )
+            print(f"[DEBUG] Salient conversion done!", flush=True)
+
+            # Log salient statistics
+            salient_stats = get_salient_stats(model)
+            logger.info(
+                f"Salient: {salient_stats['num_salient_layers']} layers, "
+                f"{salient_stats['total_salient_columns']} salient columns "
+                f"({salient_stats['num_calibrated_layers']} calibrated), "
+                f"avg ratio={salient_stats['average_salient_ratio']*100:.2f}%"
+            )
+
+        except ImportError as e:
+            logger.error(f"Salient requires wf_arch and wf_data packages: {e}")
+            raise
+
     # Log model memory usage before gradient checkpointing - use print() for reliable output
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -786,8 +852,17 @@ def create_trainer(cfg: DictConfig, callbacks: list, max_steps: int) -> pl.Train
     else:
         strategy = "auto"
 
-    # Logger
-    wandb_logger = None
+    # Loggers - always CSV for local metrics, optionally WandB
+    loggers = []
+
+    # CSV logger for local metrics (easy to parse)
+    csv_logger = CSVLogger(
+        save_dir=cfg.output_dir,
+        name="metrics",
+    )
+    loggers.append(csv_logger)
+
+    # WandB logger (optional)
     if cfg.training.logging.wandb.get("enabled", False):
         # Generate unique run ID to avoid conflicts
         import uuid
@@ -798,6 +873,7 @@ def create_trainer(cfg: DictConfig, callbacks: list, max_steps: int) -> pl.Train
             save_dir=cfg.output_dir,
             id=run_id,  # Unique ID ensures fresh run
         )
+        loggers.append(wandb_logger)
 
     # Handle gradient_clipping as either float or dict
     grad_clip_cfg = cfg.training.get("gradient_clipping", 1.0)
@@ -820,7 +896,7 @@ def create_trainer(cfg: DictConfig, callbacks: list, max_steps: int) -> pl.Train
         strategy=strategy,
         devices="auto",
         callbacks=callbacks,
-        logger=wandb_logger,
+        logger=loggers,
         log_every_n_steps=cfg.training.logging.get("log_interval", 10),
         # Validation settings (C4 perplexity every N steps)
         val_check_interval=val_cfg.get("val_check_interval", 500) if val_enabled else None,
@@ -839,7 +915,7 @@ def main(cfg: DictConfig) -> None:
     """Main training function."""
     # Get rank for distributed
     rank = int(os.environ.get("RANK", 0))
-    setup_logging(rank)
+    setup_logging(rank=rank, output_dir=Path(cfg.output_dir))
 
     # Enable TF32 for Ampere+ GPUs (A100, H100, RTX 30xx/40xx)
     # TF32 accelerates bf16 matmul by using reduced-precision accumulation internally.

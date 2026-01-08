@@ -1,6 +1,7 @@
 """WrinkleFree Lightning DataModule.
 
 Wraps the existing dataloader creation from wf_data package.
+Supports both pretraining (text) and SFT (chat) data configs.
 """
 
 import logging
@@ -11,6 +12,9 @@ from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizer
 
 logger = logging.getLogger(__name__)
+
+# SFT data configs that require chat template formatting
+SFT_DATA_CONFIGS = {"sft_nemotron"}
 
 
 class WrinkleFreeDataModule(pl.LightningDataModule):
@@ -71,24 +75,17 @@ class WrinkleFreeDataModule(pl.LightningDataModule):
 
     def setup(self, stage: Optional[str] = None):
         """Create dataloaders."""
-        from wf_train.data import create_pretraining_dataloader
-
         if stage == "fit" or stage is None:
             logger.info(
                 f"Creating train dataloader: config={self.config_name}, "
                 f"batch_size={self.batch_size}, max_length={self.max_length}"
             )
 
-            train_dl, mixed_dataset, probe_loaders = create_pretraining_dataloader(
-                tokenizer=self.tokenizer,
-                batch_size=self.batch_size,
-                max_length=self.max_length,
-                config_name=self.config_name,
-                with_probes=self.with_probes,
-                world_size=self.world_size,
-                rank=self.rank,
-                packed=self.packed,
-            )
+            # Check if this is an SFT config
+            if self.config_name in SFT_DATA_CONFIGS:
+                train_dl, mixed_dataset, probe_loaders = self._create_sft_dataloader()
+            else:
+                train_dl, mixed_dataset, probe_loaders = self._create_pretrain_dataloader()
 
             self.train_dataloader_instance = train_dl
             self.mixed_dataset = mixed_dataset
@@ -97,17 +94,89 @@ class WrinkleFreeDataModule(pl.LightningDataModule):
             # Create validation dataloader if config specified
             if self.val_config_name:
                 logger.info(f"Creating val dataloader: config={self.val_config_name}")
-                val_dl, _, _ = create_pretraining_dataloader(
-                    tokenizer=self.tokenizer,
-                    batch_size=self.val_batch_size,
-                    max_length=self.max_length,
-                    config_name=self.val_config_name,
-                    with_probes=False,
-                    world_size=self.world_size,
-                    rank=self.rank,
-                    packed=self.packed,
-                )
+                if self.val_config_name in SFT_DATA_CONFIGS:
+                    val_dl, _, _ = self._create_sft_dataloader(
+                        config_name=self.val_config_name,
+                        batch_size=self.val_batch_size,
+                    )
+                else:
+                    from wf_train.data import create_pretraining_dataloader
+
+                    val_dl, _, _ = create_pretraining_dataloader(
+                        tokenizer=self.tokenizer,
+                        batch_size=self.val_batch_size,
+                        max_length=self.max_length,
+                        config_name=self.val_config_name,
+                        with_probes=False,
+                        world_size=self.world_size,
+                        rank=self.rank,
+                        packed=self.packed,
+                    )
                 self.val_dataloader_instance = val_dl
+
+    def _create_pretrain_dataloader(
+        self,
+        config_name: Optional[str] = None,
+        batch_size: Optional[int] = None,
+    ) -> tuple[DataLoader, Any, Optional[dict]]:
+        """Create pretraining dataloader for text data."""
+        from wf_train.data import create_pretraining_dataloader
+
+        return create_pretraining_dataloader(
+            tokenizer=self.tokenizer,
+            batch_size=batch_size or self.batch_size,
+            max_length=self.max_length,
+            config_name=config_name or self.config_name,
+            with_probes=self.with_probes,
+            world_size=self.world_size,
+            rank=self.rank,
+            packed=self.packed,
+        )
+
+    def _create_sft_dataloader(
+        self,
+        config_name: Optional[str] = None,
+        batch_size: Optional[int] = None,
+    ) -> tuple[DataLoader, None, None]:
+        """Create SFT dataloader with chat template formatting.
+
+        Uses nvidia/Llama-Nemotron-Post-Training-Dataset with Qwen chat template.
+        Labels are masked so only assistant responses contribute to loss.
+        """
+        from wf_data.data import load_data_config, create_sft_dataloader, SFTConfig
+
+        config_name = config_name or self.config_name
+        config = load_data_config(config_name)
+        sft_config = config.get("sft", {})
+
+        logger.info(
+            f"Creating SFT dataloader: path={sft_config.get('path')}, "
+            f"subset={sft_config.get('subset')}"
+        )
+
+        sft_cfg = SFTConfig(
+            path=sft_config.get("path", "nvidia/Llama-Nemotron-Post-Training-Dataset"),
+            subset=sft_config.get("subset", "SFT"),
+            split=sft_config.get("split", "train"),
+            input_column=sft_config.get("input_column", "input"),
+            output_column=sft_config.get("output_column", "output"),
+            system_prompt_column=sft_config.get("system_prompt_column", "system_prompt"),
+            max_length=self.max_length,
+        )
+
+        dataloader = create_sft_dataloader(
+            tokenizer=self.tokenizer,
+            batch_size=batch_size or self.batch_size,
+            config=sft_cfg,
+            max_length=self.max_length,
+            rank=self.rank,
+            world_size=self.world_size,
+            num_workers=self.num_workers,
+            packed=sft_config.get("packed", True),
+        )
+
+        # SFT doesn't support mixed dataset or probes
+        return dataloader, None, None
 
     def train_dataloader(self) -> DataLoader:
         """Return training dataloader."""
@@ -140,5 +209,34 @@ class WrinkleFreeDataModule(pl.LightningDataModule):
             logger.info(f"Updating batch size: {self.batch_size} -> {new_batch_size}")
             self.batch_size = new_batch_size
             # Force recreation of dataloaders
+            self.train_dataloader_instance = None
+            self.setup(stage="fit")
+
+    def update_data_config(self, new_config_name: str):
+        """Update data config for curriculum-based data switching.
+
+        Called when curriculum phase changes to a different data_config.
+        This recreates the training dataloader with the new config.
+
+        Supports switching between pretraining and SFT configs.
+
+        Args:
+            new_config_name: New data config name (e.g., "fineweb", "sft_nemotron")
+        """
+        if new_config_name != self.config_name:
+            old_is_sft = self.config_name in SFT_DATA_CONFIGS
+            new_is_sft = new_config_name in SFT_DATA_CONFIGS
+
+            mode_change = ""
+            if old_is_sft and not new_is_sft:
+                mode_change = " (SFT -> Pretrain)"
+            elif not old_is_sft and new_is_sft:
+                mode_change = " (Pretrain -> SFT)"
+
+            logger.info(
+                f"[CURRICULUM] Switching data config: {self.config_name} -> {new_config_name}{mode_change}"
+            )
+            self.config_name = new_config_name
+            # Force recreation of training dataloader with new config
             self.train_dataloader_instance = None
             self.setup(stage="fit")

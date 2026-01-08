@@ -28,6 +28,7 @@
 | Meta-optimization | `... training.meta_optimization.enabled=true` |
 | BitDistill distillation | `... training=bitdistill_full` |
 | LRC calibration | `... training=lrc_calibration` |
+| Salient columns (AWQ-style) | `... training=salient_run` |
 | Deploy to cloud | `cd packages/deployer && wf train -m smollm2_135m -s 2 --cloud nebius` |
 | **Check sync status** | `./sync.sh --status --preset <preset>` |
 | **Start live sync** | `./sync.sh --preset <preset>` (runs in foreground with inotify) |
@@ -55,7 +56,7 @@
 | Package | Namespace | Purpose | Key Files |
 |---------|-----------|---------|-----------|
 | `training` | `wf_train` | Training pipeline + Lightning | `scripts/train_lightning.py`, `src/wf_train/lightning/` |
-| `architecture` | `wf_arch` | BitLinear/BitLinearLRC/SubLN layers | `src/wf_arch/layers/` |
+| `architecture` | `wf_arch` | BitLinear/BitLinearLRC/BitLinearSalient/SubLN layers | `src/wf_arch/layers/` |
 | `data_handler` | `wf_data` | Data loading + mixing | `src/wf_data/data/` |
 | `deployer` | `wf_deploy` | Cloud deployment (SkyPilot) | `skypilot/*.yaml` |
 | `inference` | `wf_infer` | Model serving | `src/wf_infer/` |

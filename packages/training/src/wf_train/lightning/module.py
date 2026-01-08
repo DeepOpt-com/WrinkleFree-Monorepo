@@ -378,8 +378,45 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         if not hasattr(self, "_last_curriculum_step"):
             self._last_curriculum_step = -1
         if current_global_step > self._last_curriculum_step:
+            # Check for data config change before stepping
+            old_data_config = self.objective_manager.get_current_data_config()
+            old_phase = self.objective_manager.get_current_phase_name()
+
             self.objective_manager.step_curriculum()
             self._last_curriculum_step = current_global_step
+
+            # Check if data config changed after stepping curriculum
+            new_data_config = self.objective_manager.get_current_data_config()
+            new_phase = self.objective_manager.get_current_phase_name()
+
+            # Debug logging for curriculum transitions
+            print(f"[CURRICULUM DEBUG] step={current_global_step}, phase: {old_phase}->{new_phase}, data: {old_data_config}->{new_data_config}")
+
+            if new_data_config and new_data_config != old_data_config:
+                # Switch dataloader to new data config
+                print(f"[CURRICULUM] Switching data config: {old_data_config} -> {new_data_config}")
+                datamodule = self.trainer.datamodule
+                if hasattr(datamodule, "update_data_config"):
+                    datamodule.update_data_config(new_data_config)
+                else:
+                    print(f"[CURRICULUM WARNING] datamodule has no update_data_config method!")
+
+            # Log current curriculum phase and data config to WandB
+            if new_data_config:
+                # Log as a string metric for visibility
+                if new_phase:
+                    self.log(
+                        "curriculum/phase",
+                        hash(new_phase) % 1000,  # Numeric hash for WandB
+                        on_step=True,
+                        sync_dist=True,
+                    )
+                self.log(
+                    "curriculum/data_config",
+                    hash(new_data_config) % 1000,  # Numeric hash for WandB
+                    on_step=True,
+                    sync_dist=True,
+                )
 
         return final_loss
 

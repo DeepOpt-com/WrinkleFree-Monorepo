@@ -43,6 +43,13 @@ from wf_data.data.packing import (
     pack_token_buffer,
 )
 
+from wf_data.data.sft import (
+    SFTConfig,
+    SFTDataset,
+    PackedSFTDataset,
+    create_sft_dataloader,
+)
+
 from wf_data.data.config_loader import (
     load_data_config,
     list_available_configs,
@@ -134,4 +141,9 @@ __all__ = [
     "create_mixed_dataloader",
     "create_mixed_dataset",
     "create_domain_probe_loaders",
+    # SFT API
+    "SFTConfig",
+    "SFTDataset",
+    "PackedSFTDataset",
+    "create_sft_dataloader",
 ]
