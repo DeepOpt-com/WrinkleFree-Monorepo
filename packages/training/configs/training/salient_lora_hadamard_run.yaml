@@ -109,8 +109,9 @@ auto_batch_size: false
 # Lambda warmup (DISABLED - start with full quantization from step 0)
 # Per architecture CLAUDE.md: "Without warmup (default): get_current_lambda() returns 1.0"
 lambda_warmup:
+  # TODO: enable??
   enabled: false
-  warmup_steps: 500
+  warmup_steps: 100
   schedule: linear
 
 # Resume configuration

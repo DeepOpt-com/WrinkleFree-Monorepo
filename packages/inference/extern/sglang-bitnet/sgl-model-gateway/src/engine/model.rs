@@ -1,8 +1,12 @@
 //! BitNet transformer model for inference.
 //!
 //! Implements the forward pass using native ternary SIMD kernels.
+//! Optimized with rayon for parallel projections.
 
 use std::path::Path;
+use std::sync::Arc;
+
+use rayon::prelude::*;
 
 use crate::gguf::{GgufReader, GgufTensorInfo, GgmlQuantType, GgufError, repack_ternary_weights, NativeWeightFormat};
 use crate::kernels::ffi::BitNetKernel;
@@ -336,7 +340,7 @@ impl BitNetEngine {
         output
     }
 
-    /// Compute attention for a layer.
+    /// Compute attention for a layer with parallel Q/K/V projections.
     fn attention(
         &mut self,
         layer_idx: usize,
@@ -349,24 +353,32 @@ impl BitNetEngine {
         let head_dim = self.config.head_dim;
         let kv_dim = num_kv_heads * head_dim;
 
-        // Project Q, K, V (using native BitNet kernels)
-        // We need to structure this to avoid borrow conflicts with self
-        let q = {
-            let weights = &self.layers[layer_idx].q_proj;
-            self.linear_forward_ref(weights, hidden, seq_len)
-        };
-        let k = {
-            let weights = &self.layers[layer_idx].k_proj;
-            self.linear_forward_ref(weights, hidden, seq_len)
-        };
-        let v = {
-            let weights = &self.layers[layer_idx].v_proj;
-            self.linear_forward_ref(weights, hidden, seq_len)
-        };
+        // Get references to all projection weights
+        let q_proj = &self.layers[layer_idx].q_proj;
+        let k_proj = &self.layers[layer_idx].k_proj;
+        let v_proj = &self.layers[layer_idx].v_proj;
 
-        // Apply RoPE to Q and K
-        let q = self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim);
-        let k = self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim);
+        // Parallel Q, K, V projections using rayon::join
+        let ((q, k), v) = rayon::join(
+            || rayon::join(
+                || self.linear_forward_ref(q_proj, hidden, seq_len),
+                || self.linear_forward_ref(k_proj, hidden, seq_len),
+            ),
+            || self.linear_forward_ref(v_proj, hidden, seq_len),
+        );
+
+        // Apply RoPE to Q and K (can be parallelized for long sequences)
+        let (q, k) = if seq_len > 32 {
+            rayon::join(
+                || self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim),
+                || self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim),
+            )
+        } else {
+            (
+                self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim),
+                self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim),
+            )
+        };
 
         // Update KV cache
         for i in 0..seq_len {
@@ -450,16 +462,31 @@ impl BitNetEngine {
         output
     }
 
-    /// FFN forward pass.
+    /// FFN forward pass with parallel gate/up projections.
     fn ffn(&self, layer_idx: usize, hidden: &[f32], seq_len: usize) -> Vec<f32> {
-        // Gate and up projections
-        let gate = self.linear_forward_ref(&self.layers[layer_idx].gate_proj, hidden, seq_len);
-        let up = self.linear_forward_ref(&self.layers[layer_idx].up_proj, hidden, seq_len);
+        let gate_proj = &self.layers[layer_idx].gate_proj;
+        let up_proj = &self.layers[layer_idx].up_proj;
 
-        // Apply SiLU to gate and multiply with up
-        let mut gate = gate;
-        silu_inplace(&mut gate);
-        let intermediate: Vec<f32> = gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
+        // Parallel gate and up projections using rayon
+        let (gate, up) = rayon::join(
+            || self.linear_forward_ref(gate_proj, hidden, seq_len),
+            || self.linear_forward_ref(up_proj, hidden, seq_len),
+        );
+
+        // Apply SiLU to gate and multiply with up (parallelized for large vectors)
+        let intermediate: Vec<f32> = if gate.len() > 4096 {
+            gate.par_iter()
+                .zip(up.par_iter())
+                .map(|(&g, &u)| {
+                    let silu_g = g / (1.0 + (-g).exp());
+                    silu_g * u
+                })
+                .collect()
+        } else {
+            let mut gate = gate;
+            silu_inplace(&mut gate);
+            gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect()
+        };
 
         // Down projection
         self.linear_forward_ref(&self.layers[layer_idx].down_proj, &intermediate, seq_len)

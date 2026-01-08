@@ -50,7 +50,7 @@
 - Don't use TQ2_0 for bf16 checkpoints (destroys ternary weight distribution)
 - Don't push to main without PR review
 - Don't run `sky down` on clusters you didn't create
-- Don't enable `lambda_warmup` - it should default to `false` (full ternary from start)
+- Don't disable `lambda_warmup` - use fast warmup (100 steps) for smoother early training
 
 ## Package Navigation
 

@@ -39,6 +39,7 @@ salient:
 # Auto-convert to BitNet first (will then convert to BitLinearSalient)
 auto_convert:
   enabled: true
+  insert_subln: true  # Add SubLN before projections (BitNet paper)
   exclude_layers:
     - embed_tokens
     - lm_head
@@ -59,7 +60,7 @@ packing:
 optimizer:
   type: adamw
   use_8bit: true  # Uses bitsandbytes AdamW8bit
-  learning_rate: 5e-5
+  learning_rate: 5e-4
   weight_decay: 0.01
 
 # Scheduler: WSD
@@ -79,11 +80,11 @@ gradient_accumulation_steps: 32
 gradient_clipping: 1.0
 auto_batch_size: false
 
-# Lambda warmup (DISABLED - start with full quantization)
+# Lambda warmup (ENABLED - fast 100-step warmup to full quantization)
 # At lambda=0, all columns are FP16; at lambda=1, only salient columns are FP16
 lambda_warmup:
-  enabled: false
-  warmup_steps: 1000
+  enabled: true
+  warmup_steps: 100
   schedule: linear
 
 # Resume configuration
