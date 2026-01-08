@@ -58,6 +58,7 @@ pub fn reset_profile() {
 }
 use crate::kernels::ffi::BitNetKernel;
 use crate::kernels::simd::{rms_norm_with_scale, silu_inplace, softmax_inplace, add_inplace};
+use rayon::prelude::*;
 
 use super::kv_cache::{KVCache, KVCacheConfig};
 use super::sampling::{SamplingConfig, sample_token};
@@ -696,23 +697,29 @@ impl BitNetEngine {
         // Apply final norm
         let normed = rms_norm_with_scale(hidden, &self.output_norm, self.config.rms_norm_eps);
 
-        // Project to vocabulary
+        // Project to vocabulary using parallel computation
+        // This is the critical bottleneck - 128K dot products of size 2560
+        let hidden_size = self.config.hidden_size;
+        let vocab_size = self.config.vocab_size;
+
         let logits = if let Some(ref output_proj) = self.output_proj {
-            // Use output projection weights
-            let mut logits = vec![0.0; self.config.vocab_size];
-            for (i, logit) in logits.iter_mut().enumerate() {
-                let offset = i * self.config.hidden_size;
-                *logit = dot(&normed, &output_proj[offset..offset + self.config.hidden_size]);
-            }
-            logits
+            // Use output projection weights (parallel)
+            (0..vocab_size)
+                .into_par_iter()
+                .map(|i| {
+                    let offset = i * hidden_size;
+                    dot_simd(&normed, &output_proj[offset..offset + hidden_size])
+                })
+                .collect()
         } else {
-            // Tied embeddings
-            let mut logits = vec![0.0; self.config.vocab_size];
-            for (i, logit) in logits.iter_mut().enumerate() {
-                let offset = i * self.config.hidden_size;
-                *logit = dot(&normed, &self.embed_tokens[offset..offset + self.config.hidden_size]);
-            }
-            logits
+            // Tied embeddings (parallel)
+            (0..vocab_size)
+                .into_par_iter()
+                .map(|i| {
+                    let offset = i * hidden_size;
+                    dot_simd(&normed, &self.embed_tokens[offset..offset + hidden_size])
+                })
+                .collect()
         };
 
         if PROFILING_ENABLED.load(Ordering::Relaxed) {
@@ -897,9 +904,82 @@ fn compute_rope_freqs(head_dim: usize, theta: f32) -> Vec<f32> {
         .collect()
 }
 
-/// Dot product.
+/// Dot product (scalar fallback).
 fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+/// SIMD-optimized dot product for f32 vectors.
+/// Uses AVX2 on x86-64 for 8-way parallelism.
+#[cfg(target_arch = "x86_64")]
+fn dot_simd(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+
+    let n = a.len();
+    let mut sum = 0.0f32;
+
+    unsafe {
+        // Process 8 floats at a time with AVX2
+        let mut acc0 = _mm256_setzero_ps();
+        let mut acc1 = _mm256_setzero_ps();
+        let mut acc2 = _mm256_setzero_ps();
+        let mut acc3 = _mm256_setzero_ps();
+
+        // 4-way unrolled for better ILP (32 floats per iteration)
+        let mut i = 0;
+        while i + 32 <= n {
+            let a0 = _mm256_loadu_ps(a.as_ptr().add(i));
+            let b0 = _mm256_loadu_ps(b.as_ptr().add(i));
+            acc0 = _mm256_fmadd_ps(a0, b0, acc0);
+
+            let a1 = _mm256_loadu_ps(a.as_ptr().add(i + 8));
+            let b1 = _mm256_loadu_ps(b.as_ptr().add(i + 8));
+            acc1 = _mm256_fmadd_ps(a1, b1, acc1);
+
+            let a2 = _mm256_loadu_ps(a.as_ptr().add(i + 16));
+            let b2 = _mm256_loadu_ps(b.as_ptr().add(i + 16));
+            acc2 = _mm256_fmadd_ps(a2, b2, acc2);
+
+            let a3 = _mm256_loadu_ps(a.as_ptr().add(i + 24));
+            let b3 = _mm256_loadu_ps(b.as_ptr().add(i + 24));
+            acc3 = _mm256_fmadd_ps(a3, b3, acc3);
+
+            i += 32;
+        }
+
+        // Process remaining 8-float chunks
+        while i + 8 <= n {
+            let av = _mm256_loadu_ps(a.as_ptr().add(i));
+            let bv = _mm256_loadu_ps(b.as_ptr().add(i));
+            acc0 = _mm256_fmadd_ps(av, bv, acc0);
+            i += 8;
+        }
+
+        // Combine accumulators
+        let acc = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+        // Horizontal sum of 8 floats
+        let hi = _mm256_extractf128_ps(acc, 1);
+        let lo = _mm256_castps256_ps128(acc);
+        let sum128 = _mm_add_ps(hi, lo);
+        let sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+        let sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 1));
+        sum = _mm_cvtss_f32(sum32);
+
+        // Handle remaining elements
+        while i < n {
+            sum += a[i] * b[i];
+            i += 1;
+        }
+    }
+
+    sum
+}
+
+/// Fallback for non-x86 architectures
+#[cfg(not(target_arch = "x86_64"))]
+fn dot_simd(a: &[f32], b: &[f32]) -> f32 {
+    dot(a, b)
 }
 
 /// Convert F16 to F32.
