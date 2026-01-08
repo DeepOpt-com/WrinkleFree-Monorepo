@@ -77,8 +77,48 @@ fn decode_gguf_ternary(
         GgmlQuantType::TQ2_0 | GgmlQuantType::TL2 => decode_tq2_0(data, n_elements),
         GgmlQuantType::TQ1_0 | GgmlQuantType::TL1 => decode_tq1_0(data, n_elements),
         GgmlQuantType::IQ2_S => decode_iq2_s(data, n_elements),
+        GgmlQuantType::I2_S => decode_i2_s(data, n_elements),
         _ => Err(GgufError::InvalidQuantType(dtype as u32)),
     }
+}
+
+/// Decode I2_S format: 2-bit signed integer, similar to TQ2_0 but with 4-byte scale.
+/// Block: 256 elements = 64 bytes data + 4 bytes scale/min
+fn decode_i2_s(data: &[u8], n_elements: usize) -> Result<Vec<i8>, GgufError> {
+    const BLOCK_SIZE: usize = 256;
+    const BLOCK_BYTES: usize = 68; // 64 data + 4 scale
+
+    let n_blocks = (n_elements + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let mut output = Vec::with_capacity(n_elements);
+
+    for block_idx in 0..n_blocks {
+        let block_start = block_idx * BLOCK_BYTES;
+        if block_start + 64 > data.len() {
+            break;
+        }
+
+        // Extract 256 weights from 64 bytes (same as TQ2_0)
+        for byte_idx in 0..64 {
+            let byte = data[block_start + byte_idx];
+            // 4 weights per byte, 2 bits each
+            for bit_offset in (0..8).step_by(2) {
+                let val = (byte >> bit_offset) & 0x03;
+                // 00 = -1, 01 = 0, 10 = +1 (same encoding as TQ2_0)
+                let ternary = match val {
+                    0 => -1i8,
+                    1 => 0i8,
+                    2 => 1i8,
+                    _ => 0i8, // 3 shouldn't happen, treat as 0
+                };
+                output.push(ternary);
+                if output.len() >= n_elements {
+                    return Ok(output);
+                }
+            }
+        }
+    }
+
+    Ok(output)
 }
 
 /// Decode TQ2_0 format: 2 bits per weight, 4 weights per byte.

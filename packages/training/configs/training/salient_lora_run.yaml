@@ -40,9 +40,9 @@ lora:
   rank_percentage: 0.02
   # Initialization method:
   # - "kaiming": LoRA-style (A=Kaiming, B=zeros). Fast, good gradients.
-  # - "svd_residual": SVD of quantization error. Best accuracy but SLOW.
+  # - "svd_residual": SVD of quantization error (uses fast randomized SVD).
   # - "zeros": Both A,B=zeros. DON'T USE - causes zero gradients!
-  init_method: kaiming  # Using kaiming for fast init (svd_residual was too slow)
+  init_method: svd_residual
   # LoRA scaling factor (alpha/rank)
   alpha: 1.0
   # Dropout for LoRA path (0.0 = no dropout)
