@@ -1,27 +1,29 @@
-# LRC Full Run - Qwen3-0.6B on Nebius H100
+# LRC 8x H100 Run - Qwen3-0.6B on Nebius
 #
-# Full LRC (Low-Rank Correction) + DLM training run:
+# Full LRC (Low-Rank Correction) + DLM training on 8x H100:
 # - Model: Qwen3-0.6B (auto-converted to BitNet)
-# - LRC rank: 25% (better error recovery than 10% calibration)
-# - Objectives: CE (weight=1.0) + DLM (weight=0.5)
-# - Total tokens: 1B
-# - Fixed batch size: 32 (no auto-sizing for faster iteration)
+# - LRC rank: 15% (good error recovery while fitting in memory)
+# - Objectives: CE (weight=0.5) + DLM (weight=0.5)
+# - Optimizer: MuonClip (auto-uses muon_fsdp2 for FSDP)
+# - Distributed: FSDP multi-GPU
+#
+# Smoke test: 50 steps
 #
 # Launch:
 #   cd packages/deployer
 #   source credentials/.env
-#   sky launch skypilot/lrc_run.yaml -y --cluster lrc-run
+#   sky launch skypilot/lrc_run_8xh100.yaml -y --cluster lrc-8xh100
 #
 # Monitor:
-#   sky logs lrc-run
+#   sky logs lrc-8xh100
 #
-# Down:
-#   sky down lrc-run -y
+# Down (IMPORTANT - save money!):
+#   sky down lrc-8xh100 -y
 
-name: wf-lrc-run
+name: wf-lrc-8xh100
 
 resources:
-  accelerators: H100:1
+  accelerators: H100:8
   memory: 64+
   use_spot: false
   cloud: nebius
@@ -93,16 +95,23 @@ run: |
   mkdir -p $CHECKPOINT_DIR
 
   echo "=============================================="
-  echo "LRC Full Run - Qwen3-0.6B on H100"
+  echo "LRC 8x H100 Smoke Test - Qwen3-0.6B"
   echo "=============================================="
   echo "Model: ${MODEL}"
-  echo "Training: lrc_run (LRC 25% + CE + DLM)"
-  echo "Total tokens: 1B"
-  echo "Batch size: 32 (fixed, no auto-sizing)"
+  echo "Training: lrc_run (LRC 15% + CE + DLM)"
+  echo "Distributed: FSDP multi-GPU (8x H100)"
+  echo "Smoke test: 50 steps"
+  echo ""
+  echo "Batch config:"
+  echo "  - Per-GPU batch size: 4"
+  echo "  - Gradient accumulation: 16"
+  echo "  - Effective batch: 4 * 16 * 8 = 512"
   echo ""
   echo "Objectives:"
-  echo "  - CE (continue_pretrain): weight=1.0"
-  echo "  - DLM: weight=0.5, mask_prob=0.15"
+  echo "  - CE (continue_pretrain): weight=0.5"
+  echo "  - DLM: weight=0.5, mask_prob=0.5"
+  echo ""
+  echo "Optimizer: MuonClip (muon_fsdp2 for FSDP)"
   echo ""
   echo "Logging:"
   echo "  - WandB: ${WANDB_PROJECT}"
@@ -113,27 +122,32 @@ run: |
     model=${MODEL} \
     training=lrc_run \
     data.config_name=mixed_pretrain \
-    distributed=single_gpu \
+    distributed=fsdp_multi \
     output_dir=$CHECKPOINT_DIR \
-    experiment_name=lrc_run_qwen3_0.6b \
-    training.checkpoint.save_interval=500 \
-    training.logging.log_interval=10 \
+    experiment_name=lrc_run_qwen3_0.6b_8xh100 \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=16 \
+    training.max_steps=50 \
+    training.checkpoint.save_interval=25 \
+    training.logging.log_interval=5 \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
-    training.logging.wandb.name=lrc-run-qwen3-0.6b-h100 \
-    training.logging.wandb.tags="[lrc,dlm,25pct-rank,h100,qwen3-0.6b]" \
+    training.logging.wandb.name=lrc-8xh100-qwen3-0.6b-smoke \
+    "training.logging.wandb.tags=[lrc,dlm,15pct-rank,8xh100,qwen3-0.6b,fsdp,smoke]" \
     gcs.enabled=true \
     gcs.bucket=${GCS_BUCKET}
 
   echo ""
   echo "=============================================="
-  echo "LRC Run Training Complete!"
+  echo "LRC 8x H100 Smoke Test Complete!"
   echo "=============================================="
   echo ""
   echo "Checkpoints:"
-  ls -la $CHECKPOINT_DIR/lrc_run_qwen3_0.6b/checkpoints/ 2>/dev/null || echo "No local checkpoints"
+  ls -la $CHECKPOINT_DIR/lrc_run_qwen3_0.6b_8xh100/checkpoints/ 2>/dev/null || echo "No local checkpoints"
   echo ""
   echo "GCS checkpoints:"
   gcloud storage ls "gs://${GCS_BUCKET}/experiments/" 2>/dev/null | grep lrc | head -10 || echo "GCS listing failed"
   echo ""
   echo "WandB: https://wandb.ai/${WANDB_PROJECT}"
+  echo ""
+  echo "REMEMBER: Run 'sky down lrc-8xh100 -y' to save money!"
