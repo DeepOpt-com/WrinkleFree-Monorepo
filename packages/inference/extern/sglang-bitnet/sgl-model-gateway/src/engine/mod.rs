@@ -22,5 +22,5 @@ mod model;
 mod sampling;
 
 pub use kv_cache::{KVCache, KVCacheConfig};
-pub use model::{BitNetEngine, BitNetConfig, LayerWeights};
+pub use model::{BitNetEngine, BitNetConfig, LayerWeights, enable_profiling, print_profile_results, reset_profile};
 pub use sampling::{SamplingConfig, sample_token, top_p_sampling, top_k_sampling};

@@ -32,7 +32,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "native-inference")]
-use sgl_model_gateway::engine::{BitNetEngine, SamplingConfig};
+use sgl_model_gateway::engine::{BitNetEngine, SamplingConfig, enable_profiling, print_profile_results, reset_profile};
 
 #[cfg(feature = "native-inference")]
 use sgl_model_gateway::gguf::GgufReader;
@@ -254,6 +254,9 @@ async fn run_benchmark(
         let _ = engine.generate(&input_ids, max_tokens, &sampling_config);
     }
 
+    // Enable profiling for detailed breakdown
+    enable_profiling();
+
     // Benchmark
     info!("Running benchmark...");
     let mut prefill_times = Vec::with_capacity(iterations);
@@ -312,6 +315,9 @@ async fn run_benchmark(
     println!("  Total time:      {:.2} s", overall_duration.as_secs_f64());
     println!("  Throughput:      {:.1} tok/s", overall_tok_s);
     println!("=========================");
+
+    // Print detailed profiling breakdown
+    print_profile_results();
 }
 
 #[tokio::main]

@@ -3,8 +3,59 @@
 //! Implements the forward pass using native ternary SIMD kernels.
 
 use std::path::Path;
+use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::gguf::{GgufReader, GgufTensorInfo, GgmlQuantType, GgufError, repack_ternary_weights, NativeWeightFormat};
+
+/// Global profiling state
+static PROFILING_ENABLED: AtomicBool = AtomicBool::new(false);
+static PROFILE_QKV_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_ROPE_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_ATTN_SCORES_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_O_PROJ_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_FFN_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_NORM_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_OUTPUT_US: AtomicU64 = AtomicU64::new(0);
+
+/// Enable profiling
+pub fn enable_profiling() {
+    PROFILING_ENABLED.store(true, Ordering::SeqCst);
+}
+
+/// Print profiling results
+pub fn print_profile_results() {
+    let qkv = PROFILE_QKV_US.load(Ordering::SeqCst);
+    let rope = PROFILE_ROPE_US.load(Ordering::SeqCst);
+    let attn = PROFILE_ATTN_SCORES_US.load(Ordering::SeqCst);
+    let o_proj = PROFILE_O_PROJ_US.load(Ordering::SeqCst);
+    let ffn = PROFILE_FFN_US.load(Ordering::SeqCst);
+    let norm = PROFILE_NORM_US.load(Ordering::SeqCst);
+    let output = PROFILE_OUTPUT_US.load(Ordering::SeqCst);
+    let total = qkv + rope + attn + o_proj + ffn + norm + output;
+
+    println!("\n=== Detailed Profile ===");
+    println!("Q/K/V projection: {:>8.2} ms ({:>5.1}%)", qkv as f64 / 1000.0, 100.0 * qkv as f64 / total as f64);
+    println!("RoPE encoding:    {:>8.2} ms ({:>5.1}%)", rope as f64 / 1000.0, 100.0 * rope as f64 / total as f64);
+    println!("Attention scores: {:>8.2} ms ({:>5.1}%)", attn as f64 / 1000.0, 100.0 * attn as f64 / total as f64);
+    println!("O projection:     {:>8.2} ms ({:>5.1}%)", o_proj as f64 / 1000.0, 100.0 * o_proj as f64 / total as f64);
+    println!("FFN:              {:>8.2} ms ({:>5.1}%)", ffn as f64 / 1000.0, 100.0 * ffn as f64 / total as f64);
+    println!("Norms:            {:>8.2} ms ({:>5.1}%)", norm as f64 / 1000.0, 100.0 * norm as f64 / total as f64);
+    println!("Output proj:      {:>8.2} ms ({:>5.1}%)", output as f64 / 1000.0, 100.0 * output as f64 / total as f64);
+    println!("Total tracked:    {:>8.2} ms", total as f64 / 1000.0);
+    println!("========================\n");
+}
+
+/// Reset profiling counters
+pub fn reset_profile() {
+    PROFILE_QKV_US.store(0, Ordering::SeqCst);
+    PROFILE_ROPE_US.store(0, Ordering::SeqCst);
+    PROFILE_ATTN_SCORES_US.store(0, Ordering::SeqCst);
+    PROFILE_O_PROJ_US.store(0, Ordering::SeqCst);
+    PROFILE_FFN_US.store(0, Ordering::SeqCst);
+    PROFILE_NORM_US.store(0, Ordering::SeqCst);
+    PROFILE_OUTPUT_US.store(0, Ordering::SeqCst);
+}
 use crate::kernels::ffi::BitNetKernel;
 use crate::kernels::simd::{rms_norm_with_scale, silu_inplace, softmax_inplace, add_inplace};
 
@@ -296,12 +347,22 @@ impl BitNetEngine {
         start_pos: usize,
         seq_len: usize,
     ) -> Vec<f32> {
+        // Profile: pre-attention norm
+        let norm_start = Instant::now();
+
         // Pre-attention norm - clone the norm weights to avoid borrow conflict
         let attn_norm = self.layers[layer_idx].attn_norm.clone();
         let normed = self.apply_norm(&hidden, &attn_norm, seq_len);
 
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_NORM_US.fetch_add(norm_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
         // Attention (mutates kv_cache)
         let attn_out = self.attention(layer_idx, &normed, start_pos, seq_len);
+
+        // Profile: pre-FFN norm
+        let norm_start = Instant::now();
 
         // Residual connection
         let mut hidden: Vec<f32> = hidden.iter().zip(attn_out.iter()).map(|(a, b)| a + b).collect();
@@ -309,6 +370,10 @@ impl BitNetEngine {
         // Pre-FFN norm - clone the norm weights to avoid borrow conflict
         let ffn_norm = self.layers[layer_idx].ffn_norm.clone();
         let normed = self.apply_norm(&hidden, &ffn_norm, seq_len);
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_NORM_US.fetch_add(norm_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
 
         // FFN (immutable access to self)
         let ffn_out = self.ffn(layer_idx, &normed, seq_len);
@@ -349,6 +414,9 @@ impl BitNetEngine {
         let head_dim = self.config.head_dim;
         let kv_dim = num_kv_heads * head_dim;
 
+        // Profile: Q/K/V projections
+        let qkv_start = Instant::now();
+
         // Quantize input ONCE for all Q/K/V projections (3x speedup on quantization)
         let (quantized_hidden, hidden_scale) = self.kernel.quantize_activations(hidden);
 
@@ -363,9 +431,20 @@ impl BitNetEngine {
             &self.layers[layer_idx].v_proj, &quantized_hidden, hidden_scale, seq_len
         );
 
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_QKV_US.fetch_add(qkv_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        // Profile: RoPE
+        let rope_start = Instant::now();
+
         // Apply RoPE to Q and K
         let q = self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim);
         let k = self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim);
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_ROPE_US.fetch_add(rope_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
 
         // Update KV cache
         for i in 0..seq_len {
@@ -375,14 +454,30 @@ impl BitNetEngine {
             self.kv_cache.update(layer_idx, pos, k_slice, v_slice);
         }
 
+        // Profile: attention scores
+        let attn_start = Instant::now();
+
         // Compute attention scores and output
         let total_seq_len = start_pos + seq_len;
         let attn_out = self.compute_attention_scores(
             &q, layer_idx, seq_len, total_seq_len, num_heads, num_kv_heads, head_dim,
         );
 
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_ATTN_SCORES_US.fetch_add(attn_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        // Profile: output projection
+        let o_proj_start = Instant::now();
+
         // Output projection
-        self.linear_forward_ref(&self.layers[layer_idx].o_proj, &attn_out, seq_len)
+        let result = self.linear_forward_ref(&self.layers[layer_idx].o_proj, &attn_out, seq_len);
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_O_PROJ_US.fetch_add(o_proj_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        result
     }
 
     /// Compute attention scores and weighted values.
@@ -450,6 +545,9 @@ impl BitNetEngine {
 
     /// FFN forward pass.
     fn ffn(&self, layer_idx: usize, hidden: &[f32], seq_len: usize) -> Vec<f32> {
+        // Profile: entire FFN
+        let ffn_start = Instant::now();
+
         // Quantize input ONCE for gate and up projections (2x speedup on quantization)
         let (quantized_hidden, hidden_scale) = self.kernel.quantize_activations(hidden);
 
@@ -467,7 +565,13 @@ impl BitNetEngine {
         let intermediate: Vec<f32> = gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
 
         // Down projection (new input, must quantize fresh)
-        self.linear_forward_ref(&self.layers[layer_idx].down_proj, &intermediate, seq_len)
+        let result = self.linear_forward_ref(&self.layers[layer_idx].down_proj, &intermediate, seq_len);
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_FFN_US.fetch_add(ffn_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        result
     }
 
     /// Apply linear projection using native BitNet kernels.
@@ -586,11 +690,14 @@ impl BitNetEngine {
 
     /// Forward through output norm and projection.
     fn forward_output(&self, hidden: &[f32]) -> Vec<f32> {
+        // Profile: output projection
+        let output_start = Instant::now();
+
         // Apply final norm
         let normed = rms_norm_with_scale(hidden, &self.output_norm, self.config.rms_norm_eps);
 
         // Project to vocabulary
-        if let Some(ref output_proj) = self.output_proj {
+        let logits = if let Some(ref output_proj) = self.output_proj {
             // Use output projection weights
             let mut logits = vec![0.0; self.config.vocab_size];
             for (i, logit) in logits.iter_mut().enumerate() {
@@ -606,7 +713,13 @@ impl BitNetEngine {
                 *logit = dot(&normed, &self.embed_tokens[offset..offset + self.config.hidden_size]);
             }
             logits
+        };
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_OUTPUT_US.fetch_add(output_start.elapsed().as_micros() as u64, Ordering::Relaxed);
         }
+
+        logits
     }
 
     /// Generate tokens.
