@@ -6,8 +6,8 @@
 use rayon::prelude::*;
 use super::types::{QK_BLOCK, TileConfig};
 
-// Use multiply-free ternary kernel for all platforms
-use super::gemv_ternary::vec_dot_ternary_neon as vec_dot;
+// Use multiply-free TL1 kernel for all platforms
+use super::gemv_tl1::vec_dot_tl1 as vec_dot;
 
 /// BitNet GEMM: output = packed_weights @ activations * scale
 ///
