@@ -1,26 +1,42 @@
-//! Native BitNet kernel bindings.
+//! BitNet inference kernels.
 //!
-//! This module provides Rust FFI bindings to the optimized C++ BitNet kernels
-//! in sgl-kernel/csrc/bitnet/.
+//! This module provides pure Rust SIMD-optimized kernels for BitNet inference.
+//! Primary target: ARM NEON (aarch64) with scalar fallback for other platforms.
 //!
 //! ## Features
-//! - AVX-512/AVX2/NEON SIMD acceleration
-//! - Ternary weight computation (no multiply, just add/subtract)
+//! - ARM NEON SIMD acceleration (with optional dotprod extension)
+//! - Ternary weight computation (packed I2_S format)
 //! - INT8 activation quantization
+//! - Rayon parallelization for batched operations
 //!
 //! ## Usage
 //! ```ignore
-//! use sgl_model_gateway::kernels::{BitNetKernel, CPUCapabilities};
+//! use sgl_model_gateway::kernels::{BitNetKernel, CpuCapabilities};
 //!
-//! let caps = CPUCapabilities::detect();
-//! println!("AVX-512: {}", caps.has_avx512);
+//! let caps = CpuCapabilities::detect();
+//! println!("NEON: {}", caps.has_neon);
 //!
 //! let kernel = BitNetKernel::new();
-//! let result = kernel.vec_dot(&weights, &activations);
+//! let (quantized, scale) = kernel.quantize_activations(&input);
+//! let result = kernel.vec_dot(&weights, &quantized);
 //! ```
 
-pub mod ffi;
+pub mod bitnet;
 pub mod simd;
 
-pub use ffi::*;
+// Re-export main types from bitnet module
+pub use bitnet::{
+    BitNetKernel,
+    CpuCapabilities,
+    TileConfig,
+    QK_BLOCK,
+    quantize_activations,
+    pack_weights,
+    is_simd_available,
+};
+
+// Keep simd module exports for backward compatibility
 pub use simd::*;
+
+// Compatibility alias for old code using CPUCapabilities (capital U)
+pub type CPUCapabilities = CpuCapabilities;

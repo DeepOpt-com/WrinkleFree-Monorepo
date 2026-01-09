@@ -27,7 +27,7 @@ resources:
   memory: 64+
   disk_size: 200
   use_spot: false
-  cloud: nebius
+  cloud: runpod
 
 # Run from monorepo root
 workdir: ../..
@@ -61,8 +61,8 @@ setup: |
     export PATH="$HOME/google-cloud-sdk/bin:$PATH"
   fi
 
-  # Authenticate gcloud with OAuth credentials (not service account)
-  gcloud auth login --cred-file=/tmp/gcp-creds.json --quiet
+  # Authenticate gcloud with service account
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json --quiet || true
   gcloud config set project wrinklefree-481904
 
   uv sync --all-packages
@@ -129,7 +129,7 @@ run: |
     training.lambda_warmup.warmup_steps=200 \
     training.objectives.dlm.enabled=false \
     training.meta_optimization.enabled=false \
-    training.checkpoint.save_interval=500 \
+    training.checkpoint.save_interval=100 \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
     distributed=single_gpu \

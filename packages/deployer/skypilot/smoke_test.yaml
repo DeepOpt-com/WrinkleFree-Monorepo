@@ -41,7 +41,7 @@ resources:
   accelerators: L40S:1
   memory: 64+
   use_spot: false
-  cloud: nebius
+  cloud: runpod
 
 # Run from monorepo root
 workdir: .

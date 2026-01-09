@@ -44,9 +44,10 @@ batch_size: 16
 gradient_accumulation_steps: 32
 auto_batch_size: false
 
-# Lambda warmup disabled (start with full quantization)
+# Lambda warmup enabled (gradual quantization over 100 steps)
 lambda_warmup:
-  enabled: false
+  enabled: true
+  warmup_steps: 100
 
 # === OBJECTIVES (CE only, no DLM) ===
 objectives:

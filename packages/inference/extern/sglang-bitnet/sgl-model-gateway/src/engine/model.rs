@@ -56,8 +56,8 @@ pub fn reset_profile() {
     PROFILE_NORM_US.store(0, Ordering::SeqCst);
     PROFILE_OUTPUT_US.store(0, Ordering::SeqCst);
 }
-use crate::kernels::ffi::BitNetKernel;
-use crate::kernels::simd::{rms_norm_with_scale, silu_inplace, softmax_inplace, add_inplace};
+use crate::kernels::BitNetKernel;
+use crate::kernels::simd::{rms_norm_with_scale, silu_inplace, softmax_inplace};
 use rayon::prelude::*;
 
 use super::kv_cache::{KVCache, KVCacheConfig};
@@ -279,8 +279,8 @@ impl BitNetEngine {
 
         // Initialize native BitNet kernel with auto-tuned tiles
         let kernel = BitNetKernel::with_auto_tune(
-            config.hidden_size as i32,
-            config.hidden_size as i32,
+            config.hidden_size,
+            config.hidden_size,
         );
         tracing::info!(
             "Native kernel initialized: {} (tiles: {}x{})",

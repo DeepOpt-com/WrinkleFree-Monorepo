@@ -26,11 +26,11 @@
 name: wf-salient-lora-qwen0.6b
 
 resources:
-  accelerators: H100:1
+  accelerators: A100-80GB:1
   memory: 64+
   disk_size: 200
   use_spot: false
-  cloud: nebius
+  cloud: runpod
 
 # Run from deployer directory
 workdir: ../..
@@ -98,6 +98,8 @@ run: |
   echo "  10-100%: Main training on mixed_pretrain (CE only)"
   echo ""
   echo "Optimizer: AdamW 8-bit (LR=5e-5)"
+  echo "Lambda warmup: 100 steps (gradual quantization)"
+  echo "LoRA init: SVD residual"
   echo "torch.compile: ENABLED"
   echo "=============================================="
 
@@ -112,7 +114,7 @@ run: |
     training.auto_batch_size=false \
     training.torch_compile.enabled=true \
     training.salient.calibration_samples=128 \
-    training.checkpoint.save_interval=500 \
+    training.checkpoint.save_interval=100 \
     training.validation.val_check_interval=500 \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=salient_lora_qwen0.6b_CE_only \

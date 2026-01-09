@@ -411,3 +411,78 @@ wf_server is still 3x slower than llama.cpp. Possible causes:
 - Profile memory bandwidth utilization
 - Compare SIMD utilization between wf_server and llama.cpp
 - Implement proper L2-cache-aware tiling in GEMM
+
+---
+
+## 2026-01-08: Pure Rust BitNet Kernels (ARM NEON)
+
+### Decision
+Migrated from C++ FFI kernels to pure Rust implementation targeting ARM NEON. This simplifies the build process and enables deployment on ARM-based robots.
+
+### Target Architecture
+- **Primary**: ARM64 with NEON (aarch64)
+- **Target use case**: Robot deployment (Jetson, RPi5, etc.)
+- **Fallback**: Scalar implementation for x86 testing
+
+### Implementation
+
+Created `src/kernels/bitnet/` module with pure Rust:
+
+| File | Purpose |
+|------|---------|
+| `types.rs` | Constants (QK_BLOCK=128), TileConfig, CpuCapabilities |
+| `quantize.rs` | FP32→INT8 symmetric quantization |
+| `gemv_scalar.rs` | Scalar reference implementation for testing |
+| `gemv_neon.rs` | ARM NEON optimized GEMV with optional dotprod |
+| `gemm.rs` | Batched GEMM with Rayon parallelization |
+| `mod.rs` | BitNetKernel wrapper with auto-dispatch |
+
+### Key Features
+
+1. **I2_S Weight Format**
+   - 128-element blocks, 4 weights per byte (2 bits each)
+   - Encoding: 00=-1, 01=0, 10=+1
+   - Same format as C++ implementation
+
+2. **ARM NEON SIMD**
+   - Uses `std::arch::aarch64::*` intrinsics
+   - `vmlal_s8` for multiply-accumulate widening
+   - `vpadalq_s16` for pairwise addition
+   - Optional `vdotq_s32` for ARMv8.2+ (dotprod extension)
+
+3. **Comprehensive Unit Tests**
+   - ~50 test cases across all modules
+   - Scalar-NEON consistency verification
+   - Edge cases: all ones, all zeros, extreme values
+   - Multi-block and large matrix tests
+
+### Files Changed
+
+**Created:**
+- `src/kernels/bitnet/types.rs`
+- `src/kernels/bitnet/quantize.rs`
+- `src/kernels/bitnet/gemv_scalar.rs`
+- `src/kernels/bitnet/gemv_neon.rs`
+- `src/kernels/bitnet/gemm.rs`
+- `src/kernels/bitnet/mod.rs`
+
+**Modified:**
+- `src/kernels/mod.rs` - Added bitnet module, kept ffi.rs for reference
+
+**To Remove (after validation):**
+- `src/kernels/ffi.rs` - C++ FFI bindings
+- `sgl-kernel/csrc/bitnet/bitnet_gemv.cpp` - C++ SIMD kernels
+
+### Testing Strategy
+
+1. Run unit tests on any platform (uses scalar fallback on x86)
+2. Integration testing on GCP ARM (Tau T2A) instances
+3. Benchmark with small model (135M) before larger models
+
+### Build Changes Required
+
+1. Remove C++ kernel compilation from `build.rs`
+2. Remove `cc` dependency from `Cargo.toml`
+3. `native-inference` feature becomes pure Rust
+
+---
