@@ -17,7 +17,7 @@
 
 4. **READ PACKAGE CLAUDE.md FIRST:** Before modifying any package, read its `packages/<pkg>/CLAUDE.md`
 
-5. **USE I2_S FOR GGUF:** NEVER use TQ2_0 for bf16 DLM checkpoints - produces garbage
+5. **USE I2_S FOR GGUF:** NEVER use TQ2_0 for bf16 checkpoints - produces garbage
 
 ## Quick Commands
 
@@ -33,8 +33,8 @@
 | **Deploy to cloud** | `cd packages/deployer && wf train -m smollm2_135m -t base` |
 | Cloud with scale | `wf train -m qwen3_4b -t bitdistill_full --scale large` |
 | Deploy on Modal | `wf train -m qwen3_4b -t base --backend modal` |
-| **Smoke test** | `cd packages/deployer && wf smoke -o dlm` |
-| Smoke test on Modal | `wf smoke -o dlm --backend modal` |
+| **Smoke test** | `cd packages/deployer && wf smoke -o ce` |
+| Smoke test on Modal | `wf smoke -o ce --backend modal` |
 | Smoke test preview | `wf smoke -o bitdistill --dry-run` |
 | **Check sync status** | `./sync.sh --status --preset <preset>` |
 | **Start live sync** | `./sync.sh --preset <preset>` (runs in foreground with inotify) |
@@ -81,7 +81,7 @@
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │           ObjectiveManager (multi-task)              │   │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐          │   │
-│  │  │ CE Loss  │  │   DLM    │  │   LRC    │  ...     │   │
+│  │  │ CE Loss  │  │ BitDistl │  │   LRC    │  ...     │   │
 │  │  └──────────┘  └──────────┘  └──────────┘          │   │
 │  └─────────────────────────────────────────────────────┘   │
 │         ↓                                                   │
@@ -105,7 +105,7 @@ model=smollm2_135m          # 135M params, good for testing
 model=qwen3_4b              # 4B params, production
 
 # Training configs
-training=base            # Combined CE + DLM (recommended)
+training=base            # Standard CE training (recommended)
 training=bitdistill_full    # Knowledge distillation
 training=lrc_calibration    # Low-rank correction
 
@@ -118,7 +118,7 @@ gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
 
 ## GGUF Conversion (IMPORTANT)
 
-**NEVER use TQ2_0 for bf16 DLM checkpoints - it produces garbage output!**
+**NEVER use TQ2_0 for bf16 checkpoints - it produces garbage output!**
 
 | Format | Size | Speed | Quality | Notes |
 |--------|------|-------|---------|-------|

@@ -1,6 +1,6 @@
 # WrinkleFree Inference Engine
 
-Rust inference engine for **BitNet** 1.58-bit quantized LLMs with DLM block diffusion support.
+Rust inference engine for **BitNet** 1.58-bit quantized LLMs.
 
 ## Quick Reference
 
@@ -8,8 +8,6 @@ Rust inference engine for **BitNet** 1.58-bit quantized LLMs with DLM block diff
 |------|---------|
 | Convert checkpoint to GGUF | `python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o model.gguf` |
 | Build wf_server | `cd rust && cargo build --release --bin wf_server --features native-inference` |
-| Build dlm_server | `cd rust && cargo build --release --bin dlm_server --features llama-inference` |
-| Setup llama.cpp | `./scripts/setup_llama_cpp.sh` |
 | Benchmark wf_server | `./rust/target/release/wf_server --model-path model.gguf --benchmark` |
 | Test API | `curl http://localhost:30000/v1/chat/completions -d '{"messages":[{"role":"user","content":"Hello"}]}'` |
 
@@ -32,23 +30,6 @@ cargo build --release --bin wf_server --features native-inference
 ./target/release/wf_server --model-path model.gguf --benchmark
 ```
 
-### dlm_server (DLM Block Diffusion)
-
-Fast-dLLM v2 server for ~2.5x faster inference via parallel block decoding. Requires llama.cpp.
-
-```bash
-# Setup llama.cpp first
-./scripts/setup_llama_cpp.sh
-
-# Build dlm_server
-cd rust
-cargo build --release --bin dlm_server --features llama-inference
-
-# Set library path and run
-export LD_LIBRARY_PATH="../extern/llama.cpp/build/src:../extern/llama.cpp/build/ggml/src"
-./target/release/dlm_server --model-path model.gguf --port 30000
-```
-
 ## GGUF Conversion
 
 ```bash
@@ -59,7 +40,7 @@ python scripts/convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model
 python scripts/convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf --outtype i2_s
 ```
 
-**CRITICAL**: Never use TQ2_0 for bf16 DLM checkpoints - it corrupts weights!
+**CRITICAL**: Never use TQ2_0 for bf16 checkpoints - it corrupts weights!
 
 | Format | Notes |
 |--------|-------|
@@ -70,7 +51,7 @@ python scripts/convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model
 
 ## API
 
-Both servers expose OpenAI-compatible API:
+The server exposes an OpenAI-compatible API:
 
 ```bash
 curl http://localhost:30000/v1/chat/completions \
@@ -85,18 +66,12 @@ packages/inference/
 ├── rust/                          # Rust inference engine
 │   └── src/
 │       ├── bin/
-│       │   ├── wf_server.rs       # Pure Rust BitNet server
-│       │   └── dlm_server.rs      # DLM block diffusion server
+│       │   └── wf_server.rs       # Pure Rust BitNet server
 │       ├── engine/                # Transformer forward pass
 │       ├── gguf/                  # Pure Rust GGUF reader
-│       ├── kernels/bitnet/        # SIMD ternary kernels
-│       └── inference/             # DLM scheduler
-├── cpp/                           # C++ wrappers for llama.cpp FFI
-├── extern/
-│   └── llama.cpp/                 # Downloaded on-demand
+│       └── kernels/bitnet/        # SIMD ternary kernels
 ├── scripts/
-│   ├── convert_checkpoint_to_gguf.py
-│   └── setup_llama_cpp.sh
+│   └── convert_checkpoint_to_gguf.py
 ├── src/wf_infer/                  # Python utilities
 └── tests/
 ```
@@ -106,7 +81,6 @@ packages/inference/
 | Feature | Description |
 |---------|-------------|
 | `native-inference` | Pure Rust BitNet kernels (wf_server) |
-| `llama-inference` | llama.cpp-based inference (dlm_server) |
 
 ## Building
 
@@ -115,9 +89,6 @@ cd rust
 
 # Pure Rust (wf_server)
 cargo build --release --bin wf_server --features native-inference
-
-# With llama.cpp (dlm_server) - requires setup_llama_cpp.sh first
-cargo build --release --bin dlm_server --features llama-inference
 ```
 
 ## Monorepo Integration

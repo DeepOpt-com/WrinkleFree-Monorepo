@@ -1,6 +1,5 @@
-# Salient + LoRA: CE-only (no DLM)
+# Salient + LoRA: CE-only
 #
-# Same as salient_lora_run but with DLM disabled.
 # Uses only continue_pretrain (cross-entropy) loss.
 
 defaults:
@@ -49,14 +48,10 @@ lambda_warmup:
   enabled: true
   warmup_steps: 100
 
-# === OBJECTIVES (CE only, no DLM) ===
+# === OBJECTIVES (CE only) ===
 objectives:
   continue_pretrain:
     weight: 1.0
-
-  dlm:
-    weight: 0.0
-    mask_prob: 0.5
 
 # Curriculum: 10% warmup -> 90% main (CE only)
 curriculum:
@@ -66,13 +61,11 @@ curriculum:
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.0
     - name: main
       end_ratio: 1.0
       data_config: mixed_pretrain
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.0
 
 # Logging
 logging:

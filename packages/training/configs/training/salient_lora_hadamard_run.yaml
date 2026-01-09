@@ -62,14 +62,10 @@ gradient_accumulation_steps: 32
 auto_batch_size: false
 
 # === OBJECTIVES ===
-# CE only (DLM requires SFT data, not available in this config)
+# CE only
 objectives:
   continue_pretrain:
     weight: 1.0
-
-  # DLM disabled - requires SFT data. Use salient_run.yaml for DLM.
-  dlm:
-    enabled: false
 
 # Curriculum: 10% warmup -> 90% main (CE only)
 curriculum:

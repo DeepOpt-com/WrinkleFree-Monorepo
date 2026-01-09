@@ -31,11 +31,8 @@ lambda_warmup:
   warmup_steps: 500
 
 # === OBJECTIVES ===
-# BitDistill: CE + DLM + logits distillation + attention distillation
+# BitDistill: CE + logits distillation + attention distillation
 objectives:
-  dlm:
-    weight: 1.0  # Full weight (base has 0.5)
-
   # Unified distillation: logits + attention
   distill:
     enabled: true
@@ -66,7 +63,6 @@ curriculum:
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
-        dlm: 1.0
         distill: 1.0
 
 # Teacher model configuration

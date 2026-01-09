@@ -6,7 +6,7 @@ Called from smoke_test.yaml:
     python scripts/dispatch_smoke.py --objective $OBJECTIVE --model $MODEL
 
 Usage:
-    python scripts/dispatch_smoke.py --objective dlm --model smollm2_135m
+    python scripts/dispatch_smoke.py --objective ce --model smollm2_135m
     python scripts/dispatch_smoke.py --objective bitdistill --model qwen3_0.6b --steps 50
 """
 
@@ -23,19 +23,8 @@ OBJECTIVE_CONFIGS = {
         "training_config": "smoke_test",
         "overrides": [
             "training.objectives.continue_pretrain.enabled=true",
-            "training.objectives.dlm.enabled=false",
         ],
         "description": "Cross-entropy only",
-    },
-    "dlm": {
-        # DLM requires SFT - use sft_run.yaml which has DLM enabled
-        "training_config": "sft_run",
-        "overrides": [
-            "training.max_steps=50",
-            "training.checkpoint.save_interval=10",
-            "training.logging.log_interval=1",
-        ],
-        "description": "SFT + DLM (Fast-dLLM v2 for block diffusion inference)",
     },
     "bitdistill": {
         "training_config": "bitdistill_full",

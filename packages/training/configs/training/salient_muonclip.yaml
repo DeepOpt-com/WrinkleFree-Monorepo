@@ -7,7 +7,7 @@
 # - MuonClip optimizer: lr_muon=0.02, lr_adam=2e-4
 # - QK-clipping enabled (threshold=50.0)
 # - Salient columns: 1% FP16 (AWQ-style)
-# - CE only (no DLM)
+# - CE only
 # - ~100M tokens quick test
 #
 # Usage:
@@ -56,15 +56,11 @@ lambda_warmup:
   enabled: true
   warmup_steps: 100
 
-# CE only - no DLM
+# CE only
 objectives:
   continue_pretrain:
     enabled: true
     weight: 1.0
-
-  dlm:
-    enabled: false
-    weight: 0.0
 
 # Simple single-phase curriculum (CE only)
 curriculum:
@@ -75,7 +71,6 @@ curriculum:
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.0
 
 # Logging
 logging:

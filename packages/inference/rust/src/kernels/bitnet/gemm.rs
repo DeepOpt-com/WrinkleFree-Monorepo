@@ -8,6 +8,7 @@ use super::types::{QK_BLOCK, TileConfig};
 
 // Use multiply-free TL1 kernel for all platforms
 use super::gemv_tl1::vec_dot_tl1 as vec_dot;
+use super::gemv_tl1::gemm_tl1;
 
 /// BitNet GEMM: output = packed_weights @ activations * scale
 ///
@@ -57,7 +58,16 @@ pub fn gemm(
     let mut output = vec![0.0f32; m * n];
 
     if n == 1 {
-        // Single column - simple GEMV, parallelize over rows
+        // Single column - use TRUE TL1 GEMM with vqtbl1q_u8 for parallel lookup
+        // This processes 16 rows at a time with one LUT per activation pair
+        #[cfg(target_arch = "aarch64")]
+        {
+            gemm_tl1(m, n, k, packed_weights, activations, &mut output, scale);
+            return output;
+        }
+
+        // Non-ARM fallback: parallel GEMV
+        #[cfg(not(target_arch = "aarch64"))]
         gemv_parallel(m, k, packed_weights, activations, scale, &mut output);
     } else {
         // Multiple columns - parallelize over rows

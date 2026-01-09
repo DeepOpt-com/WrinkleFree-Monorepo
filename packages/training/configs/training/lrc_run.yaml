@@ -24,11 +24,8 @@ batch_size: 8
 gradient_accumulation_steps: 8
 
 # === OBJECTIVES ===
-# CE + DLM + LRC distillation
+# CE + LRC distillation
 objectives:
-  dlm:
-    weight: 0.5
-
   distill:
     enabled: true
     weight: 1.0
@@ -51,14 +48,12 @@ curriculum:
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.5
         distill: 0.5
     - name: main
       end_ratio: 1.0
       data_config: mixed_pretrain
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.5
         distill: 1.0
 
 # Logging

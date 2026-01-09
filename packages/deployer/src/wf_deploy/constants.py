@@ -226,7 +226,7 @@ def get_wandb_entity() -> str | None:
 # =============================================================================
 
 TRAINING_CONFIGS: Final[frozenset[str]] = frozenset({
-    "base",                      # Combined CE + DLM (recommended)
+    "base",                      # Combined CE (recommended)
     "smoke_test",                # Fast 30-step validation
     "bitdistill_full",           # Knowledge distillation
     "lrc_run",                   # Low-Rank Correction
@@ -235,7 +235,6 @@ TRAINING_CONFIGS: Final[frozenset[str]] = frozenset({
     "salient_lora_hadamard_run", # Salient + LoRA + Hadamard
     "sft_run",                   # Supervised fine-tuning
     "pretrain_then_sft",         # Pretrain -> SFT curriculum
-    "dlm_distill",               # DLM + TCS distillation
     "full_run",                  # Legacy full pipeline
     # Legacy stage-based configs (still supported)
     "stage1_subln",
@@ -252,7 +251,6 @@ TRAINING_CONFIGS: Final[frozenset[str]] = frozenset({
 
 SMOKE_OBJECTIVES: Final[frozenset[str]] = frozenset({
     "ce",           # Cross-entropy only
-    "dlm",          # CE + DLM (diffusion language model)
     "bitdistill",   # BitDistill (logits + attention distillation)
     "lrc",          # LRC (Low-Rank Correction)
     "salient",      # AWQ-style salient columns

@@ -2,12 +2,11 @@
 name = "wf-inference"
 version = "0.3.0"
 edition = "2021"
-description = "WrinkleFree Inference Engine - Rust BitNet 1.58-bit LLM inference with DLM block diffusion"
+description = "WrinkleFree Inference Engine - Rust BitNet 1.58-bit LLM inference"
 
 [features]
 default = []
 native-inference = []  # Enable native BitNet kernels (pure Rust, no llama.cpp)
-llama-inference = ["native-inference"]  # Enable llama.cpp-based inference engine (requires building llama.cpp)
 
 [lints.rust]
 unused_qualifications = "warn"
@@ -15,12 +14,6 @@ unused_qualifications = "warn"
 [lib]
 name = "wf_inference"
 crate-type = ["rlib"]
-
-# DLM server with Fast-dLLM v2 block diffusion
-[[bin]]
-name = "dlm_server"
-path = "src/bin/dlm_server.rs"
-required-features = ["llama-inference"]
 
 # Pure Rust BitNet server (no llama.cpp dependency)
 [[bin]]

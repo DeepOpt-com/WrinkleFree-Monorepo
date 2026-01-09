@@ -37,7 +37,7 @@ pub use quantize::{quantize_activations, dequantize_activations};
 pub use gemv_scalar::{vec_dot_scalar, pack_weights, unpack_weights};
 pub use gemv_neon::{vec_dot_neon, vec_dot_dotprod};
 pub use gemv_ternary::{vec_dot_ternary_scalar, vec_dot_ternary_branchless, vec_dot_ternary_neon};
-pub use gemv_tl1::vec_dot_tl1;
+pub use gemv_tl1::{vec_dot_tl1, gemm_tl1};
 pub use gemm::gemm;
 
 /// Pure Rust BitNet kernel wrapper.

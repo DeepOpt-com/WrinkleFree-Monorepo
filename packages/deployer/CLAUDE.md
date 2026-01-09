@@ -32,9 +32,9 @@ wf train -m qwen3_4b -t base --backend modal       # Use Modal instead of SkyPil
 wf train -m smollm2_135m -t base -b modal          # Short form
 
 # Smoke tests
-wf smoke                          # Default: dlm on L40S (SkyPilot)
+wf smoke                          # Default: ce on L40S (SkyPilot)
 wf smoke -o bitdistill            # BitDistill smoke test
-wf smoke -o dlm --backend modal   # Smoke test on Modal
+wf smoke -o ce --backend modal    # Smoke test on Modal
 wf smoke --dry-run                # Preview without launching
 
 # Check logs
@@ -79,11 +79,13 @@ uv run --package wf-train-deployer wf train -m qwen3_4b -s 2
 
 | Objective | Description |
 |-----------|-------------|
-| `ce` | Cross-entropy only |
-| `dlm` | CE + DLM (default) |
+| `ce` | Cross-entropy only (default) |
 | `bitdistill` | BitDistill distillation |
 | `lrc` | Low-Rank Correction |
 | `salient` | AWQ-style salient columns |
+| `salient_lora` | Salient + LoRA combined |
+| `hadamard` | BitNet v2 Hadamard transform |
+| `sft` | Supervised fine-tuning |
 | `meta_opt` | Meta-optimization (LDC-MTL + ODM) |
 
 ## Key Files
@@ -114,7 +116,7 @@ cd packages/deployer
 source credentials/.env
 
 # Run smoke test with specific objective
-wf smoke                          # Default: dlm on L40S
+wf smoke                          # Default: ce on L40S
 wf smoke -o bitdistill            # BitDistill distillation
 wf smoke -o lrc --gpu-type H100   # LRC on H100
 wf smoke -o meta_opt --gpu-count 2  # Meta-opt with 2 GPUs
@@ -123,10 +125,10 @@ wf smoke -o meta_opt --gpu-count 2  # Meta-opt with 2 GPUs
 wf smoke --dry-run
 
 # Monitor
-sky logs wf-smoke-dlm
+sky logs wf-smoke-ce
 
 # Teardown
-sky down wf-smoke-dlm -y
+sky down wf-smoke-ce -y
 ```
 
 **Test Configuration**:

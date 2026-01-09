@@ -70,8 +70,6 @@ def evaluate(
     smoke_test: bool = False,
     output_dir: str | None = None,
     use_bitnet: bool = False,
-    use_dlm: bool = False,
-    mc_iterations: int = 128,
     trust_remote_code: bool = True,
     verbosity: str = "INFO",
     wandb_project: str | None = None,
@@ -87,9 +85,6 @@ def evaluate(
     With W&B logging:
         results = evaluate("path/to/model", wandb_project="my-project")
 
-    For DLM (diffusion) models:
-        results = evaluate("path/to/dlm-checkpoint", use_dlm=True)
-
     Args:
         model_path: HuggingFace model ID or local path to model
         benchmark: Benchmark preset ("bitdistill", "glue", "summarization", "smoke_test")
@@ -102,8 +97,6 @@ def evaluate(
         smoke_test: Enable smoke test mode (limit=10 per task)
         output_dir: Directory to save results (None = don't save)
         use_bitnet: Use BitNet kernels if available
-        use_dlm: Use DLM (diffusion) evaluation mode with Monte Carlo masking
-        mc_iterations: Monte Carlo iterations for DLM loglikelihood (default: 128)
         trust_remote_code: Trust remote code in model config
         verbosity: Logging verbosity ("DEBUG", "INFO", "WARNING")
         wandb_project: W&B project name (None = no logging)
@@ -187,51 +180,23 @@ def evaluate(
     logger.info(f"Evaluating {model_path} on tasks: {lm_eval_tasks}")
     logger.info(f"Device: {device}, Dtype: {dtype}, Batch size: {batch_size}")
 
-    # Choose evaluation mode
-    if use_dlm:
-        # Use DLM (diffusion) evaluation with Monte Carlo masking
-        logger.info(f"Using DLM evaluation mode (MC iterations: {mc_iterations})")
-        from wf_eval.models.dlm_model import DLMEvalHarness
+    # Standard HuggingFace evaluation
+    model_args = f"pretrained={model_path}"
+    model_args += f",dtype={dtype}"
+    model_args += f",trust_remote_code={trust_remote_code}"
 
-        # Create DLM model wrapper
-        dlm_model = DLMEvalHarness(
-            pretrained=model_path,
-            device=device,
-            dtype=dtype,
-            batch_size=batch_size if isinstance(batch_size, int) else 1,
-            mc_iterations=mc_iterations,
-            trust_remote_code=trust_remote_code,
-        )
-
-        # Run evaluation with custom model
-        results = evaluator.simple_evaluate(
-            model=dlm_model,
-            tasks=lm_eval_tasks,
-            num_fewshot=num_fewshot_arg,
-            batch_size=batch_size if isinstance(batch_size, int) else 1,
-            device=device,
-            limit=limit,
-            task_manager=task_manager,
-            **kwargs,
-        )
-    else:
-        # Standard HuggingFace evaluation
-        model_args = f"pretrained={model_path}"
-        model_args += f",dtype={dtype}"
-        model_args += f",trust_remote_code={trust_remote_code}"
-
-        # Run evaluation using lm_eval
-        results = evaluator.simple_evaluate(
-            model="hf",
-            model_args=model_args,
-            tasks=lm_eval_tasks,
-            num_fewshot=num_fewshot_arg,
-            batch_size=batch_size,
-            device=device,
-            limit=limit,
-            task_manager=task_manager,
-            **kwargs,
-        )
+    # Run evaluation using lm_eval
+    results = evaluator.simple_evaluate(
+        model="hf",
+        model_args=model_args,
+        tasks=lm_eval_tasks,
+        num_fewshot=num_fewshot_arg,
+        batch_size=batch_size,
+        device=device,
+        limit=limit,
+        task_manager=task_manager,
+        **kwargs,
+    )
 
     # Extract and format results
     formatted_results = _format_results(results)

@@ -53,8 +53,8 @@ scheduler:
 # Training parameters
 total_tokens: 1_000_000_000
 max_seq_length: 1024
-batch_size: 16
-gradient_accumulation_steps: 32
+batch_size: 24  # Increased 50% from 16
+gradient_accumulation_steps: 21  # Reduced to maintain ~same effective batch
 auto_batch_size: false
 
 # Lambda warmup for smoother early training
@@ -63,14 +63,10 @@ lambda_warmup:
   warmup_steps: 200
 
 # === OBJECTIVES ===
-# CE only (DLM requires SFT data, not available in this config)
+# CE only
 objectives:
   continue_pretrain:
     weight: 1.0
-
-  # DLM disabled - requires SFT data. Use salient_run.yaml for DLM.
-  dlm:
-    enabled: false
 
 # Curriculum: 10% warmup -> 90% main (CE only)
 curriculum:

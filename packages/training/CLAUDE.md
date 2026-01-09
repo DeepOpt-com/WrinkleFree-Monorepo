@@ -5,10 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## CRITICAL Rules
 
 1. **USE LIGHTNING TRAINER**: Use `train_lightning.py` (legacy `train.py` has been removed)
-2. **AUTO BATCH SIZE**: Use `training.auto_batch_size=true` for single GPU runs only (NOT supported with DDP/FSDP!)
-3. **CLEAN CHECKPOINTS**: Before re-running failed jobs, clean `/tmp/checkpoints/` on remote
-4. **EXPERIMENTAL CODE**: MoE and TensorParallel are in `_experimental/` (not production-ready)
-5. **LEGACY CODE**: Legacy trainers are in `training/_legacy/` (use Lightning instead)
+2. **ALWAYS USE torch.compile**: Enable `training.torch_compile.enabled=true` for single-GPU (40-60 min first-run overhead, then cached)
+3. **AUTO BATCH SIZE**: Use `training.auto_batch_size=true` for single GPU runs only (NOT supported with DDP/FSDP!)
+4. **CLEAN CHECKPOINTS**: Before re-running failed jobs, clean `/tmp/checkpoints/` on remote
+5. **EXPERIMENTAL CODE**: MoE and TensorParallel are in `_experimental/` (not production-ready)
+6. **LEGACY CODE**: Legacy trainers are in `training/_legacy/` (use Lightning instead)
 
 ## Known Bugs
 
@@ -40,8 +41,21 @@ WrinkleFree is a repository for training and serving 1.58-bit (ternary) LLM mode
 |--------------|--------|---------|-------|
 | **TF32** | Enabled | 10-20% | Auto-enabled for Ampere+ GPUs (A100, H100, RTX 30xx/40xx) |
 | **Sequence Packing** | Enabled | 1.4-2x | Packs sequences to reduce padding waste |
-| **torch.compile** | Not used | - | Incompatible with FSDP multi-GPU |
+| **torch.compile** | **ALWAYS USE** | 20-40% | Use `training.torch_compile.enabled=true` (single GPU only) |
 | **FlashAttention (SDPA)** | Via HuggingFace | ~2x attention | HF models use SDPA by default |
+
+### torch.compile Notes
+- **ALWAYS enable** for single-GPU training: `training.torch_compile.enabled=true`
+- First run has 40-60 min compile overhead (cached at `/tmp/torch_compile_cache/`)
+- Use `mode=default` for best balance of compile time vs speedup
+- NOT compatible with FSDP multi-GPU
+
+### Log Buffering Issues
+When running training via `nohup ... > log.txt 2>&1 &`, Python's stdout buffering causes:
+- Training progress (tqdm) not appearing in log file
+- Log file appears "stuck" even though training is running
+- **Workaround**: Check GPU utilization (`nvidia-smi`) and process CPU time to verify training is active
+- Training metrics are still logged to WandB in real-time
 
 ## Monorepo Integration
 
@@ -87,16 +101,15 @@ uv run python scripts/train_lightning.py model=qwen3_4b training=base
 
 ### Unified Training (Recommended)
 
-The `base` config combines STE quantization training with DLM (Diffusion Language Model) objectives in a single pass:
+The `base` config provides STE quantization training with composable objectives:
 
 ```bash
-# Combined STE + DLM training (GitHub Issue #2)
+# Standard training
 uv run python scripts/train_lightning.py model=smollm2_135m training=base
 
 # Key features:
 # - Auto-converts model to BitNet if needed
-# - Multi-task: LM loss + DLM masking loss on same data
-# - Curriculum: Phases ramp up DLM weight over training
+# - Multi-task: ObjectiveManager supports composable losses
 # - MuonClip optimizer with QK clipping
 # - Meta-optimization for dynamic dataset weights (via ODM)
 # - WandB logging with per-objective losses
@@ -105,26 +118,17 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=base
 **Multi-Task Objectives**:
 The `ObjectiveManager` runs multiple objectives on the same batch:
 - `continue_pretrain`: Standard next-token prediction loss
-- `dlm`: Diffusion Language Model masking loss
+- `distill`: Knowledge distillation (logits, hidden states, attention)
 - `sft`: Supervised fine-tuning (instruction-masked CE loss)
 
-When DLM is enabled, the batch is preprocessed:
-1. Original labels stored in `batch["_original_labels"]`
-2. Input tokens masked with `mask_token_id`
-3. CE objective uses original labels; DLM uses masked positions
-
-**Curriculum Phases** (configurable in `unified.yaml`):
+**Curriculum Phases** (configurable in training configs):
 ```yaml
 curriculum:
   phases:
     - name: warmup         # Steps 0-10%
-      objectives: {continue_pretrain: 1.0, dlm: 0.0}
-    - name: dlm_ramp       # Steps 10-30%
-      objectives: {continue_pretrain: 1.0, dlm: 0.3}
-    - name: main           # Steps 30-80%
-      objectives: {continue_pretrain: 1.0, dlm: 0.5}
-    - name: dlm_focus      # Steps 80-100%
-      objectives: {continue_pretrain: 0.5, dlm: 1.0}
+      objectives: {continue_pretrain: 1.0}
+    - name: main           # Steps 10-100%
+      objectives: {continue_pretrain: 1.0}
 ```
 
 **Configurable Resume**:
@@ -144,23 +148,12 @@ uv run python scripts/train_lightning.py training=base \
 
 ### Inference Compatibility
 
-Models trained with `training=base` support **BOTH** inference modes:
-- **Autoregressive** (llama-cli): Works because we train with CE loss throughout
-- **Block diffusion** (dlm_server): Works because we train with DLM loss; may be faster
-
-| Training Config | Inference Mode | Notes |
-|-----------------|----------------|-------|
-| `objectives.continue_pretrain.enabled=true` | llama-cli (autoregressive) | Standard next-token prediction |
-| `objectives.dlm.enabled=true` | dlm_server (block diffusion) | Parallel token prediction, potentially faster |
+Models trained with `training=base` support autoregressive inference via the native Rust wf_server.
 
 **Critical Notes**:
 1. Use I2_S format for production (fastest, AVX-512 optimized)
 2. **NEVER use TQ2_0** for bf16 checkpoints - it corrupts ternary weights
-3. If llama-cli produces garbage, check quantization format first
-
-**DLM Settings** (if using dlm_server):
-- `mask_token_id` must match between training and inference (typically 0)
-- Block diffusion speedup depends on model size and hardware
+3. If inference produces garbage, check quantization format first
 
 See `packages/inference/CLAUDE.md` for conversion and serving details.
 
@@ -176,10 +169,8 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=base
 uv run python scripts/train_lightning.py model=smollm2_135m training=base \
   training.auto_batch_size=true
 
-# All objectives work unchanged (DLM, LRC, distillation)
-uv run python scripts/train_lightning.py model=smollm2_135m training=base \
-  training.objectives.dlm.enabled=true \
-  training.objectives.dlm.weight=0.5
+# All objectives work unchanged (LRC, distillation, etc.)
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
 ```
 
 **Key Features**:
@@ -200,11 +191,10 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=base \
 cd packages/deployer
 source credentials/.env
 
-# Run specific objective combo
-sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
-  --env OBJECTIVE_COMBO=dlm
+# Run smoke test
+wf smoke -o ce
 
-# Available combos: ce_only, dlm, distill, bitdistill, lrc
+# Available objectives: ce, bitdistill, lrc, salient, sft, meta_opt
 ```
 
 ### Meta-Optimization (LDC-MTL + ODM + LayerLR)
@@ -236,7 +226,7 @@ uv run python scripts/train_lightning.py model=smollm2_135m training=base \
 
 **How LDC-MTL Works**:
 - Small router MLP (32 hidden units) takes per-objective losses as input
-- Outputs softmax weights for each objective (CE, DLM, etc.)
+- Outputs softmax weights for each objective (CE, distill, etc.)
 - Loss discrepancy penalty encourages balanced weighted losses: `f(W,x) = Σ|τ_i·l_i - τ_{i+1}·l_{i+1}|`
 - Router trains jointly with model via single-level optimization
 
@@ -381,7 +371,7 @@ curriculum:
     - name: pretrain
       end_ratio: 0.9
       data_config: fineweb
-      objectives: {continue_pretrain: 1.0, dlm: 1.0}
+      objectives: {continue_pretrain: 1.0}
     - name: sft
       end_ratio: 1.0
       data_config: sft_nemotron
@@ -422,9 +412,9 @@ uv run python scripts/train_lightning.py model=qwen3_0.6b training=salient_lora_
 **Available Configs**:
 | Config | Optimizer | Objectives | Notes |
 |--------|-----------|------------|-------|
-| `salient_run` | AdamW 8-bit | CE + DLM | Stable, production-ready |
-| `salient_muonclip` | MuonClip | CE only | Experimental (Issue #25) |
-| `salient_lora_ce_only` | AdamW 8-bit | CE only | Salient + LoRA combined |
+| `salient_run` | AdamW 8-bit | CE | Stable, production-ready |
+| `salient_muonclip` | MuonClip | CE | Experimental (Issue #25) |
+| `salient_lora_ce_only` | AdamW 8-bit | CE | Salient + LoRA combined |
 
 **MuonClip + BitNet (Issue #25)**:
 MuonClip with high learning rates (lr_muon > 0.005) has historically caused divergence with BitNet.
@@ -699,7 +689,6 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 **Objectives** (`src/wf_train/objectives/`):
 - `manager.py` - ObjectiveManager: runs multiple objectives on same batch
 - `continue_pretrain.py` - ContinuePretrainObjective: next-token prediction
-- `dlm.py` - DLMObjective: diffusion language model masking
 - `distill.py` - DistillObjective: unified distillation with 4 configurable components:
   - `hidden`: Hidden state alignment (layerwise distillation)
   - `logits`: KL divergence on logits (full or sparse TCS mode)
@@ -733,16 +722,16 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 ```python
 # ObjectiveManager runs all enabled objectives
 manager = ObjectiveManager(
-    objectives={"continue_pretrain": CPObj(), "dlm": DLMObj()},
-    weights={"continue_pretrain": 1.0, "dlm": 0.5},
+    objectives={"continue_pretrain": CPObj(), "distill": DistillObj()},
+    weights={"continue_pretrain": 1.0, "distill": 0.5},
 )
 
-# Preprocess applies DLM masking, stores originals
+# Preprocess allows objectives to modify batch
 batch = manager.preprocess_batch(batch)
 
 # Forward computes all losses, returns weighted sum
 output = manager(model_outputs, batch)
-# output.loss = 1.0 * cp_loss + 0.5 * dlm_loss
+# output.loss = 1.0 * cp_loss + 0.5 * distill_loss
 ```
 
 **Auto-Setup Pattern**:
@@ -767,7 +756,7 @@ All configs in `configs/` using Hydra:
 **Key Config Files**:
 | Config | Purpose |
 |--------|---------|
-| `training/base.yaml` | Combined STE+DLM with curriculum |
+| `training/base.yaml` | Standard STE training with composable objectives |
 | `training/stage2_pretrain.yaml` | Legacy Stage 2 |
 | `data/default.yaml` | Points to wf_data |
 

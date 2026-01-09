@@ -1,5 +1,5 @@
 # Unified Training Configuration
-# Combines continue pre-training with optional layerwise distillation and DLM
+# Combines continue pre-training with optional layerwise distillation
 # Replaces separate stage1, stage1.9, stage2 with a single composable config
 
 stage: unified
@@ -91,16 +91,6 @@ objectives:
     ignore_index: -100
     label_smoothing: 0.0
 
-  dlm:
-    enabled: false  # DLM requires SFT - only use with sft_run.yaml or pretrain_then_sft.yaml
-    weight: 0.5
-    mask_prob: 0.15
-    mask_token_id: 0  # Use unk_token_id (0) as mask token for decoder-only models
-    use_complementary_masks: true  # Fast-dLLM v2: duplicate batch with m and (1-m) masks
-    # NOTE: DLM only masks OUTPUT tokens (labels != -100), not instructions
-    # Fast-dLLM v2 was trained on Qwen2.5-7B-Instruct, not a base model
-    # See: https://huggingface.co/Efficient-Large-Model/Fast_dLLM_v2_7B
-
   layerwise_distill:
     enabled: false  # Enable for distillation
     weight: 0.5
@@ -119,25 +109,22 @@ objectives:
 # === CURRICULUM SCHEDULE ===
 # Phase-based training with objective weight transitions
 #
-# NOTE: DLM requires SFT and cannot be combined with CE (continue_pretrain).
-# For DLM training, use pretrain_then_sft.yaml which adds DLM in the SFT phase.
-#
-# Example multi-phase curriculum with DLM:
+# Example multi-phase curriculum:
 #   phases:
 #     - name: pretrain
 #       end_ratio: 0.9
 #       data_config: fineweb
-#       objectives: {continue_pretrain: 1.0}  # CE only, no DLM
-#     - name: sft_dlm
+#       objectives: {continue_pretrain: 1.0}
+#     - name: sft
 #       end_ratio: 1.0
 #       data_config: sft_nemotron
-#       objectives: {sft: 1.0, dlm: 0.5}  # DLM with SFT
+#       objectives: {sft: 1.0}
 #
 curriculum:
   enabled: true
   interpolation: step  # "step" (immediate jump), "linear", or "cosine"
   phases:
-    # Single phase: CE only (no DLM - DLM requires SFT)
+    # Single phase: CE only
     - name: main
       end_ratio: 1.0
       data_config: fineweb
@@ -187,7 +174,7 @@ validation:
 
 # === META-OPTIMIZATION ===
 # Efficient meta-optimization using O(1) methods:
-# - LDC-MTL: Objective weight optimization (CE vs DLM vs distillation)
+# - LDC-MTL: Objective weight optimization (CE vs distillation)
 # - ODM/EXP3: Dataset weight optimization (bandit-based data mixing)
 # - LayerLR: Per-layer learning rate optimization (LARS-inspired)
 #

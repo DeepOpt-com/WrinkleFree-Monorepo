@@ -1,14 +1,10 @@
 # Full Run Configuration (Legacy)
-# Pretrain with Distillation -> SFT+DLM Configuration
+# Pretrain with Distillation -> SFT Configuration
 #
-# Two-phase training:
-# - Phase 1 (0-90%): Pretrain with CE + distillation on FineWeb
-# - Phase 2 (90-100%): SFT+DLM on Nemotron dataset
-#
-# NOTE: DLM requires SFT data - it only masks OUTPUT tokens (labels != -100).
-# Fast-dLLM v2 was trained on Qwen2.5-7B-Instruct, not a base model.
-#
-# Reference: "Fast-dLLM v2" (arXiv:2509.26328)
+# Three-phase training:
+# - Phase 1 (0-10%): Warmup on FineWeb
+# - Phase 2 (10-90%): Pretrain with CE + distillation on mixed data
+# - Phase 3 (90-100%): SFT on Nemotron dataset
 
 defaults:
   - base
@@ -38,7 +34,7 @@ lambda_warmup:
   warmup_steps: 1000  # Match scheduler warmup
 
 # === OBJECTIVES ===
-# CE + distillation for pretrain, SFT+DLM for final phase
+# CE + distillation for pretrain, SFT for final phase
 objectives:
   # SFT for final phase
   sft:
@@ -46,13 +42,6 @@ objectives:
     weight: 1.0
     ignore_index: -100
     label_smoothing: 0.0
-
-  # DLM for Fast-dLLM v2 inference (only used with SFT phase)
-  dlm:
-    enabled: true
-    weight: 0.5
-    mask_prob: 0.15
-    use_complementary_masks: true
 
   # Unified distillation with TCS (sparse logits)
   distill:
@@ -87,7 +76,6 @@ curriculum:
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.0  # DLM requires SFT
         sft: 0.0
         distill: 0.0
 
@@ -97,18 +85,15 @@ curriculum:
       data_config: mixed_pretrain
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.0  # DLM requires SFT
         sft: 0.0
         distill: 1.0
 
-    # Phase 3: SFT+DLM on instruction data (90%-100%)
-    # DLM only masks response tokens (labels != -100)
-    - name: sft_dlm
+    # Phase 3: SFT on instruction data (90%-100%)
+    - name: sft
       end_ratio: 1.0
       data_config: sft_nemotron
       objectives:
         continue_pretrain: 0.0
-        dlm: 0.5  # DLM with SFT - masks response tokens only
         sft: 1.0
         distill: 0.0
 
@@ -116,4 +101,4 @@ curriculum:
 logging:
   wandb:
     project: wrinklefree_v2
-    tags: [full_run, bitnet, sft, dlm, distill]
+    tags: [full_run, bitnet, sft, distill]

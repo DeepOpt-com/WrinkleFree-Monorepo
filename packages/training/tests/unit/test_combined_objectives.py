@@ -1,6 +1,6 @@
-"""Tests for combined multi-task objectives (LM + DLM).
+"""Tests for combined multi-task objectives.
 
-Tests the interaction between ContinuePretrainObjective and DLMObjective
+Tests the interaction between ContinuePretrainObjective and other objectives
 when running multi-task training on the same data.
 """
 
@@ -8,50 +8,7 @@ import pytest
 import torch
 
 from wf_train.objectives.continue_pretrain import ContinuePretrainObjective
-from wf_train.objectives.dlm import DLMObjective
 from wf_train.objectives.manager import ObjectiveManager
-
-
-class TestDLMStoresOriginals:
-    """Test that DLM stores original labels for multi-task training."""
-
-    def test_stores_original_labels(self):
-        """Test that DLM stores _original_labels in batch."""
-        obj = DLMObjective(mask_token_id=999, mask_prob=0.5)
-
-        input_ids = torch.randint(0, 100, (2, 10))
-        labels = input_ids.clone()  # Labels match input for LM
-
-        batch = {
-            "input_ids": input_ids.clone(),
-            "labels": labels.clone(),
-        }
-
-        processed = obj.preprocess_batch(batch)
-
-        assert "_original_labels" in processed
-        # With complementary masks (default), batch is doubled so _original_labels is also doubled
-        # First half should match original labels
-        assert torch.equal(processed["_original_labels"][:2], labels)
-
-    def test_original_labels_not_masked(self):
-        """Test that _original_labels are not masked."""
-        obj = DLMObjective(mask_token_id=999, mask_prob=0.9)  # High mask prob
-
-        input_ids = torch.randint(0, 100, (4, 20))
-        labels = input_ids.clone()
-
-        batch = {
-            "input_ids": input_ids.clone(),
-            "labels": labels.clone(),
-        }
-
-        processed = obj.preprocess_batch(batch)
-
-        # Original labels should not contain mask token
-        assert not (processed["_original_labels"] == 999).any()
-        # But input_ids should be masked
-        assert (processed["input_ids"] == 999).any()
 
 
 class TestContinuePretrainUsesOriginalLabels:
@@ -104,22 +61,21 @@ class TestContinuePretrainUsesOriginalLabels:
         assert output.loss.item() > 0  # Should work normally
 
 
-class TestCombinedObjectiveManager:
-    """Test ObjectiveManager with both CE and DLM objectives."""
+class TestObjectiveManagerBasics:
+    """Test ObjectiveManager with CE objectives."""
 
-    def test_combined_ce_dlm_forward(self):
-        """Test running CE + DLM together on same data."""
+    def test_ce_only_forward(self):
+        """Test running CE objective alone."""
         cp_obj = ContinuePretrainObjective()
-        dlm_obj = DLMObjective(mask_token_id=999, mask_prob=0.15)
 
         manager = ObjectiveManager(
-            objectives={"continue_pretrain": cp_obj, "dlm": dlm_obj},
-            weights={"continue_pretrain": 1.0, "dlm": 0.5},
+            objectives={"continue_pretrain": cp_obj},
+            weights={"continue_pretrain": 1.0},
         )
 
         # Create batch
         batch_size, seq_len, vocab_size = 2, 10, 100
-        input_ids = torch.randint(0, vocab_size - 1, (batch_size, seq_len))  # Avoid mask token
+        input_ids = torch.randint(0, vocab_size - 1, (batch_size, seq_len))
         labels = input_ids.clone()
 
         batch = {
@@ -127,40 +83,26 @@ class TestCombinedObjectiveManager:
             "labels": labels,
         }
 
-        # Preprocess (DLM applies masking)
+        # Preprocess
         processed_batch = manager.preprocess_batch(batch)
 
-        # Verify originals are stored
-        assert "_original_input_ids" in processed_batch
-        assert "_original_labels" in processed_batch
-
-        # With complementary masks, batch is doubled (2 -> 4)
-        doubled_batch_size = processed_batch["input_ids"].shape[0]
-        logits = torch.randn(doubled_batch_size, seq_len, vocab_size)
+        logits = torch.randn(batch_size, seq_len, vocab_size)
         model_outputs = {"logits": logits}
 
         # Forward pass
         output = manager(model_outputs, processed_batch)
 
-        # Verify both objectives computed
+        # Verify objective computed
         assert "continue_pretrain" in output.objective_outputs
-        assert "dlm" in output.objective_outputs
+        assert output.loss.item() > 0
 
-        # Verify weighted combination
-        cp_loss = output.objective_outputs["continue_pretrain"].loss
-        dlm_loss = output.objective_outputs["dlm"].loss
-        expected_total = 1.0 * cp_loss + 0.5 * dlm_loss
-
-        assert torch.allclose(output.loss, expected_total, rtol=1e-5)
-
-    def test_wandb_metrics_includes_both(self):
-        """Test WandB metrics include both objective losses."""
+    def test_wandb_metrics_ce_only(self):
+        """Test WandB metrics with CE objective only."""
         cp_obj = ContinuePretrainObjective()
-        dlm_obj = DLMObjective(mask_token_id=999, mask_prob=0.15)
 
         manager = ObjectiveManager(
-            objectives={"continue_pretrain": cp_obj, "dlm": dlm_obj},
-            weights={"continue_pretrain": 1.0, "dlm": 0.5},
+            objectives={"continue_pretrain": cp_obj},
+            weights={"continue_pretrain": 1.0},
         )
 
         batch_size, seq_len, vocab_size = 2, 10, 100
@@ -170,38 +112,24 @@ class TestCombinedObjectiveManager:
         batch = {"input_ids": input_ids, "labels": labels}
         processed_batch = manager.preprocess_batch(batch)
 
-        # With complementary masks, batch is doubled
-        doubled_batch_size = processed_batch["input_ids"].shape[0]
-        logits = torch.randn(doubled_batch_size, seq_len, vocab_size)
+        logits = torch.randn(batch_size, seq_len, vocab_size)
         model_outputs = {"logits": logits}
 
         output = manager(model_outputs, processed_batch)
         metrics = manager.get_wandb_metrics(output)
 
-        # Verify all expected metrics
+        # Verify expected metrics
         assert "train/loss" in metrics
         assert "train/continue_pretrain_loss" in metrics
-        assert "train/dlm_loss" in metrics
-        assert "train/dlm_num_masked" in metrics
         assert "schedule/continue_pretrain_weight" in metrics
-        assert "schedule/dlm_weight" in metrics
 
     def test_modifies_input_flag(self):
         """Test that any_modifies_input is correctly set."""
         cp_obj = ContinuePretrainObjective()  # doesn't modify
-        dlm_obj = DLMObjective(mask_token_id=999)  # modifies
 
         # Only CE
-        manager1 = ObjectiveManager(objectives={"cp": cp_obj})
-        assert not manager1.any_modifies_input
-
-        # Only DLM
-        manager2 = ObjectiveManager(objectives={"dlm": dlm_obj})
-        assert manager2.any_modifies_input
-
-        # Both
-        manager3 = ObjectiveManager(objectives={"cp": cp_obj, "dlm": dlm_obj})
-        assert manager3.any_modifies_input
+        manager = ObjectiveManager(objectives={"cp": cp_obj})
+        assert not manager.any_modifies_input
 
 
 class TestConfigurableResume:
@@ -250,39 +178,21 @@ class TestConfigurableResume:
         assert resume_config.load_training_state is True
 
 
-class TestFactoryWithDLM:
-    """Test factory creates DLM correctly with combined objectives."""
+class TestFactoryBasics:
+    """Test factory creates objectives correctly."""
 
-    def test_create_manager_with_dlm_enabled(self):
-        """Test creating manager with both CE and DLM enabled."""
+    def test_create_manager_with_ce_only(self):
+        """Test creating manager with CE objective only."""
         from wf_train.objectives.factory import create_objective_manager
 
         config = {
             "objectives": {
                 "continue_pretrain": {"enabled": True, "weight": 1.0},
-                "dlm": {"enabled": True, "weight": 0.5, "mask_token_id": 999, "mask_prob": 0.15},
             },
         }
 
         manager = create_objective_manager(config, total_steps=1000)
 
         assert "continue_pretrain" in manager.objectives
-        assert "dlm" in manager.objectives
         assert manager.base_weights["continue_pretrain"] == 1.0
-        assert manager.base_weights["dlm"] == 0.5
-        assert manager.any_modifies_input
-
-    def test_dlm_requires_mask_token_id(self):
-        """Test that DLM requires mask_token_id when enabled."""
-        from wf_train.objectives.factory import create_objective_manager
-
-        config = {
-            "objectives": {
-                "continue_pretrain": {"enabled": True},
-                "dlm": {"enabled": True, "weight": 0.5},  # No mask_token_id
-            },
-        }
-
-        # Should raise because mask_token_id is required
-        with pytest.raises(KeyError):
-            create_objective_manager(config, total_steps=1000)
+        assert not manager.any_modifies_input

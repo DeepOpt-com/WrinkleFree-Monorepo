@@ -84,7 +84,7 @@ def train(ctx, model: str, training: str | None, stage: float | None, scale: str
 
     \b
     Training Configs (recommended):
-        base:           Combined CE + DLM (default)
+        base:           CE training (default)
         bitdistill_full: Knowledge distillation
         lrc_run:        Low-Rank Correction
         salient_run:    AWQ-style salient columns
@@ -382,9 +382,9 @@ def runs(limit: int):
     )
 )
 @click.option("--model", "-m", default=DEFAULT_SMOKE_TEST_MODEL, help="Model to test (default: smollm2_135m)")
-@click.option("--objective", "-o", default="dlm",
+@click.option("--objective", "-o", default="ce",
               type=click.Choice(list(SMOKE_OBJECTIVES)),
-              help="Smoke test objective (default: dlm)")
+              help="Smoke test objective (default: ce)")
 @click.option("--gpu-type", default="L40S",
               type=click.Choice(["H100", "A100", "L40S", "A10G"]),
               help="GPU type (default: L40S)")
@@ -405,8 +405,7 @@ def smoke(ctx, model: str, objective: str, gpu_type: str, gpu_count: int, cloud:
 
     \b
     Objectives:
-        ce:           Cross-entropy only
-        dlm:          CE + DLM (default)
+        ce:           Cross-entropy only (default)
         bitdistill:   BitDistill distillation
         lrc:          Low-Rank Correction
         salient:      AWQ-style salient columns
@@ -417,7 +416,7 @@ def smoke(ctx, model: str, objective: str, gpu_type: str, gpu_count: int, cloud:
 
     \b
     Examples:
-        wf smoke                          # Default: dlm on L40S
+        wf smoke                          # Default: ce on L40S
         wf smoke -o bitdistill            # BitDistill smoke test
         wf smoke -o lrc --gpu-type H100   # LRC on H100
         wf smoke -o meta_opt --gpu-count 2  # Meta-opt with 2 GPUs
