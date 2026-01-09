@@ -84,17 +84,18 @@ class TestNextPowerOf2:
 class TestHadamardTransformWeights:
     """Test weight Hadamard transformation."""
 
-    def test_shape_preserved(self):
-        """Test output shape matches input."""
-        weight = torch.randn(256, 128)
+    def test_shape_preserved_power_of_2(self):
+        """Test output shape matches input for power-of-2 dimensions."""
+        weight = torch.randn(256, 128)  # 128 is power of 2
         weight_h = hadamard_transform_weights(weight)
         assert weight_h.shape == weight.shape
 
-    def test_non_power_of_2_input(self):
-        """Test with non-power-of-2 in_features."""
+    def test_shape_padded_non_power_of_2(self):
+        """Test output shape is padded for non-power-of-2 in_features."""
         weight = torch.randn(256, 576)  # SmolLM hidden size
         weight_h = hadamard_transform_weights(weight)
-        assert weight_h.shape == weight.shape
+        # Shape is now (out, padded_in) not (out, in) - this preserves H @ H = I
+        assert weight_h.shape == (256, 1024)  # 576 -> 1024 (next power of 2)
 
     def test_gradient_flow(self):
         """Test gradients flow through weight transform."""
@@ -110,16 +111,16 @@ class TestHBitLinear:
     def test_init(self):
         """Test HBitLinear initialization."""
         layer = HBitLinear(128, 256)
-        assert layer.in_features == 128
+        assert layer.original_in_features == 128
+        assert layer.in_features == 128  # Padded (same as original for power of 2)
         assert layer.out_features == 256
-        assert layer.padded_in == 128  # Already power of 2
         assert not layer.needs_padding
 
     def test_init_non_power_of_2(self):
         """Test HBitLinear with non-power-of-2 input."""
         layer = HBitLinear(576, 256)  # SmolLM hidden size
-        assert layer.in_features == 576
-        assert layer.padded_in == 1024
+        assert layer.original_in_features == 576
+        assert layer.in_features == 1024  # Padded to next power of 2
         assert layer.needs_padding
 
     def test_forward_shape(self):
@@ -323,3 +324,124 @@ class TestHBitLinearConversion:
         # SmolLM2-135M has 30 layers, each with o_proj and down_proj
         assert hbit_count > 0, "No HBitLinear layers found"
         assert bit_count > 0, "No BitLinear layers found"
+
+
+class TestMathematicalEquivalence:
+    """Test that HBitLinear preserves mathematical equivalence Y = W @ X."""
+
+    def test_hadamard_submatrix_not_involutory(self):
+        """Prove that H_11 @ H_11 != I for sliced Hadamard submatrices.
+
+        This test documents the mathematical issue with slicing Hadamard matrices.
+        For the full normalized Hadamard H, we have H @ H = I (involutory).
+        But for a submatrix H_11, this property does NOT hold.
+        """
+        # Build 4x4 normalized Hadamard
+        H4 = torch.tensor([
+            [1, 1, 1, 1],
+            [1, -1, 1, -1],
+            [1, 1, -1, -1],
+            [1, -1, -1, 1],
+        ], dtype=torch.float32) / 2.0  # normalized by 1/sqrt(4)
+
+        # Full Hadamard is involutory: H @ H = I
+        assert torch.allclose(H4 @ H4, torch.eye(4), atol=1e-6), "Full H should be involutory"
+
+        # Slice to 3x3 submatrix (simulating non-power-of-2)
+        H11 = H4[:3, :3]
+
+        # H_11 @ H_11 should NOT be identity - this is the bug we fixed
+        H11_squared = H11 @ H11
+        I3 = torch.eye(3)
+
+        # H_11 @ H_11 has diagonal 0.75 and off-diagonal ±0.25
+        # This would break mathematical equivalence if we sliced
+        assert not torch.allclose(H11_squared, I3, atol=0.1), "H_11 @ H_11 != I (expected)"
+        assert torch.allclose(H11_squared.diag(), torch.tensor([0.75, 0.75, 0.75]), atol=1e-6)
+
+    def test_mathematical_equivalence_power_of_2(self):
+        """Test Y = Linear(X) == HBitLinear(X) for power-of-2 dimensions (no padding)."""
+        from wf_arch.conversion.convert import convert_linear_to_hbitlinear
+
+        # Power of 2 dimension - no padding needed
+        in_features, out_features = 64, 32
+        linear = nn.Linear(in_features, out_features, bias=False)
+        hbit = convert_linear_to_hbitlinear(linear)
+
+        # Disable quantization to test pure Hadamard equivalence
+        warmup = LambdaWarmup(warmup_steps=0, min_lambda=0.0)
+        set_global_lambda_warmup(warmup)
+
+        try:
+            x = torch.randn(2, 8, in_features)
+            y_linear = linear(x)
+            y_hbit = hbit(x)
+
+            # Should be mathematically equivalent
+            assert torch.allclose(y_linear, y_hbit, atol=1e-4), (
+                f"Mathematical equivalence broken for power-of-2 dims. "
+                f"Max diff: {(y_linear - y_hbit).abs().max()}"
+            )
+        finally:
+            set_global_lambda_warmup(None)
+
+    def test_mathematical_equivalence_non_power_of_2(self):
+        """Test Y = Linear(X) == HBitLinear(X) for non-power-of-2 dimensions.
+
+        This is the critical test - after the fix, padded dimensions should
+        preserve mathematical equivalence: Y = W @ X = (W @ H) @ (H @ X).
+        """
+        from wf_arch.conversion.convert import convert_linear_to_hbitlinear
+
+        # Non-power-of-2 dimension - SmolLM2 hidden size
+        in_features, out_features = 576, 256
+        linear = nn.Linear(in_features, out_features, bias=False)
+        hbit = convert_linear_to_hbitlinear(linear)
+
+        # Verify padding is applied
+        assert hbit.original_in_features == 576
+        assert hbit.in_features == 1024  # Padded to next power of 2
+
+        # Disable quantization to test pure Hadamard equivalence
+        warmup = LambdaWarmup(warmup_steps=0, min_lambda=0.0)
+        set_global_lambda_warmup(warmup)
+
+        try:
+            x = torch.randn(2, 8, in_features)
+            y_linear = linear(x)
+            y_hbit = hbit(x)
+
+            # After fix: should be mathematically equivalent
+            assert torch.allclose(y_linear, y_hbit, atol=1e-4), (
+                f"Mathematical equivalence broken for non-power-of-2 dims. "
+                f"Max diff: {(y_linear - y_hbit).abs().max()}"
+            )
+        finally:
+            set_global_lambda_warmup(None)
+
+    def test_mathematical_equivalence_qwen3_dimensions(self):
+        """Test equivalence for Qwen3-0.6B dimensions (3072 intermediate)."""
+        from wf_arch.conversion.convert import convert_linear_to_hbitlinear
+
+        # Qwen3-0.6B down_proj: intermediate_size -> hidden_size
+        in_features, out_features = 3072, 1024
+        linear = nn.Linear(in_features, out_features, bias=False)
+        hbit = convert_linear_to_hbitlinear(linear)
+
+        # Verify padding: 3072 -> 4096
+        assert hbit.original_in_features == 3072
+        assert hbit.in_features == 4096
+
+        warmup = LambdaWarmup(warmup_steps=0, min_lambda=0.0)
+        set_global_lambda_warmup(warmup)
+
+        try:
+            x = torch.randn(2, 8, in_features)
+            y_linear = linear(x)
+            y_hbit = hbit(x)
+
+            assert torch.allclose(y_linear, y_hbit, atol=1e-4), (
+                f"Qwen3 dimensions: max diff {(y_linear - y_hbit).abs().max()}"
+            )
+        finally:
+            set_global_lambda_warmup(None)

@@ -69,7 +69,8 @@ setup: |
   gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json --quiet || true
   gcloud config set project wrinklefree-481904
 
-  uv sync --all-packages
+  # Only sync training-related packages (skip wf-inference which has build issues)
+  uv sync --package wf-train --package wf-arch --package wf-data
 
   # Verify Hadamard imports
   printf "Verifying Hadamard imports...\n"

@@ -141,10 +141,12 @@ def hadamard_transform_weights(weight: torch.Tensor) -> torch.Tensor:
         weight: Weight tensor of shape (out_features, in_features)
 
     Returns:
-        Hadamard-transformed weight tensor of same shape
+        Hadamard-transformed weight tensor of shape (out_features, padded_in)
+        where padded_in is the next power of 2 >= in_features.
 
     Note:
-        Non-power-of-2 in_features are automatically padded and sliced back.
+        Non-power-of-2 in_features are padded to next power of 2.
+        The output is NOT sliced back - this preserves H @ H = I.
     """
     if weight.ndim != 2:
         raise ValueError(f"Expected 2D weight tensor, got shape {weight.shape}")
@@ -160,8 +162,6 @@ def hadamard_transform_weights(weight: torch.Tensor) -> torch.Tensor:
     # Note: scale=1.0 since normalization is built into the matrix
     weight_h = hadamard_transform(weight, scale=1.0)
 
-    # Slice back to original size
-    if padded_in != in_features:
-        weight_h = weight_h[:, :in_features]
-
+    # NO SLICING - keep full padded dimension for mathematical correctness
+    # Slicing would break H @ H = I property (H_11 @ H_11 != I for submatrix)
     return weight_h
