@@ -887,105 +887,54 @@ static void bitnet_vec_dot_i2_i8_with_bias(
     const int nb = n / QK_I2_S;
 
 #if defined(BITNET_HAS_X86_SIMD) && defined(__AVX512F__) && defined(__AVX512BW__)
-    const __m512i mask = _mm512_set1_epi8(0x03);
     __m512i accu = _mm512_setzero_si512();
 
-    const int group64_num = nb / 64;
-
-    for (int i = 0; i < group64_num; i++) {
-        __m512i accu64 = _mm512_setzero_si512();
-
-        for (int j = 0; j < 64; j++) {
-            __m512i xq8_3 = _mm512_loadu_si512(
-                (const __m512i*)(packed_weights + i * 64 * 64 + j * 64)
-            );
-
-            __m512i xq8_2 = _mm512_srli_epi16(xq8_3, 2);
-            __m512i xq8_1 = _mm512_srli_epi16(xq8_3, 4);
-            __m512i xq8_0 = _mm512_srli_epi16(xq8_3, 6);
-
-            xq8_3 = _mm512_and_si512(xq8_3, mask);
-            xq8_2 = _mm512_and_si512(xq8_2, mask);
-            xq8_1 = _mm512_and_si512(xq8_1, mask);
-            xq8_0 = _mm512_and_si512(xq8_0, mask);
-
-            __m512i yq8_0 = _mm512_loadu_si512(
-                (const __m512i*)(activations + i * 256 * 64 + j * 256 + 0)
-            );
-            __m512i yq8_1 = _mm512_loadu_si512(
-                (const __m512i*)(activations + i * 256 * 64 + j * 256 + 64)
-            );
-            __m512i yq8_2 = _mm512_loadu_si512(
-                (const __m512i*)(activations + i * 256 * 64 + j * 256 + 128)
-            );
-            __m512i yq8_3 = _mm512_loadu_si512(
-                (const __m512i*)(activations + i * 256 * 64 + j * 256 + 192)
-            );
-
-            xq8_0 = _mm512_maddubs_epi16(xq8_0, yq8_0);
-            xq8_1 = _mm512_maddubs_epi16(xq8_1, yq8_1);
-            xq8_2 = _mm512_maddubs_epi16(xq8_2, yq8_2);
-            xq8_3 = _mm512_maddubs_epi16(xq8_3, yq8_3);
-
-            accu64 = _mm512_add_epi16(accu64, _mm512_add_epi16(xq8_0, xq8_1));
-            accu64 = _mm512_add_epi16(accu64, _mm512_add_epi16(xq8_2, xq8_3));
-        }
-
-        accu = _mm512_add_epi32(
-            _mm512_madd_epi16(accu64, _mm512_set1_epi16(1)),
-            accu
+    // Process blocks - widen to 32-bit after each iteration to avoid overflow
+    for (int i = 0; i < nb; i++) {
+        // Each block: 32 bytes packed weights = 128 weights, 128 activations
+        __m256i xq8_3 = _mm256_loadu_si256(
+            (const __m256i*)(packed_weights + i * 32)
         );
+
+        __m256i xq8_2 = _mm256_srli_epi16(xq8_3, 2);
+        __m256i xq8_1 = _mm256_srli_epi16(xq8_3, 4);
+        __m256i xq8_0 = _mm256_srli_epi16(xq8_3, 6);
+
+        const __m256i mask256 = _mm256_set1_epi8(0x03);
+        xq8_3 = _mm256_and_si256(xq8_3, mask256);
+        xq8_2 = _mm256_and_si256(xq8_2, mask256);
+        xq8_1 = _mm256_and_si256(xq8_1, mask256);
+        xq8_0 = _mm256_and_si256(xq8_0, mask256);
+
+        __m256i yq8_0 = _mm256_loadu_si256(
+            (const __m256i*)(activations + i * 128 + 0)
+        );
+        __m256i yq8_1 = _mm256_loadu_si256(
+            (const __m256i*)(activations + i * 128 + 32)
+        );
+        __m256i yq8_2 = _mm256_loadu_si256(
+            (const __m256i*)(activations + i * 128 + 64)
+        );
+        __m256i yq8_3 = _mm256_loadu_si256(
+            (const __m256i*)(activations + i * 128 + 96)
+        );
+
+        xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
+        xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
+        xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
+        xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
+
+        // Sum in 16-bit (safe, max ~2000 per lane for one block)
+        __m256i sum16 = _mm256_add_epi16(_mm256_add_epi16(xq8_0, xq8_1),
+                                         _mm256_add_epi16(xq8_2, xq8_3));
+
+        // Widen to 32-bit immediately to prevent overflow across blocks
+        __m512i sum32 = _mm512_cvtepi16_epi32(sum16);
+        accu = _mm512_add_epi32(accu, sum32);
     }
 
-    const int remaining_blocks = nb - group64_num * 64;
-    if (remaining_blocks > 0) {
-        __m256i mask256 = _mm256_set1_epi8(0x03);
-        __m256i accu_rem = _mm256_setzero_si256();
-        const int start_offset = group64_num * 64;
-
-        for (int j = 0; j < remaining_blocks; j++) {
-            __m256i xq8_3 = _mm256_loadu_si256(
-                (const __m256i*)(packed_weights + (start_offset + j) * 32)
-            );
-            __m256i xq8_2 = _mm256_srli_epi16(xq8_3, 2);
-            __m256i xq8_1 = _mm256_srli_epi16(xq8_3, 4);
-            __m256i xq8_0 = _mm256_srli_epi16(xq8_3, 6);
-
-            xq8_3 = _mm256_and_si256(xq8_3, mask256);
-            xq8_2 = _mm256_and_si256(xq8_2, mask256);
-            xq8_1 = _mm256_and_si256(xq8_1, mask256);
-            xq8_0 = _mm256_and_si256(xq8_0, mask256);
-
-            __m256i yq8_0 = _mm256_loadu_si256(
-                (const __m256i*)(activations + (start_offset + j) * 128 + 0)
-            );
-            __m256i yq8_1 = _mm256_loadu_si256(
-                (const __m256i*)(activations + (start_offset + j) * 128 + 32)
-            );
-            __m256i yq8_2 = _mm256_loadu_si256(
-                (const __m256i*)(activations + (start_offset + j) * 128 + 64)
-            );
-            __m256i yq8_3 = _mm256_loadu_si256(
-                (const __m256i*)(activations + (start_offset + j) * 128 + 96)
-            );
-
-            xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
-            xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
-            xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
-            xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
-
-            __m256i sum = _mm256_add_epi16(xq8_0, xq8_1);
-            sum = _mm256_add_epi16(sum, _mm256_add_epi16(xq8_2, xq8_3));
-            accu_rem = _mm256_add_epi32(accu_rem, _mm256_madd_epi16(sum, _mm256_set1_epi16(1)));
-        }
-
-        __m256i lo = _mm512_castsi512_si256(accu);
-        __m256i hi = _mm512_extracti64x4_epi64(accu, 1);
-        accu_rem = _mm256_add_epi32(accu_rem, _mm256_add_epi32(lo, hi));
-        *result = (float)(hsum_i32_8(accu_rem) - sum_activations);
-    } else {
-        *result = (float)(hsum_i32_16(accu) - sum_activations);
-    }
+    // Horizontal sum and apply bias correction
+    *result = (float)(_mm512_reduce_add_epi32(accu) - sum_activations);
 
 #elif defined(BITNET_HAS_X86_SIMD) && defined(__AVX2__)
     __m256i mask = _mm256_set1_epi8(0x03);

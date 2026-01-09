@@ -43,7 +43,7 @@ envs:
   MODEL: qwen3_0.6b
   WANDB_PROJECT: wrinklefree_v2
   HF_HUB_ENABLE_HF_TRANSFER: "1"
-  EXPERIMENT_NAME: hadamard_qwen3_0.6b_ce_only_warmup1k
+  EXPERIMENT_NAME: hadamard_qwen3_0.6b_ce_only
 
 setup: |
   set -e
@@ -102,7 +102,7 @@ run: |
   echo "  - HBitLinear for o_proj, down_proj (BitNet v2)"
   echo "  - SubLN before all projections (BitNet paper)"
   echo "  - CE only (DLM disabled)"
-  echo "  - Lambda warmup: 1000 steps (longer for CE-only stability)"
+  echo "  - Lambda warmup: 150 steps"
   echo "  - LR: 2e-5 (AdamW) - lower for CE-only stability"
   echo "  - Batch: 4 x 16 grad_accum = 64 effective (65K tokens/step)"
   echo "  - 10B tokens total"
@@ -126,8 +126,7 @@ run: |
     training.torch_compile.enabled=true \
     training.optimizer.type=adamw \
     +training.optimizer.learning_rate=2e-5 \
-    training.lambda_warmup.warmup_steps=1000 \
-    training.scheduler.warmup_steps=1000 \
+    training.lambda_warmup.warmup_steps=150 \
     training.objectives.dlm.enabled=false \
     training.meta_optimization.enabled=false \
     training.checkpoint.save_interval=500 \
