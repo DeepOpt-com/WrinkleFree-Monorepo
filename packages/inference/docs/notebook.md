@@ -321,3 +321,93 @@ No improvement (20.99 tok/s vs 20.51 tok/s baseline). Profiling confirmed the bo
 
 ### Conclusion
 SIMD optimization is unnecessary for DLM - the C++ inference engine dominates runtime. The adaptive threshold strategy was the correct solution.
+
+---
+
+## 2026-01-08: wf_server GEMM Kernel Optimization Attempts
+
+### Context
+Benchmarking wf_server (native Rust inference) on Qwen2.5-32B showed poor performance vs llama.cpp:
+- **llama.cpp**: 53.84 tok/s prefill
+- **wf_server**: ~15 tok/s prefill (3.5x slower)
+
+Profile showed FFN at 77% of compute time. Model dimensions:
+- hidden_size: 5120
+- intermediate_size: 27648
+- num_layers: 64
+
+### Optimization 1: Activation Sum Caching (FAILED)
+
+**Hypothesis**: The `bitnet_vec_dot_i2_i8` function computes `sum(activations)` for bias correction inside every call. For GEMM with M output rows, the same sum is computed M times per batch column.
+
+**Implementation**:
+1. Created `compute_activation_sum()` - SIMD-optimized sum function
+2. Created `bitnet_vec_dot_i2_i8_with_bias()` - dot product with pre-computed sum
+3. Modified `bitnet_gemm_i2_i8()` to pre-compute N sums (one per batch column)
+
+**Result**: No improvement (15.0 → 15.5 tok/s).
+
+**Why it failed**: The workload is memory-bound, not compute-bound. The activation data is already being loaded for the dot product, so computing the sum "for free" during the load doesn't save much. The overhead of my implementation actually made things slightly worse initially (found int16 overflow bug in my AVX-512 path).
+
+**Lesson**: Pre-computation optimizations don't help memory-bound workloads.
+
+### Optimization 2: Loop Order Change (MARGINAL)
+
+**Change**: In the parallelized GEMM, changed loop order from M-major to N-major:
+```cpp
+// Before: consecutive threads share weights, different activations
+int m = work_id / N;
+int n = work_id % N;
+
+// After: consecutive threads share activations, different weights
+int n = work_id / M;
+int m = work_id % M;
+```
+
+**Result**: 15.3 → 15.6 tok/s (~2% improvement, within noise)
+
+### Optimization 3: Thread Count Tuning (SIGNIFICANT)
+
+**Experiment**: Varied OMP_NUM_THREADS on 64-core AMD EPYC Genoa
+
+| Threads | Prefill tok/s | vs 64 threads |
+|---------|---------------|---------------|
+| 16 | 11.2 | -28% |
+| 24 | 15.1 | -3% |
+| **32** | **17.6** | **+13%** |
+| 48 | 15.1 | -3% |
+| 64 | 15.6 | baseline |
+
+**Result**: 32 threads is optimal, giving 17.6 tok/s (+13% over 64 threads)
+
+**Why**: Too many threads cause memory bandwidth contention on NUMA systems. The 64 cores share memory controllers, so reducing thread count reduces contention.
+
+### Optimization 4: NUMA/OpenMP Binding (NEGATIVE)
+
+**Experiments**:
+- `OMP_PROC_BIND=close OMP_PLACES=cores`: 13.6 tok/s (-23%)
+- `OMP_PROC_BIND=spread OMP_PLACES=threads`: 10.6 tok/s (-40%)
+
+**Result**: Default binding is best. Explicit NUMA binding hurts performance.
+
+### Current Best Configuration
+
+```bash
+export OMP_NUM_THREADS=32
+./wf_server --model-path model.gguf --context-len 4096 --benchmark
+```
+
+**Performance**: 17.6 tok/s prefill (still 3x slower than llama.cpp's 53.84 tok/s)
+
+### Remaining Gap Analysis
+
+wf_server is still 3x slower than llama.cpp. Possible causes:
+1. **Memory layout**: llama.cpp may have better weight layout for cache
+2. **SIMD utilization**: llama.cpp may use AVX-512 more efficiently
+3. **Tiling strategy**: llama.cpp may use better blocking/tiling for L2 cache
+4. **Parallelization**: llama.cpp may parallelize differently (per-layer vs per-element)
+
+### Next Steps
+- Profile memory bandwidth utilization
+- Compare SIMD utilization between wf_server and llama.cpp
+- Implement proper L2-cache-aware tiling in GEMM

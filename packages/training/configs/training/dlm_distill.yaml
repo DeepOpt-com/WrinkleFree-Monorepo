@@ -1,13 +1,15 @@
 # DLM + Distillation Configuration
-# Combines DLM (for fast inference) with TCS distillation (for quality)
+# Pretrain with Distillation -> SFT+DLM Configuration
 #
-# Key insight: AR teachers produce causal (left-to-right) predictions, while DLM
-# students need bidirectional masked token predictions. This config uses:
-# - TCS (Target Concrete Score) distillation: no token shifting, designed for DLM
-# - Teacher receives unmasked input (via _original_input_ids) for meaningful predictions
-# - Student receives masked input for DLM training
+# Three-phase training:
+# - Phase 1 (0-10%): CE-only warmup on FineWeb
+# - Phase 2 (10-90%): CE + TCS distillation on mixed_pretrain
+# - Phase 3 (90-100%): SFT+DLM on Nemotron dataset
 #
-# Reference: "Distilled Diffusion Language Models" (OpenReview)
+# NOTE: DLM requires SFT data - it only masks OUTPUT tokens (labels != -100).
+# Fast-dLLM v2 was trained on Qwen2.5-7B-Instruct, not a base model.
+#
+# Reference: "Fast-dLLM v2" (arXiv:2509.26328)
 
 defaults:
   - base
@@ -33,9 +35,23 @@ lambda_warmup:
   warmup_steps: 500
 
 # === OBJECTIVES ===
-# DLM + TCS distillation for fast inference with quality transfer
+# CE + distillation for pretrain, SFT+DLM for final phase
 objectives:
-  # Unified distillation with TCS (sparse logits) for DLM
+  # SFT for final phase
+  sft:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+  # DLM for Fast-dLLM v2 inference (only used with SFT phase)
+  dlm:
+    enabled: true
+    weight: 0.5
+    mask_prob: 0.15
+    use_complementary_masks: true
+
+  # Unified distillation with TCS (sparse logits)
   distill:
     enabled: true
     weight: 1.0
@@ -51,14 +67,14 @@ objectives:
       temperature: 5.0  # Higher temp for softer targets
       mode: sparse  # TCS-style top-K sparse matching
       top_k: 100  # Sparse TCS estimation for efficiency
-      shift_labels: false  # NO shifting for DLM
+      shift_labels: true  # Use shifted labels for CE phases
       ignore_index: -100
     attention:
       enabled: false
     lrc:
       enabled: false
 
-# Phase-based training: CE first, then DLM+distill
+# Phase-based training: CE+distill first, then SFT+DLM
 curriculum:
   interpolation: linear
   phases:
@@ -68,40 +84,35 @@ curriculum:
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.0
+        dlm: 0.0  # DLM requires SFT
+        sft: 0.0
         distill: 0.0
 
-    # Phase 2: Ramp up DLM + distillation (10% - 30%)
-    - name: dlm_ramp
-      end_ratio: 0.3
+    # Phase 2: CE + distillation (10% - 90%)
+    - name: pretrain_distill
+      end_ratio: 0.9
       data_config: mixed_pretrain
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.3
-        distill: 0.6
-
-    # Phase 3: Full DLM + distillation (30% - 80%)
-    - name: main
-      end_ratio: 0.8
-      data_config: mixed_pretrain
-      objectives:
-        continue_pretrain: 1.0
-        dlm: 0.5
+        dlm: 0.0  # DLM requires SFT
+        sft: 0.0
         distill: 1.0
 
-    # Phase 4: DLM focus (last 20%)
-    - name: dlm_focus
+    # Phase 3: SFT+DLM on instruction data (90% - 100%)
+    # DLM only masks response tokens (labels != -100)
+    - name: sft_dlm
       end_ratio: 1.0
-      data_config: mixed_pretrain
+      data_config: sft_nemotron
       objectives:
-        continue_pretrain: 0.5
-        dlm: 1.0
-        distill: 0.6
+        continue_pretrain: 0.0
+        dlm: 0.5  # DLM with SFT - masks response tokens only
+        sft: 1.0
+        distill: 0.0
 
 # Logging
 logging:
   wandb:
-    tags: [dlm_distill, bitnet, tcs]
+    tags: [dlm_distill, bitnet, sft, dlm, tcs]
 
 # Influence-based data selection
 influence:

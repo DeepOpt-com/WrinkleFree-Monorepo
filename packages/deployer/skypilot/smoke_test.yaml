@@ -35,13 +35,13 @@
 # Teardown:
 #   sky down smoke -y
 
-name: wf-smoke-${OBJECTIVE}
+name: wf-smoke-dlm
 
 resources:
-  accelerators: ${GPU_TYPE}:${GPU_COUNT}
+  accelerators: L40S:1
   memory: 64+
   use_spot: false
-  cloud: ${CLOUD}
+  cloud: nebius
 
 # Run from monorepo root
 workdir: .
@@ -58,9 +58,6 @@ envs:
   # Configurable via --env
   MODEL: smollm2_135m
   OBJECTIVE: dlm
-  GPU_TYPE: L40S
-  GPU_COUNT: "1"
-  CLOUD: nebius
   # Fixed
   WANDB_PROJECT: wrinklefree
   HF_HUB_ENABLE_HF_TRANSFER: "1"

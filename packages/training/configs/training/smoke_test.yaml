@@ -42,7 +42,7 @@ logging:
 lambda_warmup:
   warmup_steps: 5
 
-# Single phase
+# Single phase (CE only - DLM requires SFT, use sft_run for DLM testing)
 curriculum:
   phases:
     - name: smoke
@@ -50,4 +50,4 @@ curriculum:
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
-        dlm: 0.5
+        dlm: 0.0  # DLM requires SFT data

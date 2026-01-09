@@ -1,0 +1,100 @@
+# Salient + MuonClip Training (CE-only)
+#
+# Testing MuonClip optimizer with salient columns.
+# Related: GitHub Issue #25 (MuonClip divergence with BitNet)
+#
+# Configuration:
+# - MuonClip optimizer: lr_muon=0.02, lr_adam=2e-4
+# - QK-clipping enabled (threshold=50.0)
+# - Salient columns: 1% FP16 (AWQ-style)
+# - CE only (no DLM)
+# - ~100M tokens quick test
+#
+# Usage:
+#   uv run python scripts/train_lightning.py \
+#     model=qwen3_0.6b training=salient_muonclip
+
+defaults:
+  - base
+
+stage: salient_muonclip
+
+# Salient Column Configuration
+salient:
+  enabled: true
+  ratio: 0.01  # 1% of columns in FP16
+  calibration_samples: 128
+  calibration_data: fineweb
+
+# MuonClip optimizer (testing for Issue #25)
+optimizer:
+  type: muonclip
+  lr_muon: 0.02       # Base.yaml default - testing if it works
+  lr_adam: 2e-4       # Lower than base.yaml 3e-4
+  momentum: 0.95
+  weight_decay: 0.01
+  # QK-clipping settings
+  enable_clipping: true
+  clipping_threshold: 50.0
+  clipping_alpha: 0.5
+
+# Training parameters (~100M tokens)
+total_tokens: 100_000_000
+max_seq_length: 1024
+batch_size: 4
+gradient_accumulation_steps: 16
+auto_batch_size: false
+
+# Scheduler
+scheduler:
+  type: wsd
+  warmup_steps: 100
+  decay_ratio: 0.2
+
+# Lambda warmup for gradual quantization
+lambda_warmup:
+  enabled: true
+  warmup_steps: 100
+
+# CE only - no DLM
+objectives:
+  continue_pretrain:
+    enabled: true
+    weight: 1.0
+
+  dlm:
+    enabled: false
+    weight: 0.0
+
+# Simple single-phase curriculum (CE only)
+curriculum:
+  enabled: true
+  phases:
+    - name: main
+      end_ratio: 1.0
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0
+        dlm: 0.0
+
+# Logging
+logging:
+  log_interval: 5
+  wandb:
+    enabled: true
+    project: wrinklefree_v2
+    tags: [salient, muonclip, bitnet, ce_only, issue_25]
+
+# Memory optimization
+memory:
+  gradient_checkpointing: true
+  clear_cache_interval: 100
+
+# Checkpointing
+checkpoint:
+  save_interval: 200
+  keep_last_n: 3
+
+# No meta-optimization for this test
+meta_optimization:
+  enabled: false

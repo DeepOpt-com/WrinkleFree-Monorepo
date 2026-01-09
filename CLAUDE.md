@@ -29,6 +29,7 @@
 | BitDistill distillation | `... training=bitdistill_full` |
 | LRC calibration | `... training=lrc_run` |
 | Salient columns (AWQ-style) | `... training=salient_run` |
+| Salient + MuonClip (experimental) | `... training=salient_muonclip` |
 | **Deploy to cloud** | `cd packages/deployer && wf train -m smollm2_135m -t base` |
 | Cloud with scale | `wf train -m qwen3_4b -t bitdistill_full --scale large` |
 | **Smoke test** | `cd packages/deployer && wf smoke -o dlm` |

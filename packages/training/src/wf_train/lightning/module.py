@@ -429,21 +429,32 @@ class WrinkleFreeLightningModule(pl.LightningModule):
                     datamodule.update_data_config(new_data_config)
 
             # Log current curriculum phase and data config to WandB
-            if new_data_config:
-                # Log as a string metric for visibility
-                if new_phase:
-                    self.log(
-                        "curriculum/phase",
-                        hash(new_phase) % 1000,  # Numeric hash for WandB
-                        on_step=True,
-                        sync_dist=True,
-                    )
-                self.log(
-                    "curriculum/data_config",
-                    hash(new_data_config) % 1000,  # Numeric hash for WandB
-                    on_step=True,
-                    sync_dist=True,
-                )
+            # Use phase index (0, 1, 2...) for clean numeric logging
+            phase_idx = self.objective_manager.get_current_phase_index()
+            phase_progress = self.objective_manager.get_progress_in_phase()
+
+            self.log(
+                "curriculum/phase_idx",
+                float(phase_idx),  # 0, 1, 2... for each phase
+                on_step=True,
+                sync_dist=True,
+            )
+            self.log(
+                "curriculum/phase_progress",
+                phase_progress,  # 0.0 to 1.0 within current phase
+                on_step=True,
+                sync_dist=True,
+            )
+
+            # Log phase name and data config to WandB summary (text)
+            if hasattr(self, "logger") and self.logger is not None:
+                try:
+                    # Access wandb experiment directly for string logging
+                    if hasattr(self.logger, "experiment") and self.logger.experiment is not None:
+                        self.logger.experiment.summary["curriculum/current_phase"] = new_phase or "main"
+                        self.logger.experiment.summary["curriculum/current_data"] = new_data_config or "default"
+                except Exception:
+                    pass  # Silently ignore if wandb not available
 
         return final_loss
 

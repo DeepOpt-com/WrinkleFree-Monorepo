@@ -103,8 +103,8 @@ run: |
   echo "  - SubLN before all projections (BitNet paper)"
   echo "  - CE only (DLM disabled)"
   echo "  - Lambda warmup: 200 steps"
-  echo "  - LR: 5e-5 (AdamW)"
-  echo "  - Batch: 10 x 6 grad_accum = 60 effective (~61K tokens/step)"
+  echo "  - LR: 2e-5 (AdamW)"
+  echo "  - Batch: 4 x 16 grad_accum = 64 effective (~65K tokens/step)"
   echo "  - 10B tokens total"
   echo "  - GCS uploads enabled"
   echo "=============================================="
@@ -118,14 +118,14 @@ run: |
     training.auto_convert.insert_subln=true \
     training.total_tokens=10_000_000_000 \
     training.max_steps=null \
-    training.batch_size=10 \
-    training.gradient_accumulation_steps=6 \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=16 \
     training.max_seq_length=1024 \
     training.logging.log_interval=10 \
     training.auto_batch_size=false \
     training.torch_compile.enabled=true \
     training.optimizer.type=adamw \
-    +training.optimizer.learning_rate=5e-5 \
+    +training.optimizer.learning_rate=2e-5 \
     training.lambda_warmup.warmup_steps=200 \
     training.objectives.dlm.enabled=false \
     training.meta_optimization.enabled=false \

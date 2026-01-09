@@ -164,6 +164,39 @@ class CurriculumScheduler:
         """Get current data configuration name."""
         return self.get_current_phase().data_config
 
+    def get_current_phase_index(self) -> int:
+        """Get index of current phase (0-indexed).
+
+        Returns index into self.phases list for the current phase.
+        Useful for clean WandB logging instead of hash values.
+        """
+        progress = self._current_step / self.total_steps
+        for i, phase in enumerate(self.phases):
+            if progress <= phase.end_ratio:
+                return i
+        return len(self.phases) - 1
+
+    def get_progress_in_phase(self) -> float:
+        """Get progress within current phase (0.0 to 1.0).
+
+        Useful for visualizing how far along we are in the current phase.
+        """
+        progress = self._current_step / self.total_steps
+        phase_idx = self.get_current_phase_index()
+
+        if phase_idx == 0:
+            phase_start = 0.0
+        else:
+            phase_start = self.phases[phase_idx - 1].end_ratio
+
+        phase_end = self.phases[phase_idx].end_ratio
+        phase_length = phase_end - phase_start
+
+        if phase_length == 0:
+            return 1.0
+
+        return (progress - phase_start) / phase_length
+
     def state_dict(self) -> dict:
         """Get state for checkpointing."""
         return {"current_step": self._current_step}
@@ -221,11 +254,26 @@ class ObjectiveManager(nn.Module):
         self._validate_objective_compatibility()
 
     def _validate_objective_compatibility(self) -> None:
-        """Check for incompatible objective combinations and warn."""
-        # Check for DLM + logits_distill with shift_labels (incompatible)
+        """Check for incompatible objective combinations and error/warn."""
         has_dlm = "dlm" in self.objectives
+        has_sft = "sft" in self.objectives
+        has_ce = "continue_pretrain" in self.objectives
         has_logits_distill = "logits_distill" in self.objectives
 
+        # DLM requires SFT (Fast-dLLM v2 is trained on Qwen2.5-7B-Instruct)
+        # See: https://huggingface.co/Efficient-Large-Model/Fast_dLLM_v2_7B
+        if has_dlm and not has_sft:
+            raise ValueError(
+                "DLM requires SFT to be enabled. DLM masking only applies to output tokens "
+                "in instruction-following data. Fast-dLLM v2 was trained on Qwen2.5-7B-Instruct. "
+                "See: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/47"
+            )
+
+        # DLM + CE in same phase is invalid (corrupts CE gradients)
+        if has_dlm and has_ce:
+            self._validate_no_dlm_ce_overlap()
+
+        # Check for DLM + logits_distill with shift_labels (incompatible)
         if has_dlm and has_logits_distill:
             logits_distill = self.objectives["logits_distill"]
             # Check if shift_labels is True (default for AR-to-AR distillation)
@@ -236,6 +284,34 @@ class ObjectiveManager(nn.Module):
                     "AR-style logits distillation with token shifting is incompatible with DLM's "
                     "masked prediction paradigm. Consider using 'tcs_distill' instead (no shifting), "
                     "or disable one of the objectives."
+                )
+
+    def _validate_no_dlm_ce_overlap(self) -> None:
+        """Validate that DLM and CE (continue_pretrain) are never active together.
+
+        DLM + CE in the same phase corrupts ~85% of CE gradients because CE trains
+        on logits computed from masked inputs. CE warmup then SFT+DLM is OK.
+        """
+        if self.curriculum is not None:
+            for phase in self.curriculum.phases:
+                weights = phase.objective_weights
+                dlm_active = weights.get("dlm", 0) > 0
+                ce_active = weights.get("continue_pretrain", 0) > 0
+                if dlm_active and ce_active:
+                    raise ValueError(
+                        f"Invalid objective combination in phase '{phase.name}': "
+                        f"DLM and continue_pretrain cannot be active together. "
+                        f"DLM should only be used with SFT phases. "
+                        f"See: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/47"
+                    )
+        else:
+            # No curriculum - check base weights
+            dlm_weight = self.base_weights.get("dlm", 0)
+            ce_weight = self.base_weights.get("continue_pretrain", 0)
+            if dlm_weight > 0 and ce_weight > 0:
+                raise ValueError(
+                    "Invalid objective combination: DLM and continue_pretrain cannot be active together. "
+                    "DLM should only be used with SFT phases."
                 )
 
     @property
@@ -374,6 +450,26 @@ class ObjectiveManager(nn.Module):
             phase = self.curriculum.get_current_phase()
             return phase.name if phase else None
         return None
+
+    def get_current_phase_index(self) -> int:
+        """Get current curriculum phase index (0-indexed).
+
+        Returns:
+            Phase index, or 0 if no curriculum.
+        """
+        if self.curriculum is not None:
+            return self.curriculum.get_current_phase_index()
+        return 0
+
+    def get_progress_in_phase(self) -> float:
+        """Get progress within current phase (0.0 to 1.0).
+
+        Returns:
+            Progress ratio, or 0.0 if no curriculum.
+        """
+        if self.curriculum is not None:
+            return self.curriculum.get_progress_in_phase()
+        return 0.0
 
     def get_wandb_metrics(self, output: ManagerOutput, prefix: str = "train") -> dict[str, float]:
         """Generate wandb-compatible metrics dictionary.

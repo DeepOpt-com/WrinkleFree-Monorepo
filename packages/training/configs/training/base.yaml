@@ -92,11 +92,14 @@ objectives:
     label_smoothing: 0.0
 
   dlm:
-    enabled: true  # Combined STE+DLM training by default
+    enabled: false  # DLM requires SFT - only use with sft_run.yaml or pretrain_then_sft.yaml
     weight: 0.5
     mask_prob: 0.15
     mask_token_id: 0  # Use unk_token_id (0) as mask token for decoder-only models
     use_complementary_masks: true  # Fast-dLLM v2: duplicate batch with m and (1-m) masks
+    # NOTE: DLM only masks OUTPUT tokens (labels != -100), not instructions
+    # Fast-dLLM v2 was trained on Qwen2.5-7B-Instruct, not a base model
+    # See: https://huggingface.co/Efficient-Large-Model/Fast_dLLM_v2_7B
 
   layerwise_distill:
     enabled: false  # Enable for distillation
@@ -115,30 +118,31 @@ objectives:
 
 # === CURRICULUM SCHEDULE ===
 # Phase-based training with objective weight transitions
-# DLM enabled from the start (no warmup phase)
 #
-# To add an SFT phase at the end of training, use a multi-phase curriculum:
+# NOTE: DLM requires SFT and cannot be combined with CE (continue_pretrain).
+# For DLM training, use pretrain_then_sft.yaml which adds DLM in the SFT phase.
+#
+# Example multi-phase curriculum with DLM:
 #   phases:
 #     - name: pretrain
 #       end_ratio: 0.9
 #       data_config: fineweb
-#       objectives: {continue_pretrain: 1.0, dlm: 1.0}
-#     - name: sft
+#       objectives: {continue_pretrain: 1.0}  # CE only, no DLM
+#     - name: sft_dlm
 #       end_ratio: 1.0
 #       data_config: sft_nemotron
-#       objectives: {sft: 1.0}
+#       objectives: {sft: 1.0, dlm: 0.5}  # DLM with SFT
 #
 curriculum:
   enabled: true
   interpolation: step  # "step" (immediate jump), "linear", or "cosine"
   phases:
-    # Single phase: CE + DLM from step 0
+    # Single phase: CE only (no DLM - DLM requires SFT)
     - name: main
       end_ratio: 1.0
       data_config: fineweb
       objectives:
         continue_pretrain: 1.0
-        dlm: 1.0
 
 # Teacher model (only loaded if an objective requires_teacher)
 teacher:

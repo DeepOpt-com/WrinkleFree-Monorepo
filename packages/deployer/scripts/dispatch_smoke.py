@@ -28,13 +28,14 @@ OBJECTIVE_CONFIGS = {
         "description": "Cross-entropy only",
     },
     "dlm": {
-        "training_config": "smoke_test",
+        # DLM requires SFT - use sft_run.yaml which has DLM enabled
+        "training_config": "sft_run",
         "overrides": [
-            "training.objectives.continue_pretrain.enabled=true",
-            "training.objectives.dlm.enabled=true",
-            "training.objectives.dlm.weight=0.5",
+            "training.max_steps=50",
+            "training.checkpoint.save_interval=10",
+            "training.logging.log_interval=1",
         ],
-        "description": "CE + DLM (diffusion language model)",
+        "description": "SFT + DLM (Fast-dLLM v2 for block diffusion inference)",
     },
     "bitdistill": {
         "training_config": "bitdistill_full",

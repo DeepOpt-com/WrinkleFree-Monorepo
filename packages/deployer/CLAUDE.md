@@ -89,6 +89,7 @@ uv run --package wf-train-deployer wf train -m qwen3_4b -s 2
 | `src/wf_deploy/cli.py` | CLI commands: train, smoke, logs, runs |
 | `skypilot/train.yaml` | SkyPilot training job template |
 | `skypilot/smoke_test.yaml` | **Unified smoke test (use `wf smoke -o <objective>`)** |
+| `skypilot/train_salient_muonclip.yaml` | MuonClip + Salient experiment (Issue #25) |
 | `skypilot/service.yaml` | SkyServe inference template |
 | `skypilot/eval.yaml` | Model evaluation template |
 | `scripts/dispatch_smoke.py` | Maps objective to training config + overrides |

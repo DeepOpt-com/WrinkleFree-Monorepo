@@ -3,10 +3,15 @@
 Implements Fast-dLLM v2 block-wise masked language modeling with:
 1. Token shift: logits[i-1] predicts token[i] (preserves AR representations)
 2. Complementary masks: each sample duplicated with m and (1-m) masks
+3. Output-only masking: only masks response tokens, not instruction tokens
 
 Reference: Fast-dLLM v2 (https://arxiv.org/abs/2509.26328)
 - "If xi is masked, the model uses the hidden state at i−1 to predict xi"
 - "Each training sample is duplicated into two views with masks m and m̄=1−m"
+
+IMPORTANT: DLM requires SFT data with instruction tokens masked in labels (=-100).
+Fast-dLLM v2 was trained on Qwen2.5-7B-Instruct, not a base model.
+See: https://huggingface.co/Efficient-Large-Model/Fast_dLLM_v2_7B
 """
 
 from __future__ import annotations
@@ -66,8 +71,13 @@ class DLMObjective(Objective):
         Creates masked_input_ids and dlm_labels in the batch.
         With complementary masks, batch size is doubled: each sample appears
         twice with masks m and (1-m), ensuring every token is masked once.
+
+        IMPORTANT: Only masks OUTPUT tokens (where labels != -100).
+        Instruction tokens are never masked - model needs to see them.
+        This requires SFT-style labels where instruction tokens have label=-100.
         """
         input_ids = batch["input_ids"]
+        labels = batch.get("labels")
         device = input_ids.device
         batch_size, seq_len = input_ids.shape
 
@@ -77,12 +87,24 @@ class DLMObjective(Objective):
                 f"DLM requires seq_len > 2 (need at least 3 tokens: BOS, content, EOS), got {seq_len}"
             )
 
+        # Require labels for output-only masking
+        if labels is None:
+            raise ValueError(
+                "DLM requires 'labels' in batch to identify output tokens. "
+                "Use SFT data where instruction tokens have label=-100."
+            )
+
         # Store originals before modification
         batch["_original_input_ids"] = input_ids.clone()
-        batch["_original_labels"] = batch.get("labels", input_ids).clone()
+        batch["_original_labels"] = labels.clone()
 
-        # Create random mask
-        mask = torch.rand(input_ids.shape, device=device) < self.mask_prob
+        # Only mask OUTPUT tokens (where labels != -100)
+        # Instruction tokens (labels == -100) are NEVER masked
+        output_token_mask = labels != self.ignore_index
+
+        # Create random mask within output tokens only
+        random_mask = torch.rand(input_ids.shape, device=device) < self.mask_prob
+        mask = random_mask & output_token_mask
 
         # Don't mask first token (BOS) - position 0 has no preceding token for shift
         # Don't mask last token (EOS)
@@ -95,8 +117,9 @@ class DLMObjective(Objective):
             mask = mask & attention_mask.bool()
 
         if self.use_complementary_masks:
-            # Create complementary mask (positions not masked in m)
-            comp_mask = ~mask
+            # Create complementary mask (output positions not masked in m)
+            # Note: complementary mask is ALSO limited to output tokens
+            comp_mask = (~mask) & output_token_mask
             comp_mask[:, 0] = False  # Still protect BOS
             comp_mask[:, -1] = False  # Still protect EOS
             if attention_mask is not None:

@@ -96,38 +96,15 @@ run: |
   echo "Related: GitHub Issue #25 (MuonClip divergence)"
   echo "=============================================="
 
-  # Salient training with MuonClip
-  # Use + prefix for fields not in base optimizer config
+  # Salient training with MuonClip - using dedicated config
   uv run --package wf-train python packages/training/scripts/train_lightning.py \
     model=${MODEL} \
-    training=salient_run \
-    training.total_tokens=100_000_000 \
-    training.max_steps=null \
-    training.batch_size=4 \
-    training.gradient_accumulation_steps=16 \
-    training.max_seq_length=1024 \
-    training.logging.log_interval=5 \
-    training.auto_batch_size=false \
-    training.optimizer.type=muonclip \
-    +training.optimizer.lr_muon=0.02 \
-    +training.optimizer.lr_adam=2e-4 \
-    +training.optimizer.enable_clipping=true \
-    +training.optimizer.clipping_threshold=50.0 \
-    +training.optimizer.clipping_alpha=0.5 \
-    +training.optimizer.momentum=0.95 \
-    training.objectives.dlm.weight=0.0 \
-    training.objectives.continue_pretrain.weight=1.0 \
-    training.lambda_warmup.warmup_steps=100 \
-    training.meta_optimization.enabled=false \
-    training.checkpoint.save_interval=200 \
+    training=salient_muonclip \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
     distributed=single_gpu \
     gcs.enabled=true \
-    gcs.bucket=${GCS_BUCKET} \
-    training.logging.wandb.enabled=true \
-    training.logging.wandb.project=${WANDB_PROJECT} \
-    training.logging.wandb.tags="[salient,muonclip,bitnet,ce_only,issue_25]"
+    gcs.bucket=${GCS_BUCKET}
 
   echo ""
   echo "=============================================="

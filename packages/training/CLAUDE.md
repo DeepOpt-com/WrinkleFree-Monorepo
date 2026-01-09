@@ -280,6 +280,7 @@ meta_optimization:
 
 **WandB Metrics**:
 ```
+# Meta-optimization metrics
 meta/ldc_mtl/objective_weight_{name}  # Learned objective weights
 meta/ldc_mtl/loss_discrepancy         # Discrepancy penalty value
 meta/odm/dataset_weight_{name}        # Dataset sampling probabilities
@@ -288,6 +289,12 @@ meta/odm/avg_reward_{name}            # Per-domain average rewards
 meta/layer_lr/multiplier_layer_{i}    # Per-layer LR multipliers
 meta/layer_lr/grad_norm_layer_{i}     # Per-layer gradient norms (EMA)
 meta/layer_lr/mean_multiplier         # Geometric mean of multipliers
+
+# Curriculum metrics (clean phase tracking)
+curriculum/phase_idx                   # Current phase index (0, 1, 2...)
+curriculum/phase_progress              # Progress within current phase (0.0-1.0)
+curriculum/current_phase               # Phase name (in WandB summary)
+curriculum/current_data                # Data config name (in WandB summary)
 ```
 
 **Smoke Tests**:
@@ -390,6 +397,39 @@ curriculum:
 **Data Config** (`sft_nemotron.yaml`):
 The SFT data config loads from nvidia/Llama-Nemotron-Post-Training-Dataset with 5 splits:
 code, math, science, chat, safety (~3.9M total examples). License: CC-BY-4.0.
+
+### Salient Column Training (AWQ-style)
+
+Salient columns keep ~1% of weight columns in FP16 based on activation-aware saliency scoring.
+Based on AWQ, SqueezeLLM, and SpQR papers.
+
+```bash
+# Salient columns with AdamW (stable)
+uv run python scripts/train_lightning.py model=qwen3_0.6b training=salient_run
+
+# Salient columns with MuonClip (experimental - Issue #25)
+uv run python scripts/train_lightning.py model=qwen3_0.6b training=salient_muonclip
+
+# Salient + LoRA (CE-only)
+uv run python scripts/train_lightning.py model=qwen3_0.6b training=salient_lora_ce_only
+```
+
+**How Salient Works**:
+- Calibration: Run 128 samples through model, compute `saliency = activation_magnitude × weight_norm`
+- Selection: Keep top 1% columns in FP16, quantize rest to ternary
+- Training: Both FP16 and ternary weights are updated (end-to-end trainable)
+
+**Available Configs**:
+| Config | Optimizer | Objectives | Notes |
+|--------|-----------|------------|-------|
+| `salient_run` | AdamW 8-bit | CE + DLM | Stable, production-ready |
+| `salient_muonclip` | MuonClip | CE only | Experimental (Issue #25) |
+| `salient_lora_ce_only` | AdamW 8-bit | CE only | Salient + LoRA combined |
+
+**MuonClip + BitNet (Issue #25)**:
+MuonClip with high learning rates (lr_muon > 0.005) has historically caused divergence with BitNet.
+The `salient_muonclip` config tests if salient columns + CE-only objective can stabilize training.
+See GitHub Issue #25 for ongoing experiments.
 
 ### Legacy Stages (Still Supported)
 
