@@ -19,6 +19,7 @@ experiment_name: bitdistill_${model.name}
 gcs:
   enabled: true  # Required for Modal/cloud - checkpoints are lost without this!
   bucket: wrinklefree-checkpoints  # GCS bucket name
+  project: wrinklefree-481904  # GCP project ID (required for user credentials)
   experiment_prefix: experiments  # Prefix for experiment data in bucket
 
 # Resume behavior

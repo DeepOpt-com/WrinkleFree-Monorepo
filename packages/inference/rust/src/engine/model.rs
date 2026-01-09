@@ -963,9 +963,72 @@ fn compute_rope_freqs(head_dim: usize, theta: f32) -> Vec<f32> {
         .collect()
 }
 
-/// Dot product (scalar fallback).
+/// SIMD-optimized dot product for f32 vectors.
+/// Uses ARM NEON or falls back to scalar.
+#[inline]
 fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    #[cfg(target_arch = "aarch64")]
+    {
+        dot_neon(a, b)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    }
+}
+
+/// ARM NEON optimized f32 dot product.
+/// Processes 4 floats per iteration using SIMD.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn dot_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+
+    debug_assert_eq!(a.len(), b.len());
+    let n = a.len();
+
+    unsafe {
+        let mut acc0 = vdupq_n_f32(0.0);
+        let mut acc1 = vdupq_n_f32(0.0);
+        let mut acc2 = vdupq_n_f32(0.0);
+        let mut acc3 = vdupq_n_f32(0.0);
+
+        let chunks = n / 16;
+        let a_ptr = a.as_ptr();
+        let b_ptr = b.as_ptr();
+
+        // Process 16 elements per iteration (4 NEON registers)
+        for i in 0..chunks {
+            let offset = i * 16;
+            let a0 = vld1q_f32(a_ptr.add(offset));
+            let a1 = vld1q_f32(a_ptr.add(offset + 4));
+            let a2 = vld1q_f32(a_ptr.add(offset + 8));
+            let a3 = vld1q_f32(a_ptr.add(offset + 12));
+            let b0 = vld1q_f32(b_ptr.add(offset));
+            let b1 = vld1q_f32(b_ptr.add(offset + 4));
+            let b2 = vld1q_f32(b_ptr.add(offset + 8));
+            let b3 = vld1q_f32(b_ptr.add(offset + 12));
+            acc0 = vfmaq_f32(acc0, a0, b0);
+            acc1 = vfmaq_f32(acc1, a1, b1);
+            acc2 = vfmaq_f32(acc2, a2, b2);
+            acc3 = vfmaq_f32(acc3, a3, b3);
+        }
+
+        // Combine accumulators
+        acc0 = vaddq_f32(acc0, acc1);
+        acc2 = vaddq_f32(acc2, acc3);
+        acc0 = vaddq_f32(acc0, acc2);
+
+        // Horizontal sum
+        let mut sum = vaddvq_f32(acc0);
+
+        // Handle remaining elements
+        for i in (chunks * 16)..n {
+            sum += *a_ptr.add(i) * *b_ptr.add(i);
+        }
+
+        sum
+    }
 }
 
 // ============================================================================

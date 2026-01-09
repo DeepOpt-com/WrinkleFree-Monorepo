@@ -72,6 +72,7 @@ class RunManager:
         audit_logger: Any,
         fingerprint_metadata: dict[str, Any] | None = None,
         gcs_prefix: str = "experiments",
+        gcs_project: str | None = None,
         local_cache_dir: Path | None = None,
         rank: int = 0,
         skip_gcs: bool = False,
@@ -84,6 +85,7 @@ class RunManager:
             audit_logger: AuditLogger instance for warnings
             fingerprint_metadata: Metadata from fingerprint generation
             gcs_prefix: Prefix path in bucket (default: "experiments")
+            gcs_project: GCP project ID (required for user credentials)
             local_cache_dir: Local directory for caching checkpoints
             rank: Process rank (only rank 0 does GCS operations)
             skip_gcs: If True, skip GCS operations entirely
@@ -94,6 +96,7 @@ class RunManager:
         self.fingerprint = fingerprint
         self.gcs_bucket = gcs_bucket
         self.gcs_prefix = gcs_prefix
+        self.gcs_project = gcs_project
         self.audit_logger = audit_logger
         self.fingerprint_metadata = fingerprint_metadata or {}
         self.rank = rank
@@ -139,8 +142,8 @@ class RunManager:
                 # log_credentials_missing raises, but be explicit
                 raise CredentialsError(f"GCS credentials file not found: {creds_path}")
 
-            # Try to create client
-            self._client = storage.Client()
+            # Try to create client (project required for user credentials)
+            self._client = storage.Client(project=self.gcs_project)
 
             # Verify bucket access
             self._bucket = self._client.bucket(self.gcs_bucket)

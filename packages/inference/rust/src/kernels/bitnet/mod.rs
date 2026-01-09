@@ -29,6 +29,7 @@ mod quantize;
 mod gemv_scalar;
 mod gemv_neon;
 mod gemv_ternary;
+mod gemv_tl1;
 mod gemm;
 
 pub use types::{QK_BLOCK, BLOCK_BYTES, TileConfig, CpuCapabilities};
@@ -36,6 +37,7 @@ pub use quantize::{quantize_activations, dequantize_activations};
 pub use gemv_scalar::{vec_dot_scalar, pack_weights, unpack_weights};
 pub use gemv_neon::{vec_dot_neon, vec_dot_dotprod};
 pub use gemv_ternary::{vec_dot_ternary_scalar, vec_dot_ternary_branchless, vec_dot_ternary_neon};
+pub use gemv_tl1::vec_dot_tl1;
 pub use gemm::gemm;
 
 /// Pure Rust BitNet kernel wrapper.
@@ -87,7 +89,7 @@ impl BitNetKernel {
     ///
     /// Uses the fastest available kernel based on CPU capabilities:
     /// - ARMv8.2+ with dotprod: Uses vdotq_s32 (fastest, ~4x over baseline)
-    /// - ARM NEON: Uses multiply-free ternary kernel (add/subtract only)
+    /// - ARM NEON: Uses multiply-free TL1 kernel (mask-based add/subtract only)
     /// - x86/other: Scalar fallback
     ///
     /// # Arguments
@@ -103,8 +105,8 @@ impl BitNetKernel {
             return vec_dot_dotprod(packed_weights, activations) as f32;
         }
 
-        // Fallback: multiply-free ternary kernel (add/subtract only)
-        vec_dot_ternary_neon(packed_weights, activations) as f32
+        // Fallback: multiply-free TL1 kernel (mask-based, zero multiplications)
+        vec_dot_tl1(packed_weights, activations) as f32
     }
 
     /// Compute batched GEMM: output = packed_weights @ activations * scale.

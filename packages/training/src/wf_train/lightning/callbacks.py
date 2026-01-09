@@ -798,6 +798,7 @@ class RunManagerCallback(Callback):
                 audit_logger=audit_logger,
                 fingerprint_metadata=fp_metadata,
                 gcs_prefix=gcs_config.get("experiment_prefix", "experiments"),
+                gcs_project=gcs_config.get("project", "wrinklefree-481904"),
                 local_cache_dir=output_dir / ".fingerprint_cache",
                 rank=rank,
             )
