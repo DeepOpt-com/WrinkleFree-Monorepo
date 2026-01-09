@@ -57,9 +57,10 @@ batch_size: 16
 gradient_accumulation_steps: 32
 auto_batch_size: false
 
-# Lambda warmup disabled (start with full quantization)
+# Lambda warmup for smoother early training
 lambda_warmup:
-  enabled: false
+  enabled: true
+  warmup_steps: 200
 
 # === OBJECTIVES ===
 # CE only (DLM requires SFT data, not available in this config)

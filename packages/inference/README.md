@@ -9,7 +9,7 @@ Rust inference engine for **BitNet** 1.58-bit quantized LLMs with DLM block diff
 python scripts/convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf
 
 # 2. Build the server
-cd extern/sglang-bitnet/sgl-model-gateway
+cd rust
 cargo build --release --bin wf_server --features native-inference
 
 # 3. Run inference
@@ -28,6 +28,7 @@ curl http://localhost:30000/v1/chat/completions \
 Native inference with SIMD-optimized ternary kernels. No C++ dependencies.
 
 ```bash
+cd rust
 cargo build --release --bin wf_server --features native-inference
 ./target/release/wf_server --model-path model.gguf --port 30000
 ```
@@ -42,15 +43,13 @@ cargo build --release --bin wf_server --features native-inference
 Fast-dLLM v2 for ~2.5x faster inference via parallel block decoding.
 
 ```bash
-# Build llama.cpp first
-cd extern/sglang-bitnet/3rdparty/llama.cpp
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
-cmake --build build -j4
-cd ../sgl-model-gateway
+# Setup llama.cpp first
+./scripts/setup_llama_cpp.sh
 
 # Build and run
+cd rust
 cargo build --release --bin dlm_server --features llama-inference
-export LD_LIBRARY_PATH="../3rdparty/llama.cpp/build/src:../3rdparty/llama.cpp/build/ggml/src"
+export LD_LIBRARY_PATH="../extern/llama.cpp/build/src:../extern/llama.cpp/build/ggml/src"
 ./target/release/dlm_server --model-path model.gguf --port 30000
 ```
 
@@ -90,30 +89,33 @@ curl http://localhost:30000/v1/chat/completions \
 
 ```
 packages/inference/
+├── rust/                          # Rust inference engine
+│   └── src/
+│       ├── bin/wf_server.rs       # Pure Rust server
+│       ├── bin/dlm_server.rs      # DLM server
+│       ├── engine/                # Transformer implementation
+│       ├── gguf/                  # GGUF reader
+│       ├── kernels/bitnet/        # SIMD kernels
+│       └── inference/             # DLM scheduler
+├── cpp/                           # C++ wrappers for llama.cpp FFI
+├── extern/
+│   └── llama.cpp/                 # Downloaded on-demand
 ├── scripts/
-│   └── convert_checkpoint_to_gguf.py   # Checkpoint → GGUF
-├── extern/sglang-bitnet/
-│   ├── 3rdparty/llama.cpp/             # Conversion tools + dlm_server backend
-│   └── sgl-model-gateway/              # wf-inference Rust crate
-│       └── src/
-│           ├── bin/wf_server.rs        # Pure Rust server
-│           ├── bin/dlm_server.rs       # DLM server
-│           ├── engine/                 # Transformer implementation
-│           ├── gguf/                   # GGUF reader
-│           ├── kernels/bitnet/         # SIMD kernels
-│           └── inference/              # DLM scheduler
-└── docs/
+│   ├── convert_checkpoint_to_gguf.py
+│   └── setup_llama_cpp.sh
+├── src/wf_infer/                  # Python utilities
+└── tests/
 ```
 
 ## Building
 
 ```bash
-cd extern/sglang-bitnet/sgl-model-gateway
+cd rust
 
 # Pure Rust (no dependencies)
 cargo build --release --bin wf_server --features native-inference
 
-# With llama.cpp
+# With llama.cpp (requires setup_llama_cpp.sh first)
 cargo build --release --bin dlm_server --features llama-inference
 ```
 

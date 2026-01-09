@@ -66,7 +66,7 @@ cleanup() {
     echo "Shutting down..."
     pkill -f "sglang.launch_server.*$SERVER_PORT" 2>/dev/null || true
     pkill -f "llama-server.*$SERVER_PORT" 2>/dev/null || true
-    pkill -f "sgl-model-gateway.*$SERVER_PORT" 2>/dev/null || true
+    pkill -f "wf_server.*$SERVER_PORT" 2>/dev/null || true
     pkill -f "streamlit.*serve_sglang.py" 2>/dev/null || true
 }
 trap cleanup EXIT

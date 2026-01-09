@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # Get the repository root (where extern/ is located)
 SCRIPT_DIR = Path(__file__).parent.resolve()
 INFERENCE_PKG = SCRIPT_DIR.parent
-LLAMA_CPP_DIR = INFERENCE_PKG / "extern" / "sglang-bitnet" / "3rdparty" / "llama.cpp"
+LLAMA_CPP_DIR = INFERENCE_PKG / "extern" / "llama.cpp"
 CONVERTER_SCRIPT = LLAMA_CPP_DIR / "convert_hf_to_gguf.py"
 
 # Model size expectations (approximate, for validation)

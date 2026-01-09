@@ -16,8 +16,8 @@ PORT="${PORT:-8080}"
 THREADS="${THREADS:-4}"
 CTX_SIZE="${CTX_SIZE:-2048}"
 
-# llama.cpp from sglang-bitnet
-LLAMA_DIR="${PROJECT_DIR}/extern/sglang-bitnet/3rdparty/llama.cpp"
+# llama.cpp
+LLAMA_DIR="${PROJECT_DIR}/extern/llama.cpp"
 SERVER="${LLAMA_DIR}/build/bin/llama-server"
 
 # Library path for shared libs
@@ -26,8 +26,8 @@ export LD_LIBRARY_PATH="${LLAMA_DIR}/build/src:${LLAMA_DIR}/build/ggml/src:${LD_
 # Verify binary exists
 if [[ ! -x "$SERVER" ]]; then
     echo "Error: llama-server not found. Build with:"
-    echo "  cd extern/sglang-bitnet/3rdparty/llama.cpp"
-    echo "  cmake -B build && cmake --build build -j4"
+    echo "  cd extern/llama.cpp"
+    echo "  cmake -B build -DBUILD_SHARED_LIBS=ON && cmake --build build -j4"
     exit 1
 fi
 

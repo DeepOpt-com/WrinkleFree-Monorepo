@@ -7,9 +7,10 @@ Rust inference engine for **BitNet** 1.58-bit quantized LLMs with DLM block diff
 | Task | Command |
 |------|---------|
 | Convert checkpoint to GGUF | `python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o model.gguf` |
-| Build wf_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin wf_server --features native-inference` |
-| Build dlm_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin dlm_server --features llama-inference` |
-| Benchmark wf_server | `./wf_server --model-path model.gguf --benchmark --benchmark-iterations 10` |
+| Build wf_server | `cd rust && cargo build --release --bin wf_server --features native-inference` |
+| Build dlm_server | `cd rust && cargo build --release --bin dlm_server --features llama-inference` |
+| Setup llama.cpp | `./scripts/setup_llama_cpp.sh` |
+| Benchmark wf_server | `./rust/target/release/wf_server --model-path model.gguf --benchmark` |
 | Test API | `curl http://localhost:30000/v1/chat/completions -d '{"messages":[{"role":"user","content":"Hello"}]}'` |
 
 ## Binaries
@@ -19,6 +20,8 @@ Rust inference engine for **BitNet** 1.58-bit quantized LLMs with DLM block diff
 Native BitNet inference server with SIMD-optimized ternary kernels. No C++ dependencies.
 
 ```bash
+cd rust
+
 # Build
 cargo build --release --bin wf_server --features native-inference
 
@@ -34,17 +37,15 @@ cargo build --release --bin wf_server --features native-inference
 Fast-dLLM v2 server for ~2.5x faster inference via parallel block decoding. Requires llama.cpp.
 
 ```bash
-# Build llama.cpp first
-cd extern/sglang-bitnet/3rdparty/llama.cpp
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
-cmake --build build -j4
+# Setup llama.cpp first
+./scripts/setup_llama_cpp.sh
 
 # Build dlm_server
-cd ../sgl-model-gateway
+cd rust
 cargo build --release --bin dlm_server --features llama-inference
 
 # Set library path and run
-export LD_LIBRARY_PATH="extern/sglang-bitnet/3rdparty/llama.cpp/build/src:extern/sglang-bitnet/3rdparty/llama.cpp/build/ggml/src"
+export LD_LIBRARY_PATH="../extern/llama.cpp/build/src:../extern/llama.cpp/build/ggml/src"
 ./target/release/dlm_server --model-path model.gguf --port 30000
 ```
 
@@ -81,20 +82,23 @@ curl http://localhost:30000/v1/chat/completions \
 
 ```
 packages/inference/
+├── rust/                          # Rust inference engine
+│   └── src/
+│       ├── bin/
+│       │   ├── wf_server.rs       # Pure Rust BitNet server
+│       │   └── dlm_server.rs      # DLM block diffusion server
+│       ├── engine/                # Transformer forward pass
+│       ├── gguf/                  # Pure Rust GGUF reader
+│       ├── kernels/bitnet/        # SIMD ternary kernels
+│       └── inference/             # DLM scheduler
+├── cpp/                           # C++ wrappers for llama.cpp FFI
+├── extern/
+│   └── llama.cpp/                 # Downloaded on-demand
 ├── scripts/
-│   └── convert_checkpoint_to_gguf.py  # GGUF conversion
-├── extern/sglang-bitnet/
-│   ├── 3rdparty/llama.cpp/            # llama.cpp (conversion + dlm_server backend)
-│   └── sgl-model-gateway/             # Rust inference engine (wf-inference crate)
-│       └── src/
-│           ├── bin/
-│           │   ├── wf_server.rs       # Pure Rust BitNet server
-│           │   └── dlm_server.rs      # DLM block diffusion server
-│           ├── engine/                # Transformer forward pass
-│           ├── gguf/                  # Pure Rust GGUF reader
-│           ├── kernels/bitnet/        # SIMD ternary kernels
-│           └── inference/             # DLM scheduler
-└── docs/                              # Documentation
+│   ├── convert_checkpoint_to_gguf.py
+│   └── setup_llama_cpp.sh
+├── src/wf_infer/                  # Python utilities
+└── tests/
 ```
 
 ## Feature Flags
@@ -107,12 +111,12 @@ packages/inference/
 ## Building
 
 ```bash
-cd extern/sglang-bitnet/sgl-model-gateway
+cd rust
 
 # Pure Rust (wf_server)
 cargo build --release --bin wf_server --features native-inference
 
-# With llama.cpp (dlm_server)
+# With llama.cpp (dlm_server) - requires setup_llama_cpp.sh first
 cargo build --release --bin dlm_server --features llama-inference
 ```
 

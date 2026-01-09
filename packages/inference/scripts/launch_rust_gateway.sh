@@ -1,8 +1,7 @@
 #!/bin/bash
-# Launch the Rust sgl-model-gateway with native BitNet inference.
+# Launch the Rust wf-inference engine with native BitNet inference.
 #
-# This bypasses the Python gRPC server and calls C++ SIMD kernels directly
-# from Rust, eliminating ~49ms of overhead per token.
+# This uses pure Rust SIMD kernels for optimal performance.
 #
 # Usage:
 #   ./scripts/launch_rust_gateway.sh [--native] [--port PORT]
@@ -26,7 +25,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-GATEWAY_DIR="${PROJECT_DIR}/extern/sglang-bitnet/sgl-model-gateway"
+GATEWAY_DIR="${PROJECT_DIR}/rust"
 
 # Default configuration
 PORT="${PORT:-30000}"
@@ -60,7 +59,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "=== Rust sgl-model-gateway ==="
+echo "=== WrinkleFree Inference Engine ==="
 echo "Backend: $BACKEND"
 echo "Model:   $MODEL"
 echo "Host:    $HOST"
@@ -81,8 +80,8 @@ fi
 # Build in release mode (limit to 4 jobs to prevent system freeze)
 cargo build --release $FEATURES -j4
 
-# Set library path for llama.cpp shared libraries (now in sglang-bitnet)
-export LD_LIBRARY_PATH="${PROJECT_DIR}/extern/sglang-bitnet/3rdparty/llama.cpp/build/src:${PROJECT_DIR}/extern/sglang-bitnet/3rdparty/llama.cpp/build/ggml/src:${LD_LIBRARY_PATH:-}"
+# Set library path for llama.cpp shared libraries (for dlm_server)
+export LD_LIBRARY_PATH="${PROJECT_DIR}/extern/llama.cpp/build/src:${PROJECT_DIR}/extern/llama.cpp/build/ggml/src:${LD_LIBRARY_PATH:-}"
 
 # Run the gateway
 echo ""

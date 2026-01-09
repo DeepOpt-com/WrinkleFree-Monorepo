@@ -249,7 +249,7 @@ def main():
     except requests.exceptions.ConnectionError:
         print(f"ERROR: Cannot connect to {args.server_url}")
         print("Please start the server first:")
-        print("  ./extern/sglang-bitnet/sgl-model-gateway/target/release/dlm_server \\")
+        print("  ./rust/target/release/dlm_server \\")
         print("    --model-path models/model.gguf --port 30000")
         return 1
 
