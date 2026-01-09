@@ -255,64 +255,8 @@ class ObjectiveManager(nn.Module):
 
     def _validate_objective_compatibility(self) -> None:
         """Check for incompatible objective combinations and error/warn."""
-        has_dlm = "dlm" in self.objectives
-        has_sft = "sft" in self.objectives
-        has_ce = "continue_pretrain" in self.objectives
-        has_logits_distill = "logits_distill" in self.objectives
-
-        # DLM requires SFT (Fast-dLLM v2 is trained on Qwen2.5-7B-Instruct)
-        # See: https://huggingface.co/Efficient-Large-Model/Fast_dLLM_v2_7B
-        if has_dlm and not has_sft:
-            raise ValueError(
-                "DLM requires SFT to be enabled. DLM masking only applies to output tokens "
-                "in instruction-following data. Fast-dLLM v2 was trained on Qwen2.5-7B-Instruct. "
-                "See: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/47"
-            )
-
-        # DLM + CE in same phase is invalid (corrupts CE gradients)
-        if has_dlm and has_ce:
-            self._validate_no_dlm_ce_overlap()
-
-        # Check for DLM + logits_distill with shift_labels (incompatible)
-        if has_dlm and has_logits_distill:
-            logits_distill = self.objectives["logits_distill"]
-            # Check if shift_labels is True (default for AR-to-AR distillation)
-            shift_labels = getattr(logits_distill, "shift_labels", True)
-            if shift_labels:
-                logger.warning(
-                    "Incompatible objectives detected: 'dlm' + 'logits_distill' with shift_labels=True. "
-                    "AR-style logits distillation with token shifting is incompatible with DLM's "
-                    "masked prediction paradigm. Consider using 'tcs_distill' instead (no shifting), "
-                    "or disable one of the objectives."
-                )
-
-    def _validate_no_dlm_ce_overlap(self) -> None:
-        """Validate that DLM and CE (continue_pretrain) are never active together.
-
-        DLM + CE in the same phase corrupts ~85% of CE gradients because CE trains
-        on logits computed from masked inputs. CE warmup then SFT+DLM is OK.
-        """
-        if self.curriculum is not None:
-            for phase in self.curriculum.phases:
-                weights = phase.objective_weights
-                dlm_active = weights.get("dlm", 0) > 0
-                ce_active = weights.get("continue_pretrain", 0) > 0
-                if dlm_active and ce_active:
-                    raise ValueError(
-                        f"Invalid objective combination in phase '{phase.name}': "
-                        f"DLM and continue_pretrain cannot be active together. "
-                        f"DLM should only be used with SFT phases. "
-                        f"See: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/47"
-                    )
-        else:
-            # No curriculum - check base weights
-            dlm_weight = self.base_weights.get("dlm", 0)
-            ce_weight = self.base_weights.get("continue_pretrain", 0)
-            if dlm_weight > 0 and ce_weight > 0:
-                raise ValueError(
-                    "Invalid objective combination: DLM and continue_pretrain cannot be active together. "
-                    "DLM should only be used with SFT phases."
-                )
+        # Currently no validation needed - objectives are independent
+        pass
 
     @property
     def requires_teacher(self) -> bool:
@@ -344,8 +288,8 @@ class ObjectiveManager(nn.Module):
         """Apply all objective preprocessing to batch.
 
         Objectives with modifies_input=True get to modify the batch,
-        but ONLY if their current weight is > 0. This prevents DLM from
-        masking inputs during warmup phases when DLM weight is 0.
+        but ONLY if their current weight is > 0. This prevents objectives
+        from modifying inputs during warmup phases when their weight is 0.
 
         Args:
             batch: Input batch dictionary

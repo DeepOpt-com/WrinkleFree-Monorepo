@@ -189,18 +189,10 @@ class GCSCheckpointCallback(Callback):
     Long training runs MUST upload checkpoints - losing hours of GPU
     time to a crash is unacceptable.
 
-    Also saves dlm_config.json alongside checkpoints for inference compatibility.
-    The DLM config contains mask_token_id, mask_prob, etc. needed for DLM inference.
-
     Args:
         bucket: GCS bucket name (e.g., "wrinklefree-checkpoints")
         experiment_name: Experiment name for path organization
         stage: Training stage name (e.g., "lightning", "stage2")
-        dlm_config: Optional DLM configuration dict with keys:
-            - mask_token_id: Token ID used for masking (typically 0)
-            - mask_prob: Masking probability during training
-            - ignore_index: Label ignore index (typically -100)
-            - training_method: E.g., "unified-dlm"
     """
 
     def __init__(
@@ -208,13 +200,11 @@ class GCSCheckpointCallback(Callback):
         bucket: str,
         experiment_name: str = "default",
         stage: str = "lightning",
-        dlm_config: Optional[dict] = None,
     ):
         super().__init__()
         self.bucket = bucket
         self.experiment_name = experiment_name
         self.stage = stage
-        self.dlm_config = dlm_config
         self._last_uploaded_path: Optional[str] = None
 
     def on_train_batch_end(
@@ -241,12 +231,6 @@ class GCSCheckpointCallback(Callback):
         # New checkpoint saved - upload it
         if Path(ckpt_path).exists():
             step = trainer.global_step
-            ckpt_dir = Path(ckpt_path).parent
-
-            # Save dlm_config.json alongside checkpoint
-            if self.dlm_config:
-                self._save_dlm_config(ckpt_dir)
-
             self._upload_to_gcs(Path(ckpt_path), f"step_{step:06d}")
             self._last_uploaded_path = ckpt_path
 
@@ -261,27 +245,7 @@ class GCSCheckpointCallback(Callback):
 
         ckpt_path = ckpt_callback.last_model_path
         if ckpt_path and Path(ckpt_path).exists():
-            ckpt_dir = Path(ckpt_path).parent
-
-            # Save dlm_config.json alongside final checkpoint
-            if self.dlm_config:
-                self._save_dlm_config(ckpt_dir)
-
             self._upload_to_gcs(Path(ckpt_path), "final")
-
-    def _save_dlm_config(self, checkpoint_dir: Path) -> None:
-        """Save dlm_config.json for inference compatibility.
-
-        This file is needed by DLM inference servers to know the mask_token_id
-        and other masking parameters used during training.
-        """
-        config_path = checkpoint_dir / "dlm_config.json"
-        try:
-            with open(config_path, "w") as f:
-                json.dump(self.dlm_config, f, indent=2)
-            logger.info(f"Saved DLM config to {config_path}")
-        except Exception as e:
-            logger.warning(f"Failed to save dlm_config.json: {e}")
 
     def _upload_to_gcs(self, local_path: Path, checkpoint_type: str) -> None:
         """Upload checkpoint to GCS with retry.
@@ -343,21 +307,6 @@ class GCSCheckpointCallback(Callback):
             raise GCSUploadError(f"gcloud storage cp failed:\n{result.stderr.strip()}")
 
         logger.info(f"Successfully uploaded checkpoint to {gcs_path}")
-
-        # Also upload dlm_config.json if it exists alongside the checkpoint
-        dlm_config_path = local_path.parent / "dlm_config.json"
-        if dlm_config_path.exists():
-            dlm_cmd = ["gcloud", "storage", "cp", str(dlm_config_path), gcs_path]
-            logger.info(f"Uploading dlm_config.json to {gcs_path}")
-            try:
-                dlm_result = subprocess.run(dlm_cmd, capture_output=True, text=True, timeout=60)
-                if dlm_result.returncode != 0:
-                    # DLM config is less critical - warn but don't fail
-                    logger.warning(f"Failed to upload dlm_config.json: {dlm_result.stderr}")
-                else:
-                    logger.info("Successfully uploaded dlm_config.json")
-            except subprocess.TimeoutExpired:
-                logger.warning("dlm_config.json upload timed out")
 
 
 class ZClipCallback(Callback):

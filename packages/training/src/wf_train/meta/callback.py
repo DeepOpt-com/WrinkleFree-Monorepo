@@ -621,7 +621,7 @@ class MetaOptimizerCallback(Callback):
 
         Example:
             >>> callback.get_current_weights()
-            {"objective": {"ce": 0.6, "dlm": 0.4}, "dataset": {"web": 0.5, "code": 0.5}}
+            {"objective": {"ce": 0.6, "distill": 0.4}, "dataset": {"web": 0.5, "code": 0.5}}
         """
         result: dict[str, dict[str, float]] = {}
 

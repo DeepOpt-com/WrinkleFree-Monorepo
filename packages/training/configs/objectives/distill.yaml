@@ -28,11 +28,11 @@ logits:
   weight: 10.0
   # Softmax temperature (higher = softer distributions)
   temperature: 5.0
-  # Mode: "full" (standard KL on all logits) or "sparse" (top-K TCS style for DLM)
+  # Mode: "full" (standard KL on all logits) or "sparse" (top-K TCS style)
   mode: full
   # Number of top tokens for sparse mode (ignored for full mode)
   top_k: 100
-  # Shift logits for next-token prediction (True for AR models, False for DLM)
+  # Shift logits for next-token prediction
   shift_labels: true
   ignore_index: -100
 
@@ -44,10 +44,8 @@ attention:
   weight: 1.0e-5
   # Layer to distill (-1 = last layer, recommended by BitDistill)
   distill_layer: -1
-  # Mode: "relation" (A*A^T matching) or "block" (block-wise for DLM)
+  # Mode: "relation" (A*A^T matching)
   mode: relation
-  # Block size for block mode (ignored for relation mode)
-  block_size: 32
   # Temperature for softmax in relation computation
   temperature: 1.0
 

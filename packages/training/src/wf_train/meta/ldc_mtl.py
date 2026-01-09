@@ -2,7 +2,7 @@
 
 Reference: https://arxiv.org/abs/2502.08585
 
-Optimizes objective weights (CE, DLM, distillation) using a small router
+Optimizes objective weights (CE, distillation, etc.) using a small router
 network with penalized single-level updates. Achieves O(1) time and memory
 complexity compared to O(K) for traditional bi-level methods.
 
@@ -43,7 +43,7 @@ class ObjectiveRouter(nn.Module):
         """Initialize the router network.
 
         Args:
-            num_objectives: Number of training objectives (e.g., 2 for CE + DLM)
+            num_objectives: Number of training objectives (e.g., 2 for CE + distillation)
             hidden_dim: Hidden layer dimension for the MLP. Default 32 is
                 sufficient for typical multi-task setups.
         """
@@ -122,9 +122,9 @@ class LDCMTLManager:
         3. Call step() after the main optimizer step to update router weights
 
     Example:
-        >>> manager = LDCMTLManager(["ce", "dlm"], config, device)
+        >>> manager = LDCMTLManager(["ce", "distill"], config, device)
         >>> # In training loop:
-        >>> losses = {"ce": ce_loss, "dlm": dlm_loss}
+        >>> losses = {"ce": ce_loss, "distill": distill_loss}
         >>> total_loss, weights = manager.compute_weighted_loss(losses)
         >>> total_loss.backward()
         >>> main_optimizer.step()
@@ -140,7 +140,7 @@ class LDCMTLManager:
         """Initialize the LDC-MTL manager.
 
         Args:
-            objective_names: List of objective names (e.g., ["ce", "dlm"]).
+            objective_names: List of objective names (e.g., ["ce", "distill"]).
                 Order matters - losses must be provided in the same order.
             config: LDC-MTL configuration with hyperparameters.
             device: Device to place the router network on. Should match

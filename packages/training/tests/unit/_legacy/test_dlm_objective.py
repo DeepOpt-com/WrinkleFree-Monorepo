@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from wf_train.objectives.dlm import DLMObjective
+from wf_train.objectives._legacy.dlm import DLMObjective
 
 
 class TestDLMPreprocessing:

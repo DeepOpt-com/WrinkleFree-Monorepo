@@ -1,6 +1,6 @@
 //! WrinkleFree Inference Server
 //!
-//! Native BitNet inference server with GGUF support and DLM block diffusion.
+//! Native BitNet inference server with GGUF support.
 //! Uses native ternary SIMD kernels for maximum inference speed.
 //!
 //! Usage:
@@ -33,6 +33,9 @@ use tracing::{error, info};
 
 #[cfg(feature = "native-inference")]
 use wf_inference::engine::{BitNetEngine, SamplingConfig, enable_profiling, print_profile_results};
+
+#[cfg(feature = "native-inference")]
+use wf_inference::gguf::Tokenizer;
 
 /// WrinkleFree Inference Server
 #[derive(Parser, Debug)]
@@ -134,6 +137,7 @@ struct ChatCompletionResponse {
 #[cfg(feature = "native-inference")]
 struct AppState {
     engine: Arc<Mutex<BitNetEngine>>,
+    tokenizer: Option<Tokenizer>,
     request_counter: AtomicU64,
     model_name: String,
 }
@@ -156,14 +160,19 @@ async fn chat_completions(
     }
     prompt.push_str("ASSISTANT:");
 
-    // Simple tokenization (placeholder - real impl uses proper tokenizer)
-    let input_ids: Vec<i32> = prompt
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .take(512)
-        .enumerate()
-        .map(|(i, _)| i as i32)
-        .collect();
+    // Tokenize input using the model's tokenizer
+    let input_ids: Vec<i32> = if let Some(ref tokenizer) = state.tokenizer {
+        tokenizer.encode(&prompt)
+    } else {
+        // Fallback: simple character-based tokenization
+        prompt
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .take(512)
+            .enumerate()
+            .map(|(i, _)| i as i32)
+            .collect()
+    };
 
     let prompt_tokens = input_ids.len() as i32;
 
@@ -180,8 +189,12 @@ async fn chat_completions(
     let output_ids = engine.generate(&input_ids, req.max_tokens as usize, &sampling_config);
     let completion_tokens = output_ids.len() as i32;
 
-    // Decode tokens (placeholder)
-    let output_text = format!("[Generated {} tokens]", completion_tokens);
+    // Decode tokens using the model's tokenizer
+    let output_text = if let Some(ref tokenizer) = state.tokenizer {
+        tokenizer.decode(&output_ids)
+    } else {
+        format!("[Generated {} tokens: {:?}]", completion_tokens, &output_ids[..output_ids.len().min(10)])
+    };
 
     let elapsed = start.elapsed();
     let tokens_per_sec = if elapsed.as_secs_f32() > 0.0 {
@@ -237,13 +250,24 @@ async fn run_benchmark(
     info!("Iterations: {}", iterations);
     info!("Max tokens: {}", max_tokens);
 
-    // Simple tokenization (placeholder)
-    let input_ids: Vec<i32> = (0..prompt.len().min(256))
-        .map(|i| i as i32)
-        .collect();
+    // Get tokenizer from engine
+    let tokenizer = engine.tokenizer();
+
+    // Tokenize using model's tokenizer if available
+    let input_ids: Vec<i32> = if let Some(ref tok) = tokenizer {
+        tok.encode(prompt)
+    } else {
+        // Fallback to placeholder
+        (0..prompt.len().min(256)).map(|i| i as i32).collect()
+    };
 
     let prompt_tokens = input_ids.len();
     info!("Prompt tokens: {}", prompt_tokens);
+    if tokenizer.is_some() {
+        info!("Using model tokenizer");
+    } else {
+        info!("Warning: Using placeholder tokenizer");
+    }
 
     let sampling_config = SamplingConfig {
         temperature: 0.0, // Greedy for deterministic benchmark
@@ -321,6 +345,36 @@ async fn run_benchmark(
 
     // Print detailed profiling breakdown
     print_profile_results();
+
+    // Sanity check: generate one more time and show the output
+    println!();
+    println!("=== Sanity Check: Sample Output ===");
+    println!("Prompt: \"{}\"", prompt);
+    engine.reset();
+    let output_ids = engine.generate(&input_ids, max_tokens, &sampling_config);
+
+    // Decode and display output
+    if let Some(ref tok) = tokenizer {
+        let output_text = tok.decode(&output_ids);
+        println!("Generated text: \"{}\"", output_text);
+
+        // Check if output looks coherent (not gibberish)
+        let has_common_words = output_text.to_lowercase()
+            .split_whitespace()
+            .any(|w| matches!(w, "the" | "is" | "a" | "an" | "to" | "of" | "and" | "in" | "for" | "that" | "it" | "with" | "as" | "be" | "was" | "are" | "this" | "have" | "from"));
+
+        if has_common_words && output_text.len() > 10 {
+            println!("Status: LIKELY COHERENT (contains common English words)");
+        } else if output_text.chars().all(|c| c.is_alphanumeric() || c.is_whitespace() || c.is_ascii_punctuation()) {
+            println!("Status: READABLE (ASCII characters)");
+        } else {
+            println!("Status: REVIEW NEEDED (may contain special tokens)");
+        }
+    } else {
+        println!("Output tokens: {:?}", &output_ids[..output_ids.len().min(20)]);
+        println!("Status: NO TOKENIZER (cannot decode)");
+    }
+    println!("===================================");
 }
 
 #[tokio::main]
@@ -371,9 +425,18 @@ async fn main() {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "wf-model".to_string());
 
+        // Create tokenizer from model vocabulary
+        let tokenizer = engine.tokenizer();
+        if tokenizer.is_some() {
+            info!("Tokenizer loaded from model vocabulary");
+        } else {
+            info!("Warning: No tokenizer available, using fallback");
+        }
+
         // Create app state
         let app_state = Arc::new(AppState {
             engine: Arc::new(Mutex::new(engine)),
+            tokenizer,
             request_counter: AtomicU64::new(0),
             model_name,
         });

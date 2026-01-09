@@ -45,7 +45,6 @@ class AttentionMode(Enum):
     """Attention distillation modes."""
 
     RELATION = "relation"  # Standard A*A^T relation matching
-    BLOCK = "block"  # Block-wise for DLM
 
 
 @dataclass
@@ -79,7 +78,7 @@ class LogitsConfig:
     temperature: float = 5.0
     mode: str = "full"  # "full" (standard KL) or "sparse" (top-K TCS)
     top_k: int = 100  # Only used when mode="sparse"
-    shift_labels: bool = True  # True for AR, False for DLM
+    shift_labels: bool = True  # Shift labels for next-token prediction
     ignore_index: int = -100
 
 
@@ -90,8 +89,7 @@ class AttentionConfig:
     enabled: bool = False
     weight: float = 1.0e-5
     distill_layer: int = -1  # Which layer to distill (-1 = last)
-    mode: str = "relation"  # "relation" (standard) or "block" (block-wise for DLM)
-    block_size: int = 32  # Only used when mode="block"
+    mode: str = "relation"  # "relation" (standard A*A^T matching)
     temperature: float = 1.0
 
 
@@ -101,7 +99,7 @@ class DistillObjective(Objective):
     Supports four components, each independently configurable:
     - hidden: Hidden state alignment (layerwise distillation)
     - logits: KL divergence on teacher/student logits (full or sparse TCS)
-    - attention: Attention pattern matching (relation or block-wise)
+    - attention: Attention pattern matching (relation-based)
     - lrc: Low-rank correction post-quantization recovery
 
     Dynamic requirements based on enabled components:
@@ -117,7 +115,7 @@ class DistillObjective(Objective):
         ignore_index: Index to ignore in labels (default: -100)
     """
 
-    modifies_input = False  # Never modifies input (DLM does that)
+    modifies_input = False  # Never modifies input
 
     def __init__(
         self,
@@ -373,7 +371,7 @@ class DistillObjective(Objective):
         student_logits = model_outputs["logits"]
         teacher_logits = teacher_outputs["logits"]
 
-        # Get labels for masking (use original labels if available from DLM)
+        # Get labels for masking (use original labels if preprocessing modified them)
         labels = batch.get("_original_labels", batch["labels"])
         ignore_index = self.logits_config.ignore_index
 
@@ -417,8 +415,7 @@ class DistillObjective(Objective):
         student_logits = model_outputs["logits"]
         teacher_logits = teacher_outputs["logits"]
 
-        # Use DLM labels if available
-        labels = batch.get("dlm_labels", batch["labels"])
+        labels = batch["labels"]
         ignore_index = self.logits_config.ignore_index
 
         # Response mask: positions where we compute loss
@@ -454,8 +451,7 @@ class DistillObjective(Objective):
         }
 
     # =========================================================================
-    # Attention Component (from AttentionRelationDistillationObjective +
-    #                      BlockAttentionDistillationObjective)
+    # Attention Component (from AttentionRelationDistillationObjective)
     # =========================================================================
 
     def _validate_and_extract_attention(
@@ -515,12 +511,8 @@ class DistillObjective(Objective):
         batch: dict[str, Any],
         teacher_outputs: dict[str, Any],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Attention distillation - relation or block-wise."""
-        mode = AttentionMode(self.attention_config.mode)
-        if mode == AttentionMode.BLOCK:
-            return self._compute_block_attention_loss(model_outputs, batch, teacher_outputs)
-        else:
-            return self._compute_relation_attention_loss(model_outputs, batch, teacher_outputs)
+        """Attention distillation using relation matching."""
+        return self._compute_relation_attention_loss(model_outputs, batch, teacher_outputs)
 
     def _compute_relation_attention_loss(
         self,
@@ -577,81 +569,6 @@ class DistillObjective(Objective):
         return loss, {
             "attention_kl": loss.detach(),
             "distill_layer": torch.tensor(layer_idx, device=loss.device),
-        }
-
-    def _compute_block_attention_loss(
-        self,
-        model_outputs: dict[str, Any],
-        batch: dict[str, Any],
-        teacher_outputs: dict[str, Any],
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Block-wise attention distillation (from BlockAttentionDistillationObjective)."""
-        student_attn, teacher_attn, _ = self._validate_and_extract_attention(
-            model_outputs, teacher_outputs
-        )
-
-        # Get response mask
-        labels = batch.get("dlm_labels", batch["labels"])
-        response_mask = labels != self.ignore_index
-
-        batch_size, num_heads, seq_len, _ = student_attn.shape
-        block_size = self.attention_config.block_size
-        num_blocks = (seq_len + block_size - 1) // block_size
-
-        total_loss = torch.tensor(0.0, device=student_attn.device, dtype=student_attn.dtype)
-        num_valid_blocks = 0
-
-        for b in range(num_blocks):
-            start = b * block_size
-            end = min((b + 1) * block_size, seq_len)
-
-            # Extract block-diagonal attention submatrix
-            s_block = student_attn[:, :, start:end, start:end]
-            t_block = teacher_attn[:, :, start:end, start:end]
-
-            # Check if block has response tokens
-            block_mask = response_mask[:, start:end]
-            if block_mask.sum() == 0:
-                continue
-
-            # Compute attention relations
-            d_r = s_block.size(-1)
-            scale = math.sqrt(d_r)
-
-            s_aat = torch.matmul(s_block, s_block.transpose(-2, -1))
-            s_rel = F.softmax(s_aat / scale, dim=-1)
-
-            t_aat = torch.matmul(t_block, t_block.transpose(-2, -1))
-            t_rel = F.softmax(t_aat / scale, dim=-1)
-
-            # Handle head count mismatch
-            if s_rel.shape[1] != t_rel.shape[1]:
-                s_rel = s_rel.mean(dim=1, keepdim=True)
-                t_rel = t_rel.mean(dim=1, keepdim=True)
-
-            # MSE loss on relation matrices
-            block_loss = F.mse_loss(s_rel, t_rel, reduction="none")
-
-            # Mask to response positions within block
-            mask_2d = block_mask.unsqueeze(-1) & block_mask.unsqueeze(-2)
-            mask_2d = mask_2d.unsqueeze(1).float()
-
-            # Apply mask and normalize
-            masked_loss = (block_loss * mask_2d).sum()
-            num_masked = mask_2d.sum().clamp(min=1)
-            block_loss = masked_loss / num_masked
-
-            total_loss = total_loss + block_loss
-            num_valid_blocks += 1
-
-        if num_valid_blocks == 0:
-            loss = torch.tensor(0.0, device=student_attn.device, dtype=student_attn.dtype)
-        else:
-            loss = total_loss / num_valid_blocks
-
-        return loss, {
-            "block_attention_loss": loss.detach(),
-            "num_valid_blocks": torch.tensor(float(num_valid_blocks), device=loss.device),
         }
 
     # =========================================================================

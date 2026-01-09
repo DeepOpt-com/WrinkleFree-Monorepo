@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Instant;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::gguf::{GgufReader, GgmlQuantType, GgufError, repack_ternary_weights, NativeWeightFormat};
+use crate::gguf::{GgufReader, GgmlQuantType, GgufError, repack_ternary_weights, NativeWeightFormat, Tokenizer};
 
 /// Global profiling state
 static PROFILING_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -61,7 +61,7 @@ use crate::kernels::simd::{rms_norm_with_scale, silu_inplace, softmax_inplace};
 use rayon::prelude::*;
 
 use super::kv_cache::{KVCache, KVCacheConfig};
-use super::sampling::{SamplingConfig, sample_token};
+use super::sampling::{SamplingConfig, sample_token_with_penalty};
 
 /// BitNet model configuration
 #[derive(Debug, Clone)]
@@ -86,6 +86,12 @@ pub struct BitNetConfig {
     pub rope_theta: f32,
     /// Head dimension (hidden_size / num_heads)
     pub head_dim: usize,
+    /// BOS token ID
+    pub bos_token_id: u32,
+    /// EOS token ID
+    pub eos_token_id: u32,
+    /// Padding token ID (optional)
+    pub pad_token_id: Option<u32>,
 }
 
 impl Default for BitNetConfig {
@@ -101,6 +107,9 @@ impl Default for BitNetConfig {
             rms_norm_eps: 1e-5,
             rope_theta: 10000.0,
             head_dim: 128,
+            bos_token_id: 1,  // Common default
+            eos_token_id: 2,  // Common default
+            pad_token_id: None,
         }
     }
 }
@@ -240,6 +249,9 @@ impl BitNetEngine {
             rms_norm_eps: gguf_config.rms_norm_eps,
             rope_theta: gguf_config.rope_theta,
             head_dim: gguf_config.hidden_size as usize / gguf_config.num_heads as usize,
+            bos_token_id: gguf_config.bos_token_id.unwrap_or(1),
+            eos_token_id: gguf_config.eos_token_id.unwrap_or(2),
+            pad_token_id: gguf_config.pad_token_id,
         };
 
         // Validate config
@@ -327,6 +339,19 @@ impl BitNetEngine {
     /// Get hidden size.
     pub fn hidden_size(&self) -> usize {
         self.config.hidden_size
+    }
+
+    /// Create a tokenizer from the model's vocabulary.
+    ///
+    /// Returns None if the model doesn't have a vocabulary loaded.
+    pub fn tokenizer(&self) -> Option<Tokenizer> {
+        self.vocab.as_ref().map(|v| {
+            Tokenizer::new(v.clone()).with_special_tokens(
+                Some(self.config.bos_token_id),
+                Some(self.config.eos_token_id),
+                self.config.pad_token_id,
+            )
+        })
     }
 
     /// Reset KV cache for new sequence.
@@ -516,7 +541,7 @@ impl BitNetEngine {
         // Compute attention scores and output
         let total_seq_len = start_pos + seq_len;
         let attn_out = self.compute_attention_scores(
-            &q, layer_idx, seq_len, total_seq_len, num_heads, num_kv_heads, head_dim,
+            &q, layer_idx, start_pos, seq_len, total_seq_len, num_heads, num_kv_heads, head_dim,
         );
 
         if PROFILING_ENABLED.load(Ordering::Relaxed) {
@@ -541,6 +566,7 @@ impl BitNetEngine {
         &self,
         q: &[f32],
         layer_idx: usize,
+        start_pos: usize,
         q_len: usize,
         kv_len: usize,
         num_heads: usize,
@@ -576,8 +602,9 @@ impl BitNetEngine {
                 }
 
                 // Apply causal mask (for positions after current)
-                let current_pos = qi; // relative to start of this forward pass
-                for ki in (current_pos + 1)..kv_len {
+                // current_pos is ABSOLUTE position in the sequence
+                let absolute_pos = start_pos + qi;
+                for ki in (absolute_pos + 1)..kv_len {
                     scores[ki] = f32::NEG_INFINITY;
                 }
 
@@ -796,23 +823,37 @@ impl BitNetEngine {
         let mut rng = rand::thread_rng();
         let mut output_ids = Vec::with_capacity(max_tokens);
 
+        // Collect all context tokens for repetition penalty
+        let mut all_tokens: Vec<i32> = input_ids.to_vec();
+
+        // Get EOS token from model config
+        let eos_token_id = self.config.eos_token_id as usize;
+
         // Prefill
         let logits = self.forward_prefill(input_ids, 0);
-        let token_id = sample_token(&logits, sampling_config, &mut rng);
+        let token_id = sample_token_with_penalty(&logits, sampling_config, &mut rng, &all_tokens);
         output_ids.push(token_id as i32);
+        all_tokens.push(token_id as i32);
+
+        // Check for EOS
+        if token_id == eos_token_id {
+            return output_ids;
+        }
 
         // Decode
         let mut pos = input_ids.len();
         for _ in 1..max_tokens {
             let logits = self.forward_one(output_ids.last().copied().unwrap_or(0), pos);
-            let token_id = sample_token(&logits, sampling_config, &mut rng);
+            let token_id = sample_token_with_penalty(&logits, sampling_config, &mut rng, &all_tokens);
 
-            // Check for EOS (simplified)
-            if token_id == 2 {
+            // Check for EOS
+            if token_id == eos_token_id {
+                output_ids.push(token_id as i32);
                 break;
             }
 
             output_ids.push(token_id as i32);
+            all_tokens.push(token_id as i32);
             pos += 1;
         }
 

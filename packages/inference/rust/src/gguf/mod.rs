@@ -25,6 +25,7 @@
 pub mod types;
 pub mod reader;
 pub mod repack;
+pub mod tokenizer;
 
 // Re-export commonly used types
 pub use types::{
@@ -33,3 +34,4 @@ pub use types::{
 };
 pub use reader::GgufReader;
 pub use repack::{repack_ternary_weights, NativeWeightFormat};
+pub use tokenizer::Tokenizer;

@@ -1,7 +1,7 @@
 """Configuration for efficient meta-optimization.
 
 This module provides configuration classes for three complementary methods:
-1. LDC-MTL: Objective weight optimization (CE vs DLM vs distillation)
+1. LDC-MTL: Objective weight optimization (CE vs distillation, etc.)
 2. ODM: Dataset weight optimization (web vs code vs math)
 3. LayerLR: Per-layer learning rate optimization
 

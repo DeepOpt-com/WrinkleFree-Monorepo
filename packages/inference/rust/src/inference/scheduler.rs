@@ -81,7 +81,7 @@ pub struct BatchScheduler {
     batch: Batch,
 
     /// Token decoder (placeholder - would use tokenizer in real impl)
-    #[allow(dead_code)] // Legacy scheduler - DlmScheduler is preferred for DLM inference
+    #[allow(dead_code)]
     eos_token_id: i32,
 
     /// RadixCache for prefix sharing (KV cache reuse)

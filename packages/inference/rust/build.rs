@@ -115,7 +115,7 @@ fn get_rustc_host() -> Option<String> {
 ///
 /// NOTE: The native-inference feature now uses pure Rust BitNet kernels
 /// and does NOT require C++ compilation. This function is only called
-/// when llama-inference is enabled (for DLM mode with llama.cpp).
+/// when llama-inference is enabled (legacy mode with llama.cpp).
 #[cfg(feature = "native-inference")]
 fn build_cpp_inference_engine() -> Result<(), Box<dyn std::error::Error>> {
     // NOTE: BitNet kernels are now pure Rust (src/kernels/bitnet/)

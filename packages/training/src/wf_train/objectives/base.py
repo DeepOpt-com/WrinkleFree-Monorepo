@@ -1,7 +1,7 @@
 """Base objective class for training objectives.
 
 Provides the abstract interface that all objectives must implement,
-including hooks for objectives that need to modify inputs (like DLM).
+including hooks for objectives that need to modify inputs.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ class Objective(nn.Module, ABC):
     - name: Unique identifier for the objective
     - forward: Compute loss and metrics
 
-    Objectives that modify inputs (like DLM) should:
+    Objectives that modify inputs should:
     - Set modifies_input = True
     - Override preprocess_batch to apply modifications
 
@@ -62,8 +62,7 @@ class Objective(nn.Module, ABC):
     def preprocess_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Hook: Modify batch BEFORE model forward pass.
 
-        Override this for objectives that need to modify inputs,
-        like DLM which applies block masking.
+        Override this for objectives that need to modify inputs.
 
         Args:
             batch: The input batch dictionary with at least:

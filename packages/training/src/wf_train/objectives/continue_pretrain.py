@@ -62,12 +62,10 @@ class ContinuePretrainObjective(Objective):
             ObjectiveOutput with loss and perplexity metric
 
         Note:
-            When used with DLMObjective (multi-task), the model sees masked
-            input_ids but this objective uses the original labels. This trains
-            the model to predict next tokens even with masked context.
+            Uses original labels if available (in case preprocessing modified them).
         """
         logits = model_outputs["logits"]
-        # Use original labels even when DLM has masked the input
+        # Use original labels if preprocessing modified them
         labels = batch.get("_original_labels", batch["labels"])
 
         # Shift for next token prediction

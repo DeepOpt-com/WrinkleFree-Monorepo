@@ -26,13 +26,19 @@ impl Default for SamplingConfig {
     }
 }
 
-/// Sample a token from logits.
-pub fn sample_token(
+/// Sample a token from logits with repetition penalty.
+pub fn sample_token_with_penalty(
     logits: &[f32],
     config: &SamplingConfig,
     rng: &mut impl Rng,
+    past_tokens: &[i32],
 ) -> usize {
     let mut logits = logits.to_vec();
+
+    // Apply repetition penalty FIRST (before temperature)
+    if config.repetition_penalty != 1.0 && !past_tokens.is_empty() {
+        apply_repetition_penalty(&mut logits, past_tokens, config.repetition_penalty);
+    }
 
     // Apply temperature
     if config.temperature > 0.0 && config.temperature != 1.0 {
@@ -62,6 +68,15 @@ pub fn sample_token(
 
     // Sample from distribution
     sample_from_probs(&probs, rng)
+}
+
+/// Sample a token from logits (without repetition penalty).
+pub fn sample_token(
+    logits: &[f32],
+    config: &SamplingConfig,
+    rng: &mut impl Rng,
+) -> usize {
+    sample_token_with_penalty(logits, config, rng, &[])
 }
 
 /// Greedy sampling (argmax).

@@ -78,7 +78,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
     """Lightning module for WrinkleFree training.
 
     Integrates with the existing ObjectiveManager system for multi-objective
-    training (DLM, LRC, distillation, etc.).
+    training (LRC, distillation, etc.).
 
     Args:
         model: The model to train (BitNet or standard transformer)
@@ -280,9 +280,8 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         Supports lazy loading: if teacher_model is None but teacher_cfg is provided
         and distill weight is non-zero, will load the teacher on-demand.
 
-        IMPORTANT: Uses _original_input_ids (unmasked) for teacher forward when DLM
-        preprocessing has been applied. AR teachers were never trained on masked
-        inputs and would produce garbage predictions on [MASK] tokens.
+        IMPORTANT: Uses _original_input_ids (unmasked) for teacher forward when
+        preprocessing has been applied. AR teachers should see clean inputs.
         """
         if not self.objective_manager.requires_teacher:
             return None
@@ -312,8 +311,8 @@ class WrinkleFreeLightningModule(pl.LightningModule):
             else:
                 return None
 
-        # Use original unmasked input_ids for AR teacher (not masked input from DLM)
-        # Falls back to batch["input_ids"] if DLM preprocessing wasn't applied
+        # Use original unmasked input_ids for AR teacher
+        # Falls back to batch["input_ids"] if no preprocessing was applied
         teacher_input_ids = batch.get("_original_input_ids", batch["input_ids"])
 
         with torch.no_grad():
@@ -333,7 +332,7 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         If LDC-MTL meta-optimization is enabled, uses learned weights instead of
         curriculum weights.
         """
-        # Preprocess batch (DLM masking, etc.)
+        # Preprocess batch if objectives need to modify inputs
         batch = self.objective_manager.preprocess_batch(batch)
 
         # Forward pass through student model
@@ -459,13 +458,13 @@ class WrinkleFreeLightningModule(pl.LightningModule):
         return final_loss
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
-        """Validation step - computes clean perplexity WITHOUT DLM preprocessing.
+        """Validation step - computes clean perplexity WITHOUT preprocessing.
 
-        Unlike training, we skip DLM masking to get true language model perplexity
+        Unlike training, we skip preprocessing to get true language model perplexity
         on held-out validation data (e.g., C4). This provides a fair comparison
         metric across training runs regardless of which objectives are enabled.
         """
-        # Forward pass WITHOUT preprocessing (no DLM masking)
+        # Forward pass WITHOUT preprocessing
         model_outputs = self.forward(**batch)
 
         # Compute CE loss directly for clean perplexity

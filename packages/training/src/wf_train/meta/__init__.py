@@ -4,7 +4,7 @@ This module provides O(1) complexity meta-optimization using three complementary
 methods that can be enabled independently or together:
 
 1. **LDC-MTL** (Loss Discrepancy Control for Multi-Task Learning):
-   - Optimizes objective weights (e.g., CE vs DLM vs distillation)
+   - Optimizes objective weights (e.g., CE vs distillation)
    - Uses a small router MLP to learn task weights dynamically
    - O(1) complexity via single-level optimization with discrepancy penalty
 
