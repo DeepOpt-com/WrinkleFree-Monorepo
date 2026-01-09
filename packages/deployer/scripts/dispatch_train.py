@@ -123,6 +123,7 @@ def main():
         "--package",
         "wf-train",
         "python",
+        "-u",  # Force unbuffered stdout/stderr for real-time logs
         "packages/training/scripts/train_lightning.py",
         f"model={args.model}",
         f"training={args.training_config}",
@@ -156,7 +157,54 @@ def main():
 
     # Execute
     os.makedirs(args.checkpoint_dir, exist_ok=True)
-    result = subprocess.run(cmd, cwd=Path(__file__).parent.parent.parent.parent)
+    monorepo_root = Path(__file__).parent.parent.parent.parent
+
+    # Pre-install BitNet transformers fork if using bitnet model
+    # We must sync first, then install fork, then run without uv run (which would reinstall)
+    if "bitnet" in args.model.lower():
+        print("\n[BitNet] Installing transformers fork with BitNet support...")
+        # First run uv sync to create venv
+        sync_cmd = ["uv", "sync", "--package", "wf-train"]
+        subprocess.run(sync_cmd, cwd=monorepo_root, check=True)
+        # Install transformers fork (overwrites PyPI version)
+        install_cmd = [
+            "uv", "pip", "install",
+            "git+https://github.com/huggingface/transformers.git@096f25ae1f501a084d8ff2dcaf25fbc2bd60eba4",
+        ]
+        subprocess.run(install_cmd, cwd=monorepo_root, check=True)
+        print("[BitNet] Transformers fork installed successfully\n")
+
+        # Run directly with venv python to avoid uv run reinstalling packages
+        venv_python = monorepo_root / ".venv" / "bin" / "python"
+        cmd = [
+            str(venv_python),
+            "-u",  # Force unbuffered stdout/stderr
+            "packages/training/scripts/train_lightning.py",
+            f"model={args.model}",
+            f"training={args.training_config}",
+            f"distributed={args.distributed}",
+            f"output_dir={args.checkpoint_dir}",
+            f"experiment_name={args.experiment_name}",
+            f"training.logging.wandb.project={args.wandb_project}",
+            "gcs.enabled=true",
+            f"gcs.bucket={args.gcs_bucket}",
+        ]
+        if args.total_tokens:
+            tokens = parse_tokens(args.total_tokens)
+            cmd.append(f"training.total_tokens={tokens}")
+            cmd.append("training.max_steps=null")
+        if args.max_steps:
+            cmd.append(f"training.max_steps={args.max_steps}")
+        cmd.extend(args.overrides)
+        print("Command (direct venv):")
+        print(" ".join(cmd))
+        print()
+
+    result = subprocess.run(
+        cmd,
+        cwd=monorepo_root,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},  # Ensure unbuffered output
+    )
     return result.returncode
 
 

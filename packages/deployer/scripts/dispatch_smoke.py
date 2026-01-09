@@ -144,6 +144,7 @@ def main():
         "--package",
         "wf-train",
         "python",
+        "-u",  # Force unbuffered stdout/stderr for real-time logs
         "packages/training/scripts/train_lightning.py",
         f"model={args.model}",
         f"training={training_config}",
@@ -165,7 +166,11 @@ def main():
 
     # Execute
     os.makedirs(args.checkpoint_dir, exist_ok=True)
-    result = subprocess.run(cmd, cwd=Path(__file__).parent.parent.parent.parent)
+    result = subprocess.run(
+        cmd,
+        cwd=Path(__file__).parent.parent.parent.parent,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},  # Ensure unbuffered output
+    )
     return result.returncode
 
 

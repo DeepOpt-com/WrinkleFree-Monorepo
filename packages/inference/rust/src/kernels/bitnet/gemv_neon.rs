@@ -134,10 +134,118 @@ pub fn vec_dot_neon(packed_weights: &[u8], activations: &[i8]) -> i32 {
     }
 }
 
-// NOTE: The dotprod extension (ARMv8.2+) with vdotq_s32 would be 4x faster,
-// but it requires the unstable `stdarch_neon_dotprod` feature in Rust.
-// For now, we use the standard NEON path which is still much faster than scalar.
-// TODO: Enable dotprod when the feature stabilizes (tracking issue #117224)
+/// ARMv8.2+ dotprod-accelerated dot product.
+///
+/// Uses vdotq_s32 to compute 4x4-element dot products per instruction.
+/// For ternary weights (-1, 0, +1), the multiplications are effectively
+/// just sign handling, but the instruction throughput is ~4x higher.
+///
+/// # Performance
+/// - vdotq_s32: 16 MAC ops in 1 instruction (1 cycle throughput on Cortex-A76+)
+/// - vmlal_s8: 8 MAC ops in 1 instruction (but 2 instructions needed for 16 elements)
+/// - Mask-based: ~6-8 instructions for 16 elements
+///
+/// For BitNet ternary weights, the "multiplications" are by -1/0/+1 which
+/// modern ARM cores handle as efficiently as add/sub.
+#[cfg(target_arch = "aarch64")]
+pub fn vec_dot_dotprod(packed_weights: &[u8], activations: &[i8]) -> i32 {
+    use std::arch::aarch64::*;
+
+    let n = activations.len();
+    assert!(n % QK_BLOCK == 0);
+    assert!(packed_weights.len() >= n / 4);
+
+    let num_blocks = n / QK_BLOCK;
+
+    unsafe {
+        // 4 int32 accumulators (vdotq_s32 returns int32x4_t)
+        let mut acc0: int32x4_t = vdupq_n_s32(0);
+        let mut acc1: int32x4_t = vdupq_n_s32(0);
+        let mut acc2: int32x4_t = vdupq_n_s32(0);
+        let mut acc3: int32x4_t = vdupq_n_s32(0);
+
+        // Mask for extracting 2-bit values
+        let mask = vdupq_n_u8(0x03);
+        // Bias for converting 0,1,2 -> -1,0,+1
+        let bias = vdupq_n_s8(1);
+
+        for block in 0..num_blocks {
+            let w_ptr = packed_weights.as_ptr().add(block * BLOCK_BYTES);
+            let a_ptr = activations.as_ptr().add(block * QK_BLOCK);
+
+            // Load 32 packed bytes (128 weights)
+            let w_lo: uint8x16_t = vld1q_u8(w_ptr);
+            let w_hi: uint8x16_t = vld1q_u8(w_ptr.add(16));
+
+            // Unpack weights to 4 groups of 32 bytes each
+            // Group 0: bits 6-7 of each byte
+            let w0_lo = vandq_u8(vshrq_n_u8(w_lo, 6), mask);
+            let w0_hi = vandq_u8(vshrq_n_u8(w_hi, 6), mask);
+
+            // Group 1: bits 4-5 of each byte
+            let w1_lo = vandq_u8(vshrq_n_u8(w_lo, 4), mask);
+            let w1_hi = vandq_u8(vshrq_n_u8(w_hi, 4), mask);
+
+            // Group 2: bits 2-3 of each byte
+            let w2_lo = vandq_u8(vshrq_n_u8(w_lo, 2), mask);
+            let w2_hi = vandq_u8(vshrq_n_u8(w_hi, 2), mask);
+
+            // Group 3: bits 0-1 of each byte
+            let w3_lo = vandq_u8(w_lo, mask);
+            let w3_hi = vandq_u8(w_hi, mask);
+
+            // Convert from {0,1,2} to {-1,0,+1} by subtracting 1
+            let w0_lo_s = vsubq_s8(vreinterpretq_s8_u8(w0_lo), bias);
+            let w0_hi_s = vsubq_s8(vreinterpretq_s8_u8(w0_hi), bias);
+            let w1_lo_s = vsubq_s8(vreinterpretq_s8_u8(w1_lo), bias);
+            let w1_hi_s = vsubq_s8(vreinterpretq_s8_u8(w1_hi), bias);
+            let w2_lo_s = vsubq_s8(vreinterpretq_s8_u8(w2_lo), bias);
+            let w2_hi_s = vsubq_s8(vreinterpretq_s8_u8(w2_hi), bias);
+            let w3_lo_s = vsubq_s8(vreinterpretq_s8_u8(w3_lo), bias);
+            let w3_hi_s = vsubq_s8(vreinterpretq_s8_u8(w3_hi), bias);
+
+            // Load activations (128 int8s in 8 vectors)
+            let a0_lo: int8x16_t = vld1q_s8(a_ptr.add(0) as *const i8);
+            let a0_hi: int8x16_t = vld1q_s8(a_ptr.add(16) as *const i8);
+            let a1_lo: int8x16_t = vld1q_s8(a_ptr.add(32) as *const i8);
+            let a1_hi: int8x16_t = vld1q_s8(a_ptr.add(48) as *const i8);
+            let a2_lo: int8x16_t = vld1q_s8(a_ptr.add(64) as *const i8);
+            let a2_hi: int8x16_t = vld1q_s8(a_ptr.add(80) as *const i8);
+            let a3_lo: int8x16_t = vld1q_s8(a_ptr.add(96) as *const i8);
+            let a3_hi: int8x16_t = vld1q_s8(a_ptr.add(112) as *const i8);
+
+            // Use vdotq_s32 for 4-element dot products
+            // vdotq_s32(acc, a, b) computes: acc[i] += sum(a[4i..4i+4] * b[4i..4i+4])
+            // This is 4x faster than vmlal_s8 for the same number of elements
+
+            // Group 0: activations[0:32] * weights[0:32]
+            acc0 = vdotq_s32(acc0, w0_lo_s, a0_lo);
+            acc0 = vdotq_s32(acc0, w0_hi_s, a0_hi);
+
+            // Group 1: activations[32:64] * weights[32:64]
+            acc1 = vdotq_s32(acc1, w1_lo_s, a1_lo);
+            acc1 = vdotq_s32(acc1, w1_hi_s, a1_hi);
+
+            // Group 2: activations[64:96] * weights[64:96]
+            acc2 = vdotq_s32(acc2, w2_lo_s, a2_lo);
+            acc2 = vdotq_s32(acc2, w2_hi_s, a2_hi);
+
+            // Group 3: activations[96:128] * weights[96:128]
+            acc3 = vdotq_s32(acc3, w3_lo_s, a3_lo);
+            acc3 = vdotq_s32(acc3, w3_hi_s, a3_hi);
+        }
+
+        // Horizontal sum of all accumulators
+        let total = vaddq_s32(vaddq_s32(acc0, acc1), vaddq_s32(acc2, acc3));
+        vaddvq_s32(total)
+    }
+}
+
+/// Fallback for non-ARM or non-dotprod platforms.
+#[cfg(not(target_arch = "aarch64"))]
+pub fn vec_dot_dotprod(packed_weights: &[u8], activations: &[i8]) -> i32 {
+    super::gemv_scalar::vec_dot_scalar(packed_weights, activations)
+}
 
 /// Fallback for non-ARM platforms - delegates to scalar implementation.
 #[cfg(not(target_arch = "aarch64"))]
@@ -271,6 +379,31 @@ mod tests {
         assert_eq!(scalar_result, neon_result);
     }
 
-    // NOTE: test_dotprod_matches_neon removed because vdotq_s32 requires nightly Rust
-    // (unstable feature stdarch_neon_dotprod). Will re-add when it stabilizes.
+    #[test]
+    fn test_dotprod_matches_scalar() {
+        // Test that dotprod kernel produces same results as scalar
+        let weights: Vec<i8> = (0..128).map(|i| ((i * 7) % 3) as i8 - 1).collect();
+        let packed = pack_weights(&weights);
+        let activations: Vec<i8> = (0..128).map(|i| (((i * 11) % 200) as i32 - 100) as i8).collect();
+
+        let scalar_result = vec_dot_scalar(&packed, &activations);
+        let dotprod_result = vec_dot_dotprod(&packed, &activations);
+
+        assert_eq!(scalar_result, dotprod_result, "dotprod kernel mismatch");
+    }
+
+    #[test]
+    fn test_dotprod_matches_neon_multiple_blocks() {
+        // Test with multiple blocks (256 elements = 2 blocks)
+        let weights: Vec<i8> = (0..256).map(|i| ((i * 17) % 3) as i8 - 1).collect();
+        let packed = pack_weights(&weights);
+        let activations: Vec<i8> = (0..256).map(|i| (((i * 23) % 200) as i32 - 100) as i8).collect();
+
+        let scalar_result = vec_dot_scalar(&packed, &activations);
+        let neon_result = vec_dot_neon(&packed, &activations);
+        let dotprod_result = vec_dot_dotprod(&packed, &activations);
+
+        assert_eq!(scalar_result, neon_result, "neon kernel mismatch");
+        assert_eq!(scalar_result, dotprod_result, "dotprod kernel mismatch");
+    }
 }

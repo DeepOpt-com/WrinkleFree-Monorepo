@@ -32,7 +32,9 @@
 | Salient + MuonClip (experimental) | `... training=salient_muonclip` |
 | **Deploy to cloud** | `cd packages/deployer && wf train -m smollm2_135m -t base` |
 | Cloud with scale | `wf train -m qwen3_4b -t bitdistill_full --scale large` |
+| Deploy on Modal | `wf train -m qwen3_4b -t base --backend modal` |
 | **Smoke test** | `cd packages/deployer && wf smoke -o dlm` |
+| Smoke test on Modal | `wf smoke -o dlm --backend modal` |
 | Smoke test preview | `wf smoke -o bitdistill --dry-run` |
 | **Check sync status** | `./sync.sh --status --preset <preset>` |
 | **Start live sync** | `./sync.sh --preset <preset>` (runs in foreground with inotify) |
@@ -63,7 +65,7 @@
 | `training` | `wf_train` | Training pipeline + Lightning | `scripts/train_lightning.py`, `src/wf_train/lightning/` |
 | `architecture` | `wf_arch` | BitLinear/BitLinearLRC/BitLinearSalient/SubLN layers | `src/wf_arch/layers/` |
 | `data_handler` | `wf_data` | Data loading + mixing | `src/wf_data/data/` |
-| `deployer` | `wf_deploy` | Cloud deployment (SkyPilot) | `skypilot/*.yaml` |
+| `deployer` | `wf_deploy` | Cloud deployment (SkyPilot/Modal) | `skypilot/*.yaml`, `modal_deployer.py` |
 | `inference` | `wf_infer` | Model serving | `src/wf_infer/` |
 | `mobile` | N/A | Android inference (C++/JNI) | `android/` |
 | `eval` | `wf_eval` | Model evaluation | `src/wf_eval/` |

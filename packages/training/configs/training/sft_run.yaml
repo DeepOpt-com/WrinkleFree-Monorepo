@@ -1,46 +1,57 @@
 # SFT Training Configuration
-# Supervised Fine-Tuning using nvidia/Llama-Nemotron-Post-Training-Dataset
+# Supervised Fine-Tuning on salient/lora checkpoint output
 #
 # Usage:
 #   uv run --package wf-train python scripts/train_lightning.py \
-#     model=qwen3_4b training=sft_run
-#
-# The dataset has ~3.9M examples across 5 splits: code, math, science, chat, safety
-# Uses Qwen chat template format - labels are masked for instruction tokens.
+#     model=qwen3_4b training=sft_run \
+#     training.resume.checkpoint_path=gs://bucket/salient_lora_checkpoint/final/checkpoint.pt
 
 defaults:
   - base
 
 stage: sft
 
-# Lower LRs for fine-tuning
+# Resume from salient_lora or similar checkpoint
+resume:
+  checkpoint_path: null           # Override with path to salient_lora checkpoint
+  load_optimizer_state: false     # Fresh optimizer for SFT
+  load_scheduler_state: false     # Fresh scheduler for SFT
+  load_training_state: false      # Start from step 0
+  strict_model_load: false        # Allow salient/lora architecture
+
+# AdamW 8-bit optimizer
 optimizer:
-  type: muon
-  lr_muon: 0.002
-  lr_adam: 3e-5
+  type: adamw
+  use_8bit: true
+  learning_rate: 5e-5
+  weight_decay: 0.01
 
 scheduler:
   warmup_steps: 100
-  decay_ratio: 0.1
 
 # Training parameters
 total_tokens: 1_000_000_000  # 1B tokens for SFT
 batch_size: 8
 gradient_accumulation_steps: 8
 
-# Lambda warmup disabled for SFT (model already quantized)
+# Lambda warmup disabled (model already quantized)
 lambda_warmup:
   enabled: false
 
 # === OBJECTIVES ===
-# SFT + DLM - instruction tokens never masked, DLM only masks response tokens
-# DLM enables Fast-dLLM v2 block diffusion inference
+# SFT + DLM v2 (Fast-dLLM)
+# DLM only masks response tokens (labels != -100), never instruction tokens
 objectives:
   continue_pretrain:
     enabled: false
+
   dlm:
-    enabled: true  # DLM for Fast-dLLM v2 inference support
+    enabled: true
     weight: 0.5
+    mask_prob: 0.15
+    mask_token_id: 0
+    use_complementary_masks: true  # Fast-dLLM v2
+
   sft:
     enabled: true
     weight: 1.0
@@ -55,7 +66,7 @@ curriculum:
       data_config: sft_nemotron
       objectives:
         sft: 1.0
-        dlm: 0.5  # DLM masks output tokens only
+        dlm: 0.5
 
 # Checkpointing
 checkpoint:
@@ -65,7 +76,7 @@ checkpoint:
 # Logging
 logging:
   wandb:
-    tags: [sft, bitnet, nemotron]
+    tags: [sft, bitnet, dlm_v2]
 
 # Validation disabled for SFT
 validation:

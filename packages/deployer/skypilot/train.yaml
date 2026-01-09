@@ -110,7 +110,8 @@ run: |
   fi
 
   # Run dispatch script (pass HYDRA_OVERRIDES as extra args)
-  python packages/deployer/scripts/dispatch_train.py $DISPATCH_ARGS $HYDRA_OVERRIDES
+  # stdbuf ensures line-buffered output for real-time logs
+  stdbuf -oL -eL python -u packages/deployer/scripts/dispatch_train.py $DISPATCH_ARGS $HYDRA_OVERRIDES
 
   echo ""
   echo "================================================"

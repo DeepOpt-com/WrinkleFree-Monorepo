@@ -86,10 +86,11 @@ base_image = (
         "echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc",
     )
     # Install ML dependencies using uv (cached layer)
+    # NOTE: Using transformers from HuggingFace fork for BitNet support
     .run_commands(
         "/root/.local/bin/uv pip install --system "
         "torch>=2.5.0 "
-        "transformers>=4.51.0 "
+        "git+https://github.com/huggingface/transformers.git@096f25ae1f501a084d8ff2dcaf25fbc2bd60eba4 "
         "datasets>=2.18.0 "
         "accelerate>=0.27.0 "
         "safetensors>=0.4.0 "
@@ -131,6 +132,7 @@ def get_training_image() -> modal.Image:
         .add_local_dir(
             str(MONOREPO_ROOT),
             remote_path="/app/monorepo",
+            copy=True,  # Copy into image to allow run_commands after
             # Exclude large/unnecessary directories
             ignore=[
                 ".git",
@@ -153,6 +155,8 @@ def get_training_image() -> modal.Image:
             "cd /app/monorepo && /root/.local/bin/uv pip install --system -e packages/architecture",
             "cd /app/monorepo && /root/.local/bin/uv pip install --system -e packages/data_handler",
             "cd /app/monorepo && /root/.local/bin/uv pip install --system -e packages/training",
+            # Install BitNet-compatible transformers fork (overwrites the one from training)
+            "/root/.local/bin/uv pip install --system 'git+https://github.com/huggingface/transformers.git@096f25ae1f501a084d8ff2dcaf25fbc2bd60eba4'",
         )
     )
 
@@ -505,17 +509,19 @@ class ModalTrainer:
 
         if detach:
             # Async execution - return immediately
-            handle = run_training.spawn(**kwargs)
-            run_id = f"{RunIdPrefix.MODAL.value}{model}-{training_config}"
-            print(f"[Modal] Launched! Run ID: {run_id}")
-            print(f"   Function call ID: {handle.object_id}")
-            print(f"   Dashboard: https://modal.com/apps/{MODAL_APP_NAME}")
-            # Store function call ID for later retrieval
-            self._last_function_call_id = handle.object_id
+            with app.run():
+                handle = run_training.spawn(**kwargs)
+                run_id = f"{RunIdPrefix.MODAL.value}{model}-{training_config}"
+                print(f"[Modal] Launched! Run ID: {run_id}")
+                print(f"   Function call ID: {handle.object_id}")
+                print(f"   Dashboard: https://modal.com/apps/{MODAL_APP_NAME}")
+                # Store function call ID for later retrieval
+                self._last_function_call_id = handle.object_id
             return run_id
         else:
             # Blocking execution - wait for result
-            result = run_training.remote(**kwargs)
+            with app.run():
+                result = run_training.remote(**kwargs)
             return result
 
     def smoke_test(
@@ -549,13 +555,16 @@ class ModalTrainer:
         }
 
         if detach:
-            handle = run_smoke_test.spawn(**kwargs)
-            run_id = f"{RunIdPrefix.MODAL.value}smoke-{objective}"
-            print(f"[Modal] Launched! Run ID: {run_id}")
-            self._last_function_call_id = handle.object_id
+            with app.run():
+                handle = run_smoke_test.spawn(**kwargs)
+                run_id = f"{RunIdPrefix.MODAL.value}smoke-{objective}"
+                print(f"[Modal] Launched! Run ID: {run_id}")
+                self._last_function_call_id = handle.object_id
             return run_id
         else:
-            return run_smoke_test.remote(**kwargs)
+            with app.run():
+                result = run_smoke_test.remote(**kwargs)
+            return result
 
     def logs(self, run_id: str, follow: bool = False) -> None:
         """Stream logs from a training run.
@@ -630,7 +639,8 @@ class ModalTrainer:
         Returns:
             List of checkpoint info dicts
         """
-        return list_checkpoints.remote(limit=limit)
+        with app.run():
+            return list_checkpoints.remote(limit=limit)
 
 
 # =============================================================================
