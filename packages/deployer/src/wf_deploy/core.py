@@ -30,11 +30,14 @@ from wf_deploy.constants import (
     DEFAULT_SMOKE_TEST_MODEL,
     DEFAULT_WANDB_PROJECT,
     DEFAULT_CONTEXT_SIZE,
+    DEFAULT_BACKEND,
     DOCKER_IMAGE,
     GCP_PROJECT_ID,
     GAR_REGION,
     GAR_REPO,
     SCALES,
+    Backend,
+    RunIdPrefix,
     get_scale_for_model,
 )
 
@@ -90,12 +93,13 @@ def train(
     scale: Scale | None = None,
     overrides: list[str] | None = None,
     cloud: str = "nebius",
+    backend: str = DEFAULT_BACKEND,
     detach: bool = True,
     resume_checkpoint: str | None = None,
     gpu_type: str | None = None,
     training_config: str | None = None,
 ) -> str:
-    """Launch a training job on SkyPilot.
+    """Launch a training job on SkyPilot or Modal.
 
     Args:
         model: Model config name (e.g., "qwen3_4b", "smollm2_135m")
@@ -103,7 +107,8 @@ def train(
         scale: GPU scale profile ("dev", "small", "medium", "large", "xlarge").
                If None, uses model-specific defaults.
         overrides: Hydra config overrides (e.g., ["training.lr=1e-4"])
-        cloud: Cloud provider ("nebius", "gcp", "runpod", or "vast")
+        cloud: Cloud provider ("nebius", "gcp", "runpod", or "vast") - SkyPilot only
+        backend: Deployment backend ("skypilot" or "modal")
         detach: Return immediately (True) or wait for completion (False)
         resume_checkpoint: Path to checkpoint to resume from (local or gs://)
         gpu_type: Override GPU type (e.g., "H100", "L40S", "A10G")
@@ -116,11 +121,15 @@ def train(
     Example:
         >>> from wf_deploy import train
         >>> run_id = train("qwen3_4b", training_config="base")
-        >>> run_id = train("qwen3_4b", training_config="base", scale="large")
+        >>> run_id = train("qwen3_4b", training_config="base", backend="modal")
         >>> run_id = train("qwen3_4b", training_config="lrc_run", overrides=["training.batch_size=8"])
     """
     overrides = overrides or []
-    return _train_skypilot(model, scale, overrides, cloud, detach, resume_checkpoint, gpu_type, training_config)
+
+    if backend == Backend.MODAL.value:
+        return _train_modal(model, scale, overrides, detach, resume_checkpoint, training_config)
+    else:
+        return _train_skypilot(model, scale, overrides, cloud, detach, resume_checkpoint, gpu_type, training_config)
 
 
 def _train_skypilot(
@@ -255,6 +264,58 @@ def _train_skypilot(
         return job_name
 
 
+def _train_modal(
+    model: str,
+    scale: Scale | None,
+    overrides: list[str],
+    detach: bool,
+    resume_checkpoint: str | None = None,
+    training_config: str | None = None,
+) -> str:
+    """Launch training on Modal.
+
+    Args:
+        model: Model config name
+        scale: GPU scale profile
+        overrides: Hydra config overrides
+        detach: Return immediately or wait
+        resume_checkpoint: Path to resume from
+        training_config: Training config name
+
+    Returns:
+        Run ID string
+    """
+    from wf_deploy.modal_deployer import ModalTrainer
+
+    # Extract training_config from overrides if not explicitly provided
+    if training_config is None:
+        for override in overrides:
+            if override.startswith("training="):
+                training_config = override.split("=", 1)[1]
+                overrides = [o for o in overrides if not o.startswith("training=")]
+                break
+    if training_config is None:
+        raise ValueError(
+            "training_config is required. Either pass training_config='base' or "
+            "include 'training=base' in overrides."
+        )
+
+    trainer = ModalTrainer()
+    result = trainer.launch(
+        model=model,
+        training_config=training_config,
+        scale=scale,
+        overrides=overrides,
+        detach=detach,
+        resume_checkpoint=resume_checkpoint,
+    )
+
+    if isinstance(result, str):
+        return result
+    else:
+        return result.get("run_id", "unknown")
+
+
 def logs(run_id: str, follow: bool = False) -> None:
     """View logs for a training run.
 
@@ -262,6 +323,14 @@ def logs(run_id: str, follow: bool = False) -> None:
         run_id: The run ID from train()
         follow: Stream logs continuously
     """
+    # Check if this is a Modal run
+    if run_id.startswith(RunIdPrefix.MODAL.value):
+        from wf_deploy.modal_deployer import ModalTrainer
+        trainer = ModalTrainer()
+        trainer.logs(run_id, follow=follow)
+        return
+
+    # SkyPilot run
     import sky
 
     # Extract job_name from run_id format: "sky-{model}-s{stage}:{job_id}"
@@ -284,6 +353,13 @@ def cancel(run_id: str) -> bool:
     Returns:
         True if cancelled successfully
     """
+    # Check if this is a Modal run
+    if run_id.startswith(RunIdPrefix.MODAL.value):
+        from wf_deploy.modal_deployer import ModalTrainer
+        trainer = ModalTrainer()
+        return trainer.cancel(run_id)
+
+    # SkyPilot run
     import sky
 
     try:
@@ -345,23 +421,42 @@ def smoke_test_unified(
     gpu_type: str = "L40S",
     gpu_count: int = 1,
     cloud: str = "nebius",
+    backend: str = DEFAULT_BACKEND,
     extra_overrides: list[str] | None = None,
 ) -> dict:
     """Run unified smoke test with specific objective.
 
-    Uses the new unified smoke_test.yaml with dispatch_smoke.py.
+    Uses the new unified smoke_test.yaml with dispatch_smoke.py (SkyPilot)
+    or Modal's run_smoke_test function.
 
     Args:
         model: Model config name (default: smollm2_135m)
         objective: Smoke test objective (ce, dlm, bitdistill, lrc, etc.)
         gpu_type: GPU type (H100, L40S, A10G)
         gpu_count: Number of GPUs
-        cloud: Cloud provider (nebius, runpod, vast)
+        cloud: Cloud provider (nebius, runpod, vast) - SkyPilot only
+        backend: Deployment backend ("skypilot" or "modal")
         extra_overrides: Additional Hydra overrides
 
     Returns:
         Test results dict with job name
     """
+    # Use Modal backend if requested
+    if backend == Backend.MODAL.value:
+        from wf_deploy.modal_deployer import ModalTrainer
+        trainer = ModalTrainer()
+        result = trainer.smoke_test(
+            model=model,
+            objective=objective,
+            gpu_type=gpu_type,
+            gpu_count=gpu_count,
+            detach=True,
+        )
+        if isinstance(result, str):
+            return {"status": "launched", "run_id": result}
+        return result
+
+    # SkyPilot backend
     try:
         import sky
     except ImportError:

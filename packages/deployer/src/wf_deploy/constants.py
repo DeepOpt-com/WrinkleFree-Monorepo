@@ -91,14 +91,33 @@ class RunIdPrefix(str, Enum):
     """Prefixes for run IDs to identify the backend.
 
     Run IDs are prefixed to make backend detection self-documenting:
-    - sky-qwen3_4b-s2:123 -> SkyPilot backend
+    - sky-qwen3_4b-base:123 -> SkyPilot backend
+    - modal-qwen3_4b-base -> Modal backend
 
     Example:
         if run_id.startswith(RunIdPrefix.SKYPILOT.value):
             _logs_skypilot(run_id, follow)
+        elif run_id.startswith(RunIdPrefix.MODAL.value):
+            _logs_modal(run_id, follow)
     """
 
     SKYPILOT = "sky-"
+    MODAL = "modal-"
+
+
+class Backend(str, Enum):
+    """Deployment backend options.
+
+    SkyPilot: Multi-cloud orchestration with spot instance support.
+    Modal: Serverless GPU compute with fast cold starts and caching.
+    """
+
+    SKYPILOT = "skypilot"
+    MODAL = "modal"
+
+
+DEFAULT_BACKEND: Final[str] = Backend.SKYPILOT.value
+"""Default deployment backend (SkyPilot for multi-cloud support)."""
 
 
 # =============================================================================

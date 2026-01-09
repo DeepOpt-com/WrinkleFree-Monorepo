@@ -1,6 +1,8 @@
 # WrinkleFree-Deployer
 
-Training job launcher for 1.58-bit quantized LLMs. Uses SkyPilot for managed GPU jobs with spot recovery.
+Training job launcher for 1.58-bit quantized LLMs. Supports two backends:
+- **SkyPilot** (default): Multi-cloud orchestration with spot recovery
+- **Modal**: Serverless GPU with fast cold starts and caching
 
 ## CRITICAL Rules
 
@@ -19,16 +21,20 @@ Training job launcher for 1.58-bit quantized LLMs. Uses SkyPilot for managed GPU
 cd packages/deployer
 source credentials/.env
 
-# Training with specific config
+# Training with SkyPilot (default)
 wf train -m qwen3_4b -t base                       # Combined CE + DLM
 wf train -m qwen3_4b -t bitdistill_full --scale large  # BitDistill
 wf train -m smollm2_135m -t lrc_run                # Low-Rank Correction
 wf train -m qwen3_4b -t base --dry-run             # Preview without launching
 
+# Training with Modal (fast starts, cached volumes)
+wf train -m qwen3_4b -t base --backend modal       # Use Modal instead of SkyPilot
+wf train -m smollm2_135m -t base -b modal          # Short form
+
 # Smoke tests
-wf smoke                          # Default: dlm on L40S
+wf smoke                          # Default: dlm on L40S (SkyPilot)
 wf smoke -o bitdistill            # BitDistill smoke test
-wf smoke -o lrc --gpu-type H100   # LRC on H100
+wf smoke -o dlm --backend modal   # Smoke test on Modal
 wf smoke --dry-run                # Preview without launching
 
 # Check logs
@@ -87,8 +93,9 @@ uv run --package wf-train-deployer wf train -m qwen3_4b -s 2
 | `src/wf_deploy/constants.py` | All magic strings, defaults, scales, training configs |
 | `src/wf_deploy/core.py` | Main API: train(), smoke_test_unified(), logs() |
 | `src/wf_deploy/cli.py` | CLI commands: train, smoke, logs, runs |
-| `skypilot/train.yaml` | **Unified training job (uses dispatch_train.py)** |
-| `skypilot/smoke_test.yaml` | **Unified smoke test (uses dispatch_smoke.py)** |
+| `src/wf_deploy/modal_deployer.py` | **Modal backend: ModalTrainer, run_training()** |
+| `skypilot/train.yaml` | SkyPilot unified training job (uses dispatch_train.py) |
+| `skypilot/smoke_test.yaml` | SkyPilot unified smoke test (uses dispatch_smoke.py) |
 | `skypilot/train_salient_muonclip.yaml` | MuonClip + Salient experiment (Issue #25) |
 | `skypilot/service.yaml` | SkyServe inference template |
 | `skypilot/eval.yaml` | Model evaluation template |
@@ -187,7 +194,50 @@ Build and push with:
 ./scripts/build-image.sh
 ```
 
-## Cloud Providers
+## Modal Backend
+
+Modal provides serverless GPU compute with fast cold starts (~30s warm) and persistent volumes.
+
+### One-Time Setup
+```bash
+# Install Modal CLI
+pip install modal && modal setup
+
+# Create secrets (required)
+modal secret create wandb-api-key WANDB_API_KEY=$WANDB_API_KEY
+modal secret create gcp-credentials GOOGLE_APPLICATION_CREDENTIALS_JSON="$(cat credentials/gcp-service-account.json)"
+
+# Optional: HuggingFace token for gated models
+modal secret create hf-token HF_TOKEN=$HF_TOKEN
+```
+
+### Usage
+```bash
+# Training on Modal
+wf train -m qwen3_4b -t base --backend modal
+wf train -m smollm2_135m -t lrc_run -b modal
+
+# Smoke test on Modal
+wf smoke -o dlm --backend modal
+```
+
+### Modal vs SkyPilot Comparison
+
+| Feature | SkyPilot | Modal |
+|---------|----------|-------|
+| Startup time | ~5-10 min | ~30s (warm) |
+| Spot instances | Yes | No |
+| Multi-cloud | Yes | Modal only |
+| Persistent volumes | file_mounts | Modal Volumes |
+| Job recovery | Built-in | Via volumes |
+
+### Modal Caching
+
+- **Image layers**: Dependencies cached, ~30s warm start
+- **HF cache volume**: Model downloads persist across runs
+- **Checkpoint volume**: Training checkpoints persist for auto-resume
+
+## Cloud Providers (SkyPilot)
 
 | Provider | Config | Notes |
 |----------|--------|-------|

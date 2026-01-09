@@ -35,9 +35,11 @@ from wf_deploy.constants import (
     DEFAULT_SMOKE_TEST_MODEL,
     DEFAULT_WANDB_PROJECT,
     DEFAULT_CONTEXT_SIZE,
+    DEFAULT_BACKEND,
     TRAINING_CONFIGS,
     SMOKE_OBJECTIVES,
     SCALES,
+    Backend,
     get_wandb_entity,
 )
 
@@ -68,11 +70,14 @@ def cli():
               type=click.Choice(["H100", "A100", "A100-80GB", "L40S", "A10G"]),
               help="Override GPU type (default: H100)")
 @click.option("--resume", "-r", default=None, help="Resume from checkpoint (local path or gs://)")
-@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod", "vast"]), help="Cloud provider")
+@click.option("--cloud", "-c", default="nebius", type=click.Choice(["gcp", "nebius", "runpod", "vast"]), help="Cloud provider (SkyPilot only)")
+@click.option("--backend", "-b", default=DEFAULT_BACKEND,
+              type=click.Choice([b.value for b in Backend]),
+              help="Deployment backend: skypilot (default) or modal")
 @click.option("--detach/--no-detach", default=True, help="Return immediately or wait")
-@click.option("--dry-run", is_flag=True, help="Print SkyPilot config without launching")
+@click.option("--dry-run", is_flag=True, help="Print config without launching")
 @click.pass_context
-def train(ctx, model: str, training: str | None, stage: float | None, scale: str, gpu_type: str | None, resume: str, cloud: str, detach: bool, dry_run: bool):
+def train(ctx, model: str, training: str | None, stage: float | None, scale: str, gpu_type: str | None, resume: str, cloud: str, backend: str, detach: bool, dry_run: bool):
     """Launch a training job.
 
     Any extra arguments are passed directly to Hydra.
@@ -140,10 +145,12 @@ def train(ctx, model: str, training: str | None, stage: float | None, scale: str
         click.echo("🔍 DRY RUN - would launch with:")
         click.echo(f"   Model: {model}")
         click.echo(f"   Training: {training}")
+        click.echo(f"   Backend: {backend}")
         click.echo(f"   Scale: {scale or 'auto'}")
         if gpu_type:
             click.echo(f"   GPU Type: {gpu_type}")
-        click.echo(f"   Cloud: {cloud}")
+        if backend == Backend.SKYPILOT.value:
+            click.echo(f"   Cloud: {cloud}")
         if overrides:
             click.echo(f"   Overrides: {overrides}")
         if resume:
@@ -156,6 +163,7 @@ def train(ctx, model: str, training: str | None, stage: float | None, scale: str
         scale=scale,
         overrides=overrides,
         cloud=cloud,
+        backend=backend,
         detach=detach,
         resume_checkpoint=resume,
         gpu_type=gpu_type,
@@ -383,10 +391,13 @@ def runs(limit: int):
 @click.option("--gpu-count", default=1, type=int, help="Number of GPUs (default: 1)")
 @click.option("--cloud", "-c", default="nebius",
               type=click.Choice(["nebius", "runpod", "vast"]),
-              help="Cloud provider (default: nebius)")
-@click.option("--dry-run", is_flag=True, help="Print SkyPilot config without launching")
+              help="Cloud provider (SkyPilot only, default: nebius)")
+@click.option("--backend", "-b", default=DEFAULT_BACKEND,
+              type=click.Choice([b.value for b in Backend]),
+              help="Deployment backend: skypilot (default) or modal")
+@click.option("--dry-run", is_flag=True, help="Print config without launching")
 @click.pass_context
-def smoke(ctx, model: str, objective: str, gpu_type: str, gpu_count: int, cloud: str, dry_run: bool):
+def smoke(ctx, model: str, objective: str, gpu_type: str, gpu_count: int, cloud: str, backend: str, dry_run: bool):
     """Run a quick smoke test on cloud GPU.
 
     Uses the unified smoke_test.yaml with dispatch_smoke.py to run
@@ -419,8 +430,10 @@ def smoke(ctx, model: str, objective: str, gpu_type: str, gpu_count: int, cloud:
         click.echo("🔍 DRY RUN - would launch smoke test with:")
         click.echo(f"   Model: {model}")
         click.echo(f"   Objective: {objective}")
+        click.echo(f"   Backend: {backend}")
         click.echo(f"   GPU: {gpu_count}x {gpu_type}")
-        click.echo(f"   Cloud: {cloud}")
+        if backend == Backend.SKYPILOT.value:
+            click.echo(f"   Cloud: {cloud}")
         if extra_overrides:
             click.echo(f"   Extra overrides: {extra_overrides}")
         return
@@ -431,6 +444,7 @@ def smoke(ctx, model: str, objective: str, gpu_type: str, gpu_count: int, cloud:
         gpu_type=gpu_type,
         gpu_count=gpu_count,
         cloud=cloud,
+        backend=backend,
         extra_overrides=extra_overrides,
     )
     click.echo(f"Result: {result}")
