@@ -7,13 +7,6 @@
 //! - **native-inference**: Enable pure Rust BitNet inference with SIMD kernels
 //! - **llama-inference**: Enable llama.cpp-based inference for DLM block diffusion
 
-// Core modules (always available)
-pub mod config;
-pub mod observability;
-pub mod protocols;
-pub mod tokenizer;
-pub mod version;
-
 // Pure Rust GGUF reader (no C++ dependency)
 pub mod gguf;
 

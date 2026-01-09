@@ -78,7 +78,7 @@ impl BitNetKernel {
     /// # Returns
     /// (quantized_values, scale_factor)
     pub fn quantize_activations(&self, input: &[f32]) -> (Vec<i8>, f32) {
-        quantize::quantize_activations(input)
+        quantize_activations(input)
     }
 
     /// Compute dot product of packed weights and activations.
@@ -126,7 +126,7 @@ impl BitNetKernel {
         activations: &[i8],
         scale: f32,
     ) -> Vec<f32> {
-        gemm::gemm(m, n, k, packed_weights, activations, scale, &self.tile_config)
+        gemm(m, n, k, packed_weights, activations, scale, &self.tile_config)
     }
 }
 

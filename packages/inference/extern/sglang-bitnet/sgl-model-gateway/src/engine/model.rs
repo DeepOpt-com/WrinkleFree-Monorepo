@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Instant;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::gguf::{GgufReader, GgufTensorInfo, GgmlQuantType, GgufError, repack_ternary_weights, NativeWeightFormat};
+use crate::gguf::{GgufReader, GgmlQuantType, GgufError, repack_ternary_weights, NativeWeightFormat};
 
 /// Global profiling state
 static PROFILING_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -922,7 +922,7 @@ fn load_quantized_weights_or_f32(
         .find_tensor(name)
         .ok_or_else(|| EngineError::MissingTensor(name.to_string()))?;
 
-    let f32_data = load_f32_tensor(reader, name)?;
+    let _f32_data = load_f32_tensor(reader, name)?;
 
     // Create dummy native format (weights stored as F32, scale = 1)
     // This is inefficient but allows F32 models to work

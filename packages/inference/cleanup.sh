@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cleanup script for WrinkleFree inference package
+# Cleanup script for WrinkleFree inference package (no build)
 set -e
 
 BASE="/home/lev/code/WrinkleFreeDevWrapper/MonoRepoClean--LRCFEAT/packages/inference"
@@ -27,7 +27,7 @@ rm -rf demo deploy docker research results benchmark_results configs skypilot
 echo "Moving sgl-kernel to _legacy..."
 cd extern/sglang-bitnet
 mkdir -p _legacy
-mv sgl-kernel _legacy/ 2>/dev/null || echo "sgl-kernel already moved or doesn't exist"
+mv sgl-kernel _legacy/ 2>/dev/null || echo "sgl-kernel already moved"
 
 # Clean Rust gateway extras
 echo "Cleaning Rust extras..."
@@ -35,11 +35,4 @@ cd sgl-model-gateway
 rm -rf pytest.ini Makefile bench_native.yaml
 
 echo ""
-echo "=== Local cleanup complete ==="
-echo ""
-echo "Now building wf_server..."
-cargo build --release --bin wf_server --features native-inference
-
-echo ""
-echo "=== Build complete ==="
-ls -la target/release/wf_server
+echo "=== Cleanup complete ==="

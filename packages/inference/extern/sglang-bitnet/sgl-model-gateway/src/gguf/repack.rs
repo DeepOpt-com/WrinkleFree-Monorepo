@@ -184,7 +184,7 @@ fn decode_tq1_0(data: &[u8], n_elements: usize) -> Result<Vec<i8>, GgufError> {
                 break;
             }
 
-            let mut val = data[block_start + byte_idx];
+            let val = data[block_start + byte_idx];
 
             // Decode 5 ternary weights from one byte (base-3)
             // Actually TQ1_0 is more complex - let's use simpler approach

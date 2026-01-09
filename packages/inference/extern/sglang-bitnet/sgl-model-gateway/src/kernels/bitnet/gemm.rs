@@ -72,7 +72,7 @@ pub fn gemm(
 
 /// Single-column GEMV with row parallelization.
 fn gemv_parallel(
-    m: usize,
+    _m: usize,
     k: usize,
     packed_weights: &[u8],
     activations: &[i8],
@@ -92,7 +92,7 @@ fn gemv_parallel(
 
 /// Multi-column GEMM with row parallelization.
 fn gemm_parallel(
-    m: usize,
+    _m: usize,
     n: usize,
     k: usize,
     packed_weights: &[u8],

@@ -12,27 +12,11 @@ macro_rules! set_env {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Rebuild triggers
-    println!("cargo:rerun-if-changed=src/proto/sglang_scheduler.proto");
-    println!("cargo:rerun-if-changed=src/proto/vllm_engine.proto");
     println!("cargo:rerun-if-changed=Cargo.toml");
 
     // Build C++ inference library when native-inference feature is enabled
     #[cfg(feature = "native-inference")]
     build_cpp_inference_engine()?;
-
-    // Compile protobuf files
-    tonic_prost_build::configure()
-        .build_server(true)
-        .build_client(true)
-        .type_attribute("GetModelInfoResponse", "#[derive(serde::Serialize)]")
-        .protoc_arg("--experimental_allow_proto3_optional")
-        .compile_protos(
-            &[
-                "src/proto/sglang_scheduler.proto",
-                "src/proto/vllm_engine.proto",
-            ],
-            &["src/proto"],
-        )?;
 
     // Set version info environment variables
     let version = read_cargo_version().unwrap_or_else(|_| DEFAULT_VERSION.to_string());

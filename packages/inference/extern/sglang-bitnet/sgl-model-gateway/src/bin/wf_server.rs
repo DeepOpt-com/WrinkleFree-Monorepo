@@ -29,13 +29,10 @@ use axum::{
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[cfg(feature = "native-inference")]
-use wf_inference::engine::{BitNetEngine, SamplingConfig, enable_profiling, print_profile_results, reset_profile};
-
-#[cfg(feature = "native-inference")]
-use wf_inference::gguf::GgufReader;
+use wf_inference::engine::{BitNetEngine, SamplingConfig, enable_profiling, print_profile_results};
 
 /// WrinkleFree Inference Server
 #[derive(Parser, Debug)]
@@ -96,6 +93,7 @@ struct ChatCompletionRequest {
     #[serde(default)]
     top_p: Option<f32>,
     #[serde(default)]
+    #[allow(dead_code)] // TODO: implement streaming
     stream: bool,
 }
 
@@ -275,7 +273,7 @@ async fn run_benchmark(
 
         // Measure prefill
         let prefill_start = Instant::now();
-        let logits = engine.forward_prefill(&input_ids, 0);
+        let _logits = engine.forward_prefill(&input_ids, 0);
         let prefill_time = prefill_start.elapsed();
         prefill_times.push(prefill_time.as_micros() as u64);
 
