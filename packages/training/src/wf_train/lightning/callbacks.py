@@ -278,6 +278,93 @@ class ZClipCallback(Callback):
                 pl_module.log("train/zclip_ema_std", stats.ema_std, prog_bar=False)
 
 
+class DatasetRatioCallback(Callback):
+    """Logs dataset mixture ratios to WandB.
+
+    Always enabled. Logs both configured (initial) and observed (actual)
+    dataset sampling ratios to track data distribution during training.
+
+    Logged metrics:
+    - data/configured_weight_{name}: Initial mixture weights (logged once at start)
+    - data/observed_weight_{name}: Actual sampling ratios over training
+    - data/total_samples: Cumulative samples processed from mixed dataset
+
+    Args:
+        log_interval: How often to log observed ratios (in steps)
+    """
+
+    def __init__(self, log_interval: int = 100):
+        super().__init__()
+        self.log_interval = log_interval
+
+    def on_train_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Log initial configured weights at training start."""
+        if trainer.datamodule is None:
+            return
+
+        if not hasattr(trainer.datamodule, "get_mixed_dataset"):
+            return
+
+        mixed = trainer.datamodule.get_mixed_dataset()
+        if mixed is None:
+            return
+
+        if hasattr(mixed, "get_current_weights"):
+            weights = mixed.get_current_weights()
+            for name, weight in weights.items():
+                pl_module.log(
+                    f"data/configured_weight_{name}",
+                    weight,
+                    on_step=False,
+                    on_epoch=False,
+                    prog_bar=False,
+                )
+            logger.info(f"Dataset configured weights: {weights}")
+
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: Any,
+        batch: dict[str, Any],
+        batch_idx: int,
+    ) -> None:
+        """Log observed sampling ratios periodically."""
+        step = trainer.global_step
+        if step % self.log_interval != 0:
+            return
+
+        if trainer.datamodule is None:
+            return
+
+        if not hasattr(trainer.datamodule, "get_mixed_dataset"):
+            return
+
+        mixed = trainer.datamodule.get_mixed_dataset()
+        if mixed is None:
+            return
+
+        if hasattr(mixed, "get_sampling_stats"):
+            stats = mixed.get_sampling_stats()
+            # Log observed weights (actual sampling ratios)
+            for name, weight in stats.get("observed_weights", {}).items():
+                pl_module.log(
+                    f"data/observed_weight_{name}",
+                    weight,
+                    prog_bar=False,
+                )
+            # Log total samples
+            pl_module.log(
+                "data/total_samples",
+                float(stats.get("total_samples", 0)),
+                prog_bar=False,
+            )
+
+
 class TokenCountCallback(Callback):
     """Track tokens processed and optionally stop at target.
 

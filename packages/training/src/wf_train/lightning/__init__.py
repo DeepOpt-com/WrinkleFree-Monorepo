@@ -8,6 +8,7 @@ Provides a clean, maintainable training loop with:
 """
 
 from wf_train.lightning.callbacks import (
+    DatasetRatioCallback,
     GCSCheckpointCallback,
     LambdaWarmupCallback,
     MuonClipInitCallback,
@@ -22,6 +23,7 @@ from wf_train.lightning.module import WrinkleFreeLightningModule
 __all__ = [
     "WrinkleFreeLightningModule",
     "WrinkleFreeDataModule",
+    "DatasetRatioCallback",
     "GCSCheckpointCallback",
     "LambdaWarmupCallback",
     "MuonClipInitCallback",

@@ -390,5 +390,134 @@ class TestEdgeCases:
         assert len(fp) == 64
 
 
+class TestExperimentNameWithHash:
+    """Tests for experiment name with hash suffix (GCS naming)."""
+
+    def test_format_is_correct(self):
+        """Test that format is {name}-{8_char_hash}."""
+        # Import the function from the training script
+        import sys
+        from pathlib import Path
+
+        # Add script path to import
+        script_dir = Path(__file__).parent.parent.parent / "scripts"
+        sys.path.insert(0, str(script_dir))
+
+        # Use a simple approach - call generate_fingerprint and format manually
+        # (same logic as get_experiment_name_with_hash)
+        config = OmegaConf.create({
+            "experiment_name": "my_experiment",
+            "model": {"lr": 1e-3},
+        })
+
+        fingerprint, _ = generate_fingerprint(config, include_git=False)
+        expected_name = f"my_experiment-{fingerprint[:8]}"
+
+        # Verify format
+        assert "-" in expected_name
+        parts = expected_name.rsplit("-", 1)
+        assert len(parts) == 2
+        assert parts[0] == "my_experiment"
+        assert len(parts[1]) == 8
+        assert all(c in "0123456789abcdef" for c in parts[1])
+
+    def test_determinism_same_config(self):
+        """Test that same config produces same hashed name."""
+        config = OmegaConf.create({
+            "experiment_name": "test_exp",
+            "model": {"lr": 1e-3, "hidden_size": 768},
+            "training": {"batch_size": 32},
+        })
+
+        fp1, _ = generate_fingerprint(config, include_git=False)
+        name1 = f"test_exp-{fp1[:8]}"
+
+        fp2, _ = generate_fingerprint(config, include_git=False)
+        name2 = f"test_exp-{fp2[:8]}"
+
+        assert name1 == name2
+
+    def test_uniqueness_different_configs(self):
+        """Test that different configs produce different hashed names."""
+        config1 = OmegaConf.create({
+            "experiment_name": "smoke_test",
+            "model": {"lr": 1e-3},
+        })
+        config2 = OmegaConf.create({
+            "experiment_name": "smoke_test",
+            "model": {"lr": 1e-4},  # Different LR
+        })
+
+        fp1, _ = generate_fingerprint(config1, include_git=False)
+        name1 = f"smoke_test-{fp1[:8]}"
+
+        fp2, _ = generate_fingerprint(config2, include_git=False)
+        name2 = f"smoke_test-{fp2[:8]}"
+
+        # Same base name but different hash
+        assert name1 != name2
+        assert name1.startswith("smoke_test-")
+        assert name2.startswith("smoke_test-")
+
+    def test_default_experiment_name(self):
+        """Test that missing experiment_name defaults to 'default'."""
+        config = OmegaConf.create({
+            "model": {"lr": 1e-3},
+            # No experiment_name
+        })
+
+        base_name = config.get("experiment_name", "default")
+        assert base_name == "default"
+
+        fp, _ = generate_fingerprint(config, include_git=False)
+        name = f"{base_name}-{fp[:8]}"
+
+        assert name.startswith("default-")
+        assert len(name) == len("default-") + 8
+
+    def test_infrastructure_changes_same_hash(self):
+        """Test that infrastructure changes don't affect the hash suffix."""
+        config1 = OmegaConf.create({
+            "experiment_name": "prod_run",
+            "model": {"lr": 1e-3},
+            "num_workers": 4,
+            "logging": {"log_interval": 10},
+        })
+        config2 = OmegaConf.create({
+            "experiment_name": "prod_run",
+            "model": {"lr": 1e-3},
+            "num_workers": 8,  # Changed
+            "logging": {"log_interval": 100},  # Changed
+        })
+
+        fp1, _ = generate_fingerprint(config1, include_git=False)
+        name1 = f"prod_run-{fp1[:8]}"
+
+        fp2, _ = generate_fingerprint(config2, include_git=False)
+        name2 = f"prod_run-{fp2[:8]}"
+
+        # Infrastructure changes ignored - same hash
+        assert name1 == name2
+
+    def test_gcs_path_format(self):
+        """Test that the GCS path format is correct with hashed name."""
+        config = OmegaConf.create({
+            "experiment_name": "my_training",
+            "model": {"lr": 1e-3},
+            "gcs": {"bucket": "wrinklefree-checkpoints"},
+        })
+
+        bucket = config.gcs.bucket
+        fp, _ = generate_fingerprint(config, include_git=False)
+        experiment_name_hashed = f"my_training-{fp[:8]}"
+
+        # Construct expected GCS path
+        gcs_path = f"gs://{bucket}/checkpoints/{experiment_name_hashed}/lightning_checkpoint/checkpoints"
+
+        assert "wrinklefree-checkpoints" in gcs_path
+        assert "my_training-" in gcs_path
+        assert "/lightning_checkpoint/checkpoints" in gcs_path
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

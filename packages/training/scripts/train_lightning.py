@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from wf_arch.conversion import auto_convert_if_needed
 from wf_train.lightning import (
+    DatasetRatioCallback,
     GCSCheckpointCallback,
     LambdaWarmupCallback,
     MuonClipInitCallback,
@@ -73,7 +74,12 @@ def get_experiment_name_with_hash(cfg: DictConfig) -> tuple[str, str]:
     """Generate experiment name with config fingerprint suffix.
 
     Appends an 8-character hash of the config to the experiment name to prevent
-    GCS bucket naming conflicts. Same config always produces the same hash.
+    GCS bucket naming conflicts. Same config AND git commit always produce the
+    same hash. Infrastructure-only changes (num_workers, logging, etc.) are ignored.
+
+    Note: If you commit mid-training (even a README change), the hash changes and
+    auto-resume won't find the old checkpoint. Use explicit resume.checkpoint_path
+    to resume across commits.
 
     Args:
         cfg: Hydra config
@@ -882,6 +888,11 @@ def create_callbacks(cfg: DictConfig) -> list:
             f"odm={meta_config.odm.enabled}, "
             f"log_interval={meta_config.log_interval}"
         )
+
+    # Dataset ratio logging (always enabled)
+    # Uses meta_optimization.log_interval if available, else default 100
+    dataset_log_interval = cfg.training.get("meta_optimization", {}).get("log_interval", 100)
+    callbacks.append(DatasetRatioCallback(log_interval=dataset_log_interval))
 
     # LR monitor
     callbacks.append(LearningRateMonitor(logging_interval="step"))
