@@ -6,8 +6,8 @@
 # Full training run with BitNet v2 Hadamard conversion:
 # - HBitLinear for o_proj and down_proj (online Hadamard)
 # - SubLN for training stability
-# - CE only (no DLM)
-# - Lambda warmup: 50 steps
+# - CE + DLM objectives
+# - Full quantization from step 0 (no lambda warmup)
 #
 # Launch:
 #   cd packages/deployer
@@ -43,7 +43,7 @@ envs:
   MODEL: qwen3_0.6b
   WANDB_PROJECT: wrinklefree_v2
   HF_HUB_ENABLE_HF_TRANSFER: "1"
-  EXPERIMENT_NAME: hadamard_qwen3_0.6b_ce_only_warmup1k
+  EXPERIMENT_NAME: hadamard_qwen3_0.6b_v2
 
 setup: |
   set -e
@@ -101,9 +101,9 @@ run: |
   echo "Configuration:"
   echo "  - HBitLinear for o_proj, down_proj (BitNet v2)"
   echo "  - SubLN before all projections (BitNet paper)"
-  echo "  - CE only (DLM disabled)"
-  echo "  - Lambda warmup: 1000 steps (longer for CE-only stability)"
-  echo "  - LR: 2e-5 (AdamW) - lower for CE-only stability"
+  echo "  - CE + DLM objectives (meta-optimization enabled)"
+  echo "  - Lambda warmup: 50 steps (gradual quantization)"
+  echo "  - LR: 1e-4 (AdamW)"
   echo "  - Batch: 4 x 16 grad_accum = 64 effective (65K tokens/step)"
   echo "  - 10B tokens total"
   echo "  - GCS uploads enabled"
@@ -125,11 +125,8 @@ run: |
     training.auto_batch_size=false \
     training.torch_compile.enabled=true \
     training.optimizer.type=adamw \
-    +training.optimizer.learning_rate=2e-5 \
-    training.lambda_warmup.warmup_steps=1000 \
-    training.scheduler.warmup_steps=1000 \
-    training.objectives.dlm.enabled=false \
-    training.meta_optimization.enabled=false \
+    +training.optimizer.learning_rate=5e-5 \
+    training.meta_optimization.enabled=true \
     training.checkpoint.save_interval=500 \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
@@ -138,7 +135,7 @@ run: |
     gcs.bucket=${GCS_BUCKET} \
     training.logging.wandb.enabled=true \
     training.logging.wandb.project=${WANDB_PROJECT} \
-    training.logging.wandb.tags="[hadamard,subln,bitnet_v2,ce_only]"
+    training.logging.wandb.tags="[hadamard,subln,bitnet_v2,optimized_v2]"
 
   echo ""
   echo "=============================================="
