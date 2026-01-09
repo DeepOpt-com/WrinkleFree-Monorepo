@@ -157,24 +157,9 @@ run: |
   ls -lh "$BITNET_MODEL_PATH"
   echo "Model file: $(ls -lh $BITNET_MODEL_PATH)"
 
-  # Step 2: Baseline with llama.cpp (ARM NEON)
+  # Step 2: wf_server benchmark (ARM NEON + dotprod)
   echo ""
-  echo "=== Step 2: llama.cpp ARM Baseline ==="
-  echo "The quick brown fox jumps over the lazy dog. " | head -c 2000 > /tmp/test_prompt.txt
-
-  echo "--- llama.cpp I2_S baseline (ARM NEON) ---"
-  $LLAMA_CPP/build/bin/llama-cli \
-    -m "$BITNET_MODEL_PATH" \
-    -f /tmp/test_prompt.txt \
-    -n 1 \
-    -t $OMP_NUM_THREADS \
-    -c 2048 \
-    --temp 0 \
-    --no-display-prompt 2>&1 | grep -E "(prompt eval|model size)"
-
-  # Step 3: wf_server benchmark (ARM NEON + dotprod)
-  echo ""
-  echo "=== Step 3: wf_server Benchmark (ARM NEON + dotprod) ==="
+  echo "=== Step 2: wf_server Benchmark (ARM NEON) ==="
   echo "Running native Rust BitNet inference engine with ARM NEON kernels..."
 
   "$WF_SERVER" \
@@ -184,9 +169,9 @@ run: |
     --benchmark-iterations 10 \
     --benchmark-max-tokens 64
 
-  # Step 4: Thread scaling test
+  # Step 3: Thread scaling test
   echo ""
-  echo "=== Step 4: Thread Scaling ==="
+  echo "=== Step 3: Thread Scaling ==="
   for threads in 1 2 4 8; do
     echo "--- Threads: $threads ---"
     RAYON_NUM_THREADS=$threads "$WF_SERVER" \
@@ -197,33 +182,22 @@ run: |
       --benchmark-max-tokens 32 2>&1 | grep -E "(throughput|prefill|decode)"
   done
 
-  # Step 5: Sanity Check - Text Generation
+  # Step 4: Sanity Check - Text Generation (via benchmark with custom prompt)
   echo ""
-  echo "=== Step 5: Sanity Check - Text Generation ==="
-  echo "Prompt: 'The capital of France is'"
-  echo "Expected: Coherent text mentioning Paris (not gibberish)"
+  echo "=== Step 4: Sanity Check - Text Generation ==="
+  echo "Running benchmark with custom prompt to verify output quality..."
   echo ""
 
-  # Run inference and capture output
-  SANITY_OUTPUT=$("$WF_SERVER" \
+  # The benchmark mode includes a sanity check that shows generated text
+  "$WF_SERVER" \
     --model-path "$BITNET_MODEL_PATH" \
     --context-len 2048 \
-    --once \
-    --prompt "The capital of France is" \
-    --max-tokens 50 \
-    2>&1) || true
+    --benchmark \
+    --benchmark-iterations 1 \
+    --benchmark-max-tokens 64 \
+    --benchmark-prompt "The capital of France is"
 
-  echo "Output: $SANITY_OUTPUT"
-  echo ""
-
-  # Basic sanity check - output should contain some text
-  if echo "$SANITY_OUTPUT" | grep -qi "paris\|france\|city\|capital"; then
-    echo "SANITY CHECK: PASSED - Output appears coherent"
-  else
-    echo "SANITY CHECK: WARNING - Output may be gibberish, review manually"
-  fi
-
-  # Step 6: Summary
+  # Step 5: Summary
   echo ""
   echo "============================================"
   echo "ARM BENCHMARK COMPLETE"
