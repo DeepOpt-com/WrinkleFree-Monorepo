@@ -1,8 +1,11 @@
 # SGLang BitNet Performance Optimization Plan
 
-> **HISTORICAL NOTE**: This document contains research notes from Dec 2025 optimization work.
-> Scripts referenced here may have been archived or removed. The current recommended inference
-> path uses `dlm_server` with GGUF models. See [CLAUDE.md](../../CLAUDE.md).
+> **ARCHIVED**: This document contains historical research notes from Dec 2025.
+> The sglang-bitnet submodule has been **removed** from the codebase. All file paths
+> and scripts referencing `extern/sglang-bitnet/` no longer exist.
+>
+> **Current inference path**: Use `wf_server` or `dlm_server` from `rust/`.
+> See [CLAUDE.md](../../CLAUDE.md) for build and run instructions.
 
 ## Goal
 Close the 1.35x throughput gap: sglang 19.2 tok/s → BitNet.cpp 26 tok/s on AMD CPU.
@@ -58,28 +61,21 @@ Gap to close:                13.7ms (26% slower than BitNet.cpp)
 
 Add fake op registrations for BitNet kernels to enable torch.compile.
 
-**File to modify**: `extern/sglang-bitnet/python/sglang/srt/model_executor/cpu_graph_runner.py`
+**File to modify (REMOVED)**: `extern/sglang-bitnet/python/sglang/srt/model_executor/cpu_graph_runner.py`
+
+> **Note**: This file no longer exists. The sglang-bitnet submodule was removed.
+> Code below is preserved for historical reference only.
 
 ```python
-# Add to register_fake_ops():
-@torch.library.register_fake("sgl_kernel::bitnet_gemv_cpu")
-def _(packed_weights, activations, scale):
-    out_features = packed_weights.shape[0]
-    return torch.empty(out_features, dtype=torch.float32, device=packed_weights.device)
-
-@torch.library.register_fake("sgl_kernel::bitnet_gemm_cpu")
-def _(packed_weights, activations, scale):
-    out_features = packed_weights.shape[0]
-    batch_size = activations.shape[0]
-    return torch.empty(batch_size, out_features, dtype=torch.float32, device=packed_weights.device)
-
-@torch.library.register_fake("sgl_kernel::bitnet_quantize_activations_cpu")
-def _(activations):
-    return torch.empty_like(activations, dtype=torch.int8), torch.empty(1, dtype=torch.float32)
+# Historical - sglang-bitnet removed:
+# @torch.library.register_fake("sgl_kernel::bitnet_gemv_cpu")
+# def _(packed_weights, activations, scale):
+#     out_features = packed_weights.shape[0]
+#     return torch.empty(out_features, dtype=torch.float32, device=packed_weights.device)
 ```
 
-**File to modify**: `scripts/launch_sglang_bitnet.sh`
-- Add `--enable-torch-compile` flag **by default**
+**File to modify (REMOVED)**: `scripts/launch_sglang_bitnet.sh`
+- This script was deleted as part of cleanup
 
 **Test on Desktop**:
 ```bash
@@ -151,9 +147,9 @@ Replace the Python decode loop with C++ using pybind11.
 | Tensor reshapes | 2ms | 0.2ms | 1.8ms |
 | **Total** | 24ms | 3.3ms | **20.7ms** |
 
-**Implementation**:
+**Implementation** (Historical - not implemented):
 
-1. **Create C++ decode wrapper** (`sgl-kernel/csrc/cpu/bitnet_decode.cpp`):
+1. **Create C++ decode wrapper** (`sgl-kernel/csrc/cpu/bitnet_decode.cpp` - never created):
 ```cpp
 class BitNetDecoder {
     // Pre-allocated tensors
@@ -169,21 +165,16 @@ public:
 };
 ```
 
-2. **Python binding** (`sgl-kernel/python/sgl_kernel/decode.py`):
+2. **Python binding** (never created - sglang removed):
 ```python
-from sgl_kernel import bitnet_decode_step
-
-def fast_decode(model, input_ids, kv_cache):
-    """C++ decode loop - replaces Python forward pass."""
-    return bitnet_decode_step(model.handle, input_ids, kv_cache.handle)
+# Historical - not implemented
+# from sgl_kernel import bitnet_decode_step
 ```
 
-3. **Integration point** (`sglang/srt/model_executor/model_runner.py`):
+3. **Integration point** (never implemented - sglang removed):
 ```python
-# Replace:
-logits = self.model.forward(input_ids, positions, forward_batch)
-# With:
-logits = fast_decode(self.model, input_ids, self.kv_cache)
+# Historical reference only - this approach was abandoned
+# in favor of the pure Rust wf_server implementation
 ```
 
 **Benchmarks to run after each change**:
@@ -215,44 +206,21 @@ print('✓ Correctness verified')
 
 ---
 
-### Phase 3: Use BitNet.cpp Backend (Fastest Path)
+### Phase 3: Use BitNet.cpp Backend (Fastest Path) - SUPERSEDED
 **Effort**: 2-4 hours | **Expected gain**: 70% (→ 27 tok/s)
 
-If C++ decode loop is too complex, **use BitNet.cpp directly**.
+> **Note**: This approach was superseded by the pure Rust `wf_server` implementation,
+> which achieves similar performance without requiring the BitNet.cpp submodule.
 
-**Why**: BitNet.cpp already achieves 27 tok/s with pure C++. No Python overhead.
-
-**Implementation**:
-
-1. **Update Streamlit frontend** to use BitNet.cpp API:
-```python
-# demo/serve_sglang.py
-BACKEND = os.getenv("BITNET_BACKEND", "bitnet_cpp")  # or "sglang"
-
-if BACKEND == "bitnet_cpp":
-    API_URL = "http://localhost:8080/v1/chat/completions"
-else:
-    API_URL = "http://localhost:30000/v1/chat/completions"
-```
-
-2. **Update launch script**:
+**Current recommended path**:
 ```bash
-# scripts/launch_bitnet_cpp.sh
-cd extern/BitNet
-./build/bin/llama-server \
-    -m models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf \
-    --host 0.0.0.0 --port 8080
-```
+# Build and run wf_server (Pure Rust, ~26 tok/s)
+cd rust && cargo build --release --bin wf_server --features native-inference
+./target/release/wf_server --model-path ../models/model.gguf --port 30000
 
-3. **Benchmark comparison**:
-```bash
-# sglang baseline
-ssh Desktop "curl -s -X POST http://localhost:30000/v1/chat/completions ..."
-# Throughput: 16 tok/s
-
-# BitNet.cpp
-ssh Desktop "curl -s -X POST http://localhost:8080/v1/chat/completions ..."
-# Throughput: 27 tok/s
+# Or dlm_server for DLM models (~60 tok/s)
+cargo build --release --bin dlm_server --features llama-inference
+./target/release/dlm_server --model-path ../models/dlm-model.gguf --port 30000
 ```
 
 **Correctness check** (outputs should be semantically similar, not identical due to different sampling):
@@ -273,29 +241,31 @@ If we need sglang features with BitNet.cpp performance, build a hybrid:
 
 This is the "LMDeploy TurboMind" approach.
 
-**Files to create**:
+**Files created (in Rust instead of C++)**:
 | File | Purpose |
 |------|---------|
-| `sgl-kernel/csrc/inference/bitnet_engine.cpp` | Full inference engine in C++ |
-| `sgl-kernel/csrc/inference/kv_cache.cpp` | C++ KV cache manager |
-| `sgl-kernel/csrc/inference/scheduler.cpp` | C++ batch scheduler |
-| `sgl-kernel/python/sgl_kernel/engine.py` | Python wrapper |
+| `rust/src/bin/wf_server.rs` | Full inference engine in Rust |
+| `rust/src/engine/` | Rust transformer implementation |
+| `rust/src/inference/` | DLM scheduler |
+| `cpp/llama_engine.cpp` | C++ wrapper for llama.cpp FFI (dlm_server only) |
 
 **Only pursue this if**:
 - Need sglang features (batching, prefix caching, etc.)
 - BitNet.cpp doesn't meet feature requirements
 - Have dedicated engineering resources
 
-## Files to Modify
+## Files to Modify (Historical - see notes)
 
-| File | Action | Phase |
+> **Note**: The sglang-bitnet submodule and related scripts have been removed.
+> The Rust inference engine (`rust/`) is the current implementation.
+
+| File | Status | Notes |
 |------|--------|-------|
-| `extern/sglang-bitnet/python/sglang/srt/model_executor/cpu_graph_runner.py` | Add BitNet fake ops | 1 |
-| `scripts/launch_sglang_bitnet.sh` | Enable `--enable-torch-compile` by default | 1 |
-| `sgl-kernel/csrc/cpu/bitnet_decode.cpp` | C++ decode loop | 2 |
-| `sgl-kernel/python/sgl_kernel/decode.py` | Python bindings | 2 |
-| `demo/serve_sglang.py` | Add BitNet.cpp backend option | 3 |
-| `scripts/launch_bitnet_cpp.sh` | BitNet.cpp server script | 3 |
+| `extern/sglang-bitnet/...` | REMOVED | Submodule deleted |
+| `scripts/launch_sglang_bitnet.sh` | DELETED | Replaced by `scripts/launch_rust_gateway.sh` |
+| `scripts/launch_bitnet_cpp.sh` | DELETED | Use wf_server/dlm_server instead |
+| `rust/src/bin/wf_server.rs` | CURRENT | Pure Rust inference server |
+| `rust/src/bin/dlm_server.rs` | CURRENT | DLM block diffusion server |
 
 ## Success Criteria
 
@@ -339,39 +309,31 @@ This is the "LMDeploy TurboMind" approach.
 - SGLang SIMD kernels: 3.8x faster than HuggingFace
 - Remaining gap (13.7ms) is framework overhead, not kernel performance
 
-### Recommended Production Setup
+### Recommended Production Setup (Current)
 ```bash
-# Best performance: BitNet.cpp with cache-reuse (26+ tok/s)
-./scripts/launch_bitnet_cpp.sh  # Uses --cache-reuse 64 by default
+# Best performance: wf_server (Pure Rust, ~26 tok/s)
+cd rust && cargo build --release --bin wf_server --features native-inference
+./target/release/wf_server --model-path ../models/model.gguf --port 30000
 
-# If SGLang features needed (batching, prefix caching): 16 tok/s
-./scripts/launch_sglang_bitnet.sh
-
-# Streamlit UI (works with both backends)
-BITNET_BACKEND=bitnet_cpp uv run streamlit run demo/serve_sglang.py
+# DLM block diffusion (~60 tok/s)
+cargo build --release --bin dlm_server --features llama-inference
+export LD_LIBRARY_PATH="../extern/llama.cpp/build/src:../extern/llama.cpp/build/ggml/src"
+./target/release/dlm_server --model-path ../models/dlm-model.gguf --port 30000
 ```
 
-## Benchmark Commands (Run on Desktop)
+## Benchmark Commands (Historical)
 
-```bash
-# Phase 1: torch.compile
-ssh Desktop "cd /home/lev/code/WrinkleFree/WrinkleFree-Inference-Engine && \
-  .venv/bin/python -m sglang.launch_server --model-path microsoft/bitnet-b1.58-2B-4T \
-  --port 30000 --device cpu --enable-torch-compile &"
-sleep 60  # Wait for warmup
-curl http://Desktop:30000/v1/chat/completions -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Count 1 to 50"}],"max_tokens":100}' | jq
-
-# Phase 2: C++ decode (after implementation)
-ssh Desktop ".venv/bin/python scripts/benchmark_decode.py --mode cpp"
-
-# Phase 3: BitNet.cpp
-ssh Desktop "cd /home/lev/code/WrinkleFree/packages/inference/extern/BitNet && \
-  ./build/bin/llama-server -m models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf --port 8080 &"
-sleep 5
-curl http://Desktop:8080/v1/chat/completions -H "Content-Type: application/json" \
-  -d '{"model":"bitnet","messages":[{"role":"user","content":"Count 1 to 50"}],"max_tokens":100}' | jq
-```
+> **Note**: These commands reference removed submodules. Current benchmark commands:
+>
+> ```bash
+> # Current: Test wf_server
+> cd rust && ./target/release/wf_server --model-path ../models/model.gguf --benchmark
+>
+> # Current: Test API
+> curl http://localhost:30000/v1/chat/completions \
+>   -H "Content-Type: application/json" \
+>   -d '{"messages":[{"role":"user","content":"Count 1 to 50"}],"max_tokens":100}'
+> ```
 
 ## Correctness Validation (After EVERY Phase)
 
@@ -404,7 +366,7 @@ See git history for implementation details.
 
 ---
 
-## Final Conclusion (Dec 28, 2025)
+## Final Conclusion (Dec 28, 2025) - UPDATED Jan 2026
 
 ### What We Learned
 
@@ -423,20 +385,22 @@ See git history for implementation details.
 
 4. **torch.compile is impractical on CPU**: Graph capture consumes too much memory and takes too long
 
-### Recommendations
+### Recommendations (Updated Jan 2026)
 
-1. **For maximum performance**: Use BitNet.cpp (26 tok/s)
-   - Pure C++ inference loop eliminates all Python overhead
-   - `--cache-reuse 64` for repeated prompt patterns
+> **Note**: The sglang-bitnet submodule has been removed. The recommendations below
+> have been superseded by the pure Rust implementation.
 
-2. **For SGLang features**: Accept 19.2 tok/s with current implementation
-   - Batching, prefix caching, continuous batching still valuable for multi-user scenarios
-   - 26% slower than BitNet.cpp is acceptable trade-off for features
+1. **For maximum performance**: Use `wf_server` (Pure Rust, ~26 tok/s)
+   - Eliminates all Python overhead
+   - Single binary, no dependencies
 
-3. **Future optimization paths** (if needed):
-   - Implement C++ scheduler bypass for single-request decode
-   - Profile and optimize SGLang's async event loop
-   - Consider Rust-based HTTP layer (like sgl-model-gateway)
+2. **For DLM models**: Use `dlm_server` (~60 tok/s)
+   - Block diffusion decoding for ~2.5x speedup
+   - Requires llama.cpp (downloaded via `scripts/setup_llama_cpp.sh`)
+
+3. **Future optimization paths** (completed):
+   - ~~Implement C++ scheduler bypass~~ → Done in Rust
+   - ~~Consider Rust-based HTTP layer~~ → wf_server is pure Rust
 
 ## Sources
 - [SGLang CPU Backend Optimization Roadmap](https://github.com/sgl-project/sglang/issues/8281)

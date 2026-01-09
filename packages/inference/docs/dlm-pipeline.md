@@ -6,8 +6,9 @@ End-to-end guide for running DLM (Diffusion Language Model) inference with block
 
 DLM models use Fast-dLLM v2 block diffusion to generate multiple tokens in parallel. This requires:
 - Models trained with the DLM objective (`objectives.dlm.enabled=true`)
-- The `dlm_server` binary (not `native_server`)
-- GGUF model files in TQ1_0 or I2_S format
+- The `dlm_server` binary (not `wf_server`)
+- GGUF model files in I2_S format
+- llama.cpp (setup via `scripts/setup_llama_cpp.sh`)
 
 **Performance Note**: The ~2.5x speedup over autoregressive decoding is theoretical. Actual speedup depends on model, hardware, and workload. Benchmark for your use case.
 
@@ -45,14 +46,9 @@ gcloud storage cp \
 
 ### Step 3: Convert to GGUF
 
-**CRITICAL**: Use the Microsoft BitNet converter, not standard llama.cpp!
-
 ```bash
-# Fix architecture name (capital N -> lowercase n)
-sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' models/dlm-checkpoint/config.json
-
-# Convert with Microsoft BitNet converter
-uv run python extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py \
+# Convert checkpoint to GGUF (I2_S recommended)
+python scripts/convert_checkpoint_to_gguf.py \
     models/dlm-checkpoint \
     --outfile models/dlm-model.gguf \
     --outtype i2_s
@@ -63,23 +59,33 @@ ls -lh models/dlm-model.gguf
 
 **DO NOT USE**: TQ2_0 for bf16 checkpoints - it produces garbage output.
 
-### Step 4: Start DLM Server
+### Step 4: Setup llama.cpp
 
 ```bash
-# Build if needed (see CLAUDE.md for full build instructions)
-cd extern/sglang-bitnet/sgl-model-gateway
-cargo build --release --features native-inference --bin dlm_server
+# Download and build llama.cpp (required for dlm_server)
+./scripts/setup_llama_cpp.sh
+```
+
+### Step 5: Build and Start DLM Server
+
+```bash
+# Build dlm_server
+cd rust
+cargo build --release --features llama-inference --bin dlm_server
+
+# Set library path
+export LD_LIBRARY_PATH="../extern/llama.cpp/build/src:../extern/llama.cpp/build/ggml/src"
 
 # Run server with adaptive mode (RECOMMENDED - speed + quality)
 ./target/release/dlm_server \
-    -m models/dlm-model.gguf \
+    -m ../models/dlm-model.gguf \
     --port 30000 \
     --decode-mode adaptive \
     --threshold 0.9
 
 # Or greedy mode (fastest, lower quality)
 ./target/release/dlm_server \
-    -m models/dlm-model.gguf \
+    -m ../models/dlm-model.gguf \
     --port 30000 \
     --decode-mode greedy
 ```
@@ -97,7 +103,7 @@ cargo build --release --features native-inference --bin dlm_server
 
 The server auto-detects the mask token from the model vocabulary.
 
-### Step 5: Test Inference
+### Step 6: Test Inference
 
 ```bash
 curl http://localhost:30000/v1/chat/completions \

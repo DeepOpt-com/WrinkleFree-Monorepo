@@ -1,59 +1,60 @@
 # Getting Started with BitNet Inference
 
-This guide walks you through serving a 1.58-bit BitNet model with the native sgl-kernel server.
+This guide walks you through serving a 1.58-bit BitNet model with the native Rust inference engine.
 
 ## Prerequisites
 
 - Python 3.10+
+- Rust toolchain (for building wf_server)
 - `gcloud` CLI (for downloading checkpoints from GCS)
 - AVX2 or AVX512 CPU support (run `cat /proc/cpuinfo | grep avx` to check)
 
 ## Quick Start (5 minutes)
 
-### 1. Install dependencies
+### 1. Build the Rust server
 
 ```bash
-cd packages/inference
+cd packages/inference/rust
 
-# One-time setup: builds sgl-kernel with BitNet SIMD kernels
-./scripts/setup-cpu.sh
+# Build the pure Rust server (no C++ dependencies)
+cargo build --release --bin wf_server --features native-inference
 ```
 
-### 2. Download a checkpoint
+### 2. Download a model (GGUF format)
 
-**Option A: From GCS (recommended)**
+**Option A: Pre-converted GGUF from HuggingFace**
 ```bash
+mkdir -p models/bitnet-2b
+huggingface-cli download microsoft/BitNet-b1.58-2B-4T-gguf \
+    --local-dir models/bitnet-2b
+```
+
+**Option B: Convert from checkpoint**
+```bash
+# Download checkpoint
 mkdir -p models/dlm-bitnet-2b
-# Download model files only (excludes optimizer state)
 gcloud storage cp \
     'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.json' \
     'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.safetensors' \
-    'gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/*.jinja' \
     models/dlm-bitnet-2b/
-```
 
-**Option B: From HuggingFace**
-```bash
-# Downloads to ~/.cache/huggingface/
-python -c "from transformers import AutoModelForCausalLM, AutoTokenizer; \
-    AutoModelForCausalLM.from_pretrained('microsoft/BitNet-b1.58-2B-4T'); \
-    AutoTokenizer.from_pretrained('microsoft/BitNet-b1.58-2B-4T')"
+# Convert to GGUF
+python scripts/convert_checkpoint_to_gguf.py models/dlm-bitnet-2b -o models/model.gguf
 ```
 
 ### 3. Start the server
 
 ```bash
-# Auto-converts checkpoint to packed .bin format on first run
-./scripts/serve_native.sh models/dlm-bitnet-2b
+./rust/target/release/wf_server \
+    --model-path models/bitnet-2b/ggml-model-i2_s.gguf \
+    --port 30000
 ```
 
 You should see:
 ```
-Converting checkpoint to packed format...
-Starting native BitNet server...
-  Model:     /path/to/models/dlm-bitnet-2b.bin
-  Tokenizer: /path/to/models/dlm-bitnet-2b
-Native BitNet kernels available: True
+WrinkleFree Inference Engine
+Loading model: models/bitnet-2b/ggml-model-i2_s.gguf
+Server listening on 0.0.0.0:30000
 ```
 
 ### 4. Test the API
@@ -76,13 +77,10 @@ Open http://localhost:7860 in your browser.
 
 ## Performance
 
-| Backend | Speed | Best For |
-|---------|-------|----------|
-| **Native sgl-kernel** | ~29 tok/s | Single user, max throughput |
-| BitNet.cpp | ~26 tok/s | Alternative if sgl-kernel fails |
-| SGLang | ~16 tok/s | Multi-user (continuous batching) |
-
-The native server achieves 29 tok/s on GCP c3d-standard-32 (AMD EPYC Genoa with AVX512).
+| Server | Speed | Best For |
+|--------|-------|----------|
+| **wf_server** | ~26 tok/s | Pure Rust, no dependencies |
+| **dlm_server** | ~60 tok/s | DLM block diffusion (requires llama.cpp) |
 
 ## API Reference
 
@@ -102,8 +100,7 @@ POST /v1/chat/completions
         {"role": "user", "content": "Hello!"}
     ],
     "max_tokens": 128,
-    "temperature": 0.0,
-    "repetition_penalty": 1.2
+    "temperature": 0.0
 }
 ```
 
@@ -112,7 +109,7 @@ POST /v1/chat/completions
 {
     "id": "chatcmpl-123",
     "object": "chat.completion",
-    "model": "bitnet-native",
+    "model": "bitnet",
     "choices": [{
         "index": 0,
         "message": {"role": "assistant", "content": "Hello! How can I help?"},
@@ -132,23 +129,15 @@ POST /v1/chat/completions
 GET /health
 ```
 
-Returns: `{"status": "healthy", "native_kernel": true}`
+Returns: `{"status": "healthy"}`
 
 ## Troubleshooting
 
-### "Checkpoint not found"
+### "Model not found"
 
-Download the checkpoint first:
+Ensure you have a valid GGUF file:
 ```bash
-mkdir -p models/dlm-bitnet-2b
-gcloud storage cp -r gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-2800/* models/dlm-bitnet-2b/
-```
-
-### "Native BitNet kernels available: False"
-
-Rebuild sgl-kernel:
-```bash
-./scripts/setup-cpu.sh
+ls -la models/*.gguf
 ```
 
 ### Slow inference (< 20 tok/s)
@@ -157,14 +146,13 @@ Rebuild sgl-kernel:
 2. Use a machine with DDR5 memory (higher bandwidth)
 3. On GCP, use `c3d-standard-*` instances (AMD EPYC Genoa)
 
-### "ModuleNotFoundError: sgl_kernel"
+### Build errors
 
-Install sgl-kernel:
-```bash
-.venv/bin/pip install -e extern/sglang-bitnet/sgl-kernel --no-build-isolation
-```
+Ensure you have:
+- Rust 1.75+ (`rustup update`)
 
 ## Next Steps
 
-- [Native Inference Deep Dive](bitnet-native-inference.md) - Architecture and optimization details
+- [DLM Pipeline](dlm-pipeline.md) - Block diffusion for faster inference
+- [GGUF Conversion](gguf-conversion.md) - Converting checkpoints
 - [CLAUDE.md](../CLAUDE.md) - Full package documentation

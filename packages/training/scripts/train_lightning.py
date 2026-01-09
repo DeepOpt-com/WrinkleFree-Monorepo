@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from wf_arch.conversion import auto_convert_if_needed
 from wf_train.lightning import (
     DatasetRatioCallback,
+    GCSAuthError,
     GCSCheckpointCallback,
     LambdaWarmupCallback,
     MuonClipInitCallback,
@@ -60,6 +61,7 @@ from wf_train.lightning import (
     WrinkleFreeDataModule,
     WrinkleFreeLightningModule,
     ZClipCallback,
+    validate_gcs_auth,
 )
 from wf_train.meta import MetaOptimizerCallback, MetaOptimizationConfig
 from wf_train.objectives import create_objective_manager
@@ -787,6 +789,17 @@ def create_callbacks(cfg: DictConfig) -> list:
 
     # GCS upload with DLM config
     if cfg.get("gcs", {}).get("enabled", False):
+        # FAIL LOUDLY: Validate GCS auth upfront before training starts
+        # This prevents silent checkpoint upload failures hours into training
+        bucket = cfg.gcs.bucket
+        try:
+            validate_gcs_auth(bucket)
+        except GCSAuthError as e:
+            raise RuntimeError(
+                f"GCS enabled but auth validation failed:\n{e}\n\n"
+                f"To disable GCS, set: gcs.enabled=false"
+            ) from e
+
         # Build DLM config for inference compatibility
         dlm_cfg = cfg.training.get("objectives", {}).get("dlm", {})
         dlm_config = None
@@ -803,7 +816,7 @@ def create_callbacks(cfg: DictConfig) -> list:
         experiment_name_hashed, _ = get_experiment_name_with_hash(cfg)
         callbacks.append(
             GCSCheckpointCallback(
-                bucket=cfg.gcs.bucket,
+                bucket=bucket,
                 experiment_name=experiment_name_hashed,
                 stage="lightning",
                 dlm_config=dlm_config,

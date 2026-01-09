@@ -5,7 +5,10 @@
 # Cost: ~$1.59/hour
 #
 # Launch:
-#   sky launch skypilot/benchmark/qwen3_32b_wf_server.yaml -c qwen3-32b-wf -y
+#   sky launch packages/inference/skypilot/benchmark/qwen3_32b_wf_server.yaml -c qwen3-32b-wf -y
+#
+# Re-run with code changes:
+#   sky exec qwen3-32b-wf --workdir packages/inference
 #
 # Monitor:
 #   sky logs qwen3-32b-wf --follow
@@ -61,7 +64,7 @@ setup: |
 
   # Build llama.cpp for GGUF conversion
   echo "=== Building llama.cpp ==="
-  cd /opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp
+  cd /opt/inference/extern/llama.cpp
   cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
     -DGGML_NATIVE=ON -DGGML_AVX512=ON -DGGML_AVX512_VBMI=ON -DGGML_AVX512_VNNI=ON \
     -DCMAKE_C_FLAGS="-march=native" -DCMAKE_CXX_FLAGS="-march=native"
@@ -70,7 +73,7 @@ setup: |
 
   # Build wf_server
   echo "=== Building wf_server ==="
-  cd /opt/inference/extern/sglang-bitnet/sgl-model-gateway
+  cd /opt/inference/rust
   source "$HOME/.cargo/env"
   cargo build --release --bin wf_server --features native-inference
   ls -lh target/release/wf_server
@@ -83,18 +86,20 @@ run: |
 
   # IMPORTANT: Use sky_workdir paths for wf_server to pick up code changes from `sky exec`
   # llama.cpp is built once during setup, but wf_server should be rebuilt for code changes
-  LLAMA_CPP="/opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp"
-  WF_SERVER_WORKDIR="$HOME/sky_workdir/extern/sglang-bitnet/sgl-model-gateway"
-  WF_SERVER="$WF_SERVER_WORKDIR/target/release/wf_server"
+  LLAMA_CPP="/opt/inference/extern/llama.cpp"
+  WF_SERVER_WORKDIR="$HOME/sky_workdir/rust"
+  WF_SERVER_FALLBACK="/opt/inference/rust"
 
   # Rebuild wf_server if code has changed (use sky_workdir for latest code)
   if [ -d "$WF_SERVER_WORKDIR" ]; then
     echo "=== Rebuilding wf_server from synced workdir ==="
     cd "$WF_SERVER_WORKDIR"
     cargo build --release --bin wf_server --features native-inference
-    ls -lh target/release/wf_server
-    cd -
+    WF_SERVER="$WF_SERVER_WORKDIR/target/release/wf_server"
+  else
+    WF_SERVER="$WF_SERVER_FALLBACK/target/release/wf_server"
   fi
+  ls -lh "$WF_SERVER"
 
   echo "============================================"
   echo "Qwen3-32B wf_server Benchmark"

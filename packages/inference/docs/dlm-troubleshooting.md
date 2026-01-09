@@ -36,8 +36,8 @@ print('Mask tokens:', [t for t in tok.get_vocab() if 'MASK' in t.upper()])
 
 **Solutions**:
 ```bash
-# Re-convert with correct format
-uv run python extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py \
+# Re-convert with correct format (I2_S recommended)
+python scripts/convert_checkpoint_to_gguf.py \
     models/dlm-checkpoint --outfile model.gguf --outtype i2_s
 
 # Verify mask_token_id matches training config
@@ -73,9 +73,9 @@ uv run python extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py \
 
 **Cause**: Packed 2-bit weights not unpacked during conversion.
 
-**Solution**: Use Microsoft's BitNet converter (not standard llama.cpp):
+**Solution**: Use the inference package converter:
 ```bash
-uv run python extern/reference/BitNet.cpp/utils/convert-hf-to-gguf-bitnet.py \
+python scripts/convert_checkpoint_to_gguf.py \
     models/dlm-checkpoint --outfile model.gguf --outtype i2_s
 ```
 
@@ -118,8 +118,8 @@ Before deploying a DLM model, verify:
 ## Debug Commands
 
 ```bash
-# Check GGUF metadata
-./extern/sglang-bitnet/3rdparty/llama.cpp/build/bin/llama-cli \
+# Check GGUF metadata (requires llama.cpp)
+./extern/llama.cpp/build/bin/llama-cli \
     -m model.gguf --show-info
 
 # Test single inference

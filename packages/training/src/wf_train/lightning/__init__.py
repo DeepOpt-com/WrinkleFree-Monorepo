@@ -9,13 +9,16 @@ Provides a clean, maintainable training loop with:
 
 from wf_train.lightning.callbacks import (
     DatasetRatioCallback,
+    GCSAuthError,
     GCSCheckpointCallback,
+    GCSUploadError,
     LambdaWarmupCallback,
     MuonClipInitCallback,
     QKClipCallback,
     RunManagerCallback,
     TokenCountCallback,
     ZClipCallback,
+    validate_gcs_auth,
 )
 from wf_train.lightning.datamodule import WrinkleFreeDataModule
 from wf_train.lightning.module import WrinkleFreeLightningModule
@@ -24,11 +27,14 @@ __all__ = [
     "WrinkleFreeLightningModule",
     "WrinkleFreeDataModule",
     "DatasetRatioCallback",
+    "GCSAuthError",
     "GCSCheckpointCallback",
+    "GCSUploadError",
     "LambdaWarmupCallback",
     "MuonClipInitCallback",
     "QKClipCallback",
     "RunManagerCallback",
     "TokenCountCallback",
     "ZClipCallback",
+    "validate_gcs_auth",
 ]

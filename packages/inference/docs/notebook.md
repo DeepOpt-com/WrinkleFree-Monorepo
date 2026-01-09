@@ -71,8 +71,8 @@ Iterative mode: O(iterations) forward passes per block (until all unmasked)
 - Store best predictions for fallback (no MASK in output)
 
 ### Files Changed
-- `packages/inference/extern/sglang-bitnet/sgl-model-gateway/src/inference/dlm_scheduler.rs`
-- `packages/inference/extern/sglang-bitnet/sgl-model-gateway/src/inference/dlm_config.rs`
+- `packages/inference/rust/src/inference/dlm_scheduler.rs`
+- `packages/inference/rust/src/inference/dlm_config.rs`
 
 ---
 
@@ -219,7 +219,7 @@ benchmark:
 4. Defaults (lowest)
 
 ### Files Changed
-- `packages/inference/extern/sglang-bitnet/sgl-model-gateway/src/bin/dlm_server.rs`
+- `packages/inference/rust/src/bin/dlm_server.rs`
 - `packages/inference/configs/dlm_server.yaml` (new)
 
 ---
@@ -298,9 +298,9 @@ Most tokens are "easy" - the model is highly confident about them even in early 
 ```
 
 ### Files Changed
-- `packages/inference/extern/sglang-bitnet/sgl-model-gateway/src/inference/dlm_config.rs`
-- `packages/inference/extern/sglang-bitnet/sgl-model-gateway/src/inference/dlm_scheduler.rs`
-- `packages/inference/extern/sglang-bitnet/sgl-model-gateway/src/bin/dlm_server.rs`
+- `packages/inference/rust/src/inference/dlm_config.rs`
+- `packages/inference/rust/src/inference/dlm_scheduler.rs`
+- `packages/inference/rust/src/bin/dlm_server.rs`
 - `packages/inference/CLAUDE.md`
 - `packages/inference/docs/dlm-pipeline.md`
 

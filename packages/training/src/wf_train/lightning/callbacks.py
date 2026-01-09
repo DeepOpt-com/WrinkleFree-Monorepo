@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,6 +19,115 @@ import torch
 from pytorch_lightning.callbacks import Callback
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# GCS Exceptions - FAIL LOUDLY
+# =============================================================================
+
+
+class GCSAuthError(Exception):
+    """Raised when GCS authentication is missing or invalid.
+
+    This is raised at training startup if gcs.enabled=true but auth is not configured.
+    """
+
+    pass
+
+
+class GCSUploadError(Exception):
+    """Raised when GCS upload fails after retries.
+
+    This crashes training - checkpoints are critical for fault tolerance.
+    If GCS is optional for your use case, set gcs.enabled=false.
+    """
+
+    pass
+
+
+def validate_gcs_auth(bucket: str) -> None:
+    """Validate GCS authentication upfront.
+
+    FAILS LOUDLY if auth is missing or bucket is inaccessible.
+    Call this at training startup when gcs.enabled=true.
+
+    Args:
+        bucket: GCS bucket name to validate access to
+
+    Raises:
+        GCSAuthError: If gcloud not installed, not authenticated, or bucket inaccessible
+    """
+    # 1. Check gcloud is installed
+    try:
+        result = subprocess.run(
+            ["gcloud", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise GCSAuthError(
+                "gcloud CLI not working properly.\n"
+                "Install: https://cloud.google.com/sdk/docs/install"
+            )
+    except FileNotFoundError:
+        raise GCSAuthError(
+            "gcloud CLI not found.\n"
+            "Install: https://cloud.google.com/sdk/docs/install\n"
+            "Or set gcs.enabled=false if GCS is not needed."
+        )
+    except subprocess.TimeoutExpired:
+        raise GCSAuthError("gcloud --version timed out")
+
+    # 2. Check gcloud is authenticated
+    try:
+        result = subprocess.run(
+            ["gcloud", "auth", "print-access-token"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise GCSAuthError(
+                "gcloud not authenticated.\n"
+                f"Error: {result.stderr.strip()}\n"
+                "Run: gcloud auth login\n"
+                "Or for service accounts: gcloud auth activate-service-account --key-file=KEY.json"
+            )
+    except subprocess.TimeoutExpired:
+        raise GCSAuthError("gcloud auth print-access-token timed out")
+
+    # 3. Check bucket is accessible
+    try:
+        result = subprocess.run(
+            ["gcloud", "storage", "ls", f"gs://{bucket}/"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "403" in stderr or "AccessDenied" in stderr:
+                raise GCSAuthError(
+                    f"Access denied to bucket '{bucket}'.\n"
+                    f"Error: {stderr}\n"
+                    "Check bucket permissions or use a different bucket."
+                )
+            elif "404" in stderr or "NotFound" in stderr:
+                raise GCSAuthError(
+                    f"Bucket '{bucket}' not found.\n"
+                    f"Error: {stderr}\n"
+                    "Create the bucket or check the bucket name."
+                )
+            else:
+                raise GCSAuthError(
+                    f"Cannot access bucket '{bucket}'.\n"
+                    f"Error: {stderr}"
+                )
+    except subprocess.TimeoutExpired:
+        raise GCSAuthError(f"gcloud storage ls gs://{bucket}/ timed out")
+
+    logger.info(f"GCS auth validated: bucket '{bucket}' is accessible")
 
 
 class MuonClipInitCallback(Callback):
@@ -173,48 +283,81 @@ class GCSCheckpointCallback(Callback):
         except Exception as e:
             logger.warning(f"Failed to save dlm_config.json: {e}")
 
-    def _upload_to_gcs(self, local_path: Path, checkpoint_type: str) -> bool:
-        """Upload checkpoint and dlm_config.json to GCS using gcloud storage."""
+    def _upload_to_gcs(self, local_path: Path, checkpoint_type: str) -> None:
+        """Upload checkpoint to GCS with retry.
+
+        FAILS LOUDLY after 3 failed attempts - checkpoints are critical.
+
+        Args:
+            local_path: Local checkpoint path to upload
+            checkpoint_type: Type label (e.g., "step_001000", "final")
+
+        Raises:
+            GCSUploadError: If upload fails after 3 retries
+        """
+        max_retries = 3
+        retry_delay = 30  # seconds
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                self._upload_to_gcs_once(local_path, checkpoint_type)
+                return  # Success
+            except GCSUploadError as e:
+                if attempt == max_retries:
+                    raise GCSUploadError(
+                        f"GCS upload failed after {max_retries} attempts for {local_path}:\n"
+                        f"{e}\n\n"
+                        f"If GCS is optional, set gcs.enabled=false"
+                    )
+                logger.warning(
+                    f"GCS upload attempt {attempt}/{max_retries} failed: {e}\n"
+                    f"Retrying in {retry_delay}s..."
+                )
+                time.sleep(retry_delay)
+
+    def _upload_to_gcs_once(self, local_path: Path, checkpoint_type: str) -> None:
+        """Single upload attempt.
+
+        Raises:
+            GCSUploadError: On any failure (non-zero exit, timeout, etc.)
+        """
         gcs_path = (
             f"gs://{self.bucket}/checkpoints/{self.experiment_name}/"
             f"{self.stage}_checkpoint/checkpoints/{checkpoint_type}/"
         )
 
+        # Upload checkpoint file
+        if local_path.is_dir():
+            cmd = ["gcloud", "storage", "cp", "-r", str(local_path), gcs_path]
+        else:
+            cmd = ["gcloud", "storage", "cp", str(local_path), gcs_path]
+
+        logger.info(f"Uploading checkpoint to {gcs_path}")
+
         try:
-            # Upload checkpoint file
-            if local_path.is_dir():
-                cmd = ["gcloud", "storage", "cp", "-r", str(local_path), gcs_path]
-            else:
-                cmd = ["gcloud", "storage", "cp", str(local_path), gcs_path]
-
-            logger.info(f"Uploading checkpoint to {gcs_path}")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            raise GCSUploadError(f"Upload timed out after 300s for {local_path}")
 
-            if result.returncode != 0:
-                logger.error(f"GCS upload failed: {result.stderr}")
-                return False
+        if result.returncode != 0:
+            raise GCSUploadError(f"gcloud storage cp failed:\n{result.stderr.strip()}")
 
-            logger.info(f"Successfully uploaded checkpoint to {gcs_path}")
+        logger.info(f"Successfully uploaded checkpoint to {gcs_path}")
 
-            # Also upload dlm_config.json if it exists alongside the checkpoint
-            dlm_config_path = local_path.parent / "dlm_config.json"
-            if dlm_config_path.exists():
-                dlm_cmd = ["gcloud", "storage", "cp", str(dlm_config_path), gcs_path]
-                logger.info(f"Uploading dlm_config.json to {gcs_path}")
+        # Also upload dlm_config.json if it exists alongside the checkpoint
+        dlm_config_path = local_path.parent / "dlm_config.json"
+        if dlm_config_path.exists():
+            dlm_cmd = ["gcloud", "storage", "cp", str(dlm_config_path), gcs_path]
+            logger.info(f"Uploading dlm_config.json to {gcs_path}")
+            try:
                 dlm_result = subprocess.run(dlm_cmd, capture_output=True, text=True, timeout=60)
                 if dlm_result.returncode != 0:
+                    # DLM config is less critical - warn but don't fail
                     logger.warning(f"Failed to upload dlm_config.json: {dlm_result.stderr}")
                 else:
                     logger.info("Successfully uploaded dlm_config.json")
-
-            return True
-
-        except subprocess.TimeoutExpired:
-            logger.error("GCS upload timed out")
-            return False
-        except Exception as e:
-            logger.error(f"GCS upload error: {e}")
-            return False
+            except subprocess.TimeoutExpired:
+                logger.warning("dlm_config.json upload timed out")
 
 
 class ZClipCallback(Callback):

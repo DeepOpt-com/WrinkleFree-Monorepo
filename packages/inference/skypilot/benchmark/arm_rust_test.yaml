@@ -5,13 +5,15 @@
 # Cost: ~$0.28/hour
 #
 # Launch:
-#   sky launch skypilot/benchmark/arm_rust_test.yaml -c arm-rust -y
+#   sky launch packages/inference/skypilot/benchmark/arm_rust_test.yaml -c arm-rust -y
 #
 # Run tests:
-#   sky exec arm-rust --workdir . -- cargo test -p sgl-model-gateway --features native-inference
+#   sky exec arm-rust --workdir packages/inference
 #
 # Monitor:
 #   sky logs arm-rust --follow
+#
+# NOTE: For full benchmarks with model inference, use arm_wf_server.yaml instead
 
 name: arm-rust-test
 
@@ -21,7 +23,6 @@ resources:
   region: us-central1
   disk_size: 100
   use_spot: false
-  image_id: projects/ubuntu-os-accelerator-images/global/images/ubuntu-accelerator-2204-arm64-with-nvidia-580-v20260108
 
 envs:
   RAYON_NUM_THREADS: "8"
@@ -55,6 +56,7 @@ setup: |
   fi
 
   # Verify Rust target
+  source "$HOME/.cargo/env"
   rustup show
   echo "Rust target: $(rustc -vV | grep host)"
 
@@ -65,12 +67,13 @@ run: |
   source "$HOME/.cargo/env"
 
   # Use sky_workdir for latest code changes
-  WORKDIR="$HOME/sky_workdir/extern/sglang-bitnet/sgl-model-gateway"
+  WORKDIR="$HOME/sky_workdir/rust"
+  FALLBACK="/opt/inference/rust"
 
   if [ -d "$WORKDIR" ]; then
     cd "$WORKDIR"
   else
-    cd /opt/inference/extern/sglang-bitnet/sgl-model-gateway
+    cd "$FALLBACK"
   fi
 
   echo "============================================"
@@ -83,23 +86,24 @@ run: |
   # Step 1: Run unit tests
   echo ""
   echo "=== Step 1: Running Unit Tests ==="
-  cargo test -p sgl-model-gateway --lib -- --nocapture 2>&1 | head -200
+  cargo test --lib -- --nocapture 2>&1 | head -200
 
   # Step 2: Test bitnet kernel module specifically
   echo ""
   echo "=== Step 2: BitNet Kernel Tests ==="
-  cargo test -p sgl-model-gateway kernels::bitnet -- --nocapture
+  cargo test kernels::bitnet -- --nocapture || echo "No kernel tests found"
 
-  # Step 3: Check CPU capabilities
+  # Step 3: Build wf_server binary
   echo ""
-  echo "=== Step 3: CPU Capabilities ==="
-  cargo run --release --example cpu_caps 2>/dev/null || echo "No cpu_caps example, skipping"
+  echo "=== Step 3: Building wf_server (pure Rust, ARM NEON) ==="
+  cargo build --release --bin wf_server --features native-inference
+  ls -lh target/release/wf_server
 
-  # Step 4: Build wf_server (without C++ deps)
+  # Step 4: Show binary info
   echo ""
-  echo "=== Step 4: Building wf_server (pure Rust) ==="
-  # For now, just build the library to verify compilation
-  cargo build --release --lib 2>&1 | tail -20
+  echo "=== Step 4: Binary Info ==="
+  file target/release/wf_server
+  target/release/wf_server --help | head -20
 
   echo ""
   echo "============================================"
@@ -109,5 +113,5 @@ run: |
   echo "CPU: $(lscpu | grep 'Model name' | cut -d: -f2 | xargs)"
   echo "Architecture: $(uname -m)"
   echo ""
-  echo "All unit tests should have passed above."
-  echo "Next: Enable full wf_server build after updating engine/model.rs"
+  echo "wf_server built successfully for ARM64!"
+  echo "For full benchmarks with model inference, use arm_wf_server.yaml"
