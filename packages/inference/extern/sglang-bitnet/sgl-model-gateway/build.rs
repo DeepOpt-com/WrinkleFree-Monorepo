@@ -127,87 +127,36 @@ fn get_rustc_host() -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// Build the C++ inference engine library
+/// Build the C++ inference engine library (only for llama-inference feature)
 ///
-/// This builds a wrapper around llama.cpp for native inference.
-/// llama.cpp is included as a submodule at 3rdparty/llama.cpp.
+/// NOTE: The native-inference feature now uses pure Rust BitNet kernels
+/// and does NOT require C++ compilation. This function is only called
+/// when llama-inference is enabled (for DLM mode with llama.cpp).
 #[cfg(feature = "native-inference")]
 fn build_cpp_inference_engine() -> Result<(), Box<dyn std::error::Error>> {
-    use std::path::PathBuf;
-
-    println!("cargo:rerun-if-changed=../sgl-kernel/csrc/inference/llama_engine.cpp");
-    println!("cargo:rerun-if-changed=../sgl-kernel/csrc/inference/kv_cache.cpp");
-    println!("cargo:rerun-if-changed=../sgl-kernel/csrc/inference/bitnet_batch.cpp");
-    println!("cargo:rerun-if-changed=../sgl-kernel/csrc/bitnet/bitnet_gemv.cpp");
-    println!("cargo:rerun-if-changed=../sgl-kernel/csrc/bitnet/bitnet_gemv.h");
-
-    let kernel_dir = PathBuf::from("../sgl-kernel/csrc");
-
-    // llama.cpp paths (submodule at 3rdparty/llama.cpp) - used when llama-inference is enabled
-    #[allow(unused_variables)]
-    let llama_dir = PathBuf::from("../3rdparty/llama.cpp");
-    #[allow(unused_variables)]
-    let llama_include = llama_dir.join("include");
-    #[allow(unused_variables)]
-    let ggml_include = llama_dir.join("ggml/include");
-    #[allow(unused_variables)]
-    let llama_lib_dir = llama_dir.join("build/src");
-    #[allow(unused_variables)]
-    let ggml_lib_dir = llama_dir.join("build/ggml/src");
-
-    // Determine SIMD flags based on target architecture
-    let target = std::env::var("TARGET").unwrap_or_default();
-    let use_native = std::env::var("NATIVE_SIMD").is_ok();
-
-    // Build native BitNet kernels (standalone, no llama.cpp dependency)
-    let mut bitnet_build = cc::Build::new();
-    bitnet_build
-        .cpp(true)
-        .opt_level(3)
-        .flag("-std=c++17")
-        .flag("-DNDEBUG")
-        .include(kernel_dir.join("bitnet"))
-        .file(kernel_dir.join("bitnet/bitnet_gemv.cpp"));
-
-    if use_native {
-        bitnet_build.flag("-march=native");
-        bitnet_build.flag("-mtune=native");
-        println!("cargo:warning=Building BitNet kernels with -march=native for maximum SIMD");
-    } else if target.contains("x86_64") {
-        bitnet_build.flag("-mavx2");
-        bitnet_build.flag("-mfma");
-        // Try AVX-512 if available (will be detected at runtime)
-        bitnet_build.flag_if_supported("-mavx512f");
-        bitnet_build.flag_if_supported("-mavx512bw");
-        bitnet_build.flag_if_supported("-mavx512vl");
-    } else if target.contains("aarch64") {
-        bitnet_build.flag("-march=armv8-a+simd");
-        bitnet_build.flag_if_supported("-march=armv8.2-a+dotprod");
-    }
-
-    // Enable OpenMP for parallel processing
-    bitnet_build.flag_if_supported("-fopenmp");
-
-    bitnet_build.compile("sgl_kernel_bitnet");
-
-    // Link the BitNet kernel library
-    let out_dir = std::env::var("OUT_DIR")?;
-    println!("cargo:rustc-link-search=native={}", out_dir);
-    println!("cargo:rustc-link-lib=static=sgl_kernel_bitnet");
-
-    // Link C++ standard library
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if target_os == "macos" {
-        println!("cargo:rustc-link-lib=c++");
-    } else {
-        println!("cargo:rustc-link-lib=stdc++");
-        // Link OpenMP for parallel processing
-        println!("cargo:rustc-link-lib=gomp");
-    }
+    // NOTE: BitNet kernels are now pure Rust (src/kernels/bitnet/)
+    // No C++ compilation needed for basic native-inference
 
     // Only build llama.cpp wrapper when llama-inference feature is enabled
     #[cfg(feature = "llama-inference")]
     {
+        use std::path::PathBuf;
+
+        println!("cargo:rerun-if-changed=../sgl-kernel/csrc/inference/llama_engine.cpp");
+        println!("cargo:rerun-if-changed=../sgl-kernel/csrc/inference/kv_cache.cpp");
+        println!("cargo:rerun-if-changed=../sgl-kernel/csrc/inference/bitnet_batch.cpp");
+
+        let kernel_dir = PathBuf::from("../sgl-kernel/csrc");
+        let llama_dir = PathBuf::from("../3rdparty/llama.cpp");
+        let llama_include = llama_dir.join("include");
+        let ggml_include = llama_dir.join("ggml/include");
+        let llama_lib_dir = llama_dir.join("build/src");
+        let ggml_lib_dir = llama_dir.join("build/ggml/src");
+
+        let target = std::env::var("TARGET").unwrap_or_default();
+        let use_native = std::env::var("NATIVE_SIMD").is_ok();
+        let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
         // Check if llama.cpp is built
         let llama_lib_exists = llama_lib_dir.join("libllama.so").exists()
             || llama_lib_dir.join("libllama.dylib").exists();
@@ -228,7 +177,6 @@ fn build_cpp_inference_engine() -> Result<(), Box<dyn std::error::Error>> {
                 .file(kernel_dir.join("inference/bitnet_batch.cpp"));
 
             if use_native {
-                // Maximum optimization: use all CPU features available
                 engine_build.flag("-march=native");
                 engine_build.flag("-mtune=native");
                 println!("cargo:warning=Building C++ with -march=native for maximum SIMD optimization");
@@ -250,8 +198,11 @@ fn build_cpp_inference_engine() -> Result<(), Box<dyn std::error::Error>> {
             println!("cargo:rustc-link-lib=dylib=llama");
             println!("cargo:rustc-link-lib=dylib=ggml");
 
-            // Link OpenMP if available
-            if target_os != "macos" {
+            // Link C++ standard library
+            if target_os == "macos" {
+                println!("cargo:rustc-link-lib=c++");
+            } else {
+                println!("cargo:rustc-link-lib=stdc++");
                 println!("cargo:rustc-link-lib=gomp");
             }
         } else {

@@ -123,13 +123,13 @@ run: |
     training.max_seq_length=1024 \
     training.logging.log_interval=10 \
     training.auto_batch_size=false \
-    training.torch_compile.enabled=true \
+    training.torch_compile.enabled=false \
     training.optimizer.type=adamw \
     +training.optimizer.learning_rate=2e-5 \
     training.lambda_warmup.warmup_steps=200 \
     training.objectives.dlm.enabled=false \
     training.meta_optimization.enabled=false \
-    training.checkpoint.save_interval=100 \
+    training.checkpoint.save_interval=500 \
     output_dir=$CHECKPOINT_DIR \
     experiment_name=${EXPERIMENT_NAME} \
     distributed=single_gpu \

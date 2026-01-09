@@ -107,14 +107,16 @@ ls target/release/wf_server
 ```
 
 **Requirements**:
-- `libgomp1` for OpenMP parallelism: `sudo apt-get install libgomp1`
-- AVX2 or AVX-512 capable CPU (runtime detection)
+- **ARM64**: No external dependencies - pure Rust with NEON SIMD (aarch64)
+- **x86-64**: Scalar fallback available, AVX2/AVX-512 coming soon
+
+**Target Platform**: ARM64 with NEON (Jetson, RPi5, cloud ARM instances)
 
 ### Running Benchmarks
 
 ```bash
-# Set thread count for OpenMP (C++ kernels)
-export OMP_NUM_THREADS=32
+# Set thread count for Rayon (Rust parallelization)
+export RAYON_NUM_THREADS=8
 
 # Run benchmark
 ./target/release/wf_server \
@@ -148,12 +150,14 @@ curl http://localhost:30000/v1/chat/completions \
 
 ### Architecture
 
-The native engine uses:
+The native engine uses **pure Rust** with no C++ dependencies:
 
 1. **GGUF Reader** (`src/gguf/`) - Pure Rust GGUF parser with mmap
-2. **Native Kernels** (`sgl-kernel/csrc/bitnet/`) - AVX2/AVX-512 SIMD:
-   - `bitnet_gemm_i2_i8`: Ternary weight × INT8 activation GEMM
-   - `quantize_activations_i8`: FP32 → INT8 quantization
+2. **BitNet Kernels** (`src/kernels/bitnet/`) - Pure Rust ARM NEON SIMD:
+   - `gemv_neon.rs`: ARM NEON optimized ternary × int8 dot product
+   - `gemm.rs`: Batched GEMM with Rayon parallelization
+   - `quantize.rs`: FP32 → INT8 symmetric quantization
+   - `gemv_scalar.rs`: Scalar fallback for non-ARM platforms
 3. **Rust Engine** (`src/engine/model.rs`) - Transformer forward pass:
    - Fused Q/K/V quantization (single quantize for 3 projections)
    - Parallel output projection (rayon + AVX2 FMA)
@@ -163,21 +167,21 @@ The native engine uses:
 
 | Optimization | Impact | Details |
 |--------------|--------|---------|
+| **ARM NEON SIMD** | Baseline | Pure Rust intrinsics for ternary × int8 |
+| **Rayon parallelization** | Significant | Multi-threaded GEMM across rows |
 | **Parallel output projection** | 10.8x faster | rayon + SIMD dot products for 128K vocab |
 | **Fused activation quantization** | Minor | Quantize once for Q/K/V instead of 3x |
-| **AVX2/AVX-512 GEMM** | Baseline | Native ternary SIMD kernels |
-| **OpenMP parallelization** | Significant | C++ GEMM kernel uses all cores |
 
 ### Comparison with llama.cpp
 
 | Feature | wf_server | llama.cpp |
 |---------|-----------|-----------|
-| Prefill (2B) | ~106 tok/s | ~63 tok/s |
-| Language | Rust + C++ | C++ |
+| Language | **Pure Rust** | C++ |
+| ARM Dependencies | **None** | libstdc++, etc |
 | GGUF support | I2_S only | All formats |
-| Decode | ~7 tok/s | ~2.7 tok/s |
+| Target Platform | ARM64 (NEON) | x86/ARM |
 
-**Note**: wf_server is optimized for BitNet I2_S format. For other formats, use llama.cpp.
+**Note**: wf_server is optimized for BitNet I2_S format on ARM64. For x86 or other formats, use llama.cpp.
 
 ## Running dlm_server
 
