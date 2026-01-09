@@ -64,8 +64,26 @@ from wf_train.meta import MetaOptimizerCallback, MetaOptimizationConfig
 from wf_train.objectives import create_objective_manager
 from wf_train.teachers import HiddenStateTeacher
 from wf_train.utils.logging_setup import setup_logging
+from wf_train.utils import generate_fingerprint
 
 logger = logging.getLogger(__name__)
+
+
+def get_experiment_name_with_hash(cfg: DictConfig) -> tuple[str, str]:
+    """Generate experiment name with config fingerprint suffix.
+
+    Appends an 8-character hash of the config to the experiment name to prevent
+    GCS bucket naming conflicts. Same config always produces the same hash.
+
+    Args:
+        cfg: Hydra config
+
+    Returns:
+        (full_name, fingerprint) - e.g., ("smoke_test-a3f7c2d1", "a3f7c2d1...")
+    """
+    base_name = cfg.get("experiment_name", "default")
+    fingerprint, _ = generate_fingerprint(cfg)
+    return f"{base_name}-{fingerprint[:8]}", fingerprint
 
 print("[DEBUG] Imports complete, script loaded!", flush=True)
 
@@ -181,8 +199,9 @@ def find_lightning_resume_checkpoint(cfg: DictConfig) -> str | None:
     gcs_config = cfg.get("gcs", {})
     if gcs_config.get("enabled", False):
         bucket = gcs_config.get("bucket", "wrinklefree-checkpoints")
-        experiment_name = cfg.get("experiment_name", "default")
-        gcs_prefix = f"gs://{bucket}/checkpoints/{experiment_name}/lightning_checkpoint/checkpoints"
+        # Use experiment name with hash suffix to prevent naming conflicts
+        experiment_name_hashed, _ = get_experiment_name_with_hash(cfg)
+        gcs_prefix = f"gs://{bucket}/checkpoints/{experiment_name_hashed}/lightning_checkpoint/checkpoints"
 
         try:
             # List checkpoints in GCS, find the latest step
@@ -774,10 +793,12 @@ def create_callbacks(cfg: DictConfig) -> list:
             }
             logger.info(f"DLM config for inference: {dlm_config}")
 
+        # Use experiment name with hash suffix to prevent naming conflicts
+        experiment_name_hashed, _ = get_experiment_name_with_hash(cfg)
         callbacks.append(
             GCSCheckpointCallback(
                 bucket=cfg.gcs.bucket,
-                experiment_name=cfg.get("experiment_name", "default"),
+                experiment_name=experiment_name_hashed,
                 stage="lightning",
                 dlm_config=dlm_config,
             )
@@ -977,6 +998,12 @@ def main(cfg: DictConfig) -> None:
     rank = int(os.environ.get("RANK", 0))
     print(f"[DEBUG] Setting up logging for rank {rank}...", flush=True)
     setup_logging(rank=rank, output_dir=Path(cfg.output_dir))
+
+    # Generate experiment name with config hash suffix for unique GCS paths
+    # This prevents naming conflicts when different configs use the same experiment_name
+    experiment_name_with_hash, config_fingerprint = get_experiment_name_with_hash(cfg)
+    if rank == 0:
+        logger.info(f"Experiment name: {experiment_name_with_hash} (fingerprint: {config_fingerprint[:16]}...)")
 
     # Enable TF32 for Ampere+ GPUs (A100, H100, RTX 30xx/40xx)
     # TF32 accelerates bf16 matmul by using reduced-precision accumulation internally.

@@ -227,9 +227,9 @@ mod tests {
             packed_weights.extend(pack_weights(row_weights));
         }
 
-        // Column-major activations
+        // Column-major activations (use i32 intermediate to avoid overflow)
         let activations: Vec<i8> = (0..k * n)
-            .map(|i| ((i * 7) % 255) as i8 - 127)
+            .map(|i| (((i * 7) % 255) as i32 - 127) as i8)
             .collect();
         let scale = 0.5;
         let config = TileConfig::default();
@@ -263,7 +263,7 @@ mod tests {
         }
 
         let activations: Vec<i8> = (0..k * n)
-            .map(|i| ((i * 13) % 255) as i8 - 127)
+            .map(|i| (((i * 13) % 255) as i32 - 127) as i8)
             .collect();
         let scale = 0.1;
         let config = TileConfig::default();
@@ -395,7 +395,7 @@ mod tests {
             packed_weights.extend(pack_weights(&weights[row * k..(row + 1) * k]));
         }
 
-        let activations: Vec<i8> = (0..k * n).map(|i| ((i * 23) % 255) as i8 - 127).collect();
+        let activations: Vec<i8> = (0..k * n).map(|i| (((i * 23) % 255) as i32 - 127) as i8).collect();
         let scale = 0.1;
         let config = TileConfig::default();
 

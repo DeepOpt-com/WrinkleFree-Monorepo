@@ -194,7 +194,8 @@ mod tests {
         // Pseudo-random weights and activations
         let weights: Vec<i8> = (0..128).map(|i| ((i * 7 + 3) % 3) as i8 - 1).collect();
         let packed = pack_weights(&weights);
-        let activations: Vec<i8> = (0..128).map(|i| ((i * 11 + 5) % 255) as i8 - 127).collect();
+        // Use wrapping arithmetic to avoid overflow
+        let activations: Vec<i8> = (0..128).map(|i| (((i * 11 + 5) % 255) as i32 - 127) as i8).collect();
 
         let scalar_result = vec_dot_scalar(&packed, &activations);
         let neon_result = vec_dot_neon(&packed, &activations);
@@ -207,7 +208,8 @@ mod tests {
         // 256 elements = 2 blocks
         let weights: Vec<i8> = (0..256).map(|i| ((i * 7) % 3) as i8 - 1).collect();
         let packed = pack_weights(&weights);
-        let activations: Vec<i8> = (0..256).map(|i| ((i * 13) % 255) as i8 - 127).collect();
+        // Use wrapping arithmetic to avoid overflow
+        let activations: Vec<i8> = (0..256).map(|i| (((i * 13) % 255) as i32 - 127) as i8).collect();
 
         let scalar_result = vec_dot_scalar(&packed, &activations);
         let neon_result = vec_dot_neon(&packed, &activations);
@@ -220,7 +222,8 @@ mod tests {
         // 1024 elements = 8 blocks
         let weights: Vec<i8> = (0..1024).map(|i| ((i * 17) % 3) as i8 - 1).collect();
         let packed = pack_weights(&weights);
-        let activations: Vec<i8> = (0..1024).map(|i| ((i * 23) % 255) as i8 - 127).collect();
+        // Use wrapping arithmetic to avoid overflow
+        let activations: Vec<i8> = (0..1024).map(|i| (((i * 23) % 255) as i32 - 127) as i8).collect();
 
         let scalar_result = vec_dot_scalar(&packed, &activations);
         let neon_result = vec_dot_neon(&packed, &activations);
