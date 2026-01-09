@@ -1,449 +1,125 @@
-# CLAUDE.md
+# WrinkleFree Inference Engine
 
-This file provides guidance to Claude Code when working with this repository.
-
-## Project Overview
-
-WrinkleFree Inference Engine serves **BitNet** models (1.58-bit quantized LLMs):
-
-- **Model Format**: GGUF (converted from training checkpoints)
-- **Architecture Support**: BitNet with SubLN (Sub-Layer Normalization)
-- **Inference Options**:
-  - **wf_server**: Native Rust server with SIMD-optimized ternary kernels (fastest for prefill)
-  - **llama-cli**: Standard autoregressive decoding (works for all models)
-  - **dlm_server**: Fast-dLLM v2 block diffusion (speed optimization for DLM-trained models)
-
-**Note**: Models trained with `training=base` support BOTH autoregressive and block diffusion inference. The unified config trains with CE loss (autoregressive) + DLM loss (diffusion), so llama-cli works correctly. Use dlm_server for potential speed gains via parallel token prediction.
-
-**Note**: All paths in this document are relative to `packages/inference/`.
+Rust inference engine for **BitNet** 1.58-bit quantized LLMs with DLM block diffusion support.
 
 ## Quick Reference
 
 | Task | Command |
 |------|---------|
 | Convert checkpoint to GGUF | `python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o model.gguf` |
-| Build wf_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin wf_server --features=native-inference` |
-| Build dlm_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin dlm_server --features=native-inference` |
+| Build wf_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin wf_server --features native-inference` |
+| Build dlm_server | `cd extern/sglang-bitnet/sgl-model-gateway && cargo build --release --bin dlm_server --features llama-inference` |
 | Benchmark wf_server | `./wf_server --model-path model.gguf --benchmark --benchmark-iterations 10` |
-| Benchmark (large models) | `./wf_server --model-path model.gguf --context-len 4096 --benchmark` |
-| Start DLM server | See "Running dlm_server" section below |
 | Test API | `curl http://localhost:30000/v1/chat/completions -d '{"messages":[{"role":"user","content":"Hello"}]}'` |
 
-## GGUF Conversion
+## Binaries
 
-### Basic Conversion
+### wf_server (Pure Rust)
 
-```bash
-# Convert to GGUF (auto-fixes architecture name, F16 default)
-python scripts/convert_checkpoint_to_gguf.py \
-  /path/to/checkpoint \
-  --outfile models/model.gguf
-
-# For 2B+ models, use TQ1_0 for smaller size (auto-fallback to F16 if incompatible)
-python scripts/convert_checkpoint_to_gguf.py \
-  /path/to/checkpoint \
-  --outfile models/model.gguf \
-  --outtype tq1_0
-```
-
-### Output Format Guide
-
-| Format | Size (135M) | Size (2B) | Notes |
-|--------|-------------|-----------|-------|
-| **f16** | ~260MB | ~4.5GB | **Default, works for ALL models** |
-| **i2_s** | ~55MB | ~1.1GB | **Fastest - ternary quantized, AVX-512 optimized** |
-| tq1_0 | N/A | ~2.2GB | Requires hidden_size % 256 == 0 (2B+, not 135M) |
-| bf16 | ~260MB | ~4.5GB | Same as F16, alternative |
-| f32 | ~520MB | ~9GB | For debugging only |
-
-**CRITICAL**:
-- **Use I2_S for production** - it's the fastest and most memory efficient
-- Never use TQ2_0 for bf16 DLM checkpoints - it corrupts weights!
-- After F16 conversion, quantize to I2_S: `llama-quantize model-f16.gguf model-i2s.gguf I2_S`
-
-### Common Conversion Errors
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| "BitnetForCausalLM not found" | Arch name mismatch | Script auto-fixes this |
-| TQ1_0 shape error | Model too small | Use F16 (default) |
-| Missing tokenizer | Incomplete checkpoint | Copy `tokenizer.json` + `tokenizer_config.json` |
-
-## Running wf_server (Native Inference)
-
-The `wf_server` is a pure Rust inference server with native SIMD-optimized BitNet kernels. It provides the fastest prefill performance for BitNet models.
-
-### Benchmarks (BitNet 2B, I2_S format)
-
-Tested on AMD EPYC Genoa (32 cores), OMP_NUM_THREADS=32:
-
-| Metric | Performance |
-|--------|-------------|
-| **Prefill throughput** | **106.2 tok/s** |
-| Decode throughput | 7.2 tok/s |
-| Model size | 1.1 GB (I2_S) |
-
-#### Time Breakdown (per forward pass)
-
-| Component | Time % | Notes |
-|-----------|--------|-------|
-| FFN | 49% | 3 GEMM ops per layer (gate, up, down) |
-| Q/K/V projection | 20% | 3 GEMM ops per layer |
-| Output projection | 17% | 128K vocab, parallelized + SIMD |
-| O projection | 8% | 1 GEMM op per layer |
-| Attention scores | 5% | Softmax + weighted sum |
-| RoPE + Norms | <1% | Negligible |
-
-### Building wf_server
+Native BitNet inference server with SIMD-optimized ternary kernels. No C++ dependencies.
 
 ```bash
-cd extern/sglang-bitnet/sgl-model-gateway
+# Build
+cargo build --release --bin wf_server --features native-inference
 
-# Build with native CPU optimizations
-cargo build --release --bin wf_server --features=native-inference
-
-# Binary location
-ls target/release/wf_server
-```
-
-**Requirements**:
-- **ARM64**: No external dependencies - pure Rust with NEON SIMD (aarch64)
-- **x86-64**: Scalar fallback available, AVX2/AVX-512 coming soon
-
-**Target Platform**: ARM64 with NEON (Jetson, RPi5, cloud ARM instances)
-
-### Running Benchmarks
-
-```bash
-# Set thread count for Rayon (Rust parallelization)
-export RAYON_NUM_THREADS=8
+# Run server
+./target/release/wf_server --model-path model.gguf --port 30000
 
 # Run benchmark
-./target/release/wf_server \
-  --model-path /path/to/model-i2s.gguf \
-  --benchmark \
-  --benchmark-iterations 10
-
-# For large models (32B+), limit context length to reduce KV cache memory
-./target/release/wf_server \
-  --model-path /path/to/model-i2s.gguf \
-  --context-len 4096 \
-  --benchmark \
-  --benchmark-iterations 5
+./target/release/wf_server --model-path model.gguf --benchmark
 ```
 
-**Note**: For models with large context (e.g., 128K), always use `--context-len` to limit KV cache allocation. Without it, the engine will allocate KV cache for the full context length which may exceed available RAM.
+### dlm_server (DLM Block Diffusion)
 
-### Server Mode
-
-```bash
-# Start HTTP server (OpenAI-compatible API)
-./target/release/wf_server \
-  --model-path /path/to/model-i2s.gguf \
-  --port 30000
-
-# Test endpoint
-curl http://localhost:30000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
-```
-
-### Architecture
-
-The native engine uses **pure Rust** with no C++ dependencies:
-
-1. **GGUF Reader** (`src/gguf/`) - Pure Rust GGUF parser with mmap
-2. **BitNet Kernels** (`src/kernels/bitnet/`) - Pure Rust ARM NEON SIMD:
-   - `gemv_neon.rs`: ARM NEON optimized ternary × int8 dot product
-   - `gemm.rs`: Batched GEMM with Rayon parallelization
-   - `quantize.rs`: FP32 → INT8 symmetric quantization
-   - `gemv_scalar.rs`: Scalar fallback for non-ARM platforms
-3. **Rust Engine** (`src/engine/model.rs`) - Transformer forward pass:
-   - Fused Q/K/V quantization (single quantize for 3 projections)
-   - Parallel output projection (rayon + AVX2 FMA)
-   - KV cache management
-
-### Key Optimizations
-
-| Optimization | Impact | Details |
-|--------------|--------|---------|
-| **ARM NEON SIMD** | Baseline | Pure Rust intrinsics for ternary × int8 |
-| **Rayon parallelization** | Significant | Multi-threaded GEMM across rows |
-| **Parallel output projection** | 10.8x faster | rayon + SIMD dot products for 128K vocab |
-| **Fused activation quantization** | Minor | Quantize once for Q/K/V instead of 3x |
-
-### Comparison with llama.cpp
-
-| Feature | wf_server | llama.cpp |
-|---------|-----------|-----------|
-| Language | **Pure Rust** | C++ |
-| ARM Dependencies | **None** | libstdc++, etc |
-| GGUF support | I2_S only | All formats |
-| Target Platform | ARM64 (NEON) | x86/ARM |
-
-**Note**: wf_server is optimized for BitNet I2_S format on ARM64. For x86 or other formats, use llama.cpp.
-
-## Running dlm_server
-
-DLM models require block diffusion decoding. The `dlm_server` implements Fast-dLLM v2.
-
-### Prerequisites
+Fast-dLLM v2 server for ~2.5x faster inference via parallel block decoding. Requires llama.cpp.
 
 ```bash
-# 1. Build llama.cpp (required for dlm_server)
+# Build llama.cpp first
 cd extern/sglang-bitnet/3rdparty/llama.cpp
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
 cmake --build build -j4
 
-# 2. Build dlm_server
+# Build dlm_server
 cd ../sgl-model-gateway
-cargo build --release --bin dlm_server --features=native-inference
+cargo build --release --bin dlm_server --features llama-inference
+
+# Set library path and run
+export LD_LIBRARY_PATH="extern/sglang-bitnet/3rdparty/llama.cpp/build/src:extern/sglang-bitnet/3rdparty/llama.cpp/build/ggml/src"
+./target/release/dlm_server --model-path model.gguf --port 30000
 ```
 
-### Starting the Server
+## GGUF Conversion
 
 ```bash
-# Set library path and run
-export LD_LIBRARY_PATH="extern/sglang-bitnet/3rdparty/llama.cpp/build/src:extern/sglang-bitnet/3rdparty/llama.cpp/build/ggml/src:$LD_LIBRARY_PATH"
+# Convert checkpoint to GGUF (I2_S recommended for production)
+python scripts/convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf
 
-./extern/sglang-bitnet/sgl-model-gateway/target/release/dlm_server \
-  --model-path models/model.gguf \
-  --port 30000 \
-  --decode-mode adaptive \
-  --threshold 0.7 \
-  --block-size 32 \
-  --mask-token-id 0
+# For larger models
+python scripts/convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf --outtype i2_s
 ```
 
-### Server Options
+**CRITICAL**: Never use TQ2_0 for bf16 DLM checkpoints - it corrupts weights!
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--model-path` | (required) | Path to GGUF model |
-| `--port` | 30000 | Server port |
-| `--decode-mode` | adaptive | `greedy`, `iterative`, or `adaptive` |
-| `--threshold` | 0.7 | Confidence threshold (0-1) |
-| `--block-size` | 32 | Tokens per diffusion block |
-| `--mask-token-id` | auto | Override mask token ID (usually 0 for DLM) |
+| Format | Notes |
+|--------|-------|
+| **I2_S** | Recommended - fastest, best compatibility |
+| F16 | Default, works for all models |
+| TQ1_0 | Requires hidden_size % 256 == 0 |
+| TQ2_0 | DO NOT USE for bf16 checkpoints |
 
-### Decoding Modes
+## API
 
-| Mode | Speed | Quality | Notes |
-|------|-------|---------|-------|
-| `greedy` | Fast | Baseline | Single pass per block |
-| `adaptive` | Fast | **Best** | Refinement based on confidence |
-| `iterative` | Slow | Best | Multiple refinement passes |
-
-### Testing the API
+Both servers expose OpenAI-compatible API:
 
 ```bash
 curl http://localhost:30000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"The capital of France is"}],"max_tokens":50}'
+  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
 ```
-
-## SubLN Architecture
-
-SubLN adds normalization before output projections. WrinkleFree checkpoints use this by default.
-
-**Note**: The GGUF converter handles SubLN tensor naming automatically. No manual export required.
-
-## LRC (Low-Rank Correction)
-
-LRC recovers accuracy lost during quantization by adding a low-rank correction term:
-
-```
-output = W_quant @ Q_a(X) + U @ V^T @ X
-```
-
-Where:
-- `W_quant`: Quantized ternary weights (±1, 0)
-- `Q_a(X)`: Quantized activations (int8)
-- `U, V`: Low-rank correction matrices (rank typically 32-128)
-
-### LRC Tensor Types
-
-14 LRC tensors per layer (U/V pairs for each projection):
-
-| Projection | Tensors |
-|------------|---------|
-| Attention Q | `attn_q.lrc_U`, `attn_q.lrc_V` |
-| Attention K | `attn_k.lrc_U`, `attn_k.lrc_V` |
-| Attention V | `attn_v.lrc_U`, `attn_v.lrc_V` |
-| Attention O | `attn_output.lrc_U`, `attn_output.lrc_V` |
-| FFN Gate | `ffn_gate.lrc_U`, `ffn_gate.lrc_V` |
-| FFN Up | `ffn_up.lrc_U`, `ffn_up.lrc_V` |
-| FFN Down | `ffn_down.lrc_U`, `ffn_down.lrc_V` |
-
-### Pipeline Integration
-
-LRC is fully supported in the inference pipeline:
-
-1. **Training** (`packages/architecture`): `BitLinearLRC` layer stores U/V matrices
-2. **Conversion** (`convert_hf_to_gguf.py`): Maps `q_proj.lrc_U` → `blk.N.attn_q.lrc_U`
-3. **Inference** (`llama.cpp`): `llm_build_lrc_mm()` applies correction during forward pass
-
-**Note**: LRC tensors are automatically detected and converted. No special flags needed.
-
-### LRC Model Sizes
-
-LRC adds ~5-10% size overhead (depending on rank):
-
-| Model | Base I2_S | With LRC (rank=64) |
-|-------|-----------|-------------------|
-| 135M | ~55MB | ~60MB |
-| 2B | ~1.1GB | ~1.2GB |
 
 ## Architecture
 
 ```
 packages/inference/
 ├── scripts/
-│   ├── convert_checkpoint_to_gguf.py  # PRIMARY converter (auto-fixes, validates)
-│   ├── launch_rust_gateway.sh         # Start Rust DLM server
-│   ├── launch_sglang_bitnet.sh        # Start SGLang server
-│   ├── serve.sh                       # Full stack launcher (multiple backends)
-│   ├── benchmark_*.py                 # Performance benchmarking scripts
-│   └── _legacy/                       # Archived conversion scripts
-├── demo/
-│   └── serve_sglang.py                # Streamlit chat UI
-├── extern/
-│   └── sglang-bitnet/                 # Stripped to essentials (~38MB)
-│       ├── 3rdparty/
-│       │   ├── llama.cpp/             # Core llama.cpp (convert, quantize, cli)
-│       │   └── amd/                   # AMD GPU profiling
-│       ├── sgl-kernel/                # Native BitNet SIMD kernels
-│       ├── sgl-model-gateway/         # Rust HTTP server (dlm_server)
-│       └── python/sglang/             # SGLang backend
-└── src/wf_infer/                      # Python utilities
+│   └── convert_checkpoint_to_gguf.py  # GGUF conversion
+├── extern/sglang-bitnet/
+│   ├── 3rdparty/llama.cpp/            # llama.cpp (conversion + dlm_server backend)
+│   └── sgl-model-gateway/             # Rust inference engine (wf-inference crate)
+│       └── src/
+│           ├── bin/
+│           │   ├── wf_server.rs       # Pure Rust BitNet server
+│           │   └── dlm_server.rs      # DLM block diffusion server
+│           ├── engine/                # Transformer forward pass
+│           ├── gguf/                  # Pure Rust GGUF reader
+│           ├── kernels/bitnet/        # SIMD ternary kernels
+│           └── inference/             # DLM scheduler
+└── docs/                              # Documentation
 ```
 
-**sglang-bitnet is stripped** to BitNet/DLM essentials only:
-- `3rdparty/llama.cpp/`: Core (`src/`, `ggml/`, `common/`), tools (`examples/main/`, `examples/quantize/`), conversion (`convert_hf_to_gguf.py`, `gguf-py/`)
-- `3rdparty/amd/`: AMD GPU profiling utilities
-- `sgl-kernel/`: Native BitNet SIMD kernels (AVX2/AVX512)
-- `sgl-model-gateway/`: Rust HTTP server (dlm_server)
-- `python/sglang/`: SGLang backend for CPU inference
-- Removed: benchmark/, examples/, docs/, test/, scripts/, docker/, assets/
+## Feature Flags
 
-## Server Options
+| Feature | Description |
+|---------|-------------|
+| `native-inference` | Pure Rust BitNet kernels (wf_server) |
+| `llama-inference` | llama.cpp-based inference (dlm_server) |
 
-**For unified-trained models (CE + DLM):**
-- **llama-cli**: Works correctly for autoregressive generation
-- **dlm_server**: Faster inference via block diffusion (recommended for production)
-
-**dlm_server** implements Fast-dLLM v2 and can achieve speedups by predicting multiple tokens in parallel. However, llama-cli is a valid fallback for testing and debugging.
-
-## Build llama.cpp
+## Building
 
 ```bash
-cd extern/sglang-bitnet/3rdparty/llama.cpp
-
-# Configure with native CPU optimizations (AVX-512 on supported CPUs)
-cmake -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_SHARED_LIBS=ON \
-  -DGGML_NATIVE=ON \
-  -DCMAKE_C_FLAGS="-march=native" \
-  -DCMAKE_CXX_FLAGS="-march=native"
-
-# Build (throttled to prevent system freeze)
-cmake --build build -j4
-
-# Verify
-ls build/bin/llama-cli build/bin/llama-quantize
-ls build/src/libllama.so build/ggml/src/libggml.so
-```
-
-## Testing
-
-```bash
-# Test GGUF conversion
-python scripts/convert_checkpoint_to_gguf.py --help
-
-# Run unit tests
-uv run pytest tests/ -v
-
-# Integration tests (requires running dlm_server)
-INFERENCE_URL=http://localhost:30000 uv run pytest tests/ -v -m integration
-```
-
-## Local Development Workflow
-
-```bash
-# 1. Build llama.cpp
-cd extern/sglang-bitnet/3rdparty/llama.cpp
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
-cmake --build build -j4
-cd -
-
-# 2. Build dlm_server
 cd extern/sglang-bitnet/sgl-model-gateway
-cargo build --release --bin dlm_server --features=native-inference
-cd -
 
-# 3. Convert model
-python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o models/model.gguf
+# Pure Rust (wf_server)
+cargo build --release --bin wf_server --features native-inference
 
-# 4. Start dlm_server
-export LD_LIBRARY_PATH="extern/sglang-bitnet/3rdparty/llama.cpp/build/src:extern/sglang-bitnet/3rdparty/llama.cpp/build/ggml/src"
-./extern/sglang-bitnet/sgl-model-gateway/target/release/dlm_server \
-  --model-path models/model.gguf --port 30000 --mask-token-id 0
-
-# 5. Test
-curl http://localhost:30000/v1/chat/completions \
-  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
+# With llama.cpp (dlm_server)
+cargo build --release --bin dlm_server --features llama-inference
 ```
-
-## SkyPilot Development
-
-When iterating on Rust/C++ code with SkyPilot:
-
-**IMPORTANT**: `sky exec` syncs files to `~/sky_workdir`, but binaries built during `setup` are at `/opt/inference`. Always rebuild from the synced workdir in the `run` section to pick up code changes:
-
-```yaml
-run: |
-  # Use sky_workdir for latest code changes
-  WF_SERVER_WORKDIR="$HOME/sky_workdir/extern/sglang-bitnet/sgl-model-gateway"
-
-  # Rebuild if code changed
-  if [ -d "$WF_SERVER_WORKDIR" ]; then
-    cd "$WF_SERVER_WORKDIR"
-    cargo build --release --bin wf_server --features native-inference
-  fi
-
-  # Use the rebuilt binary
-  WF_SERVER="$WF_SERVER_WORKDIR/target/release/wf_server"
-```
-
-**Key flags:**
-- `--context-len 4096`: Override model's default context length to limit KV cache memory (critical for large models with 128K+ context)
 
 ## Monorepo Integration
 
 | Package | Relationship |
 |---------|--------------|
-| `training` | Produces checkpoints to convert and serve |
-| `deployer` | Cloud deployment orchestration (SkyPilot) |
-| `eval` | Uses inference for benchmarks |
-| `architecture` | BitLinear/BitLinearLRC/SubLN layer definitions |
-
-## Related Files
-
-| File | Purpose |
-|------|---------|
-| `scripts/convert_checkpoint_to_gguf.py` | Main GGUF converter (wrapper) |
-| `extern/sglang-bitnet/3rdparty/llama.cpp/convert_hf_to_gguf.py` | Underlying GGUF converter |
-| `extern/sglang-bitnet/sgl-model-gateway/src/bin/dlm_server.rs` | DLM server (Fast-dLLM v2) |
-| `models/` | Local GGUF models (gitignored) |
-
-## Build Throttling
-
-All scripts are throttled to prevent system freeze:
-- **Builds**: Limited to 4 parallel jobs (`-j4`)
-- **Servers**: Pinned to 8 cores via `taskset -c 0-7`
-
-For manual builds, use the safe wrapper:
-```bash
-./scripts/build-safe.sh cmake --build build
-```
+| `training` | Produces checkpoints to convert |
+| `deployer` | Cloud deployment orchestration |
+| `architecture` | BitLinear layer definitions |

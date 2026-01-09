@@ -54,11 +54,15 @@ setup: |
     export PATH="$HOME/.cargo/bin:$PATH"
   fi
 
-  # Install gcloud for GCS uploads
+  # Install gcloud for GCS uploads (check both command and existing install)
+  export PATH="$HOME/google-cloud-sdk/bin:$PATH"
   if ! command -v gcloud &> /dev/null; then
-    printf "Installing gcloud CLI...\n"
-    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
-    export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+    if [ -d "$HOME/google-cloud-sdk" ]; then
+      printf "gcloud SDK exists but not in PATH, skipping install...\n"
+    else
+      printf "Installing gcloud CLI...\n"
+      curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
+    fi
   fi
 
   # Authenticate gcloud with service account

@@ -86,49 +86,52 @@ def _prepare_docker_secrets(cloud: str) -> dict[str, str]:
 
 def train(
     model: str,
-    stage: float,
+    stage: float = 2.0,  # Deprecated, ignored
     scale: Scale | None = None,
     overrides: list[str] | None = None,
     cloud: str = "nebius",
     detach: bool = True,
     resume_checkpoint: str | None = None,
     gpu_type: str | None = None,
+    training_config: str | None = None,
 ) -> str:
     """Launch a training job on SkyPilot.
 
     Args:
         model: Model config name (e.g., "qwen3_4b", "smollm2_135m")
-        stage: Training stage (1, 1.9, 2, or 3) - legacy, use training= override instead
+        stage: [DEPRECATED] Ignored, kept for backward compatibility
         scale: GPU scale profile ("dev", "small", "medium", "large", "xlarge").
                If None, uses model-specific defaults.
-        overrides: Hydra config overrides (e.g., ["training.lr=1e-4", "training=base"])
-        cloud: Cloud provider ("nebius", "gcp", or "runpod")
+        overrides: Hydra config overrides (e.g., ["training.lr=1e-4"])
+        cloud: Cloud provider ("nebius", "gcp", "runpod", or "vast")
         detach: Return immediately (True) or wait for completion (False)
         resume_checkpoint: Path to checkpoint to resume from (local or gs://)
         gpu_type: Override GPU type (e.g., "H100", "L40S", "A10G")
+        training_config: Training config name (e.g., "base", "lrc_run", "bitdistill_full")
+                        If not provided, extracts from "training=" override
 
     Returns:
         Run ID (use with `wf logs <run_id>` to see logs)
 
     Example:
         >>> from wf_deploy import train
-        >>> run_id = train("qwen3_4b", stage=2, overrides=["training=base"])
-        >>> run_id = train("qwen3_4b", stage=2, scale="large")  # 4x H100
-        >>> run_id = train("qwen3_4b", stage=2, overrides=["training.batch_size=8"])
+        >>> run_id = train("qwen3_4b", training_config="base")
+        >>> run_id = train("qwen3_4b", training_config="base", scale="large")
+        >>> run_id = train("qwen3_4b", training_config="lrc_run", overrides=["training.batch_size=8"])
     """
     overrides = overrides or []
-    return _train_skypilot(model, stage, scale, overrides, cloud, detach, resume_checkpoint, gpu_type)
+    return _train_skypilot(model, scale, overrides, cloud, detach, resume_checkpoint, gpu_type, training_config)
 
 
 def _train_skypilot(
     model: str,
-    stage: float,
     scale: Scale | None,
     overrides: list[str],
     cloud: str,
     detach: bool,
     resume_checkpoint: str | None,
     gpu_type_override: str | None = None,
+    training_config: str | None = None,
 ) -> str:
     """Launch training on SkyPilot."""
     try:
@@ -136,6 +139,20 @@ def _train_skypilot(
     except ImportError:
         raise ImportError(
             "SkyPilot not installed. Install with: uv add 'skypilot[all]'"
+        )
+
+    # Extract training_config from overrides if not explicitly provided
+    if training_config is None:
+        for override in overrides:
+            if override.startswith("training="):
+                training_config = override.split("=", 1)[1]
+                # Remove from overrides since we pass via TRAINING_CONFIG
+                overrides = [o for o in overrides if not o.startswith("training=")]
+                break
+    if training_config is None:
+        raise ValueError(
+            "training_config is required. Either pass training_config='base' or "
+            "include 'training=base' in overrides."
         )
 
     # Determine scale (use model default if not specified)
@@ -148,7 +165,7 @@ def _train_skypilot(
     gpu_type = gpu_type_override or scale_config["type"]
     accelerators = f"{gpu_type}:{gpu_count}"
 
-    print(f"🚀 Launching {model} (Stage {stage}) on SkyPilot")
+    print(f"🚀 Launching {model} (training={training_config}) on SkyPilot")
     print(f"   Cloud: {cloud}")
     if cloud == "vast":
         print("   ⚠️  Vast.ai: Marketplace pricing, variable reliability. Use --cloud nebius for critical runs.")
@@ -157,10 +174,9 @@ def _train_skypilot(
         print(f"   Overrides: {overrides}")
 
     # Build environment variables
-    stage_str = str(int(stage)) if stage == int(stage) else str(stage)
     envs = {
         "MODEL": model,
-        "STAGE": stage_str,
+        "TRAINING_CONFIG": training_config,
     }
 
     # Pass through secrets from local environment
@@ -179,25 +195,13 @@ def _train_skypilot(
     if hf_token:
         envs["HF_TOKEN"] = hf_token
 
-    # Docker auth for non-GCP clouds (only needed when Docker image is enabled)
-    # TODO: Uncomment when Docker image is built and pushed to GAR
-    # if cloud != "gcp":
-    #     try:
-    #         docker_secrets = _prepare_docker_secrets(cloud)
-    #         for key, value in docker_secrets.items():
-    #             envs[key] = value  # Pass as env for Python API
-    #         print(f"   Docker auth: Prepared for {cloud}")
-    #     except FileNotFoundError as e:
-    #         print(f"   ⚠️  Docker auth: {e}")
-    #         print("   Continuing without Docker image (will install deps from scratch)")
-
     # Resume checkpoint (passed via env var to avoid Hydra parsing issues)
     if resume_checkpoint:
         envs["RESUME_CHECKPOINT"] = resume_checkpoint
         print(f"   Resume from: {resume_checkpoint}")
 
     # Add distributed config based on GPU count
-    # Multi-GPU needs FSDP, single GPU uses single_gpu
+    # dispatch_train.py auto-detects, but we also pass for visibility
     distributed_config = "fsdp_multi" if gpu_count > 1 else "single_gpu"
     base_overrides = [f"distributed={distributed_config}"]
 

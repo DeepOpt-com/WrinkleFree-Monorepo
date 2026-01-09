@@ -17,6 +17,8 @@ import logging
 import math
 from typing import Literal
 
+import torch
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,8 +131,13 @@ def set_global_lambda_warmup(warmup: LambdaWarmup | None) -> None:
         )
 
 
+@torch.compiler.disable
 def get_current_lambda() -> float:
-    """Get current lambda value from global warmup, or 1.0 if not set."""
+    """Get current lambda value from global warmup, or 1.0 if not set.
+
+    Note: Decorated with @torch.compiler.disable to avoid graph breaks
+    from global state access during torch.compile tracing.
+    """
     if _global_lambda_warmup is None:
         return 1.0  # Full quantization when warmup not enabled
     return _global_lambda_warmup.lambda_val

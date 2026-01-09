@@ -32,10 +32,10 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "native-inference")]
-use sgl_model_gateway::engine::{BitNetEngine, SamplingConfig, enable_profiling, print_profile_results, reset_profile};
+use wf_inference::engine::{BitNetEngine, SamplingConfig, enable_profiling, print_profile_results, reset_profile};
 
 #[cfg(feature = "native-inference")]
-use sgl_model_gateway::gguf::GgufReader;
+use wf_inference::gguf::GgufReader;
 
 /// WrinkleFree Inference Server
 #[derive(Parser, Debug)]

@@ -87,11 +87,12 @@ uv run --package wf-train-deployer wf train -m qwen3_4b -s 2
 | `src/wf_deploy/constants.py` | All magic strings, defaults, scales, training configs |
 | `src/wf_deploy/core.py` | Main API: train(), smoke_test_unified(), logs() |
 | `src/wf_deploy/cli.py` | CLI commands: train, smoke, logs, runs |
-| `skypilot/train.yaml` | SkyPilot training job template |
-| `skypilot/smoke_test.yaml` | **Unified smoke test (use `wf smoke -o <objective>`)** |
+| `skypilot/train.yaml` | **Unified training job (uses dispatch_train.py)** |
+| `skypilot/smoke_test.yaml` | **Unified smoke test (uses dispatch_smoke.py)** |
 | `skypilot/train_salient_muonclip.yaml` | MuonClip + Salient experiment (Issue #25) |
 | `skypilot/service.yaml` | SkyServe inference template |
 | `skypilot/eval.yaml` | Model evaluation template |
+| `scripts/dispatch_train.py` | Maps training config to train_lightning.py command |
 | `scripts/dispatch_smoke.py` | Maps objective to training config + overrides |
 | `credentials/.env` | Local credentials (gitignored) |
 | `credentials/gcp-service-account.json` | GCP service account for GCS + Docker auth |

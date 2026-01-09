@@ -16,21 +16,25 @@ class TestHadamardTransform:
     """Test Hadamard transform correctness."""
 
     def test_orthogonality(self):
-        """Test H @ H = n*I (Hadamard is orthogonal up to scaling)."""
+        """Test normalized Hadamard is involutory (H_norm @ H_norm = I).
+
+        The internal Hadamard matrix is normalized by 1/sqrt(n), so
+        applying the transform twice should return the original input.
+        """
         n = 64
         x = torch.eye(n)
         h_x = hadamard_transform(x, scale=1.0)
         h_h_x = hadamard_transform(h_x, scale=1.0)
-        # H @ H = n*I, so H @ H @ x / n = x
-        assert torch.allclose(h_h_x / n, x, atol=1e-5)
+        # H_norm @ H_norm = I (normalized Hadamard is involutory)
+        assert torch.allclose(h_h_x, x, atol=1e-5)
 
     def test_normalized_hadamard(self):
-        """Test normalized Hadamard is involutory."""
+        """Test normalized Hadamard is involutory with batched input."""
         n = 128
         x = torch.randn(4, 32, n)
-        scale = 1.0 / (n**0.5)
-        h_x = hadamard_transform(x, scale=scale)
-        h_h_x = hadamard_transform(h_x, scale=scale)
+        # Normalization is built-in (1/sqrt(n)), so scale=1.0
+        h_x = hadamard_transform(x, scale=1.0)
+        h_h_x = hadamard_transform(h_x, scale=1.0)
         assert torch.allclose(h_h_x, x, atol=1e-5)
 
     def test_gradient_flow(self):

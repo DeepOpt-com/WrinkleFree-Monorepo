@@ -1,35 +1,30 @@
-pub mod app_context;
-pub mod config;
-pub mod core;
-pub mod data_connector;
-pub mod grpc_client;
-pub mod mcp;
-pub mod middleware;
-pub mod multimodal;
-pub mod observability;
-pub mod policies;
-pub mod protocols;
-pub mod reasoning_parser;
-pub mod routers;
-pub mod server;
-pub mod service_discovery;
-pub mod tokenizer;
-pub mod tool_parser;
-pub mod version;
-pub mod wasm;
-pub mod workflow;
+//! WrinkleFree Inference Engine
+//!
+//! Rust inference engine for BitNet 1.58-bit quantized LLMs with DLM block diffusion support.
+//!
+//! # Features
+//!
+//! - **native-inference**: Enable pure Rust BitNet inference with SIMD kernels
+//! - **llama-inference**: Enable llama.cpp-based inference for DLM block diffusion
 
-// Native inference engine (requires llama.cpp, optional)
-#[cfg(feature = "llama-inference")]
-pub mod inference;
+// Core modules (always available)
+pub mod config;
+pub mod observability;
+pub mod protocols;
+pub mod tokenizer;
+pub mod version;
 
 // Pure Rust GGUF reader (no C++ dependency)
 pub mod gguf;
 
-// Native BitNet kernel FFI (requires C++ library, optional)
+// Native BitNet kernels (feature-gated)
 #[cfg(feature = "native-inference")]
 pub mod kernels;
 
-// Native BitNet inference engine
+// Native BitNet inference engine (feature-gated)
 #[cfg(feature = "native-inference")]
 pub mod engine;
+
+// C++ llama.cpp-based inference for DLM (feature-gated)
+#[cfg(feature = "llama-inference")]
+pub mod inference;

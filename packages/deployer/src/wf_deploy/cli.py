@@ -136,9 +136,6 @@ def train(ctx, model: str, training: str | None, stage: float | None, scale: str
     # Extra args are Hydra overrides
     overrides = list(ctx.args)
 
-    # Add training config as Hydra override
-    overrides.insert(0, f"training={training}")
-
     if dry_run:
         click.echo("🔍 DRY RUN - would launch with:")
         click.echo(f"   Model: {model}")
@@ -147,14 +144,15 @@ def train(ctx, model: str, training: str | None, stage: float | None, scale: str
         if gpu_type:
             click.echo(f"   GPU Type: {gpu_type}")
         click.echo(f"   Cloud: {cloud}")
-        click.echo(f"   Overrides: {overrides}")
+        if overrides:
+            click.echo(f"   Overrides: {overrides}")
         if resume:
             click.echo(f"   Resume: {resume}")
         return
 
     core.train(
         model=model,
-        stage=2.0,  # Default stage, actual config determined by training= override
+        training_config=training,
         scale=scale,
         overrides=overrides,
         cloud=cloud,

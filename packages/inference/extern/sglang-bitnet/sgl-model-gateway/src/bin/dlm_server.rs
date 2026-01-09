@@ -31,7 +31,7 @@ use tokio::sync::oneshot;
 use tracing::{error, info};
 
 #[cfg(feature = "native-inference")]
-use sgl_model_gateway::inference::{
+use wf_inference::inference::{
     BatchConfig, BatchSamplingParams, DlmConfig, DlmDecodeMode, DlmScheduler, DlmSchedulerConfig,
     DlmSchedulerHandle, InferenceRequest, NativeBatchEngine,
 };
@@ -669,7 +669,7 @@ async fn run_benchmark(
     max_tokens: i32,
 ) {
     use std::time::Instant;
-    use sgl_model_gateway::inference::LatencyStats;
+    use wf_inference::inference::LatencyStats;
 
     info!("Starting benchmark warmup...");
 

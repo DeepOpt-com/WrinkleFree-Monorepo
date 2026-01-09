@@ -14,11 +14,13 @@ Optimizations:
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 
 from wf_arch.layers.bitlinear import BitLinear
-from wf_arch.layers.hadamard import hadamard_transform, next_power_of_2
+from wf_arch.layers.hadamard import _build_hadamard_matrix, next_power_of_2
 from wf_arch.quantization.lambda_warmup import get_current_lambda
 
 
@@ -70,6 +72,11 @@ class HBitLinear(BitLinear):
         self.padded_in = next_power_of_2(in_features)
         self.needs_padding = self.padded_in != in_features
 
+        # Pre-compute normalized Hadamard matrix as buffer (avoids graph breaks in torch.compile)
+        # H @ H = n*I, so use 1/sqrt(n) for orthonormal (H_norm @ H_norm = I)
+        h = _build_hadamard_matrix(self.padded_in) / math.sqrt(self.padded_in)
+        self.register_buffer("hadamard_matrix", h, persistent=False)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass with Hadamard-transformed activations.
@@ -91,8 +98,10 @@ class HBitLinear(BitLinear):
         if self.needs_padding:
             x = F.pad(x, (0, self.padded_in - self.in_features))
 
-        # 2. Apply Hadamard transform (normalization built-in, uses cuBLAS)
-        x_h = hadamard_transform(x)
+        # 2. Apply Hadamard transform using pre-computed buffer (no graph breaks)
+        # Cast buffer to input dtype for BF16 consistency
+        H = self.hadamard_matrix.to(x.dtype)
+        x_h = x @ H
 
         # 3. Slice back to original dimension
         if self.needs_padding:
