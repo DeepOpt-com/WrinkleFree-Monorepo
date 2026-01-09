@@ -454,12 +454,14 @@ class LambdaWarmupCallback(Callback):
             accum_steps = trainer.accumulate_grad_batches
             if (batch_idx + 1) % accum_steps == 0:
                 self._lambda_warmup.step()
-
-            if trainer.is_global_zero:
+                # Log lambda per optimizer step (not every micro-batch)
                 pl_module.log(
                     "train/lambda",
                     self._lambda_warmup.lambda_val,
+                    on_step=True,
+                    on_epoch=False,
                     prog_bar=False,
+                    sync_dist=True,
                 )
 
 

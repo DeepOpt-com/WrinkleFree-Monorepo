@@ -1018,64 +1018,54 @@ void bitnet_gemm_i2_i8(
 
     const int packed_K = K / 4;  // 4 weights per byte
 
-    // OPTIMIZATION: Pre-compute activation sums for each batch item
-    // This avoids computing the same sum M times (once per output row)
-    // For large M (e.g., 27648), this is a massive speedup
-    std::vector<int32_t> activation_sums(N);
-
-#ifdef _OPENMP
-    #pragma omp parallel for if(N > 4)
-#endif
-    for (int n = 0; n < N; n++) {
-        activation_sums[n] = compute_activation_sum(activations + n * K, K);
-    }
-
-    // Parallelized GEMM using optimized dot product with pre-computed sums
+    // Parallelized GEMM with OpenMP
 #ifdef _OPENMP
     if (N <= 4) {
+        // For small batch sizes, parallelize over M dimension
         #pragma omp parallel for schedule(dynamic, config.BM) if(M > 64)
         for (int m = 0; m < M; m += config.BM) {
             int m_end = std::min(m + config.BM, M);
             for (int n = 0; n < N; n++) {
                 for (int mm = m; mm < m_end; mm++) {
                     float result;
-                    bitnet_vec_dot_i2_i8_with_bias(
+                    bitnet_vec_dot_i2_i8(
                         K, &result,
                         packed_weights + mm * packed_K,
-                        activations + n * K,
-                        activation_sums[n]
+                        activations + n * K
                     );
                     output[mm * N + n] = result * scale;
                 }
             }
         }
     } else {
+        // For larger batch sizes, parallelize over all work items
+        // Loop order: N-major (n changes slowly) to keep activations in cache
+        // Since activations are much smaller than weights, this improves cache hit rate
         const int total_work = M * N;
         #pragma omp parallel for schedule(static) if(total_work > 128)
         for (int work_id = 0; work_id < total_work; work_id++) {
-            int m = work_id / N;
-            int n = work_id % N;
+            int n = work_id / M;  // N changes slowly
+            int m = work_id % M;  // M changes quickly
             float result;
-            bitnet_vec_dot_i2_i8_with_bias(
+            bitnet_vec_dot_i2_i8(
                 K, &result,
                 packed_weights + m * packed_K,
-                activations + n * K,
-                activation_sums[n]
+                activations + n * K
             );
             output[m * N + n] = result * scale;
         }
     }
 #else
+    // Non-OpenMP fallback with tiling
     for (int m = 0; m < M; m += config.BM) {
         int m_end = std::min(m + config.BM, M);
         for (int n = 0; n < N; n++) {
             for (int mm = m; mm < m_end; mm++) {
                 float result;
-                bitnet_vec_dot_i2_i8_with_bias(
+                bitnet_vec_dot_i2_i8(
                     K, &result,
                     packed_weights + mm * packed_K,
-                    activations + n * K,
-                    activation_sums[n]
+                    activations + n * K
                 );
                 output[mm * N + n] = result * scale;
             }

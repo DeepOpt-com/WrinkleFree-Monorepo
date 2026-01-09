@@ -1,0 +1,138 @@
+# Salient + MuonClip Training - Nebius 1x H100
+#
+# Testing MuonClip optimizer with salient columns (CE-only).
+# Related: GitHub Issue #25 (MuonClip divergence with BitNet)
+#
+# Configuration:
+# - MuonClip optimizer: lr_muon=0.02, lr_adam=2e-4
+# - QK-clipping enabled (threshold=50.0)
+# - Salient columns: 1% FP16 (AWQ-style)
+# - CE only (no DLM)
+# - ~100M tokens quick test
+#
+# Launch:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/train_salient_muonclip.yaml -y --cluster wf-salient-muonclip
+#
+# Monitor:
+#   sky logs wf-salient-muonclip
+#
+# Down:
+#   sky down wf-salient-muonclip -y
+
+name: wf-salient-muonclip
+
+resources:
+  accelerators: H100:1
+  memory: 64+
+  disk_size: 200
+  use_spot: false
+  cloud: nebius
+
+# Run from monorepo root
+workdir: ../..
+
+file_mounts:
+  /tmp/gcp-creds.json: credentials/gcp-service-account.json
+  /tmp/credentials.env: credentials/.env
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GOOGLE_CLOUD_PROJECT: wrinklefree-481904
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: qwen3_0.6b
+  WANDB_PROJECT: wrinklefree_v2
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  EXPERIMENT_NAME: salient_muonclip_qwen3_0.6b
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  uv sync --all-packages
+
+  # Verify imports
+  printf "Verifying imports...\n"
+  uv run python -c "from wf_arch import BitLinearSalient; print('Salient imports OK')"
+
+  printf "Setup complete\n"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  source /tmp/credentials.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  echo "WANDB_API_KEY is set: $([ -n \"$WANDB_API_KEY\" ] && echo 'yes' || echo 'no')"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "=============================================="
+  echo "SALIENT + MUONCLIP Training (CE-only)"
+  echo "=============================================="
+  echo "Model: ${MODEL}"
+  echo "Experiment: ${EXPERIMENT_NAME}"
+  echo ""
+  echo "Configuration:"
+  echo "  - Salient columns: 1% FP16 (AWQ-style)"
+  echo "  - MuonClip optimizer"
+  echo "    - lr_muon: 0.02"
+  echo "    - lr_adam: 2e-4"
+  echo "    - QK-clipping: enabled (threshold=50.0)"
+  echo "  - CE only (DLM disabled)"
+  echo "  - Lambda warmup: 100 steps"
+  echo "  - ~100M tokens"
+  echo "=============================================="
+  echo ""
+  echo "Related: GitHub Issue #25 (MuonClip divergence)"
+  echo "=============================================="
+
+  # Salient training with MuonClip
+  # Use + prefix for fields not in base optimizer config
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=salient_run \
+    training.total_tokens=100_000_000 \
+    training.max_steps=null \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=16 \
+    training.max_seq_length=1024 \
+    training.logging.log_interval=5 \
+    training.auto_batch_size=false \
+    training.optimizer.type=muonclip \
+    +training.optimizer.lr_muon=0.02 \
+    +training.optimizer.lr_adam=2e-4 \
+    +training.optimizer.enable_clipping=true \
+    +training.optimizer.clipping_threshold=50.0 \
+    +training.optimizer.clipping_alpha=0.5 \
+    +training.optimizer.momentum=0.95 \
+    training.objectives.dlm.weight=0.0 \
+    training.objectives.continue_pretrain.weight=1.0 \
+    training.lambda_warmup.warmup_steps=100 \
+    training.meta_optimization.enabled=false \
+    training.checkpoint.save_interval=200 \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=${EXPERIMENT_NAME} \
+    distributed=single_gpu \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.wandb.tags="[salient,muonclip,bitnet,ce_only,issue_25]"
+
+  echo ""
+  echo "=============================================="
+  echo "TRAINING COMPLETE!"
+  echo ""
+  echo "Check W&B: https://wandb.ai/${WANDB_PROJECT}"
+  echo "Check GCS: gs://${GCS_BUCKET}/"
+  echo "=============================================="

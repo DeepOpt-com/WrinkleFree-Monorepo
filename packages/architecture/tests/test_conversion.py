@@ -322,3 +322,83 @@ class TestConvertModelToBitnet:
 
         logits = model.lm_head(x)
         assert logits.shape == (batch_size, seq_len, 1000)
+
+
+class TestConversionIdempotency:
+    """Test that conversion is idempotent (running twice doesn't break anything)."""
+
+    def test_convert_attention_twice_no_double_wrap(self):
+        """Test that converting attention twice doesn't double-wrap layers."""
+        attn = SimpleLlamaAttention(hidden_size=128)
+
+        # First conversion
+        convert_attention_layer(attn, hidden_size=128, exclude_layers=[])
+
+        # Capture structure after first conversion
+        first_o_proj = attn.o_proj
+        assert isinstance(first_o_proj, nn.Sequential)
+        assert len(first_o_proj) == 2  # SubLN + BitLinear
+
+        # Second conversion - should be a no-op
+        convert_attention_layer(attn, hidden_size=128, exclude_layers=[])
+
+        # Structure should be unchanged (not double-wrapped)
+        assert attn.o_proj is first_o_proj, "o_proj should not change on second conversion"
+        assert isinstance(attn.o_proj, nn.Sequential)
+        assert len(attn.o_proj) == 2, "Should still be 2 elements, not nested"
+        assert isinstance(attn.o_proj[0], SubLN)
+        assert isinstance(attn.o_proj[1], BitLinear)
+
+    def test_convert_mlp_twice_no_double_wrap(self):
+        """Test that converting MLP twice doesn't double-wrap layers."""
+        mlp = SimpleLlamaMLP(hidden_size=128, intermediate_size=256)
+
+        # First conversion
+        convert_mlp_layer(mlp, hidden_size=256, exclude_layers=[])
+
+        # Capture structure after first conversion
+        first_down_proj = mlp.down_proj
+        assert isinstance(first_down_proj, nn.Sequential)
+        assert len(first_down_proj) == 2  # SubLN + BitLinear
+
+        # Second conversion - should be a no-op
+        convert_mlp_layer(mlp, hidden_size=256, exclude_layers=[])
+
+        # Structure should be unchanged
+        assert mlp.down_proj is first_down_proj, "down_proj should not change on second conversion"
+        assert isinstance(mlp.down_proj, nn.Sequential)
+        assert len(mlp.down_proj) == 2, "Should still be 2 elements, not nested"
+
+    def test_convert_model_twice_same_layer_count(self):
+        """Test that converting full model twice maintains same layer count."""
+        model = SimpleLlamaModel(hidden_size=128, intermediate_size=256, num_layers=2)
+
+        # First conversion
+        convert_model_to_bitnet(model, hidden_size=128, intermediate_size=256)
+        first_subln_count = sum(1 for m in model.modules() if isinstance(m, SubLN))
+        first_bitlinear_count = sum(1 for m in model.modules() if isinstance(m, BitLinear))
+
+        # Second conversion
+        convert_model_to_bitnet(model, hidden_size=128, intermediate_size=256)
+        second_subln_count = sum(1 for m in model.modules() if isinstance(m, SubLN))
+        second_bitlinear_count = sum(1 for m in model.modules() if isinstance(m, BitLinear))
+
+        # Counts should be identical
+        assert first_subln_count == second_subln_count, "SubLN count should not change"
+        assert first_bitlinear_count == second_bitlinear_count, "BitLinear count should not change"
+
+    def test_convert_bitlinear_directly_skips(self):
+        """Test that already-converted BitLinear layers are skipped."""
+        attn = SimpleLlamaAttention(hidden_size=128)
+
+        # Manually set o_proj to BitLinear (simulating partial conversion)
+        attn.o_proj = BitLinear(128, 128, bias=False)
+        original_o_proj = attn.o_proj
+
+        # Conversion should skip o_proj entirely
+        convert_attention_layer(attn, hidden_size=128, exclude_layers=[])
+
+        # o_proj should be unchanged (still plain BitLinear, not wrapped)
+        assert attn.o_proj is original_o_proj, "Already-BitLinear o_proj should be skipped"
+        assert isinstance(attn.o_proj, BitLinear)
+        assert not isinstance(attn.o_proj, nn.Sequential)

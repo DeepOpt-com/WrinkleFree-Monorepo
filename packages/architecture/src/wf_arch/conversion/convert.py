@@ -209,7 +209,11 @@ def convert_attention_layer(
     if hasattr(attention_module, "o_proj") and "o_proj" not in exclude_layers:
         o_proj = attention_module.o_proj
 
-        if isinstance(o_proj, nn.Linear) and not isinstance(o_proj, BitLinear):
+        # Skip if already converted (BitLinear, HBitLinear, or wrapped in Sequential)
+        if isinstance(o_proj, (BitLinear, nn.Sequential)):
+            return
+
+        if isinstance(o_proj, nn.Linear):
             if use_hadamard:
                 # HBitLinear with Hadamard-transformed weights (BitNet v2)
                 new_o_proj = convert_linear_to_hbitlinear(o_proj)
@@ -224,16 +228,13 @@ def convert_attention_layer(
                 new_o_proj.weight.data = o_proj.weight.data.clone()
                 if o_proj.bias is not None:
                     new_o_proj.bias.data = o_proj.bias.data.clone()
-        else:
-            new_o_proj = o_proj
 
-        if insert_subln:
-            # SubLN before quantization (per BitNet paper)
-            o_proj_in = o_proj.in_features if isinstance(o_proj, nn.Linear) else hidden_size
-            subln = SubLN(o_proj_in)
-            attention_module.o_proj = nn.Sequential(subln, new_o_proj)
-        else:
-            attention_module.o_proj = new_o_proj
+            if insert_subln:
+                # SubLN before quantization (per BitNet paper)
+                subln = SubLN(o_proj.in_features)
+                attention_module.o_proj = nn.Sequential(subln, new_o_proj)
+            else:
+                attention_module.o_proj = new_o_proj
 
 
 def convert_mlp_layer(
@@ -286,7 +287,11 @@ def convert_mlp_layer(
     if hasattr(mlp_module, "down_proj") and "down_proj" not in exclude_layers:
         down_proj = mlp_module.down_proj
 
-        if isinstance(down_proj, nn.Linear) and not isinstance(down_proj, BitLinear):
+        # Skip if already converted (BitLinear, HBitLinear, or wrapped in Sequential)
+        if isinstance(down_proj, (BitLinear, nn.Sequential)):
+            return
+
+        if isinstance(down_proj, nn.Linear):
             if use_hadamard:
                 # HBitLinear with Hadamard-transformed weights (BitNet v2)
                 new_down_proj = convert_linear_to_hbitlinear(down_proj)
@@ -301,16 +306,13 @@ def convert_mlp_layer(
                 new_down_proj.weight.data = down_proj.weight.data.clone()
                 if down_proj.bias is not None:
                     new_down_proj.bias.data = down_proj.bias.data.clone()
-        else:
-            new_down_proj = down_proj
 
-        if insert_subln:
-            # SubLN before quantization (per BitNet paper)
-            down_proj_in = down_proj.in_features if isinstance(down_proj, nn.Linear) else hidden_size
-            subln = SubLN(down_proj_in)
-            mlp_module.down_proj = nn.Sequential(subln, new_down_proj)
-        else:
-            mlp_module.down_proj = new_down_proj
+            if insert_subln:
+                # SubLN before quantization (per BitNet paper)
+                subln = SubLN(down_proj.in_features)
+                mlp_module.down_proj = nn.Sequential(subln, new_down_proj)
+            else:
+                mlp_module.down_proj = new_down_proj
 
 
 def convert_model_to_bitnet(

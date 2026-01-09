@@ -200,18 +200,21 @@ class BitLinearSalient(BitLinear):
 
         # === Non-salient path: Ternary quantization with STE ===
         # Use standard BitLinear quantization for the rest
-        w_nonsalient_quant = w_nonsalient + lambda_val * (
-            self._weight_quant_subset(w_nonsalient) - w_nonsalient
-        ).detach()
-        x_nonsalient_quant = x_nonsalient + lambda_val * (
-            self._activation_quant_subset(x_nonsalient) - x_nonsalient
-        ).detach()
-        output_nonsalient = F.linear(
-            x_nonsalient_quant, w_nonsalient_quant
-        )  # (..., out_features)
-
-        # Combine outputs from both paths
-        output = output_salient + output_nonsalient
+        # Guard against empty non-salient indices (all columns salient)
+        if self.nonsalient_indices.numel() > 0:
+            w_nonsalient_quant = w_nonsalient + lambda_val * (
+                self._weight_quant_subset(w_nonsalient) - w_nonsalient
+            ).detach()
+            x_nonsalient_quant = x_nonsalient + lambda_val * (
+                self._activation_quant_subset(x_nonsalient) - x_nonsalient
+            ).detach()
+            output_nonsalient = F.linear(
+                x_nonsalient_quant, w_nonsalient_quant
+            )  # (..., out_features)
+            output = output_salient + output_nonsalient
+        else:
+            # All columns are salient - no quantized path needed
+            output = output_salient
 
         if self.bias is not None:
             output = output + self.bias.to(x.dtype)
