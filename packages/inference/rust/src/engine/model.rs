@@ -410,14 +410,53 @@ impl BitNetEngine {
 
     /// Get token embedding.
     fn get_embedding(&self, token_id: usize) -> Vec<f32> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static DEBUG_EMBEDDING: AtomicBool = AtomicBool::new(false);
+
         let offset = token_id * self.config.hidden_size;
-        self.embed_tokens[offset..offset + self.config.hidden_size].to_vec()
+        let embedding = self.embed_tokens[offset..offset + self.config.hidden_size].to_vec();
+
+        // Debug: print first embedding
+        if !DEBUG_EMBEDDING.swap(true, Ordering::SeqCst) {
+            eprintln!("=== EMBEDDING DEBUG (token {}) ===", token_id);
+            eprintln!("  First 16 values: {:?}", &embedding[..16]);
+            eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}",
+                embedding.iter().cloned().fold(f32::INFINITY, f32::min),
+                embedding.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+                embedding.iter().sum::<f32>() / embedding.len() as f32);
+        }
+
+        embedding
     }
 
     /// Forward through all transformer layers.
     fn forward_layers(&mut self, mut hidden: Vec<f32>, start_pos: usize, seq_len: usize) -> Vec<f32> {
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        static DEBUG_LAYER: AtomicBool = AtomicBool::new(false);
+
         for layer_idx in 0..self.config.num_layers {
+            let debug_this = layer_idx == 0 && !DEBUG_LAYER.swap(true, AtomicOrdering::SeqCst);
+            if debug_this {
+                eprintln!("=== LAYER 0 INPUT ===");
+                eprintln!("  First 8 values: {:?}", &hidden[..8]);
+                let (min, max, sum) = hidden.iter().fold(
+                    (f32::INFINITY, f32::NEG_INFINITY, 0.0f32),
+                    |(min, max, sum), &x| (min.min(x), max.max(x), sum + x)
+                );
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, sum / hidden.len() as f32);
+            }
+
             hidden = self.forward_layer(layer_idx, hidden, start_pos, seq_len);
+
+            if debug_this {
+                eprintln!("=== LAYER 0 OUTPUT ===");
+                eprintln!("  First 8 values: {:?}", &hidden[..8]);
+                let (min, max, sum) = hidden.iter().fold(
+                    (f32::INFINITY, f32::NEG_INFINITY, 0.0f32),
+                    |(min, max, sum), &x| (min.min(x), max.max(x), sum + x)
+                );
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, sum / hidden.len() as f32);
+            }
         }
         hidden
     }
@@ -444,11 +483,34 @@ impl BitNetEngine {
         // Attention (mutates kv_cache)
         let attn_out = self.attention(layer_idx, &normed, start_pos, seq_len);
 
+        // Debug attention output for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_ATTN: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_ATTN.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== ATTENTION OUTPUT (layer 0) ===");
+                eprintln!("  First 8 values: {:?}", &attn_out[..8]);
+                let (min, max) = attn_out.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, attn_out.iter().sum::<f32>() / attn_out.len() as f32);
+            }
+        }
+
         // Profile: pre-FFN norm
         let norm_start = Instant::now();
 
         // Residual connection
         let mut hidden: Vec<f32> = hidden.iter().zip(attn_out.iter()).map(|(a, b)| a + b).collect();
+
+        // Debug after attention residual for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_RES1: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_RES1.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== AFTER ATTENTION RESIDUAL (layer 0) ===");
+                let (min, max) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, hidden.iter().sum::<f32>() / hidden.len() as f32);
+            }
+        }
 
         // Pre-FFN norm - clone the norm weights to avoid borrow conflict
         let ffn_norm = self.layers[layer_idx].ffn_norm.clone();
@@ -460,6 +522,18 @@ impl BitNetEngine {
 
         // FFN (immutable access to self)
         let ffn_out = self.ffn(layer_idx, &normed, seq_len);
+
+        // Debug FFN output for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN OUTPUT (layer 0) ===");
+                eprintln!("  First 8 values: {:?}", &ffn_out[..8]);
+                let (min, max) = ffn_out.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, ffn_out.iter().sum::<f32>() / ffn_out.len() as f32);
+            }
+        }
 
         // Residual connection
         for (h, f) in hidden.iter_mut().zip(ffn_out.iter()) {
@@ -513,6 +587,23 @@ impl BitNetEngine {
         let mut v = self.linear_forward_quantized(
             &self.layers[layer_idx].v_proj, &quantized_hidden, hidden_scale, seq_len
         );
+
+        // Debug Q/K/V projections for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_QKV: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_QKV.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== Q PROJECTION (layer 0, before SubLN) ===");
+                eprintln!("  First 8 Q values: {:?}", &q[..8]);
+                let (min, max) = q.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Q min: {:.6}, max: {:.6}, mean: {:.6}", min, max, q.iter().sum::<f32>() / q.len() as f32);
+
+                eprintln!("=== K PROJECTION (layer 0, before SubLN) ===");
+                eprintln!("  First 8 K values: {:?}", &k[..8]);
+                let (min, max) = k.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  K min: {:.6}, max: {:.6}, mean: {:.6}", min, max, k.iter().sum::<f32>() / k.len() as f32);
+            }
+        }
 
         // Apply SubLN to Q/K/V projections (critical for BitNet stability)
         if let Some(ref sub_norm) = self.layers[layer_idx].attn_sub_norm {
@@ -666,6 +757,23 @@ impl BitNetEngine {
             &self.layers[layer_idx].up_proj, &quantized_hidden, hidden_scale, seq_len
         );
 
+        // Debug FFN gate/up for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN_GATE: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN_GATE.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN GATE (before SubLN) ===");
+                eprintln!("  First 8 values: {:?}", &gate[..8]);
+                let (min, max) = gate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, gate.iter().sum::<f32>() / gate.len() as f32);
+
+                eprintln!("=== FFN UP (before SubLN) ===");
+                eprintln!("  First 8 values: {:?}", &up[..8]);
+                let (min, max) = up.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, up.iter().sum::<f32>() / up.len() as f32);
+            }
+        }
+
         // Apply SubLN to gate and up projections (critical for BitNet stability)
         if let Some(ref sub_norm) = self.layers[layer_idx].ffn_sub_norm {
             let inter_size = self.config.intermediate_size;
@@ -680,10 +788,49 @@ impl BitNetEngine {
             }
         }
 
+        // Debug FFN gate/up for layer 0 (after SubLN)
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN_GATE2: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN_GATE2.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN SubLN status: {} ===", self.layers[layer_idx].ffn_sub_norm.is_some());
+                eprintln!("=== FFN GATE (after SubLN) ===");
+                let (min, max) = gate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, gate.iter().sum::<f32>() / gate.len() as f32);
+                eprintln!("=== FFN UP (after SubLN) ===");
+                let (min, max) = up.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, up.iter().sum::<f32>() / up.len() as f32);
+            }
+        }
+
         // Apply squared ReLU to gate and multiply with up
         // BitNet uses ReLU² (squared ReLU): f(x) = max(0, x)²
         squared_relu_inplace(&mut gate);
+
+        // Debug after squared ReLU
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN_RELU: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN_RELU.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN GATE (after squared ReLU) ===");
+                let (min, max) = gate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, gate.iter().sum::<f32>() / gate.len() as f32);
+            }
+        }
+
         let intermediate: Vec<f32> = gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
+
+        // Debug intermediate
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN_INTER: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN_INTER.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN INTERMEDIATE (gate * up) ===");
+                eprintln!("  First 8 values: {:?}", &intermediate[..8]);
+                let (min, max) = intermediate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, intermediate.iter().sum::<f32>() / intermediate.len() as f32);
+            }
+        }
 
         // Down projection (new input, must quantize fresh)
         let result = self.linear_forward_ref(&self.layers[layer_idx].down_proj, &intermediate, seq_len);

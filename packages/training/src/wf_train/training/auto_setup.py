@@ -65,21 +65,27 @@ def resolve_checkpoint_path(
     return None
 
 
-def _download_from_gcs_url(gcs_url: str, local_cache_dir: str) -> Optional[Path]:
+def _download_from_gcs_url(gcs_url: str, local_cache_dir: str) -> Path:
     """Download a checkpoint from a GCS URL.
+
+    FAILS LOUDLY if download fails - checkpoints are critical.
 
     Args:
         gcs_url: GCS URL (gs://bucket/path/to/checkpoint)
         local_cache_dir: Local directory to cache downloads
 
     Returns:
-        Path to downloaded checkpoint, or None on failure
+        Path to downloaded checkpoint directory
+
+    Raises:
+        GCSDownloadError: If download fails
+        GCSNotFoundError: If checkpoint doesn't exist in GCS
+        ValueError: If GCS URL is invalid
     """
     # Parse GCS URL
     match = re.match(r"gs://([^/]+)/(.+)", gcs_url)
     if not match:
-        logger.error(f"Invalid GCS URL: {gcs_url}")
-        return None
+        raise ValueError(f"Invalid GCS URL format: {gcs_url}")
 
     bucket_name, gcs_path = match.groups()
 
@@ -93,22 +99,15 @@ def _download_from_gcs_url(gcs_url: str, local_cache_dir: str) -> Optional[Path]
         logger.info(f"Using cached checkpoint: {checkpoint_file}")
         return local_dir
 
-    # Download using gcloud CLI
+    # Download using Python GCS library (FAILS LOUDLY on error)
     logger.info(f"Downloading from GCS: {gcs_url}")
-    try:
-        subprocess.run(
-            ["gcloud", "storage", "cp", "-r", gcs_url, str(local_dir)],
-            check=True,
-            capture_output=True,
-        )
-        logger.info(f"Downloaded checkpoint to: {local_dir}")
-        return local_dir
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to download from GCS: {e.stderr.decode()}")
-        return None
-    except FileNotFoundError:
-        logger.error("gcloud CLI not found. Please install Google Cloud SDK.")
-        return None
+    download_directory(
+        bucket_name=bucket_name,
+        prefix=gcs_path,
+        local_dir=local_dir,
+    )
+    logger.info(f"Downloaded checkpoint to: {local_dir}")
+    return local_dir
 
 
 def auto_setup_model(
