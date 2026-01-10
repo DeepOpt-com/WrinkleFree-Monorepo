@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import re
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +17,13 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from wf_train.utils.gcs_client import (
+    GCSDownloadError,
+    GCSError,
+    GCSNotFoundError,
+    download_directory,
+)
 
 logger = logging.getLogger(__name__)
 

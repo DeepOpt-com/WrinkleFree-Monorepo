@@ -113,10 +113,25 @@ impl GgufReader {
         }
         self.data_offset = offset;
 
+        // Debug: print calculated data offset
+        eprintln!("=== GGUF DATA OFFSET DEBUG ===");
+        eprintln!("  Position after tensor info: {} (pre-alignment)", offset - (if padding != 0 { self.alignment - padding } else { 0 }));
+        eprintln!("  Alignment: {}", self.alignment);
+        eprintln!("  Data offset (aligned): {}", self.data_offset);
+
         // Convert relative tensor offsets to absolute offsets
         // GGUF stores offsets relative to tensor data start
         for tensor in &mut self.tensors {
             tensor.data_offset += self.data_offset;
+        }
+
+        // Debug: print first I2_S tensor offset
+        for tensor in &self.tensors {
+            if tensor.dtype == GgmlQuantType::I2_S {
+                eprintln!("  First I2_S tensor '{}': relative_offset={}, absolute_offset={}",
+                    tensor.name, tensor.data_offset - self.data_offset, tensor.data_offset);
+                break;
+            }
         }
 
         Ok(())
@@ -263,6 +278,13 @@ impl GgufReader {
             .unwrap_or(1e-5);
         self.config.rope_theta = get_arch_f32(self, "{arch}.rope.freq_base")
             .unwrap_or(10000.0);
+
+        eprintln!("=== GGUF CONFIG DEBUG ===");
+        eprintln!("  architecture: {}", arch);
+        eprintln!("  rope_theta: {} (key: {}.rope.freq_base)", self.config.rope_theta, arch);
+        eprintln!("  vocab_size: {}, hidden_size: {}, num_layers: {}",
+            self.config.vocab_size, self.config.hidden_size, self.config.num_layers);
+        eprintln!("  num_heads: {}, num_kv_heads: {}", self.config.num_heads, self.config.num_kv_heads);
 
         // Tokenizer config
         self.config.bos_token_id = self.get_u32("tokenizer.ggml.bos_token_id");

@@ -254,7 +254,14 @@ async fn run_benchmark(
     let tokenizer = engine.tokenizer();
 
     // Tokenize using model's tokenizer if available
-    let input_ids: Vec<i32> = if let Some(ref tok) = tokenizer {
+    // HACK: Use hardcoded tokens from HuggingFace for testing
+    // "The capital of France is" = [128000, 791, 6864, 315, 9822, 374]
+    let use_hf_tokens = std::env::var("USE_HF_TOKENS").is_ok();
+
+    let input_ids: Vec<i32> = if use_hf_tokens {
+        eprintln!("=== Using HuggingFace tokens (hardcoded) ===");
+        vec![128000, 791, 6864, 315, 9822, 374]
+    } else if let Some(ref tok) = tokenizer {
         tok.encode(prompt)
     } else {
         // Fallback to placeholder
@@ -263,6 +270,16 @@ async fn run_benchmark(
 
     let prompt_tokens = input_ids.len();
     info!("Prompt tokens: {}", prompt_tokens);
+
+    // Debug: print actual token IDs
+    eprintln!("=== TOKENIZATION DEBUG ===");
+    eprintln!("Prompt: {:?}", prompt);
+    eprintln!("Token IDs: {:?}", input_ids);
+    if let Some(ref tok) = tokenizer {
+        for (i, &id) in input_ids.iter().enumerate() {
+            eprintln!("  [{}] {} -> {:?}", i, id, tok.decode(&[id]));
+        }
+    }
     if tokenizer.is_some() {
         info!("Using model tokenizer");
     } else {

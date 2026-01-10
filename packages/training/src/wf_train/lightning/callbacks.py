@@ -6,10 +6,7 @@ Provides:
 - TokenCountCallback: Track tokens and stop at target
 """
 
-import json
 import logging
-import os
-import subprocess
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -18,115 +15,34 @@ import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import Callback
 
+from wf_train.utils.gcs_client import (
+    GCSAuthError,
+    GCSError,
+    GCSUploadError,
+    get_gcs_client,
+    validate_gcs_access,
+    with_gcs_retry,
+)
+
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# GCS Exceptions - FAIL LOUDLY
-# =============================================================================
-
-
-class GCSAuthError(Exception):
-    """Raised when GCS authentication is missing or invalid.
-
-    This is raised at training startup if gcs.enabled=true but auth is not configured.
-    """
-
-    pass
-
-
-class GCSUploadError(Exception):
-    """Raised when GCS upload fails after retries.
-
-    This crashes training - checkpoints are critical for fault tolerance.
-    If GCS is optional for your use case, set gcs.enabled=false.
-    """
-
-    pass
-
-
-def validate_gcs_auth(bucket: str) -> None:
+def validate_gcs_auth(bucket: str, project: str | None = None) -> None:
     """Validate GCS authentication upfront.
 
     FAILS LOUDLY if auth is missing or bucket is inaccessible.
     Call this at training startup when gcs.enabled=true.
 
+    Uses Python google-cloud-storage library (not gcloud CLI).
+
     Args:
         bucket: GCS bucket name to validate access to
+        project: GCP project ID (optional, uses default if not specified)
 
     Raises:
-        GCSAuthError: If gcloud not installed, not authenticated, or bucket inaccessible
+        GCSAuthError: If authentication fails or bucket inaccessible
     """
-    # 1. Check gcloud is installed
-    try:
-        result = subprocess.run(
-            ["gcloud", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            raise GCSAuthError(
-                "gcloud CLI not working properly.\n"
-                "Install: https://cloud.google.com/sdk/docs/install"
-            )
-    except FileNotFoundError:
-        raise GCSAuthError(
-            "gcloud CLI not found.\n"
-            "Install: https://cloud.google.com/sdk/docs/install\n"
-            "Or set gcs.enabled=false if GCS is not needed."
-        )
-    except subprocess.TimeoutExpired:
-        raise GCSAuthError("gcloud --version timed out")
-
-    # 2. Check gcloud is authenticated
-    try:
-        result = subprocess.run(
-            ["gcloud", "auth", "print-access-token"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            raise GCSAuthError(
-                "gcloud not authenticated.\n"
-                f"Error: {result.stderr.strip()}\n"
-                "Run: gcloud auth login\n"
-                "Or for service accounts: gcloud auth activate-service-account --key-file=KEY.json"
-            )
-    except subprocess.TimeoutExpired:
-        raise GCSAuthError("gcloud auth print-access-token timed out")
-
-    # 3. Check bucket is accessible
-    try:
-        result = subprocess.run(
-            ["gcloud", "storage", "ls", f"gs://{bucket}/"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "403" in stderr or "AccessDenied" in stderr:
-                raise GCSAuthError(
-                    f"Access denied to bucket '{bucket}'.\n"
-                    f"Error: {stderr}\n"
-                    "Check bucket permissions or use a different bucket."
-                )
-            elif "404" in stderr or "NotFound" in stderr:
-                raise GCSAuthError(
-                    f"Bucket '{bucket}' not found.\n"
-                    f"Error: {stderr}\n"
-                    "Create the bucket or check the bucket name."
-                )
-            else:
-                raise GCSAuthError(
-                    f"Cannot access bucket '{bucket}'.\n"
-                    f"Error: {stderr}"
-                )
-    except subprocess.TimeoutExpired:
-        raise GCSAuthError(f"gcloud storage ls gs://{bucket}/ timed out")
-
+    validate_gcs_access(project=project, bucket_name=bucket)
     logger.info(f"GCS auth validated: bucket '{bucket}' is accessible")
 
 
@@ -189,10 +105,13 @@ class GCSCheckpointCallback(Callback):
     Long training runs MUST upload checkpoints - losing hours of GPU
     time to a crash is unacceptable.
 
+    FAILS LOUDLY on any upload failure after retries.
+
     Args:
         bucket: GCS bucket name (e.g., "wrinklefree-checkpoints")
         experiment_name: Experiment name for path organization
         stage: Training stage name (e.g., "lightning", "stage2")
+        project: GCP project ID (uses default if not specified)
     """
 
     def __init__(
@@ -200,12 +119,27 @@ class GCSCheckpointCallback(Callback):
         bucket: str,
         experiment_name: str = "default",
         stage: str = "lightning",
+        project: str | None = None,
     ):
         super().__init__()
         self.bucket = bucket
         self.experiment_name = experiment_name
         self.stage = stage
+        self.project = project
         self._last_uploaded_path: Optional[str] = None
+        # Lazy-initialized client
+        self._client = None
+        self._bucket_obj = None
+
+    def _get_bucket(self):
+        """Get GCS bucket, initializing client if needed."""
+        if self._bucket_obj is None:
+            self._client, self._bucket_obj = get_gcs_client(
+                project=self.project,
+                bucket_name=self.bucket,
+                validate=True,
+            )
+        return self._bucket_obj
 
     def on_train_batch_end(
         self,
@@ -247,6 +181,7 @@ class GCSCheckpointCallback(Callback):
         if ckpt_path and Path(ckpt_path).exists():
             self._upload_to_gcs(Path(ckpt_path), "final")
 
+    @with_gcs_retry()
     def _upload_to_gcs(self, local_path: Path, checkpoint_type: str) -> None:
         """Upload checkpoint to GCS with retry.
 
@@ -259,54 +194,27 @@ class GCSCheckpointCallback(Callback):
         Raises:
             GCSUploadError: If upload fails after 3 retries
         """
-        max_retries = 3
-        retry_delay = 30  # seconds
-
-        for attempt in range(1, max_retries + 1):
-            try:
-                self._upload_to_gcs_once(local_path, checkpoint_type)
-                return  # Success
-            except GCSUploadError as e:
-                if attempt == max_retries:
-                    raise GCSUploadError(
-                        f"GCS upload failed after {max_retries} attempts for {local_path}:\n"
-                        f"{e}\n\n"
-                        f"If GCS is optional, set gcs.enabled=false"
-                    )
-                logger.warning(
-                    f"GCS upload attempt {attempt}/{max_retries} failed: {e}\n"
-                    f"Retrying in {retry_delay}s..."
-                )
-                time.sleep(retry_delay)
-
-    def _upload_to_gcs_once(self, local_path: Path, checkpoint_type: str) -> None:
-        """Single upload attempt.
-
-        Raises:
-            GCSUploadError: On any failure (non-zero exit, timeout, etc.)
-        """
-        gcs_path = (
-            f"gs://{self.bucket}/checkpoints/{self.experiment_name}/"
-            f"{self.stage}_checkpoint/checkpoints/{checkpoint_type}/"
+        blob_path = (
+            f"checkpoints/{self.experiment_name}/"
+            f"{self.stage}_checkpoint/checkpoints/{checkpoint_type}/{local_path.name}"
         )
 
-        # Upload checkpoint file
-        if local_path.is_dir():
-            cmd = ["gcloud", "storage", "cp", "-r", str(local_path), gcs_path]
-        else:
-            cmd = ["gcloud", "storage", "cp", str(local_path), gcs_path]
-
-        logger.info(f"Uploading checkpoint to {gcs_path}")
+        logger.info(f"Uploading checkpoint to gs://{self.bucket}/{blob_path}")
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        except subprocess.TimeoutExpired:
-            raise GCSUploadError(f"Upload timed out after 300s for {local_path}")
+            bucket = self._get_bucket()
+            blob = bucket.blob(blob_path)
 
-        if result.returncode != 0:
-            raise GCSUploadError(f"gcloud storage cp failed:\n{result.stderr.strip()}")
+            # Upload with resumable upload for large files
+            blob.upload_from_filename(str(local_path), timeout=600)
 
-        logger.info(f"Successfully uploaded checkpoint to {gcs_path}")
+        except GCSError:
+            # Re-raise GCS errors as-is (includes GCSUploadError)
+            raise
+        except Exception as e:
+            raise GCSUploadError(f"GCS upload failed: {e}") from e
+
+        logger.info(f"Successfully uploaded checkpoint to gs://{self.bucket}/{blob_path}")
 
 
 class ZClipCallback(Callback):

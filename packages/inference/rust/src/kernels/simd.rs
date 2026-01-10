@@ -69,6 +69,15 @@ pub fn silu_inplace(data: &mut [f32]) {
     }
 }
 
+/// Squared ReLU activation: f(x) = max(0, x)²
+/// Used by BitNet b1.58 instead of SiLU
+pub fn squared_relu_inplace(data: &mut [f32]) {
+    for x in data.iter_mut() {
+        let relu = x.max(0.0);
+        *x = relu * relu;
+    }
+}
+
 /// Softmax over a slice
 pub fn softmax(input: &[f32]) -> Vec<f32> {
     if input.is_empty() {

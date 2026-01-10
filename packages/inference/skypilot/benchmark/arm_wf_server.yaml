@@ -169,22 +169,22 @@ run: |
     --benchmark-iterations 10 \
     --benchmark-max-tokens 64
 
-  # Step 3: Thread scaling test
+  # Step 3: llama.cpp baseline sanity check
   echo ""
-  echo "=== Step 3: Thread Scaling ==="
-  for threads in 1 2 4 8; do
-    echo "--- Threads: $threads ---"
-    RAYON_NUM_THREADS=$threads "$WF_SERVER" \
-      --model-path "$BITNET_MODEL_PATH" \
-      --context-len 2048 \
-      --benchmark \
-      --benchmark-iterations 3 \
-      --benchmark-max-tokens 32 2>&1 | grep -E "(throughput|prefill|decode)"
-  done
+  echo "=== Step 3: llama.cpp Baseline Sanity Check ==="
+  LLAMA_CPP="/opt/inference/extern/llama.cpp"
+  echo "Running: llama-cli -m model.gguf -p 'The capital of France is' -n 50"
+  $LLAMA_CPP/build/bin/llama-cli \
+    -m "$BITNET_MODEL_PATH" \
+    -p "The capital of France is" \
+    -n 50 \
+    -t 8 \
+    --temp 0 \
+    --no-display-prompt 2>&1 || true
 
-  # Step 4: Sanity Check - Text Generation (via benchmark with custom prompt)
+  # Step 4: wf_server Sanity Check
   echo ""
-  echo "=== Step 4: Sanity Check - Text Generation ==="
+  echo "=== Step 4: wf_server Sanity Check ==="
   echo "Running benchmark with custom prompt to verify output quality..."
   echo ""
 
@@ -194,7 +194,7 @@ run: |
     --context-len 2048 \
     --benchmark \
     --benchmark-iterations 1 \
-    --benchmark-max-tokens 64 \
+    --benchmark-max-tokens 50 \
     --benchmark-prompt "The capital of France is"
 
   # Step 5: Summary

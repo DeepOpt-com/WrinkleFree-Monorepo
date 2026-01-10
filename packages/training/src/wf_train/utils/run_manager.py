@@ -5,8 +5,8 @@ Manages the lifecycle of training runs including:
 - Checkpoint upload/download to GCS
 - Automatic resume detection
 
-IMPORTANT: This module FAILS LOUDLY on missing credentials.
-If GCS is enabled but credentials are missing, training will ABORT.
+IMPORTANT: This module FAILS LOUDLY on all GCS errors.
+If GCS is enabled but credentials are missing or operations fail, training will ABORT.
 This is intentional - silent failures lead to lost work.
 
 Example:
@@ -22,15 +22,29 @@ Example:
 from __future__ import annotations
 
 import json
-import os
+import logging
 import tempfile
-import threading
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
+
+from wf_train.utils.gcs_client import (
+    GCSAuthError,
+    GCSDownloadError,
+    GCSError,
+    GCSNotFoundError,
+    GCSUploadError,
+    get_gcs_client,
+    with_gcs_retry,
+)
+
+if TYPE_CHECKING:
+    from google.cloud.storage import Bucket, Client
+
+logger = logging.getLogger(__name__)
 
 
 class RunStatus(str, Enum):
@@ -42,10 +56,8 @@ class RunStatus(str, Enum):
     FAILED = "FAILED"
 
 
-class CredentialsError(Exception):
-    """Raised when GCS credentials are missing or invalid."""
-
-    pass
+# Keep CredentialsError for backward compatibility
+CredentialsError = GCSAuthError
 
 
 class RunManager:
@@ -56,7 +68,7 @@ class RunManager:
     - Checkpoint upload/download
     - Automatic resume detection
 
-    FAILS LOUDLY on missing credentials - no silent degradation.
+    FAILS LOUDLY on all GCS errors - no silent degradation.
 
     Attributes:
         fingerprint: SHA256 hash identifying this run
@@ -91,7 +103,7 @@ class RunManager:
             skip_gcs: If True, skip GCS operations entirely
 
         Raises:
-            CredentialsError: If GCS is enabled but credentials missing
+            GCSAuthError: If GCS is enabled but credentials missing
         """
         self.fingerprint = fingerprint
         self.gcs_bucket = gcs_bucket
@@ -113,79 +125,43 @@ class RunManager:
         self.config_blob_path = f"{self.gcs_base_path}/config.json"
 
         # Initialize GCS client (FAIL LOUDLY if credentials missing)
-        self._client = None
-        self._bucket = None
+        self._client: Client | None = None
+        self._bucket: Bucket | None = None
         if not skip_gcs and rank == 0:
             self._init_gcs_client()
 
     def _init_gcs_client(self) -> None:
-        """Initialize GCS client.
+        """Initialize GCS client using centralized client.
 
         FAILS LOUDLY if credentials are missing or invalid.
         This is intentional - silent failures lead to lost work.
 
         Raises:
-            CredentialsError: If credentials missing or invalid
+            GCSAuthError: If credentials missing or invalid
         """
         try:
-            from google.cloud import storage
-            from google.auth import exceptions as auth_exceptions
-
-            # Check for GOOGLE_APPLICATION_CREDENTIALS
-            creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-            if creds_path and not Path(creds_path).exists():
-                self.audit_logger.log_credentials_missing(
-                    service="GCS",
-                    error=f"GOOGLE_APPLICATION_CREDENTIALS file not found: {creds_path}",
-                    fingerprint=self.fingerprint,
-                )
-                # log_credentials_missing raises, but be explicit
-                raise CredentialsError(f"GCS credentials file not found: {creds_path}")
-
-            # Try to create client (project required for user credentials)
-            self._client = storage.Client(project=self.gcs_project)
-
-            # Verify bucket access
-            self._bucket = self._client.bucket(self.gcs_bucket)
-
-            # Test access by checking if bucket exists
-            if not self._bucket.exists():
-                self.audit_logger.log_credentials_missing(
-                    service="GCS",
-                    error=f"Bucket does not exist or no access: {self.gcs_bucket}",
-                    fingerprint=self.fingerprint,
-                )
-                raise CredentialsError(f"GCS bucket not accessible: {self.gcs_bucket}")
-
-        except ImportError:
-            self.audit_logger.log_credentials_missing(
-                service="GCS",
-                error="google-cloud-storage package not installed",
-                fingerprint=self.fingerprint,
+            self._client, self._bucket = get_gcs_client(
+                project=self.gcs_project,
+                bucket_name=self.gcs_bucket,
+                validate=True,
             )
-            raise CredentialsError("google-cloud-storage not installed")
-
-        except auth_exceptions.DefaultCredentialsError as e:
+        except GCSError as e:
+            # Log to audit logger for tracking
             self.audit_logger.log_credentials_missing(
                 service="GCS",
                 error=str(e),
                 fingerprint=self.fingerprint,
             )
-            raise CredentialsError(f"GCS credentials error: {e}")
-
-        except Exception as e:
-            self.audit_logger.log_credentials_missing(
-                service="GCS",
-                error=str(e),
-                fingerprint=self.fingerprint,
-            )
-            raise CredentialsError(f"GCS initialization failed: {e}")
+            raise
 
     def get_run_status(self) -> dict[str, Any] | None:
         """Get current run status from GCS.
 
         Returns:
-            Metadata dict if run exists, None otherwise
+            Metadata dict if run exists, None if run doesn't exist
+
+        Raises:
+            GCSError: If GCS operation fails (not just missing)
         """
         if self.skip_gcs or self.rank != 0:
             return None
@@ -199,12 +175,13 @@ class RunManager:
             return json.loads(content)
 
         except Exception as e:
+            # Log and re-raise - FAIL LOUDLY
             self.audit_logger.log_gcs_error(
                 operation="get_run_status",
                 error=str(e),
                 fingerprint=self.fingerprint,
             )
-            return None
+            raise GCSError(f"Failed to get run status: {e}") from e
 
     def check_and_resume(self) -> tuple[bool, Path | None, str | None]:
         """Check if we should resume from an existing run.
@@ -214,6 +191,9 @@ class RunManager:
             - should_resume: True if we should resume
             - checkpoint_path: Local path to downloaded checkpoint
             - wandb_run_id: WandB run ID to resume (for continuous plots)
+
+        Raises:
+            GCSError: If GCS operations fail
         """
         if self.skip_gcs or self.rank != 0:
             return (False, None, None)
@@ -227,47 +207,55 @@ class RunManager:
 
         # Already completed - don't resume
         if status == RunStatus.COMPLETED:
-            print(f"✓ Run {self.fingerprint[:8]} already COMPLETED")
+            print(f"Run {self.fingerprint[:8]} already COMPLETED")
             return (False, None, wandb_run_id)
 
         # Running or Interrupted - try to resume
         if status in (RunStatus.RUNNING, RunStatus.INTERRUPTED):
-            print(f"→ Found existing run in state: {status}")
+            print(f"Found existing run in state: {status}")
 
-            # Download checkpoint
-            checkpoint_path = self.download_checkpoint()
-            if checkpoint_path:
-                print(f"✓ Downloaded checkpoint to: {checkpoint_path}")
+            try:
+                checkpoint_path = self.download_checkpoint()
+                print(f"Downloaded checkpoint to: {checkpoint_path}")
                 return (True, checkpoint_path, wandb_run_id)
-            else:
-                print("✗ No checkpoint found, starting fresh")
+            except GCSNotFoundError:
+                print("No checkpoint found, starting fresh")
                 return (False, None, None)
 
         # Failed - could resume or start fresh (start fresh for now)
         if status == RunStatus.FAILED:
-            print(f"⚠ Previous run FAILED, starting fresh")
+            print("Previous run FAILED, starting fresh")
             return (False, None, None)
 
         return (False, None, None)
 
-    def download_checkpoint(self, checkpoint_type: str = "last") -> Path | None:
+    @with_gcs_retry()
+    def download_checkpoint(self, checkpoint_type: str = "last") -> Path:
         """Download checkpoint from GCS.
+
+        FAILS LOUDLY if download fails.
 
         Args:
             checkpoint_type: Type of checkpoint ("last" or "best")
 
         Returns:
-            Local path to checkpoint, or None if not found/corrupted
+            Local path to downloaded checkpoint
+
+        Raises:
+            GCSNotFoundError: If checkpoint doesn't exist
+            GCSDownloadError: If download fails after retries
         """
         if self.skip_gcs or self.rank != 0:
-            return None
+            raise GCSError("GCS is disabled or not rank 0")
 
         blob_path = f"{self.gcs_base_path}/checkpoints/{checkpoint_type}.pt"
 
         try:
             blob = self._bucket.blob(blob_path)
             if not blob.exists():
-                return None
+                raise GCSNotFoundError(
+                    f"Checkpoint not found: gs://{self.gcs_bucket}/{blob_path}"
+                )
 
             # Download to local cache
             local_path = self.local_cache_dir / f"{self.fingerprint[:8]}_{checkpoint_type}.pt"
@@ -281,17 +269,21 @@ class RunManager:
                     fingerprint=self.fingerprint,
                 )
                 local_path.unlink(missing_ok=True)
-                return None
+                raise GCSDownloadError(
+                    f"Checkpoint corrupted: gs://{self.gcs_bucket}/{blob_path}"
+                )
 
             return local_path
 
+        except (GCSNotFoundError, GCSDownloadError):
+            raise
         except Exception as e:
             self.audit_logger.log_gcs_error(
                 operation="download_checkpoint",
                 error=str(e),
                 fingerprint=self.fingerprint,
             )
-            return None
+            raise GCSDownloadError(f"Failed to download checkpoint: {e}") from e
 
     def _verify_checkpoint(self, path: Path) -> bool:
         """Verify checkpoint file is valid.
@@ -316,6 +308,7 @@ class RunManager:
         except Exception:
             return False
 
+    @with_gcs_retry()
     def update_status(
         self,
         status: RunStatus,
@@ -326,8 +319,10 @@ class RunManager:
         wandb_url: str | None = None,
         error_message: str | None = None,
         **extra_fields: Any,
-    ) -> bool:
+    ) -> None:
         """Update run status in GCS.
+
+        FAILS LOUDLY if update fails.
 
         Args:
             status: New run status
@@ -339,15 +334,18 @@ class RunManager:
             error_message: Error message (for FAILED status)
             **extra_fields: Additional fields to store
 
-        Returns:
-            True if update successful
+        Raises:
+            GCSUploadError: If update fails after retries
         """
         if self.skip_gcs or self.rank != 0:
-            return False
+            return
 
         try:
             # Get existing metadata or create new
-            existing = self.get_run_status() or {}
+            try:
+                existing = self.get_run_status() or {}
+            except GCSError:
+                existing = {}
 
             # Build updated metadata
             metadata = {
@@ -385,7 +383,7 @@ class RunManager:
                 content_type="application/json",
             )
 
-            return True
+            logger.debug(f"Updated run status to {status}")
 
         except Exception as e:
             self.audit_logger.log_gcs_error(
@@ -393,24 +391,28 @@ class RunManager:
                 error=str(e),
                 fingerprint=self.fingerprint,
             )
-            return False
+            raise GCSUploadError(f"Failed to update run status: {e}") from e
 
+    @with_gcs_retry()
     def upload_checkpoint(
         self,
         local_path: Path,
         checkpoint_type: str = "last",
         experiment_name: str | None = None,
         stage: str | None = None,
-        background: bool = True,
-    ) -> bool:
+    ) -> str:
         """Upload checkpoint to GCS.
+
+        FAILS LOUDLY if upload fails.
 
         Args:
             local_path: Path to local checkpoint file
             checkpoint_type: Name for this checkpoint ("final", "step_100", "best")
             experiment_name: If provided, uses checkpoint discovery path format
             stage: Training stage (e.g., "stage1_9", "stage2")
-            background: If True, upload in background thread
+
+        Returns:
+            GCS URI of uploaded checkpoint
 
         Path formats:
             With experiment_name/stage:
@@ -418,52 +420,56 @@ class RunManager:
             Without (legacy fingerprint-based):
                 gs://{bucket}/{gcs_prefix}/{fingerprint}/checkpoints/{checkpoint_type}.pt
 
-        Returns:
-            True if upload started/completed successfully
+        Raises:
+            FileNotFoundError: If local checkpoint doesn't exist
+            GCSUploadError: If upload fails after retries
         """
         if self.skip_gcs or self.rank != 0:
-            return False
+            raise GCSError("GCS is disabled or not rank 0")
 
         if not local_path.exists():
-            return False
+            raise FileNotFoundError(f"Local checkpoint not found: {local_path}")
 
-        def _upload():
-            try:
-                if experiment_name and stage:
-                    # New format: matches checkpoint discovery pattern
-                    blob_path = f"checkpoints/{experiment_name}/{stage}_checkpoint/checkpoints/{checkpoint_type}/checkpoint.pt"
-                else:
-                    # Legacy fingerprint-based format
-                    blob_path = f"{self.gcs_base_path}/checkpoints/{checkpoint_type}.pt"
-                blob = self._bucket.blob(blob_path)
-                blob.upload_from_filename(str(local_path))
-                print(f"✓ Uploaded checkpoint to gs://{self.gcs_bucket}/{blob_path}")
-            except Exception as e:
-                self.audit_logger.log_gcs_error(
-                    operation="upload_checkpoint",
-                    error=str(e),
-                    fingerprint=self.fingerprint,
-                )
+        try:
+            if experiment_name and stage:
+                # New format: matches checkpoint discovery pattern
+                blob_path = f"checkpoints/{experiment_name}/{stage}_checkpoint/checkpoints/{checkpoint_type}/checkpoint.pt"
+            else:
+                # Legacy fingerprint-based format
+                blob_path = f"{self.gcs_base_path}/checkpoints/{checkpoint_type}.pt"
 
-        if background:
-            thread = threading.Thread(target=_upload, daemon=True)
-            thread.start()
-        else:
-            _upload()
+            blob = self._bucket.blob(blob_path)
+            blob.upload_from_filename(str(local_path), timeout=600)
 
-        return True
+            gcs_uri = f"gs://{self.gcs_bucket}/{blob_path}"
+            print(f"Uploaded checkpoint to {gcs_uri}")
+            return gcs_uri
 
-    def upload_config(self, config: dict[str, Any]) -> bool:
+        except Exception as e:
+            self.audit_logger.log_gcs_error(
+                operation="upload_checkpoint",
+                error=str(e),
+                fingerprint=self.fingerprint,
+            )
+            raise GCSUploadError(f"Failed to upload checkpoint: {e}") from e
+
+    @with_gcs_retry()
+    def upload_config(self, config: dict[str, Any]) -> str:
         """Upload resolved config to GCS for debugging.
+
+        FAILS LOUDLY if upload fails.
 
         Args:
             config: Resolved config dict
 
         Returns:
-            True if upload successful
+            GCS URI of uploaded config
+
+        Raises:
+            GCSUploadError: If upload fails after retries
         """
         if self.skip_gcs or self.rank != 0:
-            return False
+            raise GCSError("GCS is disabled or not rank 0")
 
         try:
             blob = self._bucket.blob(self.config_blob_path)
@@ -471,7 +477,7 @@ class RunManager:
                 json.dumps(config, indent=2, default=str),
                 content_type="application/json",
             )
-            return True
+            return f"gs://{self.gcs_bucket}/{self.config_blob_path}"
 
         except Exception as e:
             self.audit_logger.log_gcs_error(
@@ -479,13 +485,16 @@ class RunManager:
                 error=str(e),
                 fingerprint=self.fingerprint,
             )
-            return False
+            raise GCSUploadError(f"Failed to upload config: {e}") from e
 
     def is_completed(self) -> bool:
         """Check if run is already completed.
 
         Returns:
             True if run status is COMPLETED
+
+        Raises:
+            GCSError: If status check fails
         """
         metadata = self.get_run_status()
         if metadata is None:
@@ -515,7 +524,7 @@ def create_run_manager(
         RunManager instance, or None if GCS disabled
 
     Raises:
-        CredentialsError: If GCS enabled but credentials missing
+        GCSAuthError: If GCS enabled but credentials missing
     """
     from omegaconf import OmegaConf
 
@@ -539,6 +548,7 @@ def create_run_manager(
         audit_logger=audit_logger,
         fingerprint_metadata=fingerprint_metadata,
         gcs_prefix=gcs_config.get("experiment_prefix", "experiments"),
+        gcs_project=gcs_config.get("project"),
         rank=rank,
         skip_gcs=False,
     )

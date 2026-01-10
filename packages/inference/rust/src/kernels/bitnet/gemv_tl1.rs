@@ -147,15 +147,15 @@ unsafe fn process_group_tl1_true(
     vpadalq_s16(acc, sum)
 }
 
-/// TRUE TL1 GEMM kernel - this is where TL1 really shines!
+/// TL1 GEMM kernel for batched row computation.
 ///
-/// For GEMM with multiple output rows, we can:
-/// 1. Build ONE LUT from a single activation pair
-/// 2. Use vqtbl1q_u8 to process 16 different weight indices (16 rows) at once
+/// Uses the correct interleaved weight format where:
+/// - byte[j].bits[6:7] → weight[j] for j=0..31 (activations 0-31)
+/// - byte[j].bits[4:5] → weight[j+32] for j=0..31 (activations 32-63)
+/// - byte[j].bits[2:3] → weight[j+64] for j=0..31 (activations 64-95)
+/// - byte[j].bits[0:1] → weight[j+96] for j=0..31 (activations 96-127)
 ///
-/// This gives ~4x speedup over per-row processing.
-///
-/// Parallelization: Uses Rayon to process row blocks in parallel.
+/// Parallelization: Uses Rayon to process rows in parallel.
 #[cfg(target_arch = "aarch64")]
 pub fn gemm_tl1(
     m: usize,
@@ -171,157 +171,16 @@ pub fn gemm_tl1(
     assert!(k % QK_BLOCK == 0);
     let k_packed = k / 4;
 
-    // Process in chunks of 16 rows using Rayon
+    // Use vec_dot_tl1 for each row - this correctly handles the interleaved format
     output
-        .par_chunks_mut(16)
+        .par_iter_mut()
         .enumerate()
-        .for_each(|(mb, out_chunk)| {
-            let row_base = mb * 16;
-            let chunk_size = out_chunk.len();
-
-            if chunk_size == 16 {
-                // Full block - use true TL1 with vqtbl1q_u8
-                process_16_rows_tl1(
-                    row_base,
-                    k,
-                    k_packed,
-                    packed_weights,
-                    activations,
-                    out_chunk,
-                    scale,
-                );
-            } else {
-                // Partial block - use scalar fallback
-                for (r, out) in out_chunk.iter_mut().enumerate() {
-                    let row = row_base + r;
-                    let w_start = row * k_packed;
-                    let mut sum = 0i32;
-
-                    for i in 0..k {
-                        let byte_idx = i / 4;
-                        let bit_pos = (i % 4) * 2;
-                        let w_byte = unsafe { *packed_weights.get_unchecked(w_start + byte_idx) };
-                        let w = ((w_byte >> bit_pos) & 0x03) as i32 - 1;
-                        let a = unsafe { *activations.get_unchecked(i) } as i32;
-                        sum += w * a;
-                    }
-
-                    *out = sum as f32 * scale;
-                }
-            }
+        .for_each(|(row, out)| {
+            let w_start = row * k_packed;
+            let w_row = &packed_weights[w_start..w_start + k_packed];
+            let dot = vec_dot_tl1(w_row, activations);
+            *out = (dot as f32) * scale;
         });
-}
-
-/// Process exactly 16 rows using true TL1 with vqtbl1q_u8.
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn process_16_rows_tl1(
-    row_base: usize,
-    k: usize,
-    k_packed: usize,
-    packed_weights: &[u8],
-    activations: &[i8],
-    output: &mut [f32],
-    scale: f32,
-) {
-    use std::arch::aarch64::*;
-
-    unsafe {
-        // Accumulator for 16 rows (as int32)
-        let mut acc = [vdupq_n_s32(0); 4];
-
-        // Process K dimension in pairs
-        for k_pair in 0..(k / 2) {
-            let a0 = *activations.get_unchecked(k_pair * 2) as i16;
-            let a1 = *activations.get_unchecked(k_pair * 2 + 1) as i16;
-
-            // Build 16-entry LUT for this activation pair
-            let lut = build_tl1_lut_i16(a0, a1);
-
-            // Get weight indices for 16 rows
-            let byte_idx = (k_pair * 2) / 4;
-            let bit_pos = ((k_pair * 2) % 4) * 2;
-
-            // Load weight bytes for 16 rows
-            let mut indices = [0u8; 16];
-            for r in 0..16 {
-                let row = row_base + r;
-                let w_byte = *packed_weights.get_unchecked(row * k_packed + byte_idx);
-                let w_pair = (w_byte >> bit_pos) & 0x0F;
-                let w0 = (w_pair >> 2) & 0x03;
-                let w1 = w_pair & 0x03;
-                indices[r] = w0 * 4 + w1;
-            }
-
-            let idx_vec = vld1q_u8(indices.as_ptr());
-
-            // Pack-and-unpack for int16 LUT
-            let lut_lo = build_lut_lo_bytes(&lut);
-            let lut_hi = build_lut_hi_bytes(&lut);
-
-            let result_lo = vqtbl1q_u8(lut_lo, idx_vec);
-            let result_hi = vqtbl1q_s8(lut_hi, idx_vec);
-
-            // Unpack to int16
-            let result_16_lo = vreinterpretq_s16_u8(vzipq_u8(result_lo, vreinterpretq_u8_s8(result_hi)).0);
-            let result_16_hi = vreinterpretq_s16_u8(vzipq_u8(result_lo, vreinterpretq_u8_s8(result_hi)).1);
-
-            // Widen to int32 and accumulate
-            acc[0] = vaddw_s16(acc[0], vget_low_s16(result_16_lo));
-            acc[1] = vaddw_high_s16(acc[1], result_16_lo);
-            acc[2] = vaddw_s16(acc[2], vget_low_s16(result_16_hi));
-            acc[3] = vaddw_high_s16(acc[3], result_16_hi);
-        }
-
-        // Store results with scale
-        let scale_vec = vdupq_n_f32(scale);
-        for i in 0..4 {
-            let f32_vec = vmulq_f32(vcvtq_f32_s32(acc[i]), scale_vec);
-            vst1q_f32(output.as_mut_ptr().add(i * 4), f32_vec);
-        }
-    }
-}
-
-/// Build int16 LUT for activation pair (a0, a1).
-/// LUT[w0*4 + w1] = (w0-1)*a0 + (w1-1)*a1
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn build_tl1_lut_i16(a0: i16, a1: i16) -> [i16; 16] {
-    let mut lut = [0i16; 16];
-    // w0, w1 ∈ {0, 1, 2} representing {-1, 0, +1}
-    for w0 in 0..3 {
-        for w1 in 0..3 {
-            let idx = w0 * 4 + w1;
-            let w0_val = w0 as i16 - 1;
-            let w1_val = w1 as i16 - 1;
-            lut[idx] = w0_val * a0 + w1_val * a1;
-        }
-    }
-    lut
-}
-
-/// Extract low bytes from int16 LUT (for pack-and-unpack).
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn build_lut_lo_bytes(lut: &[i16; 16]) -> std::arch::aarch64::uint8x16_t {
-    use std::arch::aarch64::*;
-    let mut bytes = [0u8; 16];
-    for i in 0..16 {
-        bytes[i] = (lut[i] & 0xFF) as u8;
-    }
-    unsafe { vld1q_u8(bytes.as_ptr()) }
-}
-
-/// Extract high bytes from int16 LUT (for pack-and-unpack).
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn build_lut_hi_bytes(lut: &[i16; 16]) -> std::arch::aarch64::int8x16_t {
-    use std::arch::aarch64::*;
-    let mut bytes = [0i8; 16];
-    for i in 0..16 {
-        bytes[i] = ((lut[i] >> 8) & 0xFF) as i8;
-    }
-    unsafe { vld1q_s8(bytes.as_ptr()) }
 }
 
 /// Fallback for non-ARM platforms.

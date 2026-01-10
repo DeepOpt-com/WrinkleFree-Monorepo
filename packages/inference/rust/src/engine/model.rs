@@ -57,7 +57,7 @@ pub fn reset_profile() {
     PROFILE_OUTPUT_US.store(0, Ordering::SeqCst);
 }
 use crate::kernels::BitNetKernel;
-use crate::kernels::simd::{rms_norm_with_scale, silu_inplace, softmax_inplace};
+use crate::kernels::simd::{rms_norm_with_scale, squared_relu_inplace, softmax_inplace};
 use rayon::prelude::*;
 
 use super::kv_cache::{KVCache, KVCacheConfig};
@@ -118,6 +118,7 @@ impl Default for BitNetConfig {
 pub struct LayerWeights {
     // Attention
     pub attn_norm: Vec<f32>,
+    pub attn_sub_norm: Option<Vec<f32>>,  // SubLN after attention projections
     pub q_proj: NativeWeightFormat,
     pub k_proj: NativeWeightFormat,
     pub v_proj: NativeWeightFormat,
@@ -125,6 +126,7 @@ pub struct LayerWeights {
 
     // FFN
     pub ffn_norm: Vec<f32>,
+    pub ffn_sub_norm: Option<Vec<f32>>,   // SubLN after FFN projections
     pub gate_proj: NativeWeightFormat,
     pub up_proj: NativeWeightFormat,
     pub down_proj: NativeWeightFormat,
@@ -502,15 +504,37 @@ impl BitNetEngine {
         let (quantized_hidden, hidden_scale) = self.kernel.quantize_activations(hidden);
 
         // Project Q, K, V using pre-quantized activations
-        let q = self.linear_forward_quantized(
+        let mut q = self.linear_forward_quantized(
             &self.layers[layer_idx].q_proj, &quantized_hidden, hidden_scale, seq_len
         );
-        let k = self.linear_forward_quantized(
+        let mut k = self.linear_forward_quantized(
             &self.layers[layer_idx].k_proj, &quantized_hidden, hidden_scale, seq_len
         );
-        let v = self.linear_forward_quantized(
+        let mut v = self.linear_forward_quantized(
             &self.layers[layer_idx].v_proj, &quantized_hidden, hidden_scale, seq_len
         );
+
+        // Apply SubLN to Q/K/V projections (critical for BitNet stability)
+        if let Some(ref sub_norm) = self.layers[layer_idx].attn_sub_norm {
+            // SubLN applied per-head: norm each head's output separately
+            let h = self.config.hidden_size;
+            let kv_h = kv_dim;
+            for i in 0..seq_len {
+                // Q: full hidden_size
+                let q_slice = &mut q[i * h..(i + 1) * h];
+                let normed_q = rms_norm_with_scale(q_slice, sub_norm, self.config.rms_norm_eps);
+                q_slice.copy_from_slice(&normed_q);
+
+                // K and V: kv_dim (we use the first kv_dim elements of sub_norm)
+                let k_slice = &mut k[i * kv_h..(i + 1) * kv_h];
+                let normed_k = rms_norm_with_scale(k_slice, &sub_norm[..kv_h], self.config.rms_norm_eps);
+                k_slice.copy_from_slice(&normed_k);
+
+                let v_slice = &mut v[i * kv_h..(i + 1) * kv_h];
+                let normed_v = rms_norm_with_scale(v_slice, &sub_norm[..kv_h], self.config.rms_norm_eps);
+                v_slice.copy_from_slice(&normed_v);
+            }
+        }
 
         if PROFILING_ENABLED.load(Ordering::Relaxed) {
             PROFILE_QKV_US.fetch_add(qkv_start.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -635,16 +659,30 @@ impl BitNetEngine {
         let (quantized_hidden, hidden_scale) = self.kernel.quantize_activations(hidden);
 
         // Gate and up projections using pre-quantized activations
-        let gate = self.linear_forward_quantized(
+        let mut gate = self.linear_forward_quantized(
             &self.layers[layer_idx].gate_proj, &quantized_hidden, hidden_scale, seq_len
         );
-        let up = self.linear_forward_quantized(
+        let mut up = self.linear_forward_quantized(
             &self.layers[layer_idx].up_proj, &quantized_hidden, hidden_scale, seq_len
         );
 
-        // Apply SiLU to gate and multiply with up
-        let mut gate = gate;
-        silu_inplace(&mut gate);
+        // Apply SubLN to gate and up projections (critical for BitNet stability)
+        if let Some(ref sub_norm) = self.layers[layer_idx].ffn_sub_norm {
+            let inter_size = self.config.intermediate_size;
+            for i in 0..seq_len {
+                let gate_slice = &mut gate[i * inter_size..(i + 1) * inter_size];
+                let normed_gate = rms_norm_with_scale(gate_slice, sub_norm, self.config.rms_norm_eps);
+                gate_slice.copy_from_slice(&normed_gate);
+
+                let up_slice = &mut up[i * inter_size..(i + 1) * inter_size];
+                let normed_up = rms_norm_with_scale(up_slice, sub_norm, self.config.rms_norm_eps);
+                up_slice.copy_from_slice(&normed_up);
+            }
+        }
+
+        // Apply squared ReLU to gate and multiply with up
+        // BitNet uses ReLU² (squared ReLU): f(x) = max(0, x)²
+        squared_relu_inplace(&mut gate);
         let intermediate: Vec<f32> = gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
 
         // Down projection (new input, must quantize fresh)
@@ -831,6 +869,23 @@ impl BitNetEngine {
 
         // Prefill
         let logits = self.forward_prefill(input_ids, 0);
+
+        // DEBUG: Print logits statistics
+        static DEBUG_LOGITS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !DEBUG_LOGITS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let min = logits.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mean: f32 = logits.iter().sum::<f32>() / logits.len() as f32;
+            let std: f32 = (logits.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / logits.len() as f32).sqrt();
+            eprintln!("=== LOGITS STATS (first forward) ===");
+            eprintln!("Length: {}, Min: {:.4}, Max: {:.4}, Mean: {:.4}, Std: {:.4}", logits.len(), min, max, mean, std);
+            // Top 5 tokens
+            let mut indexed: Vec<(usize, f32)> = logits.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            eprintln!("Top 5 logits: {:?}", &indexed[..5.min(indexed.len())]);
+            eprintln!("NaN count: {}, Inf count: {}", logits.iter().filter(|x| x.is_nan()).count(), logits.iter().filter(|x| x.is_infinite()).count());
+        }
+
         let token_id = sample_token_with_penalty(&logits, sampling_config, &mut rng, &all_tokens);
         output_ids.push(token_id as i32);
         all_tokens.push(token_id as i32);
@@ -937,6 +992,9 @@ fn load_layer_weights(
     // Load attention norm
     let attn_norm = load_f32_tensor(reader, &format!("{}.attn_norm.weight", prefix))?;
 
+    // Load attention sub-norm (SubLN - applied after Q/K/V projections)
+    let attn_sub_norm = load_f32_tensor(reader, &format!("{}.attn_sub_norm.weight", prefix)).ok();
+
     // Load attention projections
     let q_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_q.weight", prefix), config)?;
     let k_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_k.weight", prefix), config)?;
@@ -946,6 +1004,9 @@ fn load_layer_weights(
     // Load FFN norm
     let ffn_norm = load_f32_tensor(reader, &format!("{}.ffn_norm.weight", prefix))?;
 
+    // Load FFN sub-norm (SubLN - applied after gate/up projections)
+    let ffn_sub_norm = load_f32_tensor(reader, &format!("{}.ffn_sub_norm.weight", prefix)).ok();
+
     // Load FFN projections
     let gate_proj = load_quantized_weights_or_f32(reader, &format!("{}.ffn_gate.weight", prefix), config)?;
     let up_proj = load_quantized_weights_or_f32(reader, &format!("{}.ffn_up.weight", prefix), config)?;
@@ -953,11 +1014,13 @@ fn load_layer_weights(
 
     Ok(LayerWeights {
         attn_norm,
+        attn_sub_norm,
         q_proj,
         k_proj,
         v_proj,
         o_proj,
         ffn_norm,
+        ffn_sub_norm,
         gate_proj,
         up_proj,
         down_proj,

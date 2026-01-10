@@ -55,10 +55,28 @@ pub fn repack_ternary_weights(
     let in_features = shape[0];
     let out_features = shape[1];
 
-    // First, decode GGUF ternary to intermediate {-1, 0, +1} values
-    let ternary_values = decode_gguf_ternary(gguf_data, gguf_type, out_features * in_features)?;
+    // For I2_S: Microsoft's format is ALREADY in the exact interleaved layout our kernel expects!
+    // 128-element blocks, 32 bytes each, with weights interleaved at positions 0, 32, 64, 96.
+    // We can use the raw bytes directly without any decode/repack.
+    if gguf_type == GgmlQuantType::I2_S {
+        static DEBUG_PRINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !DEBUG_PRINTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("=== I2_S DIRECT PASSTHROUGH (no repack) ===");
+            eprintln!("  out_features: {}, in_features: {}", out_features, in_features);
+            eprintln!("  GGUF data bytes: {}, expected: {}", gguf_data.len(), out_features * in_features / 4);
+            eprintln!("  Using raw I2_S bytes directly - same format as kernel expects");
+        }
 
-    // Then pack into native format
+        return Ok(NativeWeightFormat {
+            data: gguf_data.to_vec(),
+            scale: 1.0,
+            out_features,
+            in_features,
+        });
+    }
+
+    // For other formats: decode to ternary values, then repack
+    let ternary_values = decode_gguf_ternary(gguf_data, gguf_type, out_features * in_features)?;
     let native_data = pack_native_format(&ternary_values, out_features, in_features);
 
     Ok(NativeWeightFormat {
@@ -86,38 +104,54 @@ fn decode_gguf_ternary(
 
 /// Decode I2_S format: pure 2-bit signed integer, no scale factors.
 /// Block: 256 elements = 64 bytes (4 weights per byte)
+///
+/// SIMPLE sequential extraction, MSB-first (shifts 6,4,2,0).
+/// Encoding: 00=-1, 01=0, 10=+1
 fn decode_i2_s(data: &[u8], n_elements: usize) -> Result<Vec<i8>, GgufError> {
-    const BLOCK_SIZE: usize = 256;
-    const BLOCK_BYTES: usize = 64; // Pure 2-bit packing, no scale
-
-    let n_blocks = (n_elements + BLOCK_SIZE - 1) / BLOCK_SIZE;
     let mut output = Vec::with_capacity(n_elements);
 
-    for block_idx in 0..n_blocks {
-        let block_start = block_idx * BLOCK_BYTES;
-        if block_start + 64 > data.len() {
+    // Debug: count distribution
+    static DEBUG_PRINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let mut count_neg1 = 0usize;
+    let mut count_zero = 0usize;
+    let mut count_pos1 = 0usize;
+
+    // Simple sequential extraction: MSB-first, 4 weights per byte
+    for &byte in data.iter() {
+        if output.len() >= n_elements {
             break;
         }
-
-        // Extract 256 weights from 64 bytes (same as TQ2_0)
-        for byte_idx in 0..64 {
-            let byte = data[block_start + byte_idx];
-            // 4 weights per byte, 2 bits each
-            for bit_offset in (0..8).step_by(2) {
-                let val = (byte >> bit_offset) & 0x03;
-                // 00 = -1, 01 = 0, 10 = +1 (same encoding as TQ2_0)
-                let ternary = match val {
-                    0 => -1i8,
-                    1 => 0i8,
-                    2 => 1i8,
-                    _ => 0i8, // 3 shouldn't happen, treat as 0
-                };
-                output.push(ternary);
-                if output.len() >= n_elements {
-                    return Ok(output);
-                }
+        // MSB-first: shifts 6, 4, 2, 0
+        for shift in [6, 4, 2, 0] {
+            if output.len() >= n_elements {
+                break;
             }
+            let val = (byte >> shift) & 0x03;
+            // Encoding: 00=-1, 01=0, 10=+1
+            let ternary = match val {
+                0 => { count_neg1 += 1; -1i8 },
+                1 => { count_zero += 1; 0i8 },
+                2 => { count_pos1 += 1; 1i8 },
+                _ => 0i8,
+            };
+            output.push(ternary);
         }
+    }
+
+    // Print debug stats for first tensor
+    if !DEBUG_PRINTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let total = count_neg1 + count_zero + count_pos1;
+        eprintln!("=== I2_S DECODE STATS (sequential MSB-first) ===");
+        eprintln!("Total: {}, -1: {} ({:.1}%), 0: {} ({:.1}%), +1: {} ({:.1}%)",
+            total,
+            count_neg1, (count_neg1 as f64 / total as f64) * 100.0,
+            count_zero, (count_zero as f64 / total as f64) * 100.0,
+            count_pos1, (count_pos1 as f64 / total as f64) * 100.0);
+        if data.len() >= 8 {
+            eprintln!("First 8 bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
+        }
+        eprintln!("First 16 decoded weights: {:?}", &output[..16.min(output.len())]);
     }
 
     Ok(output)
@@ -263,6 +297,8 @@ fn decode_iq2_s(data: &[u8], n_elements: usize) -> Result<Vec<i8>, GgufError> {
 /// - byte[j].bits[4:5] -> weight[j+32]
 /// - byte[j].bits[2:3] -> weight[j+64]
 /// - byte[j].bits[0:1] -> weight[j+96]
+///
+/// This matches Microsoft BitNet's I2_S format exactly (row-major, same interleaving).
 fn pack_native_format(
     ternary: &[i8],
     out_features: usize,
@@ -276,21 +312,21 @@ fn pack_native_format(
     let mut output = vec![0u8; total_bytes];
 
     for row in 0..out_features {
-        let row_offset = row * in_features;
+        let row_start = row * in_features;  // Row-major: sequential weights
         let out_row_offset = row * bytes_per_row;
 
         for block in 0..blocks_per_row {
-            let block_start = row_offset + block * QK_I2_S_NATIVE;
+            let block_start = row_start + block * QK_I2_S_NATIVE;
             let out_block_start = out_row_offset + block * 32;
 
             // Pack 128 weights into 32 bytes with interleaved layout
             for byte_idx in 0..32 {
                 let mut packed_byte = 0u8;
 
-                // 4 weights per byte at offsets 0, 32, 64, 96
+                // 4 weights per byte at offsets 0, 32, 64, 96 within the block
                 for (shift, offset) in [(6, 0), (4, 32), (2, 64), (0, 96)].iter() {
                     let weight_idx = block_start + byte_idx + offset;
-                    let ternary_val = if weight_idx < row_offset + in_features && weight_idx < ternary.len() {
+                    let ternary_val = if weight_idx < row_start + in_features && weight_idx < ternary.len() {
                         ternary[weight_idx]
                     } else {
                         0 // Pad with zeros
