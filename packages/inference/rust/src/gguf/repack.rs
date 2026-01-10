@@ -59,18 +59,18 @@ pub fn repack_ternary_weights(
     // 128-element blocks, 32 bytes each, with weights interleaved at positions 0, 32, 64, 96.
     // We can use the raw bytes directly without any decode/repack.
     //
-    // Scale factor: BitNet uses 1/sqrt(K) normalization where K = in_features.
-    // This keeps the variance of output constant regardless of layer width.
+    // Scale factor: BitNet models are trained from scratch with ternary weights and SubLN.
+    // SubLN (per-position RMSNorm after each projection) handles activation scaling.
+    // We use scale = 1.0 and let SubLN do the normalization.
     if gguf_type == GgmlQuantType::I2_S {
-        // Compute scale factor: 1/sqrt(in_features)
-        let scale = 1.0 / (in_features as f32).sqrt();
+        // No artificial scaling - SubLN handles normalization
+        let scale = 1.0;
 
         static DEBUG_PRINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !DEBUG_PRINTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            eprintln!("=== I2_S DIRECT PASSTHROUGH (with 1/sqrt(K) scale) ===");
+            eprintln!("=== I2_S DIRECT PASSTHROUGH (scale=1.0, SubLN handles normalization) ===");
             eprintln!("  out_features: {}, in_features: {}", out_features, in_features);
             eprintln!("  GGUF data bytes: {}, expected: {}", gguf_data.len(), out_features * in_features / 4);
-            eprintln!("  Scale: 1/sqrt({}) = {:.6}", in_features, scale);
         }
 
         return Ok(NativeWeightFormat {

@@ -819,7 +819,6 @@ def create_callbacks(cfg: DictConfig) -> list:
                 bucket=bucket,
                 experiment_name=experiment_name_hashed,
                 stage="lightning",
-                dlm_config=dlm_config,
             )
         )
 

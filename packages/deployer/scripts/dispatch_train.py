@@ -21,6 +21,7 @@ from pathlib import Path
 TRAINING_CONFIGS = {
     "base": "Combined CE + DLM (recommended for most training)",
     "bitdistill_full": "Knowledge distillation (BitDistill)",
+    "bitdistill_only_run": "CE-only with ODM meta-optimization (5B tokens)",
     "lrc_run": "Low-Rank Correction for quantization error recovery",
     "salient_run": "AWQ-style salient columns",
     "salient_lora_run": "Salient + LoRA combined",

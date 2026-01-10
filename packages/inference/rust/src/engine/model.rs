@@ -774,37 +774,9 @@ impl BitNetEngine {
             }
         }
 
-        // Apply SubLN to gate and up projections (critical for BitNet stability)
-        if let Some(ref sub_norm) = self.layers[layer_idx].ffn_sub_norm {
-            let inter_size = self.config.intermediate_size;
-            for i in 0..seq_len {
-                let gate_slice = &mut gate[i * inter_size..(i + 1) * inter_size];
-                let normed_gate = rms_norm_with_scale(gate_slice, sub_norm, self.config.rms_norm_eps);
-                gate_slice.copy_from_slice(&normed_gate);
-
-                let up_slice = &mut up[i * inter_size..(i + 1) * inter_size];
-                let normed_up = rms_norm_with_scale(up_slice, sub_norm, self.config.rms_norm_eps);
-                up_slice.copy_from_slice(&normed_up);
-            }
-        }
-
-        // Debug FFN gate/up for layer 0 (after SubLN)
-        if layer_idx == 0 {
-            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-            static DEBUG_FFN_GATE2: AtomicBool = AtomicBool::new(false);
-            if !DEBUG_FFN_GATE2.swap(true, AtomicOrdering::SeqCst) {
-                eprintln!("=== FFN SubLN status: {} ===", self.layers[layer_idx].ffn_sub_norm.is_some());
-                eprintln!("=== FFN GATE (after SubLN) ===");
-                let (min, max) = gate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
-                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, gate.iter().sum::<f32>() / gate.len() as f32);
-                eprintln!("=== FFN UP (after SubLN) ===");
-                let (min, max) = up.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
-                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, up.iter().sum::<f32>() / up.len() as f32);
-            }
-        }
-
         // Apply squared ReLU to gate and multiply with up
         // BitNet uses ReLU² (squared ReLU): f(x) = max(0, x)²
+        // Correct order per HuggingFace: down_proj(SubLN(act_fn(gate) * up))
         squared_relu_inplace(&mut gate);
 
         // Debug after squared ReLU
@@ -818,21 +790,46 @@ impl BitNetEngine {
             }
         }
 
-        let intermediate: Vec<f32> = gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
+        let mut intermediate: Vec<f32> = gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
 
-        // Debug intermediate
+        // Debug intermediate before SubLN
         if layer_idx == 0 {
             use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
             static DEBUG_FFN_INTER: AtomicBool = AtomicBool::new(false);
             if !DEBUG_FFN_INTER.swap(true, AtomicOrdering::SeqCst) {
-                eprintln!("=== FFN INTERMEDIATE (gate * up) ===");
+                eprintln!("=== FFN INTERMEDIATE (gate * up, before SubLN) ===");
                 eprintln!("  First 8 values: {:?}", &intermediate[..8]);
                 let (min, max) = intermediate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
                 eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, intermediate.iter().sum::<f32>() / intermediate.len() as f32);
             }
         }
 
-        // Down projection (new input, must quantize fresh)
+        // Apply SubLN to intermediate (BEFORE down projection, per HuggingFace implementation)
+        // This is the KEY fix - SubLN normalizes the gated output, not gate/up separately
+        if let Some(ref sub_norm) = self.layers[layer_idx].ffn_sub_norm {
+            let inter_size = self.config.intermediate_size;
+            for i in 0..seq_len {
+                let slice = &mut intermediate[i * inter_size..(i + 1) * inter_size];
+                let normed = rms_norm_with_scale(slice, sub_norm, self.config.rms_norm_eps);
+                slice.copy_from_slice(&normed);
+            }
+        }
+
+        // Debug intermediate after SubLN
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_DOWN: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_DOWN.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN INTERMEDIATE (after SubLN, before down_proj) ===");
+                let (min, max) = intermediate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                let nonzero = intermediate.iter().filter(|&&x| x.abs() > 1e-6).count();
+                eprintln!("  Min: {:.2}, Max: {:.2}, Mean: {:.4}", min, max, intermediate.iter().sum::<f32>() / intermediate.len() as f32);
+                eprintln!("  Non-zero: {} / {} ({:.1}%)", nonzero, intermediate.len(), 100.0 * nonzero as f32 / intermediate.len() as f32);
+                eprintln!("  Quantization scale: {:.4}", max.abs().max(min.abs()) / 127.0);
+            }
+        }
+
+        // Down projection
         let result = self.linear_forward_ref(&self.layers[layer_idx].down_proj, &intermediate, seq_len);
 
         if PROFILING_ENABLED.load(Ordering::Relaxed) {
