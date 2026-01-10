@@ -58,18 +58,24 @@ pub fn repack_ternary_weights(
     // For I2_S: Microsoft's format is ALREADY in the exact interleaved layout our kernel expects!
     // 128-element blocks, 32 bytes each, with weights interleaved at positions 0, 32, 64, 96.
     // We can use the raw bytes directly without any decode/repack.
+    //
+    // Scale factor: BitNet uses 1/sqrt(K) normalization where K = in_features.
+    // This keeps the variance of output constant regardless of layer width.
     if gguf_type == GgmlQuantType::I2_S {
+        // Compute scale factor: 1/sqrt(in_features)
+        let scale = 1.0 / (in_features as f32).sqrt();
+
         static DEBUG_PRINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !DEBUG_PRINTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            eprintln!("=== I2_S DIRECT PASSTHROUGH (no repack) ===");
+            eprintln!("=== I2_S DIRECT PASSTHROUGH (with 1/sqrt(K) scale) ===");
             eprintln!("  out_features: {}, in_features: {}", out_features, in_features);
             eprintln!("  GGUF data bytes: {}, expected: {}", gguf_data.len(), out_features * in_features / 4);
-            eprintln!("  Using raw I2_S bytes directly - same format as kernel expects");
+            eprintln!("  Scale: 1/sqrt({}) = {:.6}", in_features, scale);
         }
 
         return Ok(NativeWeightFormat {
             data: gguf_data.to_vec(),
-            scale: 1.0,
+            scale,
             out_features,
             in_features,
         });
