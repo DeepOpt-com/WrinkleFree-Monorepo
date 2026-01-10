@@ -605,27 +605,8 @@ impl BitNetEngine {
             }
         }
 
-        // Apply SubLN to Q/K/V projections (critical for BitNet stability)
-        if let Some(ref sub_norm) = self.layers[layer_idx].attn_sub_norm {
-            // SubLN applied per-head: norm each head's output separately
-            let h = self.config.hidden_size;
-            let kv_h = kv_dim;
-            for i in 0..seq_len {
-                // Q: full hidden_size
-                let q_slice = &mut q[i * h..(i + 1) * h];
-                let normed_q = rms_norm_with_scale(q_slice, sub_norm, self.config.rms_norm_eps);
-                q_slice.copy_from_slice(&normed_q);
-
-                // K and V: kv_dim (we use the first kv_dim elements of sub_norm)
-                let k_slice = &mut k[i * kv_h..(i + 1) * kv_h];
-                let normed_k = rms_norm_with_scale(k_slice, &sub_norm[..kv_h], self.config.rms_norm_eps);
-                k_slice.copy_from_slice(&normed_k);
-
-                let v_slice = &mut v[i * kv_h..(i + 1) * kv_h];
-                let normed_v = rms_norm_with_scale(v_slice, &sub_norm[..kv_h], self.config.rms_norm_eps);
-                v_slice.copy_from_slice(&normed_v);
-            }
-        }
+        // NOTE: SubLN for attention is applied AFTER the O projection output, not to Q/K/V
+        // See HuggingFace implementation: attn_output = self.attn_sub_norm(attn_output)
 
         if PROFILING_ENABLED.load(Ordering::Relaxed) {
             PROFILE_QKV_US.fetch_add(qkv_start.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -667,7 +648,17 @@ impl BitNetEngine {
         let o_proj_start = Instant::now();
 
         // Output projection
-        let result = self.linear_forward_ref(&self.layers[layer_idx].o_proj, &attn_out, seq_len);
+        let mut result = self.linear_forward_ref(&self.layers[layer_idx].o_proj, &attn_out, seq_len);
+
+        // Apply SubLN AFTER O projection (per HuggingFace: attn_output = self.attn_sub_norm(attn_output))
+        if let Some(ref sub_norm) = self.layers[layer_idx].attn_sub_norm {
+            let h = self.config.hidden_size;
+            for i in 0..seq_len {
+                let slice = &mut result[i * h..(i + 1) * h];
+                let normed = rms_norm_with_scale(slice, sub_norm, self.config.rms_norm_eps);
+                slice.copy_from_slice(&normed);
+            }
+        }
 
         if PROFILING_ENABLED.load(Ordering::Relaxed) {
             PROFILE_O_PROJ_US.fetch_add(o_proj_start.elapsed().as_micros() as u64, Ordering::Relaxed);
