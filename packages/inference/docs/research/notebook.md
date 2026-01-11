@@ -1,5 +1,14 @@
 # WrinkleFree Inference Engine - Research Notebook
 
+> **ARCHIVED**: This document contains historical research notes from Dec 2024-2025.
+> The sglang-bitnet submodule has been removed. The current inference path uses:
+> - `wf_server` (Pure Rust, ~26 tok/s)
+> - `dlm_server` (DLM block diffusion, ~60 tok/s)
+>
+> See [CLAUDE.md](../../CLAUDE.md) for current build and run instructions.
+
+---
+
 ## 2024-12-28: BitNet.cpp vs sglang Throughput Comparison
 
 ### Summary
@@ -59,15 +68,18 @@ Total:    10.8ms → 93 tok/s theoretical
 - 1.6x faster than sglang with minimal HTTP overhead
 - Single binary deployment, no Python dependencies
 
-**Quick Start:**
+**Quick Start (Current):**
 ```bash
-cd extern/BitNet
-./build/bin/llama-server -m models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf --host 0.0.0.0 --port 8080
+# Build wf_server (Pure Rust)
+cd rust && cargo build --release --bin wf_server --features native-inference
+
+# Run
+./target/release/wf_server --model-path ../models/model.gguf --port 30000
 
 # Test
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:30000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "bitnet", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
 ```
 
 ### Next Steps (Optional Optimizations)
@@ -128,20 +140,23 @@ into parameter (torch.Size([2560, 6912]))
 uv run streamlit run demo/serve_streamlit.py --server.port 7860
 ```
 
-### Quick Start
+### Quick Start (Historical - sglang removed)
+
+> **Note**: The sglang-bitnet submodule has been removed. The commands below
+> are preserved for historical reference only.
 
 ```bash
-# Build sgl-kernel (requires CUDA in PATH for cmake)
-CUDACXX=/usr/local/cuda/bin/nvcc uv pip install ./extern/sglang-bitnet/sgl-kernel --no-build-isolation
+# OLD (no longer works):
+# CUDACXX=/usr/local/cuda/bin/nvcc uv pip install ./extern/sglang-bitnet/sgl-kernel
+# uv pip install ./extern/sglang-bitnet/python
 
-# Install sglang-bitnet
-uv pip install ./extern/sglang-bitnet/python
-
-# Verify kernel
-uv run python -c "import torch, sgl_kernel; print(hasattr(torch.ops.sgl_kernel, 'bitnet_gemv_cpu'))"
+# CURRENT: Use the Rust inference engine instead
+cd rust && cargo build --release --bin wf_server --features native-inference
 ```
 
-### Files Modified (Committed)
+### Files Modified (Historical - sglang removed)
+
+> **Note**: These files were in the sglang-bitnet submodule, which has been removed.
 
 | File | Change |
 |------|--------|
@@ -318,9 +333,10 @@ def _dequant_numba(packed, scale):
 
 ### Files Modified
 
-- `src/wrinklefree_inference/sglang_backend/bitnet_quantization.py` - Core optimizations
+- `src/wf_infer/sglang_backend/bitnet_quantization.py` - Core optimizations
 - `tests/test_sglang_bitnet.py` - Test suite
-- `extern/sglang-bitnet/` - SGLang fork with BitNet integration
+
+> **Note**: The sglang-bitnet submodule has been removed. Rust inference code is now in `rust/`.
 
 ---
 
@@ -510,9 +526,9 @@ Implement native C++ kernel with fused dequant+matmul to reduce memory bandwidth
 ### Implementation Details
 
 **Files created:**
-- `src/wrinklefree_inference/native/bitnet_kernel.cpp` - AVX512 optimized GEMV
-- `src/wrinklefree_inference/native/setup.py` - PyTorch extension build
-- `src/wrinklefree_inference/native/__init__.py` - Python bindings
+- `src/wf_infer/native/bitnet_kernel.cpp` - AVX512 optimized GEMV
+- `src/wf_infer/native/setup.py` - PyTorch extension build
+- `src/wf_infer/native/__init__.py` - Python bindings
 - `benchmark/native_kernel_bench.py` - Benchmarking harness
 
 **Key optimizations:**
@@ -678,7 +694,7 @@ Optimize KV cache memory and performance for long context windows (8K+ tokens).
 ### Implementation
 
 **Files created:**
-- `src/wrinklefree_inference/kv_cache/kv_cache.py` - KV cache with quantization
+- `src/wf_infer/kv_cache/kv_cache.py` - KV cache with quantization
 - `benchmark/kv_cache_bench.py` - Long context benchmark
 
 **Supported formats:**
@@ -732,7 +748,7 @@ Optimize KV cache memory and performance for long context windows (8K+ tokens).
 ### Code Example
 
 ```python
-from wrinklefree_inference.kv_cache import KVCache, KVCacheConfig, KVCacheDtype
+from wf_infer.kv_cache import KVCache, KVCacheConfig, KVCacheDtype
 
 # Configure KV cache for 8K context with INT8 quantization
 config = KVCacheConfig(
@@ -772,8 +788,8 @@ Implement Q-Sparse-style activation sparsity for BitNet inference optimization.
 ### Implementation
 
 **Files created:**
-- `src/wrinklefree_inference/sglang_backend/activation_sparsity.py` - Core sparsity implementations
-- `src/wrinklefree_inference/sglang_backend/sparse_attention.py` - Attention sparsity
+- `src/wf_infer/sglang_backend/activation_sparsity.py` - Core sparsity implementations
+- `src/wf_infer/sglang_backend/sparse_attention.py` - Attention sparsity
 - `configs/sparsity/` - Hydra configs for different sparsity levels
 - `configs/attention/` - Attention sparsity configs
 - `benchmark/sparsity_benchmark.py` - Benchmark harness

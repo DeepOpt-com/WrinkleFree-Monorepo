@@ -1,0 +1,123 @@
+# WrinkleFree BitDistill Full Training Run
+#
+# Full training with BitDistill objectives:
+# - 1B tokens (recommended for distillation)
+# - CE + Logits Distillation + Attention Distillation
+# - WandB logging
+# - GCS checkpoint uploads
+#
+# Launch:
+#   cd packages/deployer
+#   sky launch skypilot/bitdistill_full_train.yaml -y --cluster bitdistill-full
+#
+# Monitor:
+#   sky logs bitdistill-full
+#   # WandB: https://wandb.ai/wrinklefree/runs/{run_id}
+#
+# Tear down:
+#   sky down bitdistill-full -y
+
+name: wrinklefree-bitdistill-full
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  use_spot: false
+  cloud: runpod
+  # Exclude EU-NL-1 which had network issues
+  # region: EU-CZ-1
+
+# Sync from Refact worktree
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+# Upload credentials
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_NAME: bitdistill-full-smollm2-135m
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Sync all packages
+  uv sync --all-packages
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Load credentials
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================"
+  echo "WrinkleFree BitDistill Full Training Run"
+  echo "================================================"
+  echo "Model: $MODEL"
+  echo "Total tokens: 1B (bitdistill_full.yaml default)"
+  echo ""
+  echo "Configuration:"
+  echo "  - CE + Logits Distillation (λ=10, T=5)"
+  echo "  - Attention Distillation (γ=1e-5)"
+  echo "  - Curriculum: warmup → ramp → main"
+  echo "  - MuonClip optimizer with QK clipping"
+  echo "  - GCS checkpoints every 200 steps"
+  echo "  - WandB logging"
+  echo ""
+  echo "WandB Run: ${WANDB_RUN_NAME}"
+  echo "================================================"
+
+  # Run full BitDistill training
+  uv run --package wf-train python packages/training/scripts/train.py \
+    model=${MODEL} \
+    training=bitdistill_full \
+    data=default \
+    distributed=single_gpu \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=bitdistill_full_${MODEL} \
+    training.checkpoint.save_interval=200 \
+    training.logging.log_interval=10 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.wandb.name=${WANDB_RUN_NAME} \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET}
+
+  echo ""
+  echo "================================================"
+  echo "BitDistill Training Complete!"
+  echo "================================================"
+
+  # Final checkpoint info
+  echo ""
+  echo "Final checkpoint:"
+  ls -la $CHECKPOINT_DIR/bitdistill_full_${MODEL}/checkpoints/ 2>/dev/null || echo "No local checkpoints"
+
+  echo ""
+  echo "GCS checkpoints:"
+  gcloud storage ls "gs://${GCS_BUCKET}/experiments/" 2>/dev/null | grep bitdistill | head -10 || echo "GCS listing failed"
+
+  echo ""
+  echo "WandB run: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_NAME}"

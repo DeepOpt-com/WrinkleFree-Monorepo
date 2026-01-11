@@ -1,0 +1,30 @@
+# FineWeb-Edu Validation Dataset
+# Alternative to C4 validation (more reliable HuggingFace CDN)
+#
+# Uses a small sample from FineWeb-Edu for validation.
+# Standard practice: use held-out data from same distribution as training.
+#
+# Note: FineWeb-Edu doesn't have a dedicated validation split, so we use
+# sample-100BT and skip samples to avoid overlap with sample-10BT training data.
+
+name: fineweb_validation
+
+# Single-source mode (no influence mixing needed for eval)
+dataset:
+  path: HuggingFaceFW/fineweb-edu
+  subset: sample-100BT  # Larger sample, different from training (sample-10BT)
+  split: train
+  streaming: true
+
+preprocessing:
+  max_length: 2048
+  truncation: true
+  padding: false
+  text_column: text
+  packed: true  # Use packing for consistent sequence lengths
+
+dataloader:
+  batch_size: 8  # Smaller batch for eval (no gradient memory)
+  num_workers: 2
+  prefetch_factor: 2
+  pin_memory: true

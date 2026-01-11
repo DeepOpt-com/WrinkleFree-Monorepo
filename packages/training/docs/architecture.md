@@ -2,96 +2,213 @@
 
 ## Overview
 
-WrinkleFree-1.58Quant is a framework for training 1.58-bit LLMs using the BitDistill approach. The system is designed around a 3-stage training pipeline that progressively adapts a full-precision model to ternary weights.
+WrinkleFree Training uses PyTorch Lightning with a multi-objective training system. The architecture centers around the **ObjectiveManager** pattern, which runs multiple training objectives on the same batch.
+
+## Training Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    PyTorch Lightning                        │
+│  train_lightning.py → WrinkleFreeLightningModule           │
+│         ↓                                                   │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │           ObjectiveManager (multi-task)                 ││
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐              ││
+│  │  │ CE Loss  │  │   DLM    │  │ Distill  │  ...         ││
+│  │  └──────────┘  └──────────┘  └──────────┘              ││
+│  └─────────────────────────────────────────────────────────┘│
+│         ↓                                                   │
+│  Callbacks: BatchSizeFinder, GCS, ZClip, InfluenceTracker  │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Core Components
 
-### 1. Model Architecture
-- **BitLinear**: Replaces standard `nn.Linear` layers. Implements ternary quantization {-1, 0, 1} for weights and 8-bit quantization for activations. Uses Straight-Through Estimator (STE) for gradient computation.
-- **SubLN**: Sub-Layer Normalization (RMSNorm) inserted before output projections in Self-Attention and FFN blocks to stabilize training.
-- **Llama-style Backbone**: Based on Llama/Qwen architectures with RoPE, GQA, and SwiGLU.
+### 1. Lightning Module (`lightning/`)
 
-### 2. Training Pipeline
+| File | Purpose |
+|------|---------|
+| `module.py` | `WrinkleFreeLightningModule` - wraps model + ObjectiveManager |
+| `datamodule.py` | `WrinkleFreeDataModule` - wraps dataloaders from wf_data |
+| `callbacks.py` | GCS upload, ZClip, TokenCount, InfluenceTracker, MuonClipInit |
 
-#### Stage 1: SubLN Insertion
-- **Goal**: Stabilize the model for quantization.
-- **Process**: Inserts `SubLN` modules into a pre-trained full-precision model.
-- **Training**: Short fine-tuning to adapt the new normalization layers.
+### 2. ObjectiveManager (`objectives/`)
 
-#### Stage 2: Continue Pre-training
-- **Goal**: Adapt weight distributions for quantization.
-- **Process**: Trains the model with `BitLinearWithWarmup` layers.
-- **Techniques**:
-    - **Quantization-Aware Training (QAT) with Warmup**: 
-        - **Implementation**: Uses `BitLinearWithWarmup` layers.
-            ```python
-            # Simplified Logic
-            lam = min(step / 1000, 1.0)  # Linear warmup
-            if lam < 1.0:
-                w_mixed = (1 - lam) * w + lam * w_quant
-                w_out = w + (w_mixed - w).detach()  # STE
-            else:
-                w_out = w + (w_quant - w).detach()
-            ```
-        - **Schedule**: 
-            - Steps 0-1000: Linear interpolation from FP to Ternary.
-            - Steps 1000+: Full ternary {-1, 0, 1} quantization.
-        - **Activation Quantization**: 8-bit per-token quantization (always on).
-        - **Rationale**: Gradual warmup prevents gradient instability and helps models adapt to discrete weight spaces.
-        - **Comparison**:
-            | Method | Warmup | Stability | Performance |
-            |--------|--------|-----------|-------------|
-            | Immediate QAT | None | ⚠️ Unstable | ~85% recovery |
-            | Post-Training Quant | None | ✅ Stable | ~75% recovery |
-            | **QAT with Warmup** | **1000 steps** | ✅ **Stable** | **~95% recovery** |
-    - **Influence-based Data Selection**: Uses `WrinkleFree-CheaperTraining` library to dynamically adjust data mixture weights based on influence functions, ensuring the model sees the most relevant data for the target task/domain.
+The ObjectiveManager runs multiple objectives on the same batch and combines their losses:
 
-#### Stage 3: Distillation Fine-tuning
-- **Goal**: Recover performance using a teacher model.
-- **Process**: Distills knowledge from a full-precision teacher to the 1.58-bit student.
-- **Loss Function**: `BitDistillLoss` = Cross-Entropy + Logits KL Divergence + Attention Distillation.
+```python
+# Example usage
+manager = ObjectiveManager(
+    objectives={"continue_pretrain": CPObj(), "dlm": DLMObj()},
+    weights={"continue_pretrain": 1.0, "dlm": 0.5},
+)
 
-### 4. Q-Sparse Activation Sparsity (Optional)
+# Preprocess applies DLM masking, stores originals
+batch = manager.preprocess_batch(batch)
 
-Q-Sparse ([arxiv:2407.10969](https://arxiv.org/abs/2407.10969)) adds activation sparsity on top of weight quantization for additional inference efficiency.
-
-- **Mechanism**: Top-K sparsification keeps only the largest (1 - sparsity_ratio) activations per token
-- **Order**: Sparsify → Quantize (preserves important activations for quantization)
-- **STE Gradient Flow**: Uses detach trick for straight-through estimation
-- **Optimal Sparsity**: 61% for 1-bit models (per paper)
-
-**Implementation Files:**
-- `src/wrinklefree/quantization/activation_sparse.py` - Core sparsification functions
-- `src/wrinklefree/quantization/sparsity_warmup.py` - Gradual warmup schedule
-- Integration in `src/wrinklefree/models/bitlinear.py`
-
-**Trade-offs (200-step ablation on SmolLM2-135M):**
-| Config | Final Loss | Training Time |
-|--------|------------|---------------|
-| Without Q-Sparse | ~6.93 | 480s |
-| With Q-Sparse (61%) | ~6.90 | 648s (~35% slower) |
-
-**Recommendation**: Disabled by default due to training slowdown. Enable for production models where inference efficiency is critical:
-```bash
-training.activation_sparsity.enabled=true
+# Forward computes all losses, returns weighted sum
+output = manager(model_outputs, batch)
+# output.loss = 1.0 * cp_loss + 0.5 * dlm_loss
 ```
 
-The ~35% training overhead pays off at inference where 61% of activations can be skipped, compounding with 1.58-bit weight quantization.
+**Available Objectives:**
 
-### 3. Influence Integration
-The system integrates with `WrinkleFree-CheaperTraining` to optimize data selection:
-- **InfluenceAwareOptimizer**: Wraps the standard optimizer to intercept steps.
-- **DataInfCalculator**: Computes influence scores of training data on a validation "probe" set.
-- **MixtureWeightCalculator**: Optimizes dataset mixture weights to maximize influence on the probe set.
+| Objective | File | Purpose |
+|-----------|------|---------|
+| `continue_pretrain` | `continue_pretrain.py` | Next-token prediction (CE loss) |
+| `dlm` | `dlm.py` | Diffusion Language Model masking |
+| `layerwise` | `layerwise.py` | Hidden state alignment with teacher |
+| `logits_distill` | `logits_distill.py` | KL divergence on teacher logits |
+| `attention_distill` | `attention_distill.py` | Attention pattern matching |
+| `bitdistill` | `bitdistill.py` | Combined logits + attention distillation |
+| `tcs_distill` | `tcs_distill.py` | Target Concrete Score for DLM |
+| `lrc_reconstruction` | `lrc_reconstruction.py` | Low-rank correction training |
+
+### 3. Curriculum Scheduler
+
+Phase-based weight transitions for objectives:
+
+```yaml
+# configs/training/base.yaml
+curriculum:
+  phases:
+    - name: warmup         # Steps 0-10%
+      objectives: {continue_pretrain: 1.0, dlm: 0.0}
+    - name: dlm_ramp       # Steps 10-30%
+      objectives: {continue_pretrain: 1.0, dlm: 0.3}
+    - name: main           # Steps 30-80%
+      objectives: {continue_pretrain: 1.0, dlm: 0.5}
+    - name: dlm_focus      # Steps 80-100%
+      objectives: {continue_pretrain: 0.5, dlm: 1.0}
+```
+
+### 4. Model Architecture
+
+**BitLinear Layer** (`models/bitlinear.py`):
+- Ternary weight quantization {-1, 0, 1}
+- 8-bit per-token activation quantization
+- Straight-Through Estimator (STE) for gradient computation
+
+**SubLN** (`models/subln.py`):
+- RMSNorm inserted before output projections
+- Stabilizes training for quantization
+
+**Integration with wf_arch package**:
+- `BitLinear`, `BitLinearLRC`, `SubLN` layers
+- Auto-conversion of HuggingFace models to BitNet
+
+### 5. Quantization (`quantization/`)
+
+| File | Purpose |
+|------|---------|
+| `weight_quant.py` | Ternary weight quantization |
+| `activation_quant.py` | 8-bit per-token activation quantization |
+| `ste.py` | Straight-through estimator |
+| `lambda_warmup.py` | Gradual quantization warmup |
+
+**Quantization Warmup**:
+```
+Steps 0-1000:    lambda = step/1000 (linear warmup)
+Steps 1000+:     lambda = 1.0 (full quantization)
+```
+
+### 6. Data Integration
+
+Data loading is handled by the **wf_data** package:
+
+```yaml
+# configs/data/default.yaml
+config_name: mixed_pretrain  # Loads from wf_data
+```
+
+### 7. Training Configuration
+
+| Directory | Purpose |
+|-----------|---------|
+| `training/auto_setup.py` | Auto-magic checkpoint resolution + BitNet conversion |
+| `training/fsdp_wrapper.py` | FSDP wrapping with activation checkpointing |
+| `training/trainer.py` | Legacy trainer (prefer Lightning) |
 
 ## Directory Structure
 
 ```
 src/wrinklefree/
-├── models/           # BitNet architecture components
-├── quantization/     # Quantization logic (STE, weight/activation quant)
-├── distillation/     # Distillation losses (Logits, Attention)
-├── training/         # Training stages and trainer loop
-├── data/             # Data loading and streaming
-└── serving/          # Inference and export tools
+├── lightning/           # PyTorch Lightning integration
+│   ├── module.py        # WrinkleFreeLightningModule
+│   ├── datamodule.py    # WrinkleFreeDataModule
+│   └── callbacks.py     # Training callbacks
+├── objectives/          # Multi-task objectives
+│   ├── manager.py       # ObjectiveManager
+│   ├── factory.py       # Creates ObjectiveManager from config
+│   ├── curriculum.py    # Phase-based weight transitions
+│   ├── continue_pretrain.py
+│   ├── dlm.py
+│   ├── layerwise.py
+│   ├── logits_distill.py
+│   ├── attention_distill.py
+│   ├── bitdistill.py
+│   ├── tcs_distill.py
+│   └── lrc_reconstruction.py
+├── training/            # Training utilities
+│   ├── auto_setup.py    # Checkpoint resolution
+│   ├── fsdp_wrapper.py  # FSDP integration
+│   └── trainer.py       # Legacy trainer
+├── models/              # Model components
+│   ├── bitlinear.py     # BitLinear layer
+│   ├── subln.py         # SubLN normalization
+│   ├── attention.py     # Multi-head attention
+│   └── ffn.py           # Feed-forward network
+├── quantization/        # Quantization logic
+│   ├── weight_quant.py
+│   ├── activation_quant.py
+│   ├── ste.py
+│   └── lambda_warmup.py
+├── teachers/            # Teacher models for distillation
+│   ├── local_teacher.py
+│   └── vllm_teacher.py
+├── serving/             # Inference export
+│   ├── converter.py     # GGUF conversion
+│   └── bitnet_wrapper.py
+├── _experimental/       # Not production-ready
+│   ├── moe/             # Mixture of Experts
+│   ├── tensor_parallel/
+│   └── fp8/
+└── utils/               # Utilities
+    ├── run_fingerprint.py
+    ├── run_manager.py
+    └── audit_logger.py
 ```
+
+## Monorepo Dependencies
+
+| Package | Relationship |
+|---------|--------------|
+| `wf_data` | Data loading, influence optimization |
+| `wf_arch` | BitNet layers and model conversion |
+| `deployer` | Cloud deployment (launches training jobs) |
+| `inference` | Serves trained models |
+| `eval` | Evaluates trained models |
+
+## LRC Calibration
+
+Low-Rank Correction (LRC) adds trainable low-rank matrices to correct quantization errors:
+
+```
+output = W_quant @ Q_a(X) + U @ V^T @ X
+         ─────────────────   ───────────
+         Frozen quantized     Trainable LRC
+         path                 correction
+```
+
+**Training**:
+1. Convert BitLinear → BitLinearLRC (adds U, V matrices)
+2. Freeze ALL parameters except U, V
+3. Train using hidden state matching loss vs. fp16 teacher
+
+## FSDP Multi-GPU Training
+
+When using `distributed=fsdp_multi`:
+
+- Uses `muon_fsdp2.Muon` optimizer (not `muon-clip` which is incompatible with FSDP)
+- All ranks must participate in collective operations (save_checkpoint, eval sync)
+- Use `drop_last=True` in dataloaders to prevent batch count mismatches

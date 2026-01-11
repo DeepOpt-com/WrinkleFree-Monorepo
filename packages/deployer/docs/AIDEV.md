@@ -23,7 +23,7 @@ WrinkleFree-Deployer (This Repo - Launcher)
 
 ## 2. Key Files
 
-### Constants (`src/wf_deployer/constants.py`)
+### Constants (`src/wf_deploy/constants.py`)
 
 **This is the single source of truth for all configuration values.** Before adding any hardcoded string, check if it exists here.
 
@@ -36,7 +36,7 @@ Contains:
 - `STAGE_CONFIG_MAP` - Maps stage numbers to Hydra config names
 - `EnvVars` - Centralized environment variable names
 
-### Core API (`src/wf_deployer/core.py`)
+### Core API (`src/wf_deploy/core.py`)
 
 Main functions for training:
 - `train(model, stage, backend, scale, overrides, detach)` - Launch training
@@ -45,7 +45,7 @@ Main functions for training:
 - `list_runs(backend, limit)` - List recent runs
 - `smoke_test(model, backend)` - Quick pipeline test
 
-### Modal Backend (`src/wf_deployer/modal_deployer.py`)
+### Modal Backend (`src/wf_deploy/modal_deployer.py`)
 
 Modal-specific implementation:
 - `verify_gpu_allocation(requested_type)` - **Verifies GPU type matches request** (hard failure on mismatch)
@@ -53,7 +53,7 @@ Modal-specific implementation:
 - `smoke_test(model)` - Quick validation
 - `ModalTrainer` - High-level class for AI tools
 
-### CLI (`src/wf_deployer/cli.py`)
+### CLI (`src/wf_deploy/cli.py`)
 
 Click-based CLI commands:
 - `wf train`, `wf logs`, `wf cancel`, `wf runs`, `wf smoke`
@@ -149,7 +149,7 @@ Key env vars (see `.env.example` and `constants.EnvVars`):
 
 ### Launching Training
 ```python
-from wf_deployer import train
+from wf_deploy import train
 run_id = train("qwen3_4b", stage=2)
 run_id = train("qwen3_4b", stage=2, scale="large")  # 4x H100
 run_id = train("qwen3_4b", stage=2, overrides=["training.lr=1e-4"])
@@ -178,7 +178,7 @@ RuntimeError: GPU MISMATCH: Requested H100 but got Tesla T4. Aborting.
 2. Ensure model config exists in `packages/training/configs/model/`
 
 ### Adding New Constants
-1. Add to `src/wf_deployer/constants.py`
+1. Add to `src/wf_deploy/constants.py`
 2. Import where needed
 3. Never hardcode the value directly in other files
 
@@ -192,7 +192,7 @@ uv run pytest tests/unit/ -v
 wf smoke -m smollm2_135m
 
 # Verify constants load
-python -c "from wf_deployer.constants import MODAL_APP_NAME; print('OK')"
+python -c "from wf_deploy.constants import MODAL_APP_NAME; print('OK')"
 ```
 
 ## 10. Architecture Notes

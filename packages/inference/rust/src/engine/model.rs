@@ -1,0 +1,1834 @@
+//! BitNet transformer model for inference.
+//!
+//! Implements the forward pass using native ternary SIMD kernels.
+
+use std::path::Path;
+use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use crate::gguf::{GgufReader, GgmlQuantType, GgufError, repack_ternary_weights, NativeWeightFormat, Tokenizer};
+
+/// Global profiling state
+static PROFILING_ENABLED: AtomicBool = AtomicBool::new(false);
+static PROFILE_QKV_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_ROPE_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_ATTN_SCORES_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_O_PROJ_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_FFN_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_NORM_US: AtomicU64 = AtomicU64::new(0);
+static PROFILE_OUTPUT_US: AtomicU64 = AtomicU64::new(0);
+
+/// Enable profiling
+pub fn enable_profiling() {
+    PROFILING_ENABLED.store(true, Ordering::SeqCst);
+}
+
+/// Print profiling results
+pub fn print_profile_results() {
+    let qkv = PROFILE_QKV_US.load(Ordering::SeqCst);
+    let rope = PROFILE_ROPE_US.load(Ordering::SeqCst);
+    let attn = PROFILE_ATTN_SCORES_US.load(Ordering::SeqCst);
+    let o_proj = PROFILE_O_PROJ_US.load(Ordering::SeqCst);
+    let ffn = PROFILE_FFN_US.load(Ordering::SeqCst);
+    let norm = PROFILE_NORM_US.load(Ordering::SeqCst);
+    let output = PROFILE_OUTPUT_US.load(Ordering::SeqCst);
+    let total = qkv + rope + attn + o_proj + ffn + norm + output;
+
+    println!("\n=== Detailed Profile ===");
+    println!("Q/K/V projection: {:>8.2} ms ({:>5.1}%)", qkv as f64 / 1000.0, 100.0 * qkv as f64 / total as f64);
+    println!("RoPE encoding:    {:>8.2} ms ({:>5.1}%)", rope as f64 / 1000.0, 100.0 * rope as f64 / total as f64);
+    println!("Attention scores: {:>8.2} ms ({:>5.1}%)", attn as f64 / 1000.0, 100.0 * attn as f64 / total as f64);
+    println!("O projection:     {:>8.2} ms ({:>5.1}%)", o_proj as f64 / 1000.0, 100.0 * o_proj as f64 / total as f64);
+    println!("FFN:              {:>8.2} ms ({:>5.1}%)", ffn as f64 / 1000.0, 100.0 * ffn as f64 / total as f64);
+    println!("Norms:            {:>8.2} ms ({:>5.1}%)", norm as f64 / 1000.0, 100.0 * norm as f64 / total as f64);
+    println!("Output proj:      {:>8.2} ms ({:>5.1}%)", output as f64 / 1000.0, 100.0 * output as f64 / total as f64);
+    println!("Total tracked:    {:>8.2} ms", total as f64 / 1000.0);
+    println!("========================\n");
+}
+
+/// Reset profiling counters
+pub fn reset_profile() {
+    PROFILE_QKV_US.store(0, Ordering::SeqCst);
+    PROFILE_ROPE_US.store(0, Ordering::SeqCst);
+    PROFILE_ATTN_SCORES_US.store(0, Ordering::SeqCst);
+    PROFILE_O_PROJ_US.store(0, Ordering::SeqCst);
+    PROFILE_FFN_US.store(0, Ordering::SeqCst);
+    PROFILE_NORM_US.store(0, Ordering::SeqCst);
+    PROFILE_OUTPUT_US.store(0, Ordering::SeqCst);
+}
+use crate::kernels::BitNetKernel;
+use crate::kernels::simd::{rms_norm_with_scale, squared_relu_inplace, softmax_inplace};
+use rayon::prelude::*;
+
+use super::kv_cache::{KVCache, KVCacheConfig};
+use super::sampling::{SamplingConfig, sample_token_with_penalty};
+
+/// BitNet model configuration
+#[derive(Debug, Clone)]
+pub struct BitNetConfig {
+    /// Vocabulary size
+    pub vocab_size: usize,
+    /// Hidden dimension
+    pub hidden_size: usize,
+    /// Number of transformer layers
+    pub num_layers: usize,
+    /// Number of attention heads
+    pub num_heads: usize,
+    /// Number of key-value heads (for GQA)
+    pub num_kv_heads: usize,
+    /// Intermediate (FFN) dimension
+    pub intermediate_size: usize,
+    /// Maximum sequence length
+    pub max_seq_len: usize,
+    /// RMS norm epsilon
+    pub rms_norm_eps: f32,
+    /// RoPE theta (frequency base)
+    pub rope_theta: f32,
+    /// Head dimension (hidden_size / num_heads)
+    pub head_dim: usize,
+    /// BOS token ID
+    pub bos_token_id: u32,
+    /// EOS token ID
+    pub eos_token_id: u32,
+    /// Padding token ID (optional)
+    pub pad_token_id: Option<u32>,
+}
+
+impl Default for BitNetConfig {
+    fn default() -> Self {
+        Self {
+            vocab_size: 32000,
+            hidden_size: 2048,
+            num_layers: 24,
+            num_heads: 16,
+            num_kv_heads: 8,
+            intermediate_size: 8192,
+            max_seq_len: 4096,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10000.0,
+            head_dim: 128,
+            bos_token_id: 1,  // Common default
+            eos_token_id: 2,  // Common default
+            pad_token_id: None,
+        }
+    }
+}
+
+/// Weights for a single transformer layer
+pub struct LayerWeights {
+    // Attention
+    pub attn_norm: Vec<f32>,
+    pub attn_sub_norm: Option<Vec<f32>>,  // SubLN after attention projections
+    pub q_proj: NativeWeightFormat,
+    pub k_proj: NativeWeightFormat,
+    pub v_proj: NativeWeightFormat,
+    pub o_proj: NativeWeightFormat,
+
+    // FFN
+    pub ffn_norm: Vec<f32>,
+    pub ffn_sub_norm: Option<Vec<f32>>,   // SubLN after FFN projections
+    pub gate_proj: NativeWeightFormat,
+    pub up_proj: NativeWeightFormat,
+    pub down_proj: NativeWeightFormat,
+
+    // LRC corrections (optional)
+    pub q_lrc_u: Option<Vec<f32>>,
+    pub q_lrc_v: Option<Vec<f32>>,
+    // ... other LRC matrices if needed
+}
+
+/// BitNet inference engine
+pub struct BitNetEngine {
+    /// Model configuration
+    pub config: BitNetConfig,
+    /// Token embeddings [vocab_size, hidden_size] - kept in F32 for lookup
+    pub embed_tokens: Vec<f32>,
+    /// Token embeddings in BF16 for output projection (half memory bandwidth)
+    embed_tokens_bf16: Vec<u16>,
+    /// Output norm (final RMS norm)
+    pub output_norm: Vec<f32>,
+    /// Output projection (lm_head) - may be tied with embed_tokens
+    pub output_proj: Option<Vec<f32>>,
+    /// Output projection in BF16 (if not tied with embeddings)
+    output_proj_bf16: Option<Vec<u16>>,
+    /// Per-layer weights
+    pub layers: Vec<LayerWeights>,
+    /// KV cache
+    pub kv_cache: KVCache,
+    /// Tokenizer vocabulary (for decoding)
+    pub vocab: Option<Vec<String>>,
+    /// RoPE frequency cache
+    rope_freqs: Vec<f32>,
+    /// Native BitNet SIMD kernel
+    kernel: BitNetKernel,
+}
+
+/// Error type for engine operations
+#[derive(Debug)]
+pub enum EngineError {
+    /// GGUF parsing error
+    Gguf(GgufError),
+    /// Missing required tensor
+    MissingTensor(String),
+    /// Invalid model configuration
+    InvalidConfig(String),
+    /// Generation error
+    GenerationError(String),
+}
+
+impl From<GgufError> for EngineError {
+    fn from(e: GgufError) -> Self {
+        Self::Gguf(e)
+    }
+}
+
+impl std::fmt::Display for EngineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gguf(e) => write!(f, "GGUF error: {}", e),
+            Self::MissingTensor(name) => write!(f, "Missing tensor: {}", name),
+            Self::InvalidConfig(msg) => write!(f, "Invalid config: {}", msg),
+            Self::GenerationError(msg) => write!(f, "Generation error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+impl BitNetEngine {
+    /// Load a model from a GGUF file.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, EngineError> {
+        Self::load_with_context_len(path, None)
+    }
+
+    /// Load a model from a GGUF file with optional context length override.
+    ///
+    /// Use `context_len` to limit KV cache memory for large models with
+    /// very long default context lengths (e.g., 128K).
+    pub fn load_with_context_len<P: AsRef<Path>>(
+        path: P,
+        context_len: Option<usize>,
+    ) -> Result<Self, EngineError> {
+        let reader = GgufReader::open(path)?;
+        reader.print_summary();
+        reader.print_layer0_tensors();
+        reader.print_subnorm_tensors();
+
+        // Load embeddings first to infer vocab_size if needed
+        let embed_tokens = load_f32_tensor(&reader, "token_embd.weight")?;
+
+        // Extract configuration
+        let gguf_config = &reader.config;
+        let hidden_size = gguf_config.hidden_size as usize;
+
+        // Infer vocab_size from embedding tensor shape if not in metadata
+        // embed_tokens shape is [hidden_size, vocab_size]
+        let vocab_size = if gguf_config.vocab_size > 0 {
+            gguf_config.vocab_size as usize
+        } else {
+            embed_tokens.len() / hidden_size
+        };
+        tracing::info!("Vocab size: {} (inferred from embedding shape)", vocab_size);
+
+        // Use context_len override if provided, otherwise use model's default
+        let max_seq_len = context_len.unwrap_or(gguf_config.max_seq_len as usize);
+        if context_len.is_some() {
+            tracing::info!(
+                "Context length: {} (overridden from model default {})",
+                max_seq_len,
+                gguf_config.max_seq_len
+            );
+        } else {
+            tracing::info!("Context length: {} (from model)", max_seq_len);
+        }
+
+        let config = BitNetConfig {
+            vocab_size,
+            hidden_size,
+            num_layers: gguf_config.num_layers as usize,
+            num_heads: gguf_config.num_heads as usize,
+            num_kv_heads: gguf_config.num_kv_heads as usize,
+            intermediate_size: gguf_config.intermediate_size as usize,
+            max_seq_len,
+            rms_norm_eps: gguf_config.rms_norm_eps,
+            rope_theta: gguf_config.rope_theta,
+            head_dim: gguf_config.hidden_size as usize / gguf_config.num_heads as usize,
+            bos_token_id: gguf_config.bos_token_id.unwrap_or(1),
+            eos_token_id: gguf_config.eos_token_id.unwrap_or(2),
+            pad_token_id: gguf_config.pad_token_id,
+        };
+
+        // Validate config
+        if config.hidden_size == 0 || config.num_layers == 0 || config.vocab_size == 0 {
+            return Err(EngineError::InvalidConfig(
+                "Missing required model dimensions".to_string(),
+            ));
+        }
+
+        // Load output norm
+        let output_norm = load_f32_tensor(&reader, "output_norm.weight")?;
+
+        // Try to load output projection (may be tied with embeddings)
+        let output_proj = load_f32_tensor(&reader, "output.weight").ok();
+
+        // Convert embeddings to BF16 for efficient output projection
+        // This halves memory bandwidth for the vocab_size × hidden_size dot products
+        tracing::info!("Converting embeddings to BF16 for output projection...");
+        let embed_tokens_bf16 = f32_slice_to_bf16(&embed_tokens);
+
+        // Convert output projection to BF16 if it exists (not tied with embeddings)
+        let output_proj_bf16 = output_proj.as_ref().map(|proj| {
+            tracing::info!("Converting output projection to BF16...");
+            f32_slice_to_bf16(proj)
+        });
+
+        // Load layer weights
+        let mut layers = Vec::with_capacity(config.num_layers);
+        for layer_idx in 0..config.num_layers {
+            let layer = load_layer_weights(&reader, layer_idx, &config)?;
+            layers.push(layer);
+        }
+
+        // Initialize KV cache
+        let kv_config = KVCacheConfig {
+            num_layers: config.num_layers,
+            num_kv_heads: config.num_kv_heads,
+            head_dim: config.head_dim,
+            max_seq_len: config.max_seq_len,
+        };
+        let kv_cache = KVCache::new(kv_config);
+
+        // Log KV cache memory usage
+        let kv_memory_mb = kv_cache.memory_bytes() / (1024 * 1024);
+        tracing::info!("KV cache allocated: {} MB", kv_memory_mb);
+
+        // Load vocabulary
+        let vocab = reader.get_vocab();
+
+        // Precompute RoPE frequencies
+        let rope_freqs = compute_rope_freqs(config.head_dim, config.rope_theta);
+
+        // Initialize native BitNet kernel with auto-tuned tiles
+        let kernel = BitNetKernel::with_auto_tune(
+            config.hidden_size,
+            config.hidden_size,
+        );
+        tracing::info!(
+            "Native kernel initialized: {} (tiles: {}x{})",
+            kernel.capabilities.description(),
+            kernel.tile_config.bm,
+            kernel.tile_config.bk,
+        );
+
+        Ok(Self {
+            config,
+            embed_tokens,
+            embed_tokens_bf16,
+            output_norm,
+            output_proj,
+            output_proj_bf16,
+            layers,
+            kv_cache,
+            vocab,
+            rope_freqs,
+            kernel,
+        })
+    }
+
+    /// Get vocabulary size.
+    pub fn vocab_size(&self) -> usize {
+        self.config.vocab_size
+    }
+
+    /// Get hidden size.
+    pub fn hidden_size(&self) -> usize {
+        self.config.hidden_size
+    }
+
+    /// Create a tokenizer from the model's vocabulary.
+    ///
+    /// Returns None if the model doesn't have a vocabulary loaded.
+    pub fn tokenizer(&self) -> Option<Tokenizer> {
+        self.vocab.as_ref().map(|v| {
+            Tokenizer::new(v.clone()).with_special_tokens(
+                Some(self.config.bos_token_id),
+                Some(self.config.eos_token_id),
+                self.config.pad_token_id,
+            )
+        })
+    }
+
+    /// Reset KV cache for new sequence.
+    pub fn reset(&mut self) {
+        self.kv_cache.clear();
+    }
+
+    /// Forward pass for a single position (decode step).
+    ///
+    /// # Arguments
+    /// * `token_id` - Input token ID
+    /// * `pos` - Position in sequence
+    ///
+    /// # Returns
+    /// Logits [vocab_size]
+    pub fn forward_one(&mut self, token_id: i32, pos: usize) -> Vec<f32> {
+        // Get embedding
+        let hidden = self.get_embedding(token_id as usize);
+
+        // Forward through layers
+        let hidden = self.forward_layers(hidden, pos, 1);
+
+        // Apply output norm and projection
+        self.forward_output(&hidden)
+    }
+
+    /// Forward pass for multiple positions (prefill).
+    ///
+    /// # Arguments
+    /// * `token_ids` - Input token IDs
+    /// * `start_pos` - Starting position
+    ///
+    /// # Returns
+    /// Logits for last position [vocab_size]
+    pub fn forward_prefill(&mut self, token_ids: &[i32], start_pos: usize) -> Vec<f32> {
+        let seq_len = token_ids.len();
+        if seq_len == 0 {
+            return vec![0.0; self.config.vocab_size];
+        }
+
+        // Get embeddings for all tokens
+        let mut hidden = Vec::with_capacity(seq_len * self.config.hidden_size);
+        for &token_id in token_ids {
+            hidden.extend_from_slice(&self.get_embedding(token_id as usize));
+        }
+
+        // Forward through layers
+        let hidden = self.forward_layers(hidden, start_pos, seq_len);
+
+        // Get logits for last position only
+        let last_hidden = &hidden[(seq_len - 1) * self.config.hidden_size..];
+        self.forward_output(last_hidden)
+    }
+
+    /// Get token embedding.
+    /// GGUF stores embeddings in PyTorch layout: [vocab_size, hidden_size] row-major.
+    /// Each row is one token's embedding vector (contiguous in memory).
+    fn get_embedding(&self, token_id: usize) -> Vec<f32> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static DEBUG_EMBEDDING: AtomicBool = AtomicBool::new(false);
+
+        let hidden_size = self.config.hidden_size;
+
+        // GGUF layout: [vocab_size, hidden_size] row-major (same as PyTorch)
+        // Row token_id is at positions [token_id * hidden_size .. (token_id + 1) * hidden_size]
+        let start = token_id * hidden_size;
+        let embedding: Vec<f32> = self.embed_tokens[start..start + hidden_size].to_vec();
+
+        // Debug: print first embedding
+        if !DEBUG_EMBEDDING.swap(true, Ordering::SeqCst) {
+            eprintln!("=== EMBEDDING DEBUG (token {}) ===", token_id);
+            eprintln!("  First 16 values: {:?}", &embedding[..16]);
+            eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}",
+                embedding.iter().cloned().fold(f32::INFINITY, f32::min),
+                embedding.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+                embedding.iter().sum::<f32>() / embedding.len() as f32);
+            // Also print L2 norm to verify embedding quality
+            let l2_norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+            eprintln!("  L2 norm: {:.6}", l2_norm);
+        }
+
+        embedding
+    }
+
+    /// Forward through all transformer layers.
+    fn forward_layers(&mut self, mut hidden: Vec<f32>, start_pos: usize, seq_len: usize) -> Vec<f32> {
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        static DEBUG_LAYER: AtomicBool = AtomicBool::new(false);
+
+        for layer_idx in 0..self.config.num_layers {
+            let debug_this = layer_idx == 0 && !DEBUG_LAYER.swap(true, AtomicOrdering::SeqCst);
+            if debug_this {
+                eprintln!("=== LAYER 0 INPUT ===");
+                eprintln!("  First 8 values: {:?}", &hidden[..8]);
+                let (min, max, sum) = hidden.iter().fold(
+                    (f32::INFINITY, f32::NEG_INFINITY, 0.0f32),
+                    |(min, max, sum), &x| (min.min(x), max.max(x), sum + x)
+                );
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, sum / hidden.len() as f32);
+            }
+
+            hidden = self.forward_layer(layer_idx, hidden, start_pos, seq_len);
+
+            if debug_this {
+                eprintln!("=== LAYER 0 OUTPUT ===");
+                eprintln!("  First 8 values: {:?}", &hidden[..8]);
+                let (min, max, sum) = hidden.iter().fold(
+                    (f32::INFINITY, f32::NEG_INFINITY, 0.0f32),
+                    |(min, max, sum), &x| (min.min(x), max.max(x), sum + x)
+                );
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, sum / hidden.len() as f32);
+            }
+        }
+        hidden
+    }
+
+    /// Forward through a single transformer layer.
+    fn forward_layer(
+        &mut self,
+        layer_idx: usize,
+        hidden: Vec<f32>,
+        start_pos: usize,
+        seq_len: usize,
+    ) -> Vec<f32> {
+        // Profile: pre-attention norm
+        let norm_start = Instant::now();
+
+        // Pre-attention norm - clone the norm weights to avoid borrow conflict
+        let attn_norm = self.layers[layer_idx].attn_norm.clone();
+        let normed = self.apply_norm(&hidden, &attn_norm, seq_len);
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_NORM_US.fetch_add(norm_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        // Attention (mutates kv_cache)
+        let attn_out = self.attention(layer_idx, &normed, start_pos, seq_len);
+
+        // Debug attention output for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_ATTN: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_ATTN.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== ATTENTION OUTPUT (layer 0) ===");
+                eprintln!("  First 8 values: {:?}", &attn_out[..8]);
+                let (min, max) = attn_out.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, attn_out.iter().sum::<f32>() / attn_out.len() as f32);
+            }
+        }
+
+        // Profile: pre-FFN norm
+        let norm_start = Instant::now();
+
+        // Residual connection
+        let mut hidden: Vec<f32> = hidden.iter().zip(attn_out.iter()).map(|(a, b)| a + b).collect();
+
+        // Debug after attention residual for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_RES1: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_RES1.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== AFTER ATTENTION RESIDUAL (layer 0) ===");
+                let (min, max) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, hidden.iter().sum::<f32>() / hidden.len() as f32);
+            }
+        }
+
+        // Pre-FFN norm - clone the norm weights to avoid borrow conflict
+        let ffn_norm = self.layers[layer_idx].ffn_norm.clone();
+        let normed = self.apply_norm(&hidden, &ffn_norm, seq_len);
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_NORM_US.fetch_add(norm_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        // FFN (immutable access to self)
+        let ffn_out = self.ffn(layer_idx, &normed, seq_len);
+
+        // Debug FFN output for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN OUTPUT (layer 0) ===");
+                eprintln!("  First 8 values: {:?}", &ffn_out[..8]);
+                let (min, max) = ffn_out.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, ffn_out.iter().sum::<f32>() / ffn_out.len() as f32);
+            }
+        }
+
+        // Residual connection
+        for (h, f) in hidden.iter_mut().zip(ffn_out.iter()) {
+            *h += f;
+        }
+
+        // Debug: Print layer output stats for all layers (first time only)
+        {
+            use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+            static DEBUG_LAYER_OUTPUTS: AtomicUsize = AtomicUsize::new(0);
+            let call_num = DEBUG_LAYER_OUTPUTS.fetch_add(1, AtomicOrdering::SeqCst);
+            // Print for first forward pass (first 30 layers = num_layers)
+            if call_num < 30 {
+                let (min, max) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("=== LAYER {} OUTPUT (pos 0) ===  Min: {:.2}, Max: {:.2}", layer_idx, min, max);
+            }
+        }
+
+        hidden
+    }
+
+    /// Apply RMS normalization.
+    fn apply_norm(&self, hidden: &[f32], gamma: &[f32], seq_len: usize) -> Vec<f32> {
+        let h = self.config.hidden_size;
+        let mut output = Vec::with_capacity(seq_len * h);
+
+        // Debug: track norm operations
+        static DEBUG_NORM_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let norm_count = DEBUG_NORM_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Debug first few norm calls
+        if norm_count < 3 {
+            eprintln!("=== APPLY_NORM DEBUG (call {}) ===", norm_count);
+            eprintln!("  hidden.len: {}, gamma.len: {}, seq_len: {}, h: {}", hidden.len(), gamma.len(), seq_len, h);
+            eprintln!("  hidden first 8: {:?}", &hidden[..8.min(hidden.len())]);
+            eprintln!("  gamma first 8: {:?}", &gamma[..8.min(gamma.len())]);
+            let (hmin, hmax) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+            let (gmin, gmax) = gamma.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+            eprintln!("  hidden min/max: {:.6}/{:.6}, gamma min/max: {:.6}/{:.6}", hmin, hmax, gmin, gmax);
+        }
+
+        for i in 0..seq_len {
+            let start = i * h;
+            let slice = &hidden[start..start + h];
+
+            // Debug RMS for first position of first few calls
+            if norm_count < 3 && i == 0 {
+                let sum_sq: f32 = slice.iter().map(|x| x * x).sum();
+                let mean_sq = sum_sq / slice.len() as f32;
+                let rms = (mean_sq + self.config.rms_norm_eps).sqrt();
+                eprintln!("  Position 0 RMS: {:.6} (sum_sq: {:.2}, len: {})", rms, sum_sq, slice.len());
+            }
+
+            let normed = rms_norm_with_scale(slice, gamma, self.config.rms_norm_eps);
+            output.extend_from_slice(&normed);
+        }
+
+        // Debug output for first few calls
+        if norm_count < 3 {
+            eprintln!("  output first 8: {:?}", &output[..8.min(output.len())]);
+            let (omin, omax) = output.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+            eprintln!("  output min/max: {:.6}/{:.6}", omin, omax);
+        }
+
+        output
+    }
+
+    /// Compute attention for a layer.
+    fn attention(
+        &mut self,
+        layer_idx: usize,
+        hidden: &[f32],
+        start_pos: usize,
+        seq_len: usize,
+    ) -> Vec<f32> {
+        let num_heads = self.config.num_heads;
+        let num_kv_heads = self.config.num_kv_heads;
+        let head_dim = self.config.head_dim;
+        let kv_dim = num_kv_heads * head_dim;
+
+        // Profile: Q/K/V projections
+        let qkv_start = Instant::now();
+
+        // Quantize input ONCE for all Q/K/V projections (3x speedup on quantization)
+        let (quantized_hidden, hidden_scale) = self.kernel.quantize_activations(hidden);
+
+        // Project Q, K, V using pre-quantized activations
+        let mut q = self.linear_forward_quantized(
+            &self.layers[layer_idx].q_proj, &quantized_hidden, hidden_scale, seq_len
+        );
+        let mut k = self.linear_forward_quantized(
+            &self.layers[layer_idx].k_proj, &quantized_hidden, hidden_scale, seq_len
+        );
+        let mut v = self.linear_forward_quantized(
+            &self.layers[layer_idx].v_proj, &quantized_hidden, hidden_scale, seq_len
+        );
+
+        // Debug Q/K/V projections for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_QKV: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_QKV.swap(true, AtomicOrdering::SeqCst) {
+                // Debug input quantization
+                eprintln!("=== LAYER 0 ATTENTION INPUT ===");
+                eprintln!("  hidden_scale: {:.6}", hidden_scale);
+                eprintln!("  First 16 quantized_hidden: {:?}", &quantized_hidden[..16.min(quantized_hidden.len())]);
+                eprintln!("  Q weight scale: {:.6}", self.layers[layer_idx].q_proj.scale);
+                eprintln!("  Q shape: ({}, {})", self.layers[layer_idx].q_proj.out_features, self.layers[layer_idx].q_proj.in_features);
+                eprintln!("  First 8 Q weight bytes: {:?}", &self.layers[layer_idx].q_proj.data[..8]);
+
+                eprintln!("=== Q PROJECTION (layer 0) ===");
+                eprintln!("  First 16 Q values: {:?}", &q[..16]);
+                let (min, max) = q.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Q min: {:.6}, max: {:.6}, mean: {:.6}", min, max, q.iter().sum::<f32>() / q.len() as f32);
+
+                eprintln!("=== K PROJECTION (layer 0) ===");
+                eprintln!("  First 16 K values: {:?}", &k[..16.min(k.len())]);
+                let (kmin, kmax) = k.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  K min: {:.6}, max: {:.6}", kmin, kmax);
+
+                // Also print Q and K at position 5 BEFORE RoPE
+                let h = self.config.hidden_size;
+                let pos5_start = 5 * h;
+                if q.len() > pos5_start + 16 {
+                    eprintln!("=== Q BEFORE ROPE (layer 0, pos 5, first 16) ===");
+                    eprintln!("  Q[pos5][0:16]: {:?}", &q[pos5_start..pos5_start + 16]);
+                }
+                let kv_dim = num_kv_heads * head_dim;
+                let k_pos5_start = 5 * kv_dim;
+                if k.len() > k_pos5_start + 16 {
+                    eprintln!("=== K BEFORE ROPE (layer 0, pos 5, first 16) ===");
+                    eprintln!("  K[pos5][0:16]: {:?}", &k[k_pos5_start..k_pos5_start + 16]);
+                }
+            }
+        }
+
+        // NOTE: SubLN for attention is applied AFTER the O projection output, not to Q/K/V
+        // See HuggingFace implementation: attn_output = self.attn_sub_norm(attn_output)
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_QKV_US.fetch_add(qkv_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        // Profile: RoPE
+        let rope_start = Instant::now();
+
+        // Apply RoPE to Q and K
+        let q = self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim);
+        let k = self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim);
+
+        // Debug RoPE output for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_ROPE: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_ROPE.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== Q AFTER ROPE (layer 0, first head) ===");
+                eprintln!("  First 16 Q values (head 0): {:?}", &q[..16]);
+                let (min, max) = q.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Q after RoPE min: {:.6}, max: {:.6}", min, max);
+                eprintln!("  start_pos: {}, seq_len: {}, num_heads: {}, head_dim: {}", start_pos, seq_len, num_heads, head_dim);
+
+                eprintln!("=== K AFTER ROPE (layer 0, first head) ===");
+                eprintln!("  First 16 K values (head 0): {:?}", &k[..16.min(k.len())]);
+                let (kmin, kmax) = k.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  K after RoPE min: {:.6}, max: {:.6}", kmin, kmax);
+
+                // Print Q and K at position 5 (last) to verify layout
+                let h = self.config.hidden_size;
+                let pos5_start = 5 * h;
+                if q.len() > pos5_start + 16 {
+                    eprintln!("=== Q AFTER ROPE (layer 0, pos 5, first 16) ===");
+                    eprintln!("  Q len: {}, pos5_start: {}", q.len(), pos5_start);
+                    eprintln!("  Q[pos5][0:16]: {:?}", &q[pos5_start..pos5_start + 16]);
+                }
+                let kv_h = kv_dim;
+                let k_pos5_start = 5 * kv_h;
+                if k.len() > k_pos5_start + 16 {
+                    eprintln!("=== K AFTER ROPE (layer 0, pos 5, first 16) ===");
+                    eprintln!("  K len: {}, k_pos5_start: {}", k.len(), k_pos5_start);
+                    eprintln!("  K[pos5][0:16]: {:?}", &k[k_pos5_start..k_pos5_start + 16]);
+                }
+            }
+        }
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_ROPE_US.fetch_add(rope_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        // Update KV cache
+        for i in 0..seq_len {
+            let pos = start_pos + i;
+            let k_slice = &k[i * kv_dim..(i + 1) * kv_dim];
+            let v_slice = &v[i * kv_dim..(i + 1) * kv_dim];
+            self.kv_cache.update(layer_idx, pos, k_slice, v_slice);
+        }
+
+        // Profile: attention scores
+        let attn_start = Instant::now();
+
+        // Compute attention scores and output
+        let total_seq_len = start_pos + seq_len;
+        let attn_out = self.compute_attention_scores(
+            &q, layer_idx, start_pos, seq_len, total_seq_len, num_heads, num_kv_heads, head_dim,
+        );
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_ATTN_SCORES_US.fetch_add(attn_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        // Profile: output projection
+        let o_proj_start = Instant::now();
+
+        // Output projection first
+        let mut result = self.linear_forward_ref(&self.layers[layer_idx].o_proj, &attn_out, seq_len);
+
+        // Apply SubLN AFTER O projection (llama.cpp order)
+        if let Some(ref sub_norm) = self.layers[layer_idx].attn_sub_norm {
+            let h = self.config.hidden_size;
+            for i in 0..seq_len {
+                let slice = &mut result[i * h..(i + 1) * h];
+                let normed = rms_norm_with_scale(slice, sub_norm, self.config.rms_norm_eps);
+                slice.copy_from_slice(&normed);
+            }
+        }
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_O_PROJ_US.fetch_add(o_proj_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        result
+    }
+
+    /// Compute attention scores and weighted values.
+    fn compute_attention_scores(
+        &self,
+        q: &[f32],
+        layer_idx: usize,
+        start_pos: usize,
+        q_len: usize,
+        kv_len: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let h = self.config.hidden_size;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let heads_per_kv = num_heads / num_kv_heads;
+
+        let layer_cache = self.kv_cache.layer(layer_idx);
+        let all_keys = layer_cache.get_keys(kv_len);
+        let all_values = layer_cache.get_values(kv_len);
+
+        let mut output = vec![0.0; q_len * h];
+
+        // For each query position
+        for qi in 0..q_len {
+            // For each head
+            for head in 0..num_heads {
+                let kv_head = head / heads_per_kv;
+
+                // Get query for this head
+                let q_start = qi * h + head * head_dim;
+                let q_vec = &q[q_start..q_start + head_dim];
+
+                // Compute attention scores with all keys
+                let mut scores = vec![0.0; kv_len];
+                for ki in 0..kv_len {
+                    let k_start = ki * num_kv_heads * head_dim + kv_head * head_dim;
+                    let k_vec = &all_keys[k_start..k_start + head_dim];
+                    scores[ki] = dot(q_vec, k_vec) * scale;
+                }
+
+                // Apply causal mask (for positions after current)
+                // current_pos is ABSOLUTE position in the sequence
+                let absolute_pos = start_pos + qi;
+                for ki in (absolute_pos + 1)..kv_len {
+                    scores[ki] = f32::NEG_INFINITY;
+                }
+
+                // Softmax
+                softmax_inplace(&mut scores);
+
+                // Debug: print attention scores/weights for last position, head 0, layer 0
+                if layer_idx == 0 && qi == q_len - 1 && head == 0 {
+                    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+                    static DEBUG_ATTN_WEIGHTS: AtomicBool = AtomicBool::new(false);
+                    if !DEBUG_ATTN_WEIGHTS.swap(true, AtomicOrdering::SeqCst) {
+                        // Print Q values for this position
+                        eprintln!("=== Q VALUES (layer 0, head 0, last pos) ===");
+                        eprintln!("  Q first 16: {:?}", &q_vec[..16.min(q_vec.len())]);
+
+                        // Print K values for positions 0 and 1
+                        for ki in 0..2.min(kv_len) {
+                            let k_start = ki * num_kv_heads * head_dim + kv_head * head_dim;
+                            let k_vec = &all_keys[k_start..k_start + head_dim];
+                            eprintln!("=== K VALUES (layer 0, head 0, pos {}) ===", ki);
+                            eprintln!("  K first 16: {:?}", &k_vec[..16.min(k_vec.len())]);
+                        }
+
+                        // Print raw scores before softmax
+                        let raw_scores: Vec<f32> = (0..kv_len).map(|ki| {
+                            let k_start = ki * num_kv_heads * head_dim + kv_head * head_dim;
+                            let k_vec = &all_keys[k_start..k_start + head_dim];
+                            dot(q_vec, k_vec) * scale
+                        }).collect();
+                        eprintln!("=== ATTENTION RAW SCORES (layer 0, head 0, last pos) ===");
+                        eprintln!("  scale: {:.6}, raw_scores: {:?}", scale, raw_scores);
+                        eprintln!("=== ATTENTION WEIGHTS (layer 0, head 0, last pos) ===");
+                        eprintln!("  kv_len: {}, scores: {:?}", kv_len, &scores);
+                    }
+                }
+
+                // Weighted sum of values
+                let out_start = qi * h + head * head_dim;
+                for ki in 0..kv_len {
+                    let v_start = ki * num_kv_heads * head_dim + kv_head * head_dim;
+                    let v_vec = &all_values[v_start..v_start + head_dim];
+                    for (j, &v) in v_vec.iter().enumerate() {
+                        output[out_start + j] += scores[ki] * v;
+                    }
+                }
+            }
+        }
+
+        output
+    }
+
+    /// FFN forward pass.
+    fn ffn(&self, layer_idx: usize, hidden: &[f32], seq_len: usize) -> Vec<f32> {
+        // Profile: entire FFN
+        let ffn_start = Instant::now();
+
+        // Debug FFN input for layer 0 BEFORE quantization
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN_INPUT: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN_INPUT.swap(true, AtomicOrdering::SeqCst) {
+                // NOTE: The 'hidden' parameter here is ALREADY NORMALIZED (from apply_norm in layer_forward)
+                // So these values reflect post-norm, not pre-norm
+                eprintln!("=== FFN INPUT (already normed, layer 0) ===");
+                eprintln!("  Length: {}, seq_len: {}", hidden.len(), seq_len);
+                eprintln!("  First 8 values: {:?}", &hidden[..8.min(hidden.len())]);
+                let (min, max) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, hidden.iter().sum::<f32>() / hidden.len() as f32);
+                // Print the FFN norm gamma values
+                let ffn_gamma = &self.layers[layer_idx].ffn_norm;
+                let (gmin, gmax) = ffn_gamma.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  FFN norm gamma first 8: {:?}", &ffn_gamma[..8.min(ffn_gamma.len())]);
+                eprintln!("  FFN norm gamma min: {:.6}, max: {:.6}", gmin, gmax);
+
+                // Debug gate_proj dimensions
+                let gp = &self.layers[layer_idx].gate_proj;
+                eprintln!("=== GATE_PROJ WEIGHTS ===");
+                eprintln!("  in_features: {}, out_features: {}", gp.in_features, gp.out_features);
+                eprintln!("  data len: {} bytes, scale: {}", gp.data.len(), gp.scale);
+                eprintln!("  First 8 packed bytes: {:?}", &gp.data[..8.min(gp.data.len())]);
+            }
+        }
+
+        // Quantize input ONCE for gate and up projections (2x speedup on quantization)
+        let (quantized_hidden, hidden_scale) = self.kernel.quantize_activations(hidden);
+
+        // Debug quantized values for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_QUANT: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_QUANT.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== QUANTIZED FFN INPUT ===");
+                eprintln!("  Length: {}, scale: {}", quantized_hidden.len(), hidden_scale);
+                eprintln!("  First 8 values: {:?}", &quantized_hidden[..8.min(quantized_hidden.len())]);
+                let (min, max) = quantized_hidden.iter().fold((i8::MAX, i8::MIN), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {}, Max: {}", min, max);
+            }
+        }
+
+        // Gate and up projections using pre-quantized activations
+        let mut gate = self.linear_forward_quantized(
+            &self.layers[layer_idx].gate_proj, &quantized_hidden, hidden_scale, seq_len
+        );
+        let mut up = self.linear_forward_quantized(
+            &self.layers[layer_idx].up_proj, &quantized_hidden, hidden_scale, seq_len
+        );
+
+        // Debug FFN gate/up for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN_GATE: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN_GATE.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN GATE (before SubLN) ===");
+                eprintln!("  First 8 values: {:?}", &gate[..8]);
+                let (min, max) = gate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, gate.iter().sum::<f32>() / gate.len() as f32);
+
+                eprintln!("=== FFN UP (before SubLN) ===");
+                eprintln!("  First 8 values: {:?}", &up[..8]);
+                let (min, max) = up.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, up.iter().sum::<f32>() / up.len() as f32);
+            }
+        }
+
+        // Apply squared ReLU to gate and multiply with up
+        // BitNet uses ReLU² (squared ReLU): f(x) = max(0, x)²
+        // Correct order per HuggingFace: down_proj(SubLN(act_fn(gate) * up))
+        squared_relu_inplace(&mut gate);
+
+        // Debug after squared ReLU
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN_RELU: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN_RELU.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN GATE (after squared ReLU) ===");
+                let (min, max) = gate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, gate.iter().sum::<f32>() / gate.len() as f32);
+            }
+        }
+
+        let mut intermediate: Vec<f32> = gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
+
+        // Debug intermediate before SubLN
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN_INTER: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN_INTER.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN INTERMEDIATE (gate * up, before SubLN) ===");
+                eprintln!("  First 8 values: {:?}", &intermediate[..8]);
+                let (min, max) = intermediate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, intermediate.iter().sum::<f32>() / intermediate.len() as f32);
+            }
+        }
+
+        // Apply SubLN to intermediate (BEFORE down projection, per HuggingFace implementation)
+        // This is the KEY fix - SubLN normalizes the gated output, not gate/up separately
+        if let Some(ref sub_norm) = self.layers[layer_idx].ffn_sub_norm {
+            let inter_size = self.config.intermediate_size;
+            for i in 0..seq_len {
+                let slice = &mut intermediate[i * inter_size..(i + 1) * inter_size];
+                let normed = rms_norm_with_scale(slice, sub_norm, self.config.rms_norm_eps);
+                slice.copy_from_slice(&normed);
+            }
+        }
+
+        // Debug intermediate after SubLN
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_DOWN: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_DOWN.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FFN INTERMEDIATE (after SubLN, before down_proj) ===");
+                let (min, max) = intermediate.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                let nonzero = intermediate.iter().filter(|&&x| x.abs() > 1e-6).count();
+                eprintln!("  Min: {:.2}, Max: {:.2}, Mean: {:.4}", min, max, intermediate.iter().sum::<f32>() / intermediate.len() as f32);
+                eprintln!("  Non-zero: {} / {} ({:.1}%)", nonzero, intermediate.len(), 100.0 * nonzero as f32 / intermediate.len() as f32);
+                eprintln!("  Quantization scale: {:.4}", max.abs().max(min.abs()) / 127.0);
+            }
+        }
+
+        // Down projection
+        let result = self.linear_forward_ref(&self.layers[layer_idx].down_proj, &intermediate, seq_len);
+
+        // DEBUG: down_proj output for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_DOWN_OUT: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_DOWN_OUT.swap(true, AtomicOrdering::SeqCst) {
+                let dp = &self.layers[layer_idx].down_proj;
+                eprintln!("=== DOWN_PROJ (layer 0) ===");
+                eprintln!("  in_features: {}, out_features: {}", dp.in_features, dp.out_features);
+                eprintln!("  weight scale: {:.6}", dp.scale);
+                eprintln!("  Input range: ({:.2}, {:.2})",
+                    intermediate.iter().fold(f32::INFINITY, |a, &b| a.min(b)),
+                    intermediate.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)));
+                let input_scale = intermediate.iter().map(|x| x.abs()).fold(0.0f32, |a, b| a.max(b)) / 127.0;
+                eprintln!("  Input quant scale: {:.6}", input_scale);
+                eprintln!("  Combined scale: {:.6}", dp.scale * input_scale);
+                eprintln!("  Output first 8: {:?}", &result[..8.min(result.len())]);
+                let (min, max) = result.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Output range: ({:.2}, {:.2})", min, max);
+            }
+        }
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_FFN_US.fetch_add(ffn_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        result
+    }
+
+    /// Apply linear projection using native BitNet kernels.
+    ///
+    /// This is the core operation that uses SIMD-optimized ternary GEMM:
+    /// output = weights * quantize(input) * scale
+    fn linear_forward_ref(
+        &self,
+        weights: &NativeWeightFormat,
+        input: &[f32],
+        seq_len: usize,
+    ) -> Vec<f32> {
+        let in_features = weights.in_features;
+        let out_features = weights.out_features;
+
+        // Validate dimensions
+        debug_assert_eq!(
+            input.len(),
+            seq_len * in_features,
+            "Input size mismatch: expected {} ({}x{}), got {}",
+            seq_len * in_features,
+            seq_len,
+            in_features,
+            input.len()
+        );
+
+        // Quantize activations to INT8
+        // The kernel handles finding the optimal scale factor
+        let (quantized_input, input_scale) = self.kernel.quantize_activations(input);
+
+        // Compute GEMM: output = packed_weights @ quantized_input
+        // Dimensions: [out_features x in_features] @ [in_features x seq_len] = [out_features x seq_len]
+        //
+        // The native kernel expects:
+        // - M = out_features
+        // - N = seq_len (batch size)
+        // - K = in_features
+        // - weights: [M x K/4] packed ternary
+        // - activations: [K x N] INT8
+        // - output: [M x N] FP32
+        // HuggingFace AutoBitLinear (which this model uses) MULTIPLIES by weight_scale
+        // AutoBitLinear: output = W @ fake_quant(x) * weight_scale
+        // Our int8 version: output = W @ quant(x) * input_scale * weight_scale
+        self.kernel.gemm(
+            out_features,
+            seq_len,
+            in_features,
+            &weights.data,
+            &quantized_input,
+            input_scale * weights.scale,
+        )
+    }
+
+    /// Apply linear projection with pre-quantized activations.
+    ///
+    /// Use this when the same input is used for multiple projections
+    /// (e.g., Q/K/V in attention, gate/up in FFN) to avoid redundant quantization.
+    #[inline]
+    fn linear_forward_quantized(
+        &self,
+        weights: &NativeWeightFormat,
+        quantized_input: &[i8],
+        input_scale: f32,
+        seq_len: usize,
+    ) -> Vec<f32> {
+        let in_features = weights.in_features;
+        let out_features = weights.out_features;
+
+        debug_assert_eq!(
+            quantized_input.len(),
+            seq_len * in_features,
+            "Quantized input size mismatch"
+        );
+
+        // Debug: log unusual scale values
+        // HuggingFace AutoBitLinear MULTIPLIES by weight_scale
+        let combined_scale = input_scale * weights.scale;
+        static SCALE_DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let debug_num = SCALE_DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if debug_num < 20 {
+            eprintln!("=== LINEAR FORWARD #{} ===", debug_num);
+            eprintln!("  Shape: ({}, {}), weight_scale: {:.6}, input_scale: {:.6}, combined: {:.6}",
+                out_features, in_features, weights.scale, input_scale, combined_scale);
+        }
+        if combined_scale > 10.0 || combined_scale < 1e-6 || combined_scale.is_nan() {
+            eprintln!("WARNING: linear_forward with unusual combined scale: {:.6}", combined_scale);
+            eprintln!("  weight_scale: {:.6}, input_scale: {:.6}", weights.scale, input_scale);
+        }
+
+        // Debug: For first call (Q proj layer 0), compute and print raw integer dot product
+        if debug_num == 0 {
+            use crate::kernels::bitnet::vec_dot_scalar;
+            let k_packed = in_features / 4;
+            let first_row_weights = &weights.data[..k_packed];
+            let first_col_acts = &quantized_input[..in_features];
+            let int_dot = vec_dot_scalar(first_row_weights, first_col_acts);
+            let scaled_result = (int_dot as f32) * combined_scale;
+            eprintln!("=== RAW DOT PRODUCT DEBUG (Q proj row 0, col 0) ===");
+            eprintln!("  Integer dot product: {}", int_dot);
+            eprintln!("  Scaled result: {:.6} (int_dot * {:.6})", scaled_result, combined_scale);
+            eprintln!("  For comparison, bitnet.cpp would compute:");
+            let act_sum: i32 = first_col_acts.iter().map(|&x| x as i32).sum();
+            eprintln!("    act_sum = {}", act_sum);
+            eprintln!("    (encoded_dot - act_sum) = {} - {} = {}", int_dot + act_sum, act_sum, int_dot);
+            eprintln!("    Since we use true ternary, our dot already equals true_dot");
+        }
+
+        self.kernel.gemm(
+            out_features,
+            seq_len,
+            in_features,
+            &weights.data,
+            quantized_input,
+            combined_scale,
+        )
+    }
+
+    /// Apply RoPE positional encoding.
+    fn apply_rope(
+        &self,
+        x: &[f32],
+        start_pos: usize,
+        seq_len: usize,
+        num_heads: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let mut output = x.to_vec();
+        let half_dim = head_dim / 2;
+
+        for i in 0..seq_len {
+            let pos = start_pos + i;
+            for head in 0..num_heads {
+                let offset = i * num_heads * head_dim + head * head_dim;
+
+                // Use INTERLEAVED indexing: (2j, 2j+1) pairs, NOT split-half
+                // This matches the LLaMA RoPE convention
+                for j in 0..half_dim {
+                    let freq = self.rope_freqs[j];
+                    let angle = pos as f32 * freq;
+                    let cos = angle.cos();
+                    let sin = angle.sin();
+
+                    // Interleaved pairs: (0,1), (2,3), (4,5), etc.
+                    let x0 = output[offset + 2 * j];
+                    let x1 = output[offset + 2 * j + 1];
+
+                    output[offset + 2 * j] = x0 * cos - x1 * sin;
+                    output[offset + 2 * j + 1] = x0 * sin + x1 * cos;
+                }
+            }
+        }
+
+        output
+    }
+
+    /// Forward through output norm and projection.
+    /// Uses BF16 weights to halve memory bandwidth (major bottleneck).
+    fn forward_output(&self, hidden: &[f32]) -> Vec<f32> {
+        // Profile: output projection
+        let output_start = Instant::now();
+
+        // DEBUG: Print final hidden state before norm
+        {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FINAL: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FINAL.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FINAL HIDDEN (before output norm) ===");
+                eprintln!("  Length: {}", hidden.len());
+                eprintln!("  First 8 values: {:?}", &hidden[..8.min(hidden.len())]);
+                let (min, max) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                let mean = hidden.iter().sum::<f32>() / hidden.len() as f32;
+                eprintln!("  Min: {:.4}, Max: {:.4}, Mean: {:.4}", min, max, mean);
+            }
+        }
+
+        // Apply final norm
+        let normed = rms_norm_with_scale(hidden, &self.output_norm, self.config.rms_norm_eps);
+
+        // DEBUG: Print normed values
+        {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_NORMED: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_NORMED.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== NORMED HIDDEN (after output norm) ===");
+                eprintln!("  First 8 values: {:?}", &normed[..8.min(normed.len())]);
+                let (min, max) = normed.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                let mean = normed.iter().sum::<f32>() / normed.len() as f32;
+                eprintln!("  Min: {:.4}, Max: {:.4}, Mean: {:.4}", min, max, mean);
+                // Also print output norm weights
+                eprintln!("  Output norm weights first 8: {:?}", &self.output_norm[..8.min(self.output_norm.len())]);
+            }
+        }
+
+        // Project to vocabulary using parallel computation with BF16 weights
+        // BF16 halves memory bandwidth: 128K vocab × 2560 hidden × 2 bytes = 655MB
+        // vs F32: 128K vocab × 2560 hidden × 4 bytes = 1.3GB
+        let hidden_size = self.config.hidden_size;
+        let vocab_size = self.config.vocab_size;
+
+        // GGUF stores embeddings in PyTorch layout: [vocab_size, hidden_size] row-major.
+        // For tied embeddings (LM head = embedding.T):
+        //   logits = hidden @ embedding.T
+        //   logits[i] = Σ_h hidden[h] * embedding[i, h]
+        //   With row-major: embedding[i, h] = data[i * hidden_size + h]
+        //
+        // Computation: for each vocab token i, dot product hidden with row i of embedding
+        let logits = if let Some(ref output_proj_bf16) = self.output_proj_bf16 {
+            // Separate output projection (same layout as embeddings)
+            let mut logits = vec![0.0f32; vocab_size];
+            for i in 0..vocab_size {
+                let row_start = i * hidden_size;
+                let mut sum = 0.0f32;
+                for h in 0..hidden_size {
+                    sum += normed[h] * bf16_to_f32(output_proj_bf16[row_start + h]);
+                }
+                logits[i] = sum;
+            }
+            logits
+        } else {
+            // Tied embeddings - dot product hidden with each embedding row
+            // logits[i] = dot(hidden, embedding[i])
+            let mut logits = vec![0.0f32; vocab_size];
+            for i in 0..vocab_size {
+                let row_start = i * hidden_size;
+                let mut sum = 0.0f32;
+                for h in 0..hidden_size {
+                    sum += normed[h] * bf16_to_f32(self.embed_tokens_bf16[row_start + h]);
+                }
+                logits[i] = sum;
+            }
+            logits
+        };
+
+        if PROFILING_ENABLED.load(Ordering::Relaxed) {
+            PROFILE_OUTPUT_US.fetch_add(output_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        logits
+    }
+
+    /// Generate tokens.
+    pub fn generate(
+        &mut self,
+        input_ids: &[i32],
+        max_tokens: usize,
+        sampling_config: &SamplingConfig,
+    ) -> Vec<i32> {
+        let mut rng = rand::thread_rng();
+        let mut output_ids = Vec::with_capacity(max_tokens);
+
+        // Collect all context tokens for repetition penalty
+        let mut all_tokens: Vec<i32> = input_ids.to_vec();
+
+        // Get EOS token from model config
+        let eos_token_id = self.config.eos_token_id as usize;
+
+        // Prefill
+        let logits = self.forward_prefill(input_ids, 0);
+
+        // DEBUG: Print logits statistics
+        static DEBUG_LOGITS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !DEBUG_LOGITS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let min = logits.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mean: f32 = logits.iter().sum::<f32>() / logits.len() as f32;
+            let std: f32 = (logits.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / logits.len() as f32).sqrt();
+            eprintln!("=== LOGITS STATS (first forward) ===");
+            eprintln!("Length: {}, Min: {:.4}, Max: {:.4}, Mean: {:.4}, Std: {:.4}", logits.len(), min, max, mean, std);
+            // Top 5 tokens
+            let mut indexed: Vec<(usize, f32)> = logits.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            eprintln!("Top 5 logits: {:?}", &indexed[..5.min(indexed.len())]);
+            eprintln!("NaN count: {}, Inf count: {}", logits.iter().filter(|x| x.is_nan()).count(), logits.iter().filter(|x| x.is_infinite()).count());
+            // Check specific tokens that should be predicted
+            eprintln!("Token 11 (comma) logit: {:.4}, rank: {}", logits[11], indexed.iter().position(|(i, _)| *i == 11).unwrap_or(usize::MAX));
+            eprintln!("Token 0 logit: {:.4}, Token 1 logit: {:.4}", logits[0], logits[1]);
+            // Check token 12366 (" Paris") - should be top prediction for "The capital of France is"
+            if logits.len() > 12366 {
+                let paris_rank = indexed.iter().position(|(i, _)| *i == 12366).unwrap_or(usize::MAX);
+                eprintln!("Token 12366 (Paris) logit: {:.4}, rank: {}", logits[12366], paris_rank);
+
+                // Check embedding values for Paris
+                let hidden_size = 2560;
+                let paris_emb_start = 12366 * hidden_size;
+                eprintln!("Paris embedding first 8: {:?}",
+                    &self.embed_tokens[paris_emb_start..paris_emb_start + 8]);
+            }
+        }
+
+        let token_id = sample_token_with_penalty(&logits, sampling_config, &mut rng, &all_tokens);
+        output_ids.push(token_id as i32);
+        all_tokens.push(token_id as i32);
+
+        // Check for EOS
+        if token_id == eos_token_id {
+            return output_ids;
+        }
+
+        // Decode
+        let mut pos = input_ids.len();
+        for _ in 1..max_tokens {
+            let logits = self.forward_one(output_ids.last().copied().unwrap_or(0), pos);
+            let token_id = sample_token_with_penalty(&logits, sampling_config, &mut rng, &all_tokens);
+
+            // Check for EOS
+            if token_id == eos_token_id {
+                output_ids.push(token_id as i32);
+                break;
+            }
+
+            output_ids.push(token_id as i32);
+            all_tokens.push(token_id as i32);
+            pos += 1;
+        }
+
+        output_ids
+    }
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Load an F32 tensor from GGUF.
+fn load_f32_tensor(reader: &GgufReader, name: &str) -> Result<Vec<f32>, EngineError> {
+    let tensor = reader
+        .find_tensor(name)
+        .ok_or_else(|| EngineError::MissingTensor(name.to_string()))?;
+
+    // Debug: print tensor info for norm weights
+    if name.contains("norm") {
+        eprintln!("=== LOADING F32 TENSOR '{}' ===", name);
+        eprintln!("  shape: {:?}, dtype: {:?}, offset: {}, n_bytes: {}",
+            tensor.shape, tensor.dtype, tensor.data_offset, tensor.n_bytes);
+    }
+
+    let data = reader.tensor_data(tensor);
+
+    // Debug: print first bytes for norm weights
+    if name.contains("norm") {
+        eprintln!("  First 16 raw bytes: {:02x?}", &data[..16.min(data.len())]);
+    }
+
+    match tensor.dtype {
+        GgmlQuantType::F32 => {
+            // Direct F32 data
+            let floats: Vec<f32> = data
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+
+            // Debug: print first values for norm weights
+            if name.contains("norm") {
+                eprintln!("  First 4 values: {:?}", &floats[..4.min(floats.len())]);
+            }
+
+            Ok(floats)
+        }
+        GgmlQuantType::F16 => {
+            // Convert F16 to F32
+            let floats: Vec<f32> = data
+                .chunks_exact(2)
+                .map(|b| f16_to_f32(u16::from_le_bytes([b[0], b[1]])))
+                .collect();
+            Ok(floats)
+        }
+        GgmlQuantType::BF16 => {
+            // Convert BF16 to F32
+            let floats: Vec<f32> = data
+                .chunks_exact(2)
+                .map(|b| bf16_to_f32(u16::from_le_bytes([b[0], b[1]])))
+                .collect();
+            Ok(floats)
+        }
+        _ => Err(EngineError::InvalidConfig(format!(
+            "Unsupported dtype {:?} for tensor {}",
+            tensor.dtype, name
+        ))),
+    }
+}
+
+/// Load quantized weights and repack to native format.
+fn load_quantized_weights(
+    reader: &GgufReader,
+    name: &str,
+) -> Result<NativeWeightFormat, EngineError> {
+    let tensor = reader
+        .find_tensor(name)
+        .ok_or_else(|| EngineError::MissingTensor(name.to_string()))?;
+
+    let data = reader.tensor_data(tensor);
+
+    if !tensor.dtype.is_ternary() {
+        return Err(EngineError::InvalidConfig(format!(
+            "Expected ternary weights for {}, got {:?}",
+            name, tensor.dtype
+        )));
+    }
+
+    let result = repack_ternary_weights(data, tensor.dtype, &tensor.shape)?;
+
+    // Debug: Print Q projection details for comparison with Python
+    if name == "blk.0.attn_q.weight" {
+        eprintln!("\n=== Q PROJECTION DEBUG (blk.0.attn_q.weight) ===");
+        eprintln!("GGUF shape: {:?}, dtype: {:?}", tensor.shape, tensor.dtype);
+        eprintln!("Native format: out={}, in={}, scale={:.6}", result.out_features, result.in_features, result.scale);
+
+        // Print first 8 raw bytes from GGUF
+        if data.len() >= 8 {
+            eprintln!("Raw GGUF first 8 bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
+        }
+
+        // Decode first 32 ternary values manually to compare with Python
+        // Python expects: [0, -1, -1, 1, 0, -1, 1, -1, 0, 1, -1, 0, -1, 1, 1, 0, 0, 0, 0, 0, -1, 0, -1, 1, 0, -1, 0, -1, 0, 0, 0, 0]
+        let mut first_32 = Vec::with_capacity(32);
+        for byte_idx in 0..8 {
+            if byte_idx >= data.len() { break; }
+            let byte = data[byte_idx];
+            for shift in [6, 4, 2, 0] {
+                let val = (byte >> shift) & 0x03;
+                let ternary = match val { 0 => -1i8, 1 => 0i8, 2 => 1i8, _ => 0i8 };
+                first_32.push(ternary);
+            }
+        }
+        eprintln!("Rust decoded first 32: {:?}", first_32);
+        eprintln!("Python expected first 32: [0, -1, -1, 1, 0, -1, 1, -1, 0, 1, -1, 0, -1, 1, 1, 0, 0, 0, 0, 0, -1, 0, -1, 1, 0, -1, 0, -1, 0, 0, 0, 0]");
+
+        // Check packed_size location for scale
+        let n_elements = result.out_features * result.in_features;
+        let packed_size = n_elements / 4;
+        if data.len() >= packed_size + 4 {
+            let scale_bytes = &data[packed_size..packed_size + 4];
+            let scale_val = f32::from_le_bytes([scale_bytes[0], scale_bytes[1], scale_bytes[2], scale_bytes[3]]);
+            eprintln!("Scale at offset {}: {:.6} (bytes: {:02x} {:02x} {:02x} {:02x})",
+                packed_size, scale_val, scale_bytes[0], scale_bytes[1], scale_bytes[2], scale_bytes[3]);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Load layer weights.
+fn load_layer_weights(
+    reader: &GgufReader,
+    layer_idx: usize,
+    config: &BitNetConfig,
+) -> Result<LayerWeights, EngineError> {
+    let prefix = format!("blk.{}", layer_idx);
+
+    // Load attention norm
+    let attn_norm = load_f32_tensor(reader, &format!("{}.attn_norm.weight", prefix))?;
+
+    // Load attention sub-norm (SubLN - applied after Q/K/V projections)
+    let attn_sub_norm = load_f32_tensor(reader, &format!("{}.attn_sub_norm.weight", prefix)).ok();
+
+    // Load attention projections
+    let q_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_q.weight", prefix), config)?;
+    let k_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_k.weight", prefix), config)?;
+    let v_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_v.weight", prefix), config)?;
+    let o_proj = load_quantized_weights_or_f32(reader, &format!("{}.attn_output.weight", prefix), config)?;
+
+    // Load FFN norm
+    let ffn_norm = load_f32_tensor(reader, &format!("{}.ffn_norm.weight", prefix))?;
+
+    // Load FFN sub-norm (SubLN - applied after gate/up projections)
+    let ffn_sub_norm = load_f32_tensor(reader, &format!("{}.ffn_sub_norm.weight", prefix)).ok();
+
+    // Load FFN projections
+    let gate_proj = load_quantized_weights_or_f32(reader, &format!("{}.ffn_gate.weight", prefix), config)?;
+    let up_proj = load_quantized_weights_or_f32(reader, &format!("{}.ffn_up.weight", prefix), config)?;
+    let down_proj = load_quantized_weights_or_f32(reader, &format!("{}.ffn_down.weight", prefix), config)?;
+
+    Ok(LayerWeights {
+        attn_norm,
+        attn_sub_norm,
+        q_proj,
+        k_proj,
+        v_proj,
+        o_proj,
+        ffn_norm,
+        ffn_sub_norm,
+        gate_proj,
+        up_proj,
+        down_proj,
+        q_lrc_u: None,
+        q_lrc_v: None,
+    })
+}
+
+/// Load weights as either quantized or F32 (fallback).
+fn load_quantized_weights_or_f32(
+    reader: &GgufReader,
+    name: &str,
+    config: &BitNetConfig,
+) -> Result<NativeWeightFormat, EngineError> {
+    // Try quantized first
+    if let Ok(weights) = load_quantized_weights(reader, name) {
+        return Ok(weights);
+    }
+
+    // Fallback to F32 (convert to pseudo-quantized format)
+    let tensor = reader
+        .find_tensor(name)
+        .ok_or_else(|| EngineError::MissingTensor(name.to_string()))?;
+
+    let _f32_data = load_f32_tensor(reader, name)?;
+
+    // Create dummy native format (weights stored as F32, scale = 1)
+    // This is inefficient but allows F32 models to work
+    // GGUF stores shapes in column-major order:
+    // shape[0] = columns (in_features), shape[1] = rows (out_features)
+    Ok(NativeWeightFormat {
+        data: vec![0; tensor.n_elements / 4], // Placeholder
+        scale: 1.0,
+        in_features: tensor.shape.first().copied().unwrap_or(config.hidden_size),
+        out_features: tensor.shape.get(1).copied().unwrap_or(0),
+    })
+}
+
+/// Compute RoPE frequencies.
+fn compute_rope_freqs(head_dim: usize, theta: f32) -> Vec<f32> {
+    let half_dim = head_dim / 2;
+    (0..half_dim)
+        .map(|i| 1.0 / theta.powf(2.0 * i as f32 / head_dim as f32))
+        .collect()
+}
+
+/// SIMD-optimized dot product for f32 vectors.
+/// Uses ARM NEON or falls back to scalar.
+#[inline]
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        dot_neon(a, b)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    }
+}
+
+/// ARM NEON optimized f32 dot product.
+/// Processes 4 floats per iteration using SIMD.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn dot_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+
+    debug_assert_eq!(a.len(), b.len());
+    let n = a.len();
+
+    unsafe {
+        let mut acc0 = vdupq_n_f32(0.0);
+        let mut acc1 = vdupq_n_f32(0.0);
+        let mut acc2 = vdupq_n_f32(0.0);
+        let mut acc3 = vdupq_n_f32(0.0);
+
+        let chunks = n / 16;
+        let a_ptr = a.as_ptr();
+        let b_ptr = b.as_ptr();
+
+        // Process 16 elements per iteration (4 NEON registers)
+        for i in 0..chunks {
+            let offset = i * 16;
+            let a0 = vld1q_f32(a_ptr.add(offset));
+            let a1 = vld1q_f32(a_ptr.add(offset + 4));
+            let a2 = vld1q_f32(a_ptr.add(offset + 8));
+            let a3 = vld1q_f32(a_ptr.add(offset + 12));
+            let b0 = vld1q_f32(b_ptr.add(offset));
+            let b1 = vld1q_f32(b_ptr.add(offset + 4));
+            let b2 = vld1q_f32(b_ptr.add(offset + 8));
+            let b3 = vld1q_f32(b_ptr.add(offset + 12));
+            acc0 = vfmaq_f32(acc0, a0, b0);
+            acc1 = vfmaq_f32(acc1, a1, b1);
+            acc2 = vfmaq_f32(acc2, a2, b2);
+            acc3 = vfmaq_f32(acc3, a3, b3);
+        }
+
+        // Combine accumulators
+        acc0 = vaddq_f32(acc0, acc1);
+        acc2 = vaddq_f32(acc2, acc3);
+        acc0 = vaddq_f32(acc0, acc2);
+
+        // Horizontal sum
+        let mut sum = vaddvq_f32(acc0);
+
+        // Handle remaining elements
+        for i in (chunks * 16)..n {
+            sum += *a_ptr.add(i) * *b_ptr.add(i);
+        }
+
+        sum
+    }
+}
+
+// ============================================================================
+// BF16 Support for Output Projection
+// ============================================================================
+
+/// Convert F32 to BF16 (just truncate mantissa)
+#[inline]
+fn f32_to_bf16(x: f32) -> u16 {
+    (x.to_bits() >> 16) as u16
+}
+
+/// Convert BF16 to F32 (just shift up)
+#[inline]
+fn bf16_to_f32(x: u16) -> f32 {
+    f32::from_bits((x as u32) << 16)
+}
+
+/// Convert F32 slice to BF16 Vec
+fn f32_slice_to_bf16(input: &[f32]) -> Vec<u16> {
+    input.iter().map(|&x| f32_to_bf16(x)).collect()
+}
+
+/// Dot product with BF16 weights and F32 activations.
+/// Weights are converted on-the-fly (saves memory bandwidth).
+fn dot_bf16(a: &[f32], b_bf16: &[u16]) -> f32 {
+    a.iter()
+        .zip(b_bf16.iter())
+        .map(|(&x, &y)| x * bf16_to_f32(y))
+        .sum()
+}
+
+/// SIMD-optimized dot product for F32 activations × BF16 weights.
+/// Uses NEON on ARM64 for efficient BF16→F32 conversion.
+#[cfg(target_arch = "aarch64")]
+fn dot_bf16_simd(a: &[f32], b_bf16: &[u16]) -> f32 {
+    use std::arch::aarch64::*;
+
+    let n = a.len();
+    assert_eq!(n, b_bf16.len());
+
+    unsafe {
+        let mut acc0 = vdupq_n_f32(0.0);
+        let mut acc1 = vdupq_n_f32(0.0);
+        let mut acc2 = vdupq_n_f32(0.0);
+        let mut acc3 = vdupq_n_f32(0.0);
+
+        let mut i = 0;
+
+        // Process 16 elements at a time (4x unroll)
+        while i + 16 <= n {
+            // Load 4 BF16 values, convert to F32
+            // BF16 -> F32: shift left by 16 bits
+            let b0_u16: uint16x4_t = vld1_u16(b_bf16.as_ptr().add(i));
+            let b1_u16: uint16x4_t = vld1_u16(b_bf16.as_ptr().add(i + 4));
+            let b2_u16: uint16x4_t = vld1_u16(b_bf16.as_ptr().add(i + 8));
+            let b3_u16: uint16x4_t = vld1_u16(b_bf16.as_ptr().add(i + 12));
+
+            // Convert to u32 and shift left by 16
+            let b0_u32: uint32x4_t = vshll_n_u16(b0_u16, 16);
+            let b1_u32: uint32x4_t = vshll_n_u16(b1_u16, 16);
+            let b2_u32: uint32x4_t = vshll_n_u16(b2_u16, 16);
+            let b3_u32: uint32x4_t = vshll_n_u16(b3_u16, 16);
+
+            // Reinterpret as f32
+            let b0_f32: float32x4_t = vreinterpretq_f32_u32(b0_u32);
+            let b1_f32: float32x4_t = vreinterpretq_f32_u32(b1_u32);
+            let b2_f32: float32x4_t = vreinterpretq_f32_u32(b2_u32);
+            let b3_f32: float32x4_t = vreinterpretq_f32_u32(b3_u32);
+
+            // Load activations
+            let a0: float32x4_t = vld1q_f32(a.as_ptr().add(i));
+            let a1: float32x4_t = vld1q_f32(a.as_ptr().add(i + 4));
+            let a2: float32x4_t = vld1q_f32(a.as_ptr().add(i + 8));
+            let a3: float32x4_t = vld1q_f32(a.as_ptr().add(i + 12));
+
+            // FMA: acc = a * b + acc
+            acc0 = vfmaq_f32(acc0, a0, b0_f32);
+            acc1 = vfmaq_f32(acc1, a1, b1_f32);
+            acc2 = vfmaq_f32(acc2, a2, b2_f32);
+            acc3 = vfmaq_f32(acc3, a3, b3_f32);
+
+            i += 16;
+        }
+
+        // Combine accumulators
+        acc0 = vaddq_f32(acc0, acc1);
+        acc2 = vaddq_f32(acc2, acc3);
+        acc0 = vaddq_f32(acc0, acc2);
+
+        // Horizontal sum
+        let mut sum = vaddvq_f32(acc0);
+
+        // Handle remaining elements
+        while i < n {
+            sum += a[i] * bf16_to_f32(b_bf16[i]);
+            i += 1;
+        }
+
+        sum
+    }
+}
+
+/// Fallback for non-ARM (x86, etc)
+#[cfg(not(target_arch = "aarch64"))]
+fn dot_bf16_simd(a: &[f32], b_bf16: &[u16]) -> f32 {
+    dot_bf16(a, b_bf16)
+}
+
+/// SIMD-optimized dot product for f32 vectors.
+/// Uses AVX2 on x86-64 for 8-way parallelism.
+#[cfg(target_arch = "x86_64")]
+fn dot_simd(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+
+    let n = a.len();
+    let mut sum = 0.0f32;
+
+    unsafe {
+        // Process 8 floats at a time with AVX2
+        let mut acc0 = _mm256_setzero_ps();
+        let mut acc1 = _mm256_setzero_ps();
+        let mut acc2 = _mm256_setzero_ps();
+        let mut acc3 = _mm256_setzero_ps();
+
+        // 4-way unrolled for better ILP (32 floats per iteration)
+        let mut i = 0;
+        while i + 32 <= n {
+            let a0 = _mm256_loadu_ps(a.as_ptr().add(i));
+            let b0 = _mm256_loadu_ps(b.as_ptr().add(i));
+            acc0 = _mm256_fmadd_ps(a0, b0, acc0);
+
+            let a1 = _mm256_loadu_ps(a.as_ptr().add(i + 8));
+            let b1 = _mm256_loadu_ps(b.as_ptr().add(i + 8));
+            acc1 = _mm256_fmadd_ps(a1, b1, acc1);
+
+            let a2 = _mm256_loadu_ps(a.as_ptr().add(i + 16));
+            let b2 = _mm256_loadu_ps(b.as_ptr().add(i + 16));
+            acc2 = _mm256_fmadd_ps(a2, b2, acc2);
+
+            let a3 = _mm256_loadu_ps(a.as_ptr().add(i + 24));
+            let b3 = _mm256_loadu_ps(b.as_ptr().add(i + 24));
+            acc3 = _mm256_fmadd_ps(a3, b3, acc3);
+
+            i += 32;
+        }
+
+        // Process remaining 8-float chunks
+        while i + 8 <= n {
+            let av = _mm256_loadu_ps(a.as_ptr().add(i));
+            let bv = _mm256_loadu_ps(b.as_ptr().add(i));
+            acc0 = _mm256_fmadd_ps(av, bv, acc0);
+            i += 8;
+        }
+
+        // Combine accumulators
+        let acc = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+        // Horizontal sum of 8 floats
+        let hi = _mm256_extractf128_ps(acc, 1);
+        let lo = _mm256_castps256_ps128(acc);
+        let sum128 = _mm_add_ps(hi, lo);
+        let sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+        let sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 1));
+        sum = _mm_cvtss_f32(sum32);
+
+        // Handle remaining elements
+        while i < n {
+            sum += a[i] * b[i];
+            i += 1;
+        }
+    }
+
+    sum
+}
+
+/// Fallback for non-x86 architectures
+#[cfg(not(target_arch = "x86_64"))]
+fn dot_simd(a: &[f32], b: &[f32]) -> f32 {
+    dot(a, b)
+}
+
+/// Convert F16 to F32.
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = ((bits >> 15) & 1) as u32;
+    let exp = ((bits >> 10) & 0x1F) as u32;
+    let mant = (bits & 0x3FF) as u32;
+
+    if exp == 0 {
+        if mant == 0 {
+            return f32::from_bits(sign << 31);
+        }
+        // Denormal
+        let e = exp as i32 - 14;
+        let m = mant as f32 / 1024.0;
+        return if sign == 0 { m * 2.0f32.powi(e) } else { -m * 2.0f32.powi(e) };
+    } else if exp == 31 {
+        if mant == 0 {
+            return if sign == 0 { f32::INFINITY } else { f32::NEG_INFINITY };
+        }
+        return f32::NAN;
+    }
+
+    let f32_exp = exp + 127 - 15;
+    let f32_mant = mant << 13;
+    f32::from_bits((sign << 31) | (f32_exp << 23) | f32_mant)
+}
+
+// bf16_to_f32 is defined earlier in this file (in BF16 Support section)

@@ -1,0 +1,225 @@
+# SkyPilot configuration for Qwen2.5-32B Ternary Prefill Benchmark
+# Measures input token processing speed (prompt eval) on Nebius AMD EPYC
+#
+# Nebius cpu-d3_64vcpu-256gb Instance:
+# - CPU: AMD EPYC, 64 vCPUs
+# - Memory: 256 GB
+# - Cost: ~$1.59/hour
+#
+# Launch:
+#   sky launch skypilot/benchmark/qwen3_32b_ternary_prefill.yaml -c qwen32b-prefill -y
+#
+# Monitor:
+#   sky logs qwen32b-prefill --follow
+#
+# Results:
+#   Results saved to /results/prefill_benchmark_*.json
+
+name: qwen32b-prefill
+
+resources:
+  cloud: nebius
+  cpus: 64+
+  memory: 256+
+  disk_size: 300
+  use_spot: false
+
+envs:
+  MODEL_REPO: Qwen/Qwen2.5-32B
+  MODEL_NAME: Qwen2.5-32B
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "64"
+  CTX_SIZE: "65536"
+  PREFILL_LENGTHS: "8192,16384,32768"
+  NUM_RUNS: "5"
+  OUTPUT_TOKENS: "1"
+  CMAKE_BUILD_PARALLEL_LEVEL: "64"
+  RESULTS_DIR: /results
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+file_mounts:
+  /opt/inference: .
+
+setup: |
+  set -ex
+  echo "============================================"
+  echo "Qwen2.5-32B Ternary Prefill Benchmark Setup"
+  echo "Instance: Nebius cpu-d3 (AMD EPYC)"
+  echo "============================================"
+
+  # Common setup (system deps, uv, pip packages)
+  source /opt/inference/scripts/skypilot_common_setup.sh
+
+  # Build llama.cpp with AVX-512
+  cd /opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp
+  cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_NATIVE=ON -DGGML_AVX512=ON -DGGML_AVX512_VBMI=ON -DGGML_AVX512_VNNI=ON -DCMAKE_C_FLAGS="-march=native" -DCMAKE_CXX_FLAGS="-march=native"
+  cmake --build build -j${CMAKE_BUILD_PARALLEL_LEVEL}
+
+  ls -lh build/bin/llama-cli build/bin/llama-quantize
+
+  echo "=== Setup Complete ==="
+
+run: |
+  set -ex
+
+  # Ensure Python packages are in PATH
+  export PATH="$HOME/.local/bin:$PATH"
+
+  LLAMA_CPP="/opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp"
+  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  RESULTS_FILE="${RESULTS_DIR}/prefill_benchmark_${TIMESTAMP}.json"
+
+  echo "============================================"
+  echo "Qwen2.5-32B Ternary Prefill Benchmark"
+  echo "Model: $MODEL_REPO"
+  echo "Prefill lengths: $PREFILL_LENGTHS"
+  echo "Runs per length: $NUM_RUNS"
+  echo "Output: $RESULTS_FILE"
+  echo "============================================"
+
+  # Step 1: Download model using Python API
+  echo "=== Step 1: Download Model ==="
+  sudo mkdir -p /models && sudo chown $(whoami) /models
+  python3 -c 'from huggingface_hub import snapshot_download; import os; snapshot_download(os.environ["MODEL_REPO"], local_dir="/models/"+os.environ["MODEL_NAME"], allow_patterns=["*.safetensors", "*.json", "*.model", "*.txt", "*.tiktoken"]); print("Download complete")'
+  ls -lh /models/$MODEL_NAME/
+
+  # Install GGUF dependencies
+  pip install sentencepiece gguf transformers
+
+  # Restore original config if it was modified previously
+  if [ -f /models/$MODEL_NAME/config.json.original ]; then
+    cp /models/$MODEL_NAME/config.json.original /models/$MODEL_NAME/config.json
+    echo "Restored original config.json"
+  fi
+
+  # Step 2: Convert to GGUF F16 (keep original Qwen3 architecture)
+  echo "=== Step 2: Convert to GGUF F16 ==="
+  cd /opt/inference
+  python $LLAMA_CPP/convert_hf_to_gguf.py /models/$MODEL_NAME --outfile /models/$MODEL_NAME/model-f16.gguf --outtype f16
+  ls -lh /models/$MODEL_NAME/model-f16.gguf
+
+  # Step 3: Quantize to I2_S (naive ternary quantization)
+  echo "=== Step 3: Quantizing to I2_S ==="
+  $LLAMA_CPP/build/bin/llama-quantize /models/$MODEL_NAME/model-f16.gguf /models/$MODEL_NAME/model-i2s.gguf I2_S
+  ls -lh /models/$MODEL_NAME/model-i2s.gguf
+
+  MODEL_PATH="/models/$MODEL_NAME/model-i2s.gguf"
+
+  # Step 4: Run benchmarks
+  echo "=== Step 4: Prefill Benchmarks ==="
+
+  # Create benchmark script
+  cat > /tmp/benchmark.py << 'BENCHEOF'
+  import json, os, re, subprocess, time, statistics
+  from datetime import datetime
+  from dataclasses import dataclass, asdict
+
+  MODEL_PATH = os.environ["MODEL_PATH"]
+  LLAMA_CLI = os.environ["LLAMA_CLI"]
+  NUM_THREADS = int(os.environ.get("NUM_THREADS", "64"))
+  PREFILL_LENGTHS = [int(x) for x in os.environ.get("PREFILL_LENGTHS", "8192,16384,32768").split(",")]
+  NUM_RUNS = int(os.environ.get("NUM_RUNS", "5"))
+  OUTPUT_TOKENS = int(os.environ.get("OUTPUT_TOKENS", "1"))
+  RESULTS_FILE = os.environ["RESULTS_FILE"]
+
+  @dataclass
+  class PrefillResult:
+      context_length: int
+      run_idx: int
+      prompt_eval_time_ms: float
+      prompt_tokens: int
+      prompt_tokens_per_sec: float
+      total_time_s: float
+
+  def generate_prompt(target_tokens):
+      base = "The quick brown fox jumps over the lazy dog. " * 100
+      target_chars = target_tokens * 4
+      prompt = base * (target_chars // len(base) + 1)
+      return prompt[:target_chars]
+
+  def parse_timings(output):
+      timings = {}
+      for line in output.split('\n'):
+          if 'prompt eval time' in line.lower():
+              match = re.search(r'=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens.*?([\d.]+)\s*tokens per second', line)
+              if match:
+                  timings['prompt_eval_time_ms'] = float(match.group(1))
+                  timings['prompt_tokens'] = int(match.group(2))
+                  timings['prompt_tokens_per_sec'] = float(match.group(3))
+      return timings
+
+  def run_benchmark(prompt, context_length, run_idx):
+      prompt_file = f"/tmp/prompt_{context_length}.txt"
+      with open(prompt_file, 'w') as f:
+          f.write(prompt)
+      cmd = [LLAMA_CLI, "-m", MODEL_PATH, "-f", prompt_file, "-n", str(OUTPUT_TOKENS), "-t", str(NUM_THREADS), "-c", str(context_length + 4096), "--temp", "0", "--no-display-prompt"]
+      start = time.perf_counter()
+      result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+      total_time = time.perf_counter() - start
+      output = result.stderr + result.stdout
+      timings = parse_timings(output)
+      if 'prompt_tokens_per_sec' not in timings:
+          print(f"  Warning: Could not parse timing")
+      return PrefillResult(context_length=context_length, run_idx=run_idx, prompt_eval_time_ms=timings.get('prompt_eval_time_ms', 0), prompt_tokens=timings.get('prompt_tokens', context_length), prompt_tokens_per_sec=timings.get('prompt_tokens_per_sec', 0), total_time_s=total_time)
+
+  def main():
+      results = []
+      print(f"{'='*60}\nQwen2.5-32B Ternary Prefill Benchmark\n{'='*60}")
+      print(f"Model: {MODEL_PATH}\nThreads: {NUM_THREADS}\nLengths: {PREFILL_LENGTHS}\nRuns: {NUM_RUNS}\n")
+
+      for ctx_len in PREFILL_LENGTHS:
+          print(f"\n--- Context: {ctx_len} tokens ---")
+          prompt = generate_prompt(ctx_len)
+          for run_idx in range(NUM_RUNS):
+              print(f"  Run {run_idx+1}/{NUM_RUNS}...", end=" ", flush=True)
+              try:
+                  result = run_benchmark(prompt, ctx_len, run_idx)
+                  results.append(result)
+                  print(f"OK - {result.prompt_tokens_per_sec:.1f} tok/s")
+              except Exception as e:
+                  print(f"ERROR: {e}")
+
+      print(f"\n{'='*60}\nSUMMARY\n{'='*60}")
+      print(f"{'Context':<12} {'Avg Tok/s':>15} {'Std Dev':>12} {'Avg Time':>15}")
+      print("-" * 60)
+
+      summary = {}
+      for ctx_len in PREFILL_LENGTHS:
+          ctx_results = [r for r in results if r.context_length == ctx_len]
+          if ctx_results:
+              tps = [r.prompt_tokens_per_sec for r in ctx_results if r.prompt_tokens_per_sec > 0]
+              if tps:
+                  avg_tps = statistics.mean(tps)
+                  std_tps = statistics.stdev(tps) if len(tps) > 1 else 0
+                  avg_time = statistics.mean([r.total_time_s for r in ctx_results])
+                  print(f"{ctx_len:<12} {avg_tps:>15.1f} {std_tps:>12.1f} {avg_time:>15.2f}")
+                  summary[str(ctx_len)] = {"avg_tokens_per_sec": round(avg_tps, 1), "std_tokens_per_sec": round(std_tps, 1), "avg_time_s": round(avg_time, 2), "runs": len(ctx_results)}
+
+      output_data = {
+          "timestamp": datetime.now().isoformat(),
+          "model": MODEL_PATH,
+          "model_name": "Qwen2.5-32B-Ternary",
+          "quantization": "naive_ternary_i2s",
+          "hardware": {"instance": "nebius-cpu-d3-64vcpu", "cpu": "AMD EPYC", "vcpus": 64, "memory_gb": 256},
+          "config": {"threads": NUM_THREADS, "context_lengths": PREFILL_LENGTHS, "runs_per_length": NUM_RUNS},
+          "summary": summary,
+          "raw_results": [asdict(r) for r in results],
+      }
+      with open(RESULTS_FILE, 'w') as f:
+          json.dump(output_data, f, indent=2)
+      print(f"\nResults saved to: {RESULTS_FILE}")
+      print("\n=== Full Results ===")
+      print(json.dumps(output_data, indent=2))
+
+  if __name__ == "__main__":
+      main()
+  BENCHEOF
+
+  export MODEL_PATH
+  export LLAMA_CLI="$LLAMA_CPP/build/bin/llama-cli"
+  export RESULTS_FILE
+  python3 /tmp/benchmark.py
+
+  echo ""
+  echo "=== Benchmark Complete ==="
+  cat $RESULTS_FILE

@@ -1,131 +1,131 @@
 # WrinkleFree Inference Engine
 
-> Part of [WrinkleFree Monorepo](https://github.com/DeepOpt-com/WrinkleFree-Monorepo) - Serving layer for 1.58-bit quantized LLMs.
+Rust inference engine for **BitNet** 1.58-bit quantized LLMs with DLM block diffusion support.
 
-Serving layer for 1.58-bit quantized LLMs using **SGLang-BitNet** with native SIMD kernels (AVX2/AVX512).
+> **New to inference?** See the [Getting Started Guide](../../docs/guides/inference-getting-started.md).
 
 ## Quick Start
 
 ```bash
-# Clone the monorepo
-git clone --recurse-submodules git@github.com:DeepOpt-com/WrinkleFree-Monorepo.git
-cd WrinkleFree-Monorepo/packages/inference
+# 1. Convert checkpoint to GGUF
+python scripts/convert_checkpoint_to_gguf.py /path/to/checkpoint --outfile model.gguf
 
-# Install dependencies
-uv sync --all-packages
+# 2. Build the server
+cd rust
+cargo build --release --bin wf_server --features native-inference
 
-# Build sgl-kernel (one-time setup)
-cd extern/sglang-bitnet/sgl-kernel
-uv pip install -e . --no-build-isolation
-cd ../../..
+# 3. Run inference
+./target/release/wf_server --model-path model.gguf --port 30000
 
-# Start SGLang server
-./scripts/launch_sglang_bitnet.sh
-
-# Start Streamlit chat UI (in another terminal)
-uv run streamlit run demo/serve_sglang.py --server.port 7860
+# 4. Test the API
+curl http://localhost:30000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello!"}],"max_tokens":100}'
 ```
 
-Access the chat interface at `http://localhost:7860`
+## Servers
 
-## Features
+### wf_server - Pure Rust BitNet
 
-- **SGLang-BitNet backend** - Optimized serving with native SIMD kernels
-- **Streamlit chat UI** - Interactive chat interface with streaming
-- **OpenAI-compatible API** - Standard `/v1/chat/completions` endpoint
-- **HuggingFace integration** - Direct model loading (no conversion needed)
+Native inference with SIMD-optimized ternary kernels. No C++ dependencies.
+
+```bash
+cd rust
+cargo build --release --bin wf_server --features native-inference
+./target/release/wf_server --model-path model.gguf --port 30000
+```
+
+**Benchmark mode:**
+```bash
+./target/release/wf_server --model-path model.gguf --benchmark --benchmark-iterations 10
+```
+
+### dlm_server - DLM Block Diffusion
+
+Fast-dLLM v2 for ~2.5x faster inference via parallel block decoding.
+
+```bash
+# Setup llama.cpp first
+./scripts/setup_llama_cpp.sh
+
+# Build and run
+cd rust
+cargo build --release --bin dlm_server --features llama-inference
+export LD_LIBRARY_PATH="../extern/llama.cpp/build/src:../extern/llama.cpp/build/ggml/src"
+./target/release/dlm_server --model-path model.gguf --port 30000
+```
+
+## GGUF Conversion
+
+```bash
+# Default (F16)
+python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o model.gguf
+
+# Quantized (I2_S - recommended for production)
+python scripts/convert_checkpoint_to_gguf.py checkpoint/ -o model.gguf --outtype i2_s
+```
+
+| Format | Size | Notes |
+|--------|------|-------|
+| **I2_S** | ~1.1GB (2B) | Fastest, recommended |
+| F16 | ~4.5GB (2B) | Default, compatible |
+| TQ1_0 | ~2.2GB (2B) | Requires hidden_size % 256 == 0 |
+
+**Warning:** Never use TQ2_0 for bf16 DLM checkpoints - it corrupts weights!
+
+## API
+
+OpenAI-compatible at `/v1/chat/completions`:
+
+```bash
+curl http://localhost:30000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "What is 2+2?"}],
+    "max_tokens": 100,
+    "temperature": 0.7
+  }'
+```
 
 ## Architecture
 
 ```
-demo/
-└── serve_sglang.py          # Streamlit chat frontend
-
-scripts/
-└── launch_sglang_bitnet.sh  # Server launch script
-
-extern/
-├── sglang-bitnet/           # SGLang with BitNet support
-│   ├── python/sglang/       # SGLang Python package
-│   └── sgl-kernel/          # Native SIMD kernels
-└── BitNet/                  # Microsoft BitNet.cpp (reference)
-
-src/wrinklefree_inference/
-├── sglang_backend/          # SGLang integration utilities
-├── kernels/                 # Kernel wrappers
-├── kv_cache/                # KV cache utilities
-├── client/                  # API client
-└── moe/                     # MoE support
+packages/inference/
+├── rust/                          # Rust inference engine
+│   └── src/
+│       ├── bin/wf_server.rs       # Pure Rust server
+│       ├── bin/dlm_server.rs      # DLM server
+│       ├── engine/                # Transformer implementation
+│       ├── gguf/                  # GGUF reader
+│       ├── kernels/bitnet/        # SIMD kernels
+│       └── inference/             # DLM scheduler
+├── cpp/                           # C++ wrappers for llama.cpp FFI
+├── extern/
+│   └── llama.cpp/                 # Downloaded on-demand
+├── scripts/
+│   ├── convert_checkpoint_to_gguf.py
+│   └── setup_llama_cpp.sh
+├── src/wf_infer/                  # Python utilities
+└── tests/
 ```
 
-## API Usage
-
-The server exposes an OpenAI-compatible API:
+## Building
 
 ```bash
-# Chat completion
-curl http://localhost:30000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "max_tokens": 100,
-    "stream": true
-  }'
+cd rust
 
-# List models
-curl http://localhost:30000/v1/models
+# Pure Rust (no dependencies)
+cargo build --release --bin wf_server --features native-inference
+
+# With llama.cpp (requires setup_llama_cpp.sh first)
+cargo build --release --bin dlm_server --features llama-inference
 ```
 
-## Configuration
+## Performance
 
-Environment variables for `launch_sglang_bitnet.sh`:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SGLANG_MODEL` | `microsoft/bitnet-b1.58-2B-4T` | Model to load |
-| `SGLANG_PORT` | `30000` | Server port |
-| `SGLANG_HOST` | `0.0.0.0` | Server host |
-
-## Kernel Performance
-
-Native SIMD kernels provide significant speedups over PyTorch:
-
-```bash
-# Benchmark kernels
-uv run python scripts/benchmark_kernels.py
-```
-
-- GEMV (batch=1): ~10x faster
-- Large dims: ~47x faster
-
-## Development
-
-```bash
-# Install dev dependencies
-uv sync --all-extras
-
-# Run tests
-uv run pytest tests/ -v
-
-# Validate KV cache behavior
-uv run python scripts/validate_kv_cache.py --url http://localhost:30000
-```
-
-## Cloud Deployment
-
-See [WrinkleFree-Deployer](../deployer) for SkyPilot configurations:
-
-```bash
-# GCP C3D (recommended)
-sky launch skypilot/inference/gcp_c3d.yaml -y --cluster ie-c3d
-
-# RunPod (development)
-sky launch skypilot/inference/runpod_cpu.yaml -y --cluster ie-runpod
-```
-
-## Legacy Components
-
-Archived code (BitNet.cpp integration, CLI tools, benchmarks) is in `legacy/`. See `legacy/README.md` for details.
+wf_server on AMD EPYC (32 cores), BitNet 2B I2_S:
+- **Prefill**: 106 tok/s
+- **Decode**: 7 tok/s
 
 ## License
 

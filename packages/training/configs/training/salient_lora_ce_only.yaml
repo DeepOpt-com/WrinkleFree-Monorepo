@@ -1,0 +1,80 @@
+# Salient + LoRA: CE-only
+#
+# Uses only continue_pretrain (cross-entropy) loss.
+
+defaults:
+  - base
+
+stage: salient_lora_ce_only
+
+# === SALIENT COLUMNS ===
+salient:
+  enabled: true
+  ratio: 0.01
+  calibration_samples: 128
+  calibration_data: fineweb
+
+# === LORA ADAPTER ===
+lora:
+  enabled: true
+  rank_percentage: 0.02
+  init_method: svd_residual
+  alpha: 1.0
+  dropout: 0.0
+  target_modules: null
+  quantized: false
+  freeze_base: false  # Train WHOLE model (base + LoRA)
+
+# AdamW 8-bit optimizer
+optimizer:
+  type: adamw
+  use_8bit: true
+  learning_rate: 5e-5
+  weight_decay: 0.01
+
+# Very short warmup
+scheduler:
+  warmup_steps: 10
+
+# Training parameters
+total_tokens: 1_000_000_000
+max_seq_length: 1024
+batch_size: 16
+gradient_accumulation_steps: 32
+auto_batch_size: false
+
+# Lambda warmup enabled (gradual quantization over 100 steps)
+lambda_warmup:
+  enabled: true
+  warmup_steps: 100
+
+# === OBJECTIVES (CE only) ===
+objectives:
+  continue_pretrain:
+    weight: 1.0
+
+# Curriculum: 10% warmup -> 90% main (CE only)
+curriculum:
+  phases:
+    - name: warmup
+      end_ratio: 0.10
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0
+    - name: main
+      end_ratio: 1.0
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 1.0
+
+# Logging
+logging:
+  log_interval: 2
+  wandb:
+    project: wrinklefree_v2
+    tags: [salient, lora, bitnet, ce_only]
+
+# Memory optimization
+memory:
+  gradient_checkpointing: true
+  clear_cache_interval: 100

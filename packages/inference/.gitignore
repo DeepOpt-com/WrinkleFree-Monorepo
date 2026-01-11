@@ -45,8 +45,13 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
+# Rust build artifacts
+rust/target/
+
+# External dependencies (downloaded on-demand)
+extern/llama.cpp/
+
 # Models (large files) - exclude downloaded models but keep configs
-extern/BitNet/models/
 *.gguf
 *.safetensors
 *.bin

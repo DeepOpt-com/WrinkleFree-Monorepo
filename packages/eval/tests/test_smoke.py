@@ -13,7 +13,7 @@ class TestBenchmarkPresets:
 
     def test_list_benchmarks(self):
         """Test that benchmark presets are correctly defined."""
-        from wrinklefree_eval.api import list_benchmarks
+        from wf_eval.api import list_benchmarks
 
         benchmarks = list_benchmarks()
 
@@ -23,7 +23,7 @@ class TestBenchmarkPresets:
 
     def test_bitdistill_has_all_tasks(self):
         """Test bitdistill preset includes GLUE subset from BitDistill paper."""
-        from wrinklefree_eval.api import list_benchmarks
+        from wf_eval.api import list_benchmarks
 
         benchmarks = list_benchmarks()
         bitdistill = benchmarks["bitdistill"]
@@ -34,7 +34,7 @@ class TestBenchmarkPresets:
 
     def test_smoke_test_is_minimal(self):
         """Test smoke test preset is minimal for fast validation."""
-        from wrinklefree_eval.api import list_benchmarks
+        from wf_eval.api import list_benchmarks
 
         benchmarks = list_benchmarks()
         smoke = benchmarks["smoke_test"]
@@ -45,7 +45,7 @@ class TestBenchmarkPresets:
 
     def test_task_mapping(self):
         """Test task name mapping is correct."""
-        from wrinklefree_eval.api import TASK_MAPPING
+        from wf_eval.api import TASK_MAPPING
 
         # lm-eval uses task names directly now
         assert TASK_MAPPING["mnli"] == "mnli"
@@ -58,15 +58,15 @@ class TestEvaluateFunction:
 
     def test_invalid_benchmark_raises_error(self):
         """Test that invalid benchmark raises ValueError before calling lm_eval."""
-        from wrinklefree_eval.api import BENCHMARK_PRESETS
+        from wf_eval.api import BENCHMARK_PRESETS
 
         # Verify the check happens at the right place
         assert "nonexistent" not in BENCHMARK_PRESETS
 
-    @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
+    @patch("wf_eval.api.evaluator.simple_evaluate")
     def test_evaluate_calls_lm_eval(self, mock_simple_eval):
         """Test that evaluate() correctly calls lm_eval."""
-        from wrinklefree_eval.api import evaluate
+        from wf_eval.api import evaluate
 
         # Mock lm_eval response
         mock_simple_eval.return_value = {
@@ -91,10 +91,10 @@ class TestEvaluateFunction:
         assert "glue_sst2" in call_kwargs.kwargs.get("tasks", []) or \
                "glue_sst2" in call_kwargs.args[0] if call_kwargs.args else True
 
-    @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
+    @patch("wf_eval.api.evaluator.simple_evaluate")
     def test_smoke_test_sets_limit(self, mock_simple_eval):
         """Test that smoke_test=True sets appropriate limit."""
-        from wrinklefree_eval.api import evaluate
+        from wf_eval.api import evaluate
 
         mock_simple_eval.return_value = {"results": {}}
 
@@ -109,10 +109,10 @@ class TestEvaluateFunction:
         call_kwargs = mock_simple_eval.call_args.kwargs
         assert call_kwargs.get("limit") == 10
 
-    @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
+    @patch("wf_eval.api.evaluator.simple_evaluate")
     def test_custom_limit_overrides_smoke_test(self, mock_simple_eval):
         """Test that explicit limit overrides smoke_test default."""
-        from wrinklefree_eval.api import evaluate
+        from wf_eval.api import evaluate
 
         mock_simple_eval.return_value = {"results": {}}
 
@@ -136,7 +136,7 @@ class TestResultFormatting:
 
     def test_format_results_basic(self):
         """Test basic result formatting."""
-        from wrinklefree_eval.api import _format_results
+        from wf_eval.api import _format_results
 
         raw_results = {
             "results": {
@@ -156,14 +156,14 @@ class TestResultFormatting:
 
     def test_format_results_handles_empty(self):
         """Test formatting handles empty results."""
-        from wrinklefree_eval.api import _format_results
+        from wf_eval.api import _format_results
 
         assert _format_results({}) == {}
         assert _format_results({"results": {}}) == {}
 
     def test_format_results_multiple_metrics(self):
         """Test formatting with multiple metrics (like ROUGE)."""
-        from wrinklefree_eval.api import _format_results
+        from wf_eval.api import _format_results
 
         raw_results = {
             "results": {
@@ -183,7 +183,7 @@ class TestResultFormatting:
 
     def test_make_serializable(self):
         """Test JSON serialization helper."""
-        from wrinklefree_eval.api import _make_serializable
+        from wf_eval.api import _make_serializable
         import numpy as np
 
         # Test basic types
@@ -204,18 +204,18 @@ class TestCustomTasks:
 
     def test_tasks_dir_exists(self):
         """Verify tasks directory exists."""
-        from wrinklefree_eval.tasks import TASKS_DIR
+        from wf_eval.tasks import TASKS_DIR
         assert TASKS_DIR.exists()
 
     def test_cnn_dailymail_task_exists(self):
         """Verify CNN/DailyMail task YAML exists."""
-        from wrinklefree_eval.tasks import TASKS_DIR
+        from wf_eval.tasks import TASKS_DIR
         task_file = TASKS_DIR / "cnn_dailymail.yaml"
         assert task_file.exists()
 
     def test_task_yaml_valid(self):
         """Test that task YAML contains expected fields."""
-        from wrinklefree_eval.tasks import TASKS_DIR
+        from wf_eval.tasks import TASKS_DIR
 
         task_file = TASKS_DIR / "cnn_dailymail.yaml"
         content = task_file.read_text()
@@ -232,7 +232,7 @@ class TestTaskUtils:
 
     def test_doc_to_text_summarization(self):
         """Test summarization prompt formatting."""
-        from wrinklefree_eval.tasks.utils import doc_to_text_summarization
+        from wf_eval.tasks.utils import doc_to_text_summarization
 
         doc = {"article": "This is a test article about AI."}
         prompt = doc_to_text_summarization(doc)
@@ -243,7 +243,7 @@ class TestTaskUtils:
 
     def test_doc_to_text_truncation(self):
         """Test that long articles are truncated."""
-        from wrinklefree_eval.tasks.utils import doc_to_text_summarization
+        from wf_eval.tasks.utils import doc_to_text_summarization
 
         long_article = "x" * 5000
         doc = {"article": long_article}
@@ -255,7 +255,7 @@ class TestTaskUtils:
 
     def test_strip_whitespace(self):
         """Test whitespace stripping."""
-        from wrinklefree_eval.tasks.utils import strip_whitespace
+        from wf_eval.tasks.utils import strip_whitespace
 
         assert strip_whitespace("  hello  ") == "hello"
         assert strip_whitespace("\n\ntext\n\n") == "text"
@@ -263,7 +263,7 @@ class TestTaskUtils:
 
     def test_strip_whitespace_non_string(self):
         """Test strip_whitespace with non-string input."""
-        from wrinklefree_eval.tasks.utils import strip_whitespace
+        from wf_eval.tasks.utils import strip_whitespace
 
         # Should return input unchanged if not string
         assert strip_whitespace(123) == 123
@@ -275,17 +275,17 @@ class TestModelWrappers:
 
     def test_hf_model_import(self):
         """Test HuggingFace model can be imported."""
-        from wrinklefree_eval.models import HuggingFaceModel
+        from wf_eval.models import HuggingFaceModel
         assert HuggingFaceModel is not None
 
     def test_bitnet_model_import(self):
         """Test BitNet model can be imported."""
-        from wrinklefree_eval.models import BitNetModel
+        from wf_eval.models import BitNetModel
         assert BitNetModel is not None
 
     def test_bitnet_path_detection(self):
         """Test BitNet path detection doesn't crash."""
-        from wrinklefree_eval.models.bitnet_model import find_bitnet_path
+        from wf_eval.models.bitnet_model import find_bitnet_path
 
         # Just verify function runs without error
         path = find_bitnet_path()
@@ -294,7 +294,7 @@ class TestModelWrappers:
 
     def test_bitnet_availability_check(self):
         """Test BitNet availability check."""
-        from wrinklefree_eval.models.bitnet_model import check_bitnet_available
+        from wf_eval.models.bitnet_model import check_bitnet_available
 
         # Should return boolean without crashing
         result = check_bitnet_available()
@@ -331,14 +331,14 @@ class TestWandBLogging:
 
     def test_wandb_available_flag(self):
         """Test WANDB_AVAILABLE flag is set correctly."""
-        from wrinklefree_eval.api import WANDB_AVAILABLE
+        from wf_eval.api import WANDB_AVAILABLE
         # Should be a boolean
         assert isinstance(WANDB_AVAILABLE, bool)
 
-    @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
+    @patch("wf_eval.api.evaluator.simple_evaluate")
     def test_evaluate_without_wandb(self, mock_simple_eval):
         """Test evaluate works without wandb parameters."""
-        from wrinklefree_eval.api import evaluate
+        from wf_eval.api import evaluate
 
         mock_simple_eval.return_value = {"results": {"glue_sst2": {"acc,none": 0.9}}}
 
@@ -351,11 +351,11 @@ class TestWandBLogging:
         # Should work without wandb
         assert "glue_sst2" in results
 
-    @patch("wrinklefree_eval.api.WANDB_AVAILABLE", False)
-    @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
+    @patch("wf_eval.api.WANDB_AVAILABLE", False)
+    @patch("wf_eval.api.evaluator.simple_evaluate")
     def test_evaluate_wandb_not_installed(self, mock_simple_eval):
         """Test evaluate handles missing wandb gracefully."""
-        from wrinklefree_eval.api import evaluate
+        from wf_eval.api import evaluate
 
         mock_simple_eval.return_value = {"results": {}}
 
@@ -369,12 +369,12 @@ class TestWandBLogging:
 
         assert results == {}
 
-    @patch("wrinklefree_eval.api.WANDB_AVAILABLE", True)
-    @patch("wrinklefree_eval.api.wandb")
-    @patch("wrinklefree_eval.api.evaluator.simple_evaluate")
+    @patch("wf_eval.api.WANDB_AVAILABLE", True)
+    @patch("wf_eval.api.wandb")
+    @patch("wf_eval.api.evaluator.simple_evaluate")
     def test_evaluate_with_wandb(self, mock_simple_eval, mock_wandb):
         """Test evaluate initializes and logs to wandb."""
-        from wrinklefree_eval.api import evaluate
+        from wf_eval.api import evaluate
 
         mock_simple_eval.return_value = {
             "results": {"glue_sst2": {"acc,none": 0.92}}
@@ -401,7 +401,7 @@ class TestWandBLogging:
 
     def test_log_to_wandb_function(self):
         """Test _log_to_wandb helper function."""
-        from wrinklefree_eval.api import _log_to_wandb
+        from wf_eval.api import _log_to_wandb
 
         mock_run = MagicMock()
         results = {
@@ -410,7 +410,7 @@ class TestWandBLogging:
         }
 
         # Mock wandb.Table
-        with patch("wrinklefree_eval.api.wandb") as mock_wandb:
+        with patch("wf_eval.api.wandb") as mock_wandb:
             mock_wandb.Table = MagicMock()
             _log_to_wandb(results, mock_run)
 
@@ -453,7 +453,7 @@ class TestIntegration:
     )
     def test_smoke_evaluation_tiny_model(self):
         """End-to-end test with tiny model."""
-        from wrinklefree_eval.api import evaluate
+        from wf_eval.api import evaluate
 
         results = evaluate(
             model_path="hf-internal-testing/tiny-random-gpt2",

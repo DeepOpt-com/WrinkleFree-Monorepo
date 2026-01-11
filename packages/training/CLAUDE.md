@@ -2,6 +2,28 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## CRITICAL Rules
+
+1. **USE LIGHTNING TRAINER**: Use `train_lightning.py` (legacy `train.py` has been removed)
+2. **ALWAYS USE torch.compile**: Enable `training.torch_compile.enabled=true` for single-GPU (40-60 min first-run overhead, then cached)
+3. **AUTO BATCH SIZE**: Use `training.auto_batch_size=true` for single GPU runs only (NOT supported with DDP/FSDP!)
+4. **CLEAN CHECKPOINTS**: Before re-running failed jobs, clean `/tmp/checkpoints/` on remote
+5. **EXPERIMENTAL CODE**: MoE and TensorParallel are in `_experimental/` (not production-ready)
+6. **LEGACY CODE**: Legacy trainers are in `training/_legacy/` (use Lightning instead)
+
+## Known Bugs
+
+| Bug | Workaround | Status |
+|-----|------------|--------|
+| MuonClip + BatchSizeFinder | `MuonClipInitCallback` patches upstream bug | **Fixed** (2026-01-01) |
+| BatchSizeFinder + WandB resume | Clean checkpoints before retry | Fixed in code |
+| PyTorch 2.6 weights_only | Added safe_globals for omegaconf types | Fixed |
+| BatchSizeFinder + DDP/FSDP | Auto-skipped with warning; manually tune batch_size | **Known limitation** |
+
+**MuonClip Fix Details**: The upstream muon-clip package has a bug where `HookRecorder.remove_hooks()`
+doesn't reset `is_registered=False`. This causes hooks to never re-register after BatchSizeFinder's
+`eval/train` cycles. Fixed via `MuonClipInitCallback` + patched `remove_hooks()` in module.py.
+
 ## Project Overview
 
 WrinkleFree is a repository for training and serving 1.58-bit (ternary) LLM models using:
@@ -11,24 +33,51 @@ WrinkleFree is a repository for training and serving 1.58-bit (ternary) LLM mode
 - **Package management**: uv
 - **Distributed**: FSDP for single/multi-GPU
 - **Precision**: bfloat16 for training stability
+- **TF32**: Enabled by default for Ampere+ GPUs (10-20% matmul speedup)
+
+## Performance Optimizations
+
+| Optimization | Status | Speedup | Notes |
+|--------------|--------|---------|-------|
+| **TF32** | Enabled | 10-20% | Auto-enabled for Ampere+ GPUs (A100, H100, RTX 30xx/40xx) |
+| **Sequence Packing** | Enabled | 1.4-2x | Packs sequences to reduce padding waste |
+| **torch.compile** | **ALWAYS USE** | 20-40% | Use `training.torch_compile.enabled=true` (single GPU only) |
+| **FlashAttention (SDPA)** | Via HuggingFace | ~2x attention | HF models use SDPA by default |
+
+### torch.compile Notes
+- **ALWAYS enable** for single-GPU training: `training.torch_compile.enabled=true`
+- First run has 40-60 min compile overhead (cached at `/tmp/torch_compile_cache/`)
+- Use `mode=default` for best balance of compile time vs speedup
+- NOT compatible with FSDP multi-GPU
+
+### Log Buffering Issues
+When running training via `nohup ... > log.txt 2>&1 &`, Python's stdout buffering causes:
+- Training progress (tqdm) not appearing in log file
+- Log file appears "stuck" even though training is running
+- **Workaround**: Check GPU utilization (`nvidia-smi`) and process CPU time to verify training is active
+- Training metrics are still logged to WandB in real-time
 
 ## Monorepo Integration
 
 This package is part of the WrinkleFree monorepo and depends on:
-- **cheapertraining**: Shared data loading and influence functions
+- **wf_data**: Shared data loading
+- **wf_arch**: BitNet layers (BitLinear, SubLN) and model conversion
 
 **Related packages**:
 | Package | Relationship |
 |---------|--------------|
-| `cheapertraining` | Data loading, influence optimization |
+| `wf_data` | Data loading |
+| `architecture` | BitNet layers and model conversion |
 | `deployer` | Cloud deployment (launches training jobs) |
-| `converter` | Converts trained models to DLM format |
 | `inference` | Serves trained models |
 | `eval` | Evaluates trained models |
 
+**Note**: Knowledge distillation (BitDistill, TCS) is now integrated into the objectives system.
+The old `distillation` package has been moved to `_legacy/distillation/`.
+
 **Running from monorepo root**:
 ```bash
-uv run --package wrinklefree python packages/training/scripts/train.py model=smollm2_135m training=stage2_pretrain
+uv run --package wf-train python packages/training/scripts/train_lightning.py model=smollm2_135m training=base
 ```
 
 ## Quick Start
@@ -38,71 +87,403 @@ uv run --package wrinklefree python packages/training/scripts/train.py model=smo
 uv sync
 
 # Run SmolLM2-135M training (smallest model, good for testing)
-uv run python scripts/train.py model=smollm2_135m training=stage1_subln
-uv run python scripts/train.py model=smollm2_135m training=stage1_9_layerwise data=fineweb
-uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain data=fineweb
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
+
+# With auto batch size scaling
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
+    training.auto_batch_size=true
 
 # Run larger models
-uv run python scripts/train.py model=qwen3_4b training=stage2_pretrain data=fineweb
+uv run python scripts/train_lightning.py model=qwen3_4b training=base
 ```
 
-## Training Pipeline (4 Stages)
+## Training Pipeline
+
+### Unified Training (Recommended)
+
+The `base` config provides STE quantization training with composable objectives:
+
+```bash
+# Standard training
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
+
+# Key features:
+# - Auto-converts model to BitNet if needed
+# - Multi-task: ObjectiveManager supports composable losses
+# - MuonClip optimizer with QK clipping
+# - Meta-optimization for dynamic dataset weights (via ODM)
+# - WandB logging with per-objective losses
+```
+
+**Multi-Task Objectives**:
+The `ObjectiveManager` runs multiple objectives on the same batch:
+- `continue_pretrain`: Standard next-token prediction loss
+- `distill`: Knowledge distillation (logits, hidden states, attention)
+- `sft`: Supervised fine-tuning (instruction-masked CE loss)
+
+**Curriculum Phases** (configurable in training configs):
+```yaml
+curriculum:
+  phases:
+    - name: warmup         # Steps 0-10%
+      objectives: {continue_pretrain: 1.0}
+    - name: main           # Steps 10-100%
+      objectives: {continue_pretrain: 1.0}
+```
+
+**Configurable Resume**:
+```bash
+# Resume with fresh optimizer (new LR schedule)
+uv run python scripts/train_lightning.py training=base \
+  training.resume.checkpoint_path=gs://bucket/checkpoint.pt \
+  training.resume.load_optimizer_state=false \
+  training.resume.load_scheduler_state=false
+
+# Resume options:
+#   load_optimizer_state: true/false (reset LR schedule)
+#   load_scheduler_state: true/false
+#   load_training_state: true/false (reset step counter)
+#   strict_model_load: true/false (allow missing keys)
+```
+
+### Inference Compatibility
+
+Models trained with `training=base` support autoregressive inference via the native Rust wf_server.
+
+**Critical Notes**:
+1. Use I2_S format for production (fastest, AVX-512 optimized)
+2. **NEVER use TQ2_0** for bf16 checkpoints - it corrupts ternary weights
+3. If inference produces garbage, check quantization format first
+
+See `packages/inference/CLAUDE.md` for conversion and serving details.
+
+### PyTorch Lightning Training (New)
+
+The Lightning-based trainer provides a cleaner, more maintainable training loop with auto batch size scaling:
+
+```bash
+# Basic Lightning training
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
+
+# With auto batch size scaling (finds max batch that fits GPU)
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
+  training.auto_batch_size=true
+
+# All objectives work unchanged (LRC, distillation, etc.)
+uv run python scripts/train_lightning.py model=smollm2_135m training=base
+```
+
+**Key Features**:
+- **Auto batch size**: `BatchSizeFinder` probes GPU memory at startup
+- **Built-in DDP/FSDP**: Seamless distributed training
+- **All objectives work**: ObjectiveManager reused unchanged
+- **Custom callbacks**: GCS upload, ZClip, TokenCount, QKClip, LambdaWarmup
+
+**Lightning Components** (`src/wrinklefree/lightning/`):
+| File | Purpose |
+|------|---------|
+| `module.py` | `WrinkleFreeLightningModule` - wraps model + ObjectiveManager |
+| `datamodule.py` | `WrinkleFreeDataModule` - wraps existing dataloaders |
+| `callbacks.py` | Custom callbacks (GCS, ZClip, TokenCount, etc.) |
+
+**Smoke Tests** (L40 GPU):
+```bash
+cd packages/deployer
+source credentials/.env
+
+# Run smoke test
+wf smoke -o ce
+
+# Available objectives: ce, bitdistill, lrc, salient, sft, meta_opt
+```
+
+### Meta-Optimization (LDC-MTL + ODM + LayerLR)
+
+Efficient meta-optimization for learning objective weights, dataset weights, and per-layer learning rates dynamically.
+Uses O(1) methods with no gradient caching or Hessian computation.
+
+**Components** (`src/wrinklefree/meta/`):
+- **LDC-MTL** ([arxiv:2502.08585](https://arxiv.org/abs/2502.08585)): Router network learns objective weights via loss discrepancy control
+- **ODM/EXP3** ([arxiv:2312.02406](https://arxiv.org/abs/2312.02406)): Multi-armed bandit learns dataset sampling probabilities
+- **LayerLR** (inspired by [LARS](https://arxiv.org/abs/1708.03888)): Learns per-layer LR multipliers based on gradient norms
+
+```bash
+# Enable all meta-optimization (LDC-MTL + ODM + LayerLR)
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
+  data.config_name=mixed_pretrain \
+  training.meta_optimization.enabled=true \
+  training.meta_optimization.ldc_mtl.enabled=true \
+  training.meta_optimization.odm.enabled=true \
+  training.meta_optimization.layer_lr.enabled=true
+
+# LayerLR only (per-layer learning rates)
+uv run python scripts/train_lightning.py model=smollm2_135m training=base \
+  training.meta_optimization.enabled=true \
+  training.meta_optimization.ldc_mtl.enabled=false \
+  training.meta_optimization.odm.enabled=false \
+  training.meta_optimization.layer_lr.enabled=true
+```
+
+**How LDC-MTL Works**:
+- Small router MLP (32 hidden units) takes per-objective losses as input
+- Outputs softmax weights for each objective (CE, distill, etc.)
+- Loss discrepancy penalty encourages balanced weighted losses: `f(W,x) = Σ|τ_i·l_i - τ_{i+1}·l_{i+1}|`
+- Router trains jointly with model via single-level optimization
+
+**How ODM Works**:
+- EXP3 multi-armed bandit algorithm
+- Each dataset is an "arm"; training loss is reward signal
+- Exploration rate decays: `ε_t = min{1/K, √(ln K / (K·t))}`
+- Sampling distribution: `π_t(i) = (1 - K·ε_t) × softmax(ε·R̂) + ε_t`
+- ~0% wall-clock overhead
+
+**How LayerLR Works**:
+- Learns per-layer LR multipliers based on gradient norms
+- **Bidirectional**: increases LR when gradients are low, decreases when high
+- Penalty term: `(grad_norm * multiplier - target)²` pulls toward balanced product
+- Mean-centering penalty keeps geometric mean of multipliers near 1.0
+- Skips adaptation during LR warmup (grad stats unreliable)
+
+**Config** (`base.yaml`):
+```yaml
+meta_optimization:
+  enabled: true
+  ldc_mtl:
+    enabled: true
+    lambda_penalty: 0.1      # Discrepancy penalty weight
+    hidden_dim: 32           # Router MLP hidden size
+    router_lr: 0.001         # Router learning rate
+  odm:
+    enabled: true
+    reward_smoothing: 0.9    # EMA coefficient for rewards
+    warmup_ratio: 0.01       # Fraction of steps with uniform weights
+    min_weight: 0.05         # Min sampling probability per dataset
+    max_weight: 0.60         # Max sampling probability per dataset
+  layer_lr:
+    enabled: false           # Enable per-layer LR optimization
+    lr: 0.001                # Optimizer LR for multipliers
+    min_multiplier: 0.1      # Minimum LR multiplier
+    max_multiplier: 10.0     # Maximum LR multiplier
+    warmup_ratio: 0.05       # Skip during LR warmup
+  log_interval: 100
+```
+
+**WandB Metrics**:
+```
+# Meta-optimization metrics
+meta/ldc_mtl/objective_weight_{name}  # Learned objective weights
+meta/ldc_mtl/loss_discrepancy         # Discrepancy penalty value
+meta/odm/dataset_weight_{name}        # Dataset sampling probabilities
+meta/odm/exploration_rate             # Current exploration rate
+meta/odm/avg_reward_{name}            # Per-domain average rewards
+meta/layer_lr/multiplier_layer_{i}    # Per-layer LR multipliers
+meta/layer_lr/grad_norm_layer_{i}     # Per-layer gradient norms (EMA)
+meta/layer_lr/mean_multiplier         # Geometric mean of multipliers
+
+# Curriculum metrics (clean phase tracking)
+curriculum/phase_idx                   # Current phase index (0, 1, 2...)
+curriculum/phase_progress              # Progress within current phase (0.0-1.0)
+curriculum/current_phase               # Phase name (in WandB summary)
+curriculum/current_data                # Data config name (in WandB summary)
+```
+
+**Smoke Tests**:
+```bash
+cd packages/deployer
+source credentials/.env
+
+# 1x L40 meta-optimization
+sky launch skypilot/smoke_test_meta_opt_1gpu.yaml -y --cluster meta-1gpu
+
+# 2x L40 with FSDP (currently has dtype issues)
+sky launch skypilot/smoke_test_meta_opt_2gpu.yaml -y --cluster meta-2gpu
+```
+
+### LRC Calibration (Post-Quantization Recovery)
+
+Low-Rank Correction (LRC) adds trainable low-rank matrices (U, V) to correct quantization errors.
+Based on [Low-Rank Correction for Quantized LLMs](https://arxiv.org/abs/2412.07902).
+
+```bash
+# Train LRC adapters on calibration data
+uv run python scripts/train_lightning.py model=smollm2_135m training=lrc_calibration data=fineweb
+
+# Key features:
+# - Converts BitLinear -> BitLinearLRC (adds U, V matrices)
+# - Freezes ALL params except U, V (only LRC matrices trained)
+# - Uses hidden state matching loss (teacher = original fp16 model)
+# - Short calibration run (~50M tokens)
+```
+
+**How LRC Works**:
+- Forward: `output = W_quant @ Q_a(X) + U @ V^T @ X`
+  - `W_quant @ Q_a(X)`: frozen quantized path
+  - `U @ V^T @ X`: trainable correction on unquantized activations
+- Loss: `||h_teacher - h_student||²` per layer
+- Rank: 10% of min(in, out) → ~50% error reduction
+
+**Config** (`lrc_calibration.yaml`):
+```yaml
+lrc:
+  rank_percentage: 0.1  # 10% rank
+  init_method: zeros    # or "svd_residual"
+
+objectives:
+  distill:
+    enabled: true
+    lrc:
+      enabled: true
+      loss_type: mse
+      layer_weights: progressive
+```
+
+### SFT (Supervised Fine-Tuning)
+
+Add instruction-following capabilities via SFT training on the nvidia/Llama-Nemotron-Post-Training-Dataset.
+Uses Qwen chat template formatting with instruction token masking.
+
+```bash
+# Standalone SFT training
+uv run python scripts/train_lightning.py model=qwen3_4b training=sft_run
+
+# Pretrain-then-SFT curriculum (90% pretrain, 10% SFT)
+uv run python scripts/train_lightning.py model=qwen3_4b training=pretrain_then_sft
+
+# Key features:
+# - Uses nvidia/Llama-Nemotron-Post-Training-Dataset (~3.9M examples)
+# - Applies Qwen chat template to format conversations
+# - Instruction tokens (system + user) masked with -100
+# - Only assistant responses contribute to loss
+```
+
+**How SFT Works**:
+- Data is loaded from HuggingFace with `input` (conversation turns) and `output` (assistant response)
+- Tokenizer's `apply_chat_template()` formats conversations in Qwen style
+- Labels are created with -100 for instruction portions, valid token IDs for responses
+- Cross-entropy loss is computed only on assistant response tokens
+
+**Curriculum Integration**:
+SFT can be added as a phase in the curriculum schedule:
+
+```yaml
+curriculum:
+  phases:
+    - name: pretrain
+      end_ratio: 0.9
+      data_config: fineweb
+      objectives: {continue_pretrain: 1.0}
+    - name: sft
+      end_ratio: 1.0
+      data_config: sft_nemotron
+      objectives: {sft: 1.0}
+```
+
+**Available Configs**:
+| Config | Purpose |
+|--------|---------|
+| `sft_run` | Standalone SFT training |
+| `pretrain_then_sft` | 90% pretrain + 10% SFT curriculum |
+
+**Data Config** (`sft_nemotron.yaml`):
+The SFT data config loads from nvidia/Llama-Nemotron-Post-Training-Dataset with 5 splits:
+code, math, science, chat, safety (~3.9M total examples). License: CC-BY-4.0.
+
+### Salient Column Training (AWQ-style)
+
+Salient columns keep ~1% of weight columns in FP16 based on activation-aware saliency scoring.
+Based on AWQ, SqueezeLLM, and SpQR papers.
+
+```bash
+# Salient columns with AdamW (stable)
+uv run python scripts/train_lightning.py model=qwen3_0.6b training=salient_run
+
+# Salient columns with MuonClip (experimental - Issue #25)
+uv run python scripts/train_lightning.py model=qwen3_0.6b training=salient_muonclip
+
+# Salient + LoRA (CE-only)
+uv run python scripts/train_lightning.py model=qwen3_0.6b training=salient_lora_ce_only
+```
+
+**How Salient Works**:
+- Calibration: Run 128 samples through model, compute `saliency = activation_magnitude × weight_norm`
+- Selection: Keep top 1% columns in FP16, quantize rest to ternary
+- Training: Both FP16 and ternary weights are updated (end-to-end trainable)
+
+**Available Configs**:
+| Config | Optimizer | Objectives | Notes |
+|--------|-----------|------------|-------|
+| `salient_run` | AdamW 8-bit | CE | Stable, production-ready |
+| `salient_muonclip` | MuonClip | CE | Experimental (Issue #25) |
+| `salient_lora_ce_only` | AdamW 8-bit | CE | Salient + LoRA combined |
+
+**MuonClip + BitNet (Issue #25)**:
+MuonClip with high learning rates (lr_muon > 0.005) has historically caused divergence with BitNet.
+The `salient_muonclip` config tests if salient columns + CE-only objective can stabilize training.
+See GitHub Issue #25 for ongoing experiments.
+
+### Legacy Stages (Still Supported)
 
 | Stage | Config | Purpose | Tokens |
 |-------|--------|---------|--------|
 | 1 | `stage1_subln` | Convert model: insert SubLN + BitLinear | N/A (conversion only) |
 | 1.9 | `stage1_9_layerwise` | Layer-wise distillation to align with teacher | ~100M |
 | 2 | `stage2_pretrain` | Continue pre-training with ternary weights | ~10B |
-| 3 | `stage3_distill` | Knowledge distillation fine-tuning | ~1B |
+| 3 | `bitdistill_full` | Knowledge distillation (BitDistill objectives) | ~1B |
+| LRC | `lrc_calibration` | Post-quantization low-rank correction | ~50M |
 
 ### Training Commands by Stage
 
 ```bash
 # Stage 1: SubLN Insertion (no actual training, just conversion)
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
   model=smollm2_135m \
   training=stage1_subln \
   distributed=single_gpu
 
 # Stage 1.9: Layer-wise Distillation (quick alignment, ~100M tokens)
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
   model=smollm2_135m \
   training=stage1_9_layerwise \
   data=fineweb \
   distributed=single_gpu
 
 # Stage 2: Continue Pre-training (~10B tokens)
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
   model=smollm2_135m \
   training=stage2_pretrain \
   data=fineweb \
   distributed=fsdp_multi
 
-# Stage 3: Distillation Fine-tuning
-uv run python scripts/train.py \
+# Stage 3: BitDistill (knowledge distillation via objectives)
+uv run python scripts/train_lightning.py \
   model=smollm2_135m \
-  training=stage3_distill \
-  data=downstream \
-  distributed=single_gpu
+  training=bitdistill_full \
+  data=mixed_pretrain
+
+# LRC Calibration (post-quantization recovery)
+uv run python scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=lrc_calibration \
+  data=fineweb
 ```
 
 ### Hydra Override Examples
 
 ```bash
 # Limit training steps (for smoke tests)
-uv run python scripts/train.py model=smollm2_135m training=stage1_9_layerwise \
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage1_9_layerwise \
   training.max_steps=100
 
 # Change output directory
-uv run python scripts/train.py model=smollm2_135m training=stage1_9_layerwise \
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage1_9_layerwise \
   training.output_dir=/tmp/checkpoints
 
 # Disable wandb logging
-uv run python scripts/train.py model=smollm2_135m training=stage1_9_layerwise \
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage1_9_layerwise \
   training.logging.wandb.enabled=false
 
 # Multi-GPU with FSDP
-uv run python scripts/train.py model=qwen3_4b training=stage2_pretrain \
+uv run python scripts/train_lightning.py model=qwen3_4b training=stage2_pretrain \
   distributed=fsdp_multi
 ```
 
@@ -129,7 +510,7 @@ gs://{bucket}/checkpoints/{experiment_name}/{stage}_checkpoint/checkpoints/final
 
 **Enable GCS checkpointing**:
 ```bash
-uv run python scripts/train.py ... gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
+uv run python scripts/train_lightning.py ... gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
 ```
 
 ## Resume from Checkpoint
@@ -151,6 +532,42 @@ RESUME_CHECKPOINT=gs://...checkpoint.pt python scripts/train.py ...
 4. Continues training from the saved step
 
 The checkpoint must be a **file path** (ending in `checkpoint.pt`), not a directory.
+
+## Smoke Tests
+
+Smoke tests validate the full training pipeline in ~5 minutes:
+
+```bash
+cd packages/deployer
+
+# 1x L40 smoke test (20 steps)
+sky launch skypilot/smoke_test_unified_1gpu.yaml -y --cluster unified-1gpu
+
+# 2x L40 smoke test (FSDP data parallelism)
+sky launch skypilot/smoke_test_unified_2gpu.yaml -y --cluster unified-2gpu
+
+# Monitor
+sky logs unified-1gpu
+sky logs unified-2gpu
+
+# Teardown
+sky down unified-1gpu unified-2gpu -y
+```
+
+**Smoke Test Configuration**:
+- **Steps**: 20 total (4 warmup + 16 main training)
+- **First 20%** (steps 1-4): fineweb-edu warmup
+- **Remaining 80%** (steps 5-20): mixed_pretrain training
+- **Checkpoints**: GCS upload every 10 steps
+- **Verifies**: Loss decreases, MuonClip works, GCS/WandB logging works
+
+**Expected Output**:
+```
+First loss: ~10-12
+Last loss: ~6-8 (should decrease!)
+Checkpoints: step_10/, step_20/, final/
+WandB: https://wandb.ai/wrinklefree/runs/{run_id}
+```
 
 ## Cloud Deployment (SkyPilot)
 
@@ -268,12 +685,63 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 ## Architecture
 
 ### Core Components
-- `src/wrinklefree/models/bitlinear.py` - BitLinear layer with STE quantization (ternary weights)
-- `src/wrinklefree/models/subln.py` - SubLN normalization (key BitDistill component)
-- `src/wrinklefree/distillation/` - Logits KL + attention + layer-wise distillation losses
-- `src/wrinklefree/training/stage1.py` - Stage 1 SubLN insertion
-- `src/wrinklefree/training/stage1_9.py` - Stage 1.9 layer-wise distillation
-- `src/wrinklefree/training/fsdp_wrapper.py` - FSDP wrapping with activation checkpointing
+
+**Objectives** (`src/wf_train/objectives/`):
+- `manager.py` - ObjectiveManager: runs multiple objectives on same batch
+- `continue_pretrain.py` - ContinuePretrainObjective: next-token prediction
+- `distill.py` - DistillObjective: unified distillation with 4 configurable components:
+  - `hidden`: Hidden state alignment (layerwise distillation)
+  - `logits`: KL divergence on logits (full or sparse TCS mode)
+  - `attention`: Attention pattern matching (relation or block mode)
+  - `lrc`: Low-rank correction post-quantization recovery
+- `factory.py` - Creates ObjectiveManager from config
+- `base.py` - Base Objective class with modifies_input, requires_teacher, etc.
+
+**Training** (`src/wrinklefree/training/`):
+- `fsdp_wrapper.py` - FSDP wrapping with activation checkpointing (ACTIVE)
+- `auto_setup.py` - Auto-magic checkpoint resolution + BitNet conversion (ACTIVE)
+- `_legacy/trainer.py` - Legacy base Trainer (DEPRECATED - use Lightning)
+- `_legacy/continued_pretraining.py` - Legacy ContinuedPretrainingTrainer (DEPRECATED)
+- `_legacy/stage1.py` - Stage 1 SubLN insertion (DEPRECATED - use wf_arch.auto_convert_if_needed)
+
+**Experimental** (`src/wrinklefree/_experimental/`):
+- `moe/` - Mixture of Experts (benchmark-only, not production-ready)
+- `tensor_parallel/` - Tensor parallelism utilities (experimental)
+
+**Models** (`src/wrinklefree/models/`):
+- `bitlinear.py` - BitLinear layer with STE quantization (ternary weights)
+- `subln.py` - SubLN normalization (key BitDistill component)
+
+**Data** (`src/wrinklefree/data/`):
+- Imports from `wf_data` package
+- `MixedDataset` - Runtime dataset with dynamic weights
+
+### Key Patterns
+
+**ObjectiveManager Pattern**:
+```python
+# ObjectiveManager runs all enabled objectives
+manager = ObjectiveManager(
+    objectives={"continue_pretrain": CPObj(), "distill": DistillObj()},
+    weights={"continue_pretrain": 1.0, "distill": 0.5},
+)
+
+# Preprocess allows objectives to modify batch
+batch = manager.preprocess_batch(batch)
+
+# Forward computes all losses, returns weighted sum
+output = manager(model_outputs, batch)
+# output.loss = 1.0 * cp_loss + 0.5 * distill_loss
+```
+
+**Auto-Setup Pattern**:
+```python
+from wf_train.training.auto_setup import auto_setup_model
+
+# Resolves checkpoint (local/GCS/HuggingFace)
+# Auto-converts to BitNet if needed
+model, tokenizer = auto_setup_model(config, device)
+```
 
 ### Quantization
 - **BitNet 1.58-bit**: Ternary weights {-1, 0, 1} (3 levels, 1.58 bits/weight)
@@ -281,9 +749,16 @@ training.batch_size=16 training.gradient_accumulation_steps=4
 ### Configuration
 All configs in `configs/` using Hydra:
 - `model/` - Model architecture configs (smollm2_135m, qwen3_4b)
-- `training/` - Stage-specific training configs
-- `data/` - Dataset configs (fineweb, falcon, downstream)
+- `training/` - Stage-specific training configs (unified, stage2_pretrain)
+- `data/` - Dataset configs (default points to wf_data)
 - `distributed/` - FSDP/DDP settings (single_gpu, fsdp_multi)
+
+**Key Config Files**:
+| Config | Purpose |
+|--------|---------|
+| `training/base.yaml` | Standard STE training with composable objectives |
+| `training/stage2_pretrain.yaml` | Legacy Stage 2 |
+| `data/default.yaml` | Points to wf_data |
 
 ## Development
 
@@ -309,7 +784,7 @@ The repo includes MoE infrastructure for testing and training MoE variants of Bi
 
 ### Fake MoE Testing
 ```python
-from wrinklefree.moe import create_fake_moe_from_dense, verify_moe_matches_dense
+from wf_train._experimental.moe import create_fake_moe_from_dense, verify_moe_matches_dense
 
 # Convert dense model to MoE (all experts share weights, IdentityRouter)
 moe_model = create_fake_moe_from_dense(model, num_experts=8, top_k=2)
@@ -324,7 +799,7 @@ Convert trained models to GGUF format for BitNet.cpp inference.
 
 ### Conversion Functions
 ```python
-from wrinklefree.serving.converter import (
+from wf_train.serving.converter import (
     convert_to_gguf,           # Dense model to GGUF
     convert_moe_to_gguf,       # MoE model to GGUF
     convert_dense_to_fake_moe_gguf,  # Dense -> Fake MoE -> GGUF
@@ -351,7 +826,7 @@ Intelligent run naming for training and benchmarks.
 
 ### Training Runs
 ```python
-from wrinklefree.training.run_naming import generate_run_name
+from wf_train.training.run_naming import generate_run_name
 
 # Auto-generates: qwen3_4b-s2-muon-lr2.4e3-bs64-a3f
 name = generate_run_name(hydra_config)
@@ -359,7 +834,7 @@ name = generate_run_name(hydra_config)
 
 ### Benchmark Runs
 ```python
-from wrinklefree.training.run_naming import generate_benchmark_name, generate_moe_benchmark_name
+from wf_train.training.run_naming import generate_benchmark_name, generate_moe_benchmark_name
 
 # Dense: bn2b-i2s-ctx4096-t16-a3f
 name = generate_benchmark_name("bitnet-2b", "i2_s", 4096, 16)
@@ -392,11 +867,11 @@ Q-Sparse adds activation sparsity for inference efficiency. Based on [arxiv:2407
 
 ```bash
 # Enable Q-Sparse (61% activation sparsity)
-uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain \
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage2_pretrain \
   training.activation_sparsity.enabled=true
 
 # Or via Modal
-modal run src/wf_deployer/modal_deployer.py --model smollm2_135m --stage 2 \
+modal run src/wf_deploy/modal_deployer.py --model smollm2_135m --stage 2 \
   --hydra-overrides "training.activation_sparsity.enabled=true"
 ```
 
@@ -412,35 +887,95 @@ modal run src/wf_deployer/modal_deployer.py --model smollm2_135m --stage 2 \
 - `activation_sparsity.mode`: "topk" or "block" (N:M structured)
 - `activation_sparsity.warmup.warmup_steps`: Gradual warmup (default: 1000)
 
+## FSDP Multi-GPU Training
+
+When using `distributed=fsdp_multi` for multi-GPU training, be aware of these critical requirements:
+
+### Collective Operations
+FSDP uses collective operations that **ALL ranks must participate in**:
+- `save_checkpoint()` - Gathering sharded state dict is collective
+- `eval_loss` must be synchronized across ranks for consistent checkpoint save decisions
+
+**Key fixes in trainer.py:**
+1. **Best checkpoint save**: All ranks call `save_checkpoint("best")`, not just rank 0
+2. **Eval loss sync**: Added `dist.all_reduce` to synchronize eval loss across ranks
+3. **Dataloader verification**: Added check that batch counts match across ranks
+
+### Muon Optimizer with FSDP
+
+**CRITICAL**: The original `muon-clip` package is **incompatible with FSDP** because it broadcasts raw parameters, but FSDP shards them across ranks.
+
+**Solution**: Use `muon-fsdp2` (from PyPI) which uses gather-scatter instead of broadcast:
+
+```python
+from muon_fsdp2 import Muon
+
+optimizer = Muon([
+    {"params": muon_params, "lr": lr_muon, "use_muon": True},
+    {"params": adam_params, "lr": lr_adam, "use_muon": False}
+])
+```
+
+When `training.optimizer.type=muonclip` is specified, the trainer automatically uses `muon_fsdp2.Muon`.
+
+### Lightning FSDP Requirements
+
+When using `distributed=fsdp_multi` with Lightning, these constraints apply:
+
+| Constraint | Reason | Solution |
+|------------|--------|----------|
+| **No norm gradient clipping** | FSDPPrecision doesn't support it | Use value clipping or disable |
+| **No 8-bit optimizers** | Mixed dtypes in optimizer state | Use standard AdamW |
+| **No Muon parameter filtering** | FSDP flattens params | Use AdamW or muon_fsdp2 |
+| **Uniform dtypes** | FSDP requires same dtype | Use `.clone()` not `.copy_()` in conversions |
+
+**FSDP-compatible training command:**
+```bash
+uv run python scripts/train_lightning.py model=smollm2_135m training=unified \
+  distributed=fsdp_multi \
+  training.optimizer.type=adamw \
+  +training.optimizer.use_8bit=false
+```
+
+### Common FSDP Hangs
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Hang at checkpoint | Only rank 0 calls save_checkpoint | All ranks must call |
+| Hang at eval | Different ranks make different save decisions | Sync eval loss with all_reduce |
+| Muon collective mismatch | Broadcast with sharded params | Use muon_fsdp2 |
+| Dataloader mismatch | Different batch counts per rank | Use drop_last=True |
+| Dtype assertion error | Mixed dtypes in optimizer state | Use non-8bit optimizer |
+
 ## Notes
 
 - Training uses bfloat16 for numerical stability
 - Teacher models are loaded in bfloat16 to match student dtype
 - Use 8-bit AdamW (bitsandbytes) or Muon optimizer for memory efficiency
+- **FSDP with Muon**: Use `muon-fsdp2` package (automatically selected when `optimizer.type=muonclip`)
 - BitNet submodule (at meta-repo root ../extern/BitNet) is for inference only
 - MoE support uses llama.cpp's Mixtral-style tensor packing
 
-## Training Data (from CheaperTraining)
+## Training Data (from wf_data)
 
-**Data configs are managed by CheaperTraining, NOT 1.58Quant.**
+**Data configs are managed by wf_data, NOT this package.**
 
-1.58Quant's `configs/data/default.yaml` just specifies `config_name: mixed_pretrain`, which loads
-the actual data config from `CheaperTraining/configs/data/mixed_pretrain.yaml`.
+This package's `configs/data/default.yaml` just specifies `config_name: mixed_pretrain`, which loads
+the actual data config from `wf_data/configs/data/mixed_pretrain.yaml`.
 
 The `mixed_pretrain` config includes:
 - 6 data sources (DCLM, FineWeb-Edu, GitHub Code 2025, FineMath, SlimPajama, SYNTH)
-- Multi-domain probe loaders for influence-based remixing
 - All sources are commercially friendly (CC-BY, ODC-By, MIT, Apache 2.0, CDLA)
 
 **To use a different data config**, override `data.config_name`:
 ```bash
-uv run python scripts/train.py model=smollm2_135m training=stage2_pretrain \
-  data.config_name=fineweb  # Use CheaperTraining's fineweb.yaml
+uv run python scripts/train_lightning.py model=smollm2_135m training=stage2_pretrain \
+  data.config_name=fineweb  # Use wf_data's fineweb.yaml
 ```
 
-**Available configs** (in `packages/cheapertraining/configs/data/`):
-- `mixed_pretrain` - Multi-source with influence (default, recommended)
-- `fineweb` - Single-source FineWeb-Edu (no influence)
+**Available configs** (in `packages/wf_data/configs/data/`):
+- `mixed_pretrain` - Multi-source (default, recommended)
+- `fineweb` - Single-source FineWeb-Edu
 - `downstream` - SFT/finetuning tasks (Stage 3)
 
 ## A10G GPU Settings

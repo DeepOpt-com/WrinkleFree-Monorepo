@@ -8,7 +8,7 @@ from typing import Optional
 
 import pytest
 
-from wrinklefree_inference.client.bitnet_client import AsyncBitNetClient, BitNetClient
+from wf_infer.client.bitnet_client import AsyncBitNetClient, BitNetClient
 
 
 @dataclass

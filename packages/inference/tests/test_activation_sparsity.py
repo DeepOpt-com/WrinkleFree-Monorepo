@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from wrinklefree_inference.sglang_backend.activation_sparsity import (
+from wf_infer.sglang_backend.activation_sparsity import (
     ActivationSparsityConfig,
     SparsityMode,
     apply_sparsity,

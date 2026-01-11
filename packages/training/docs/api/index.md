@@ -1,33 +1,52 @@
 # API Documentation
 
-This section documents the core Python API for WrinkleFree-1.58Quant.
+Core Python API for WrinkleFree Training.
+
+## Lightning Module
+
+- `wf_train.lightning.module.WrinkleFreeLightningModule`: Main Lightning module
+- `wf_train.lightning.datamodule.WrinkleFreeDataModule`: Data module wrapper
+- `wf_train.lightning.callbacks`: Training callbacks (GCS, ZClip, TokenCount, etc.)
+
+## Objectives
+
+- `wf_train.objectives.manager.ObjectiveManager`: Multi-task objective manager
+- `wf_train.objectives.factory.create_objective_manager`: Factory function
+- `wf_train.objectives.continue_pretrain.ContinuePretrainObjective`: CE loss
+- `wf_train.objectives.dlm.DLMObjective`: Diffusion Language Model masking
+- `wf_train.objectives.layerwise.LayerwiseObjective`: Hidden state alignment
+- `wf_train.objectives.logits_distill.LogitsDistillObjective`: KL on teacher logits
+- `wf_train.objectives.attention_distill.AttentionDistillObjective`: Attention matching
+- `wf_train.objectives.bitdistill.BitDistillObjective`: Combined distillation
+- `wf_train.objectives.lrc_reconstruction.LRCReconstructionObjective`: Low-rank correction
 
 ## Models
 
-- `wrinklefree.models.bitlinear.BitLinear`: Quantized linear layer with STE.
-- `wrinklefree.models.subln.SubLN`: Sub-Layer Normalization module.
-- `wrinklefree.models.llama.LlamaForCausalLM`: Main model architecture.
+- `wf_train.models.bitlinear.BitLinear`: Quantized linear layer with STE
+- `wf_train.models.subln.SubLN`: Sub-Layer Normalization
 
-## Training
+## Training Utilities
 
-- `wrinklefree.training.trainer.Trainer`: Base trainer class.
-- `wrinklefree.training.stage1.run_stage1`: SubLN insertion (Stage 1).
-- `wrinklefree.training.stage1_9.Stage19Trainer`: Layer-wise distillation trainer (Stage 1.9).
-- `wrinklefree.training.stage1_9.HiddenStateTeacherWrapper`: Teacher model wrapper for hidden state extraction.
-- `wrinklefree.training.stage1_9.run_stage1_9`: Run Stage 1.9 layer-wise distillation.
-- `wrinklefree.training.stage2.Stage2Trainer`: Continue pre-training trainer (Stage 2).
-- `wrinklefree.training.stage3.Stage3Trainer`: Distillation trainer (Stage 3).
+- `wf_train.training.auto_setup.auto_setup_model`: Auto checkpoint resolution + BitNet conversion
+- `wf_train.training.fsdp_wrapper`: FSDP wrapping with activation checkpointing
 
-## Distillation
+## Quantization
 
-- `wrinklefree.distillation.combined_loss.BitDistillLoss`: Combined loss function (CE + logits KL + attention KL).
-- `wrinklefree.distillation.logits_loss.LogitsDistillationLoss`: Logits KL divergence.
-- `wrinklefree.distillation.attention_loss.AttentionDistillationLoss`: Attention distillation.
-- `wrinklefree.distillation.layerwise_loss.LayerwiseDistillationLoss`: Layer-wise hidden state distillation (Stage 1.9).
-- `wrinklefree.distillation.layerwise_loss.LayerwiseLossType`: Enum for loss metrics (cosine, mse, mse_normalized, kl, inner_product).
+- `wf_train.quantization.weight_quant`: Ternary weight quantization
+- `wf_train.quantization.activation_quant`: 8-bit activation quantization
+- `wf_train.quantization.ste`: Straight-through estimator
 
-## Influence (via Library)
+## Teachers (for distillation)
 
-- `cheapertraining.InfluenceAwareOptimizer`: Optimizer wrapper for influence updates.
-- `cheapertraining.DataInfCalculator`: Influence score calculator.
-- `cheapertraining.MixtureWeightCalculator`: Mixture weight optimizer.
+- `wf_train.teachers.local_teacher.LocalTeacher`: Local HuggingFace teacher
+- `wf_train.teachers.vllm_teacher.VLLMTeacher`: vLLM-based teacher
+
+## Serving
+
+- `wf_train.serving.converter`: GGUF conversion utilities
+- `wf_train.serving.bitnet_wrapper`: BitNet.cpp Python wrapper
+
+## Data (via wf_data package)
+
+- `wf_data.influence.InfluenceTracker`: Influence-based data remixing
+- `wf_data.data.MixedDataset`: Multi-source dataset with dynamic weights

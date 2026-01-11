@@ -1,0 +1,208 @@
+# BitNet + DLM + CE Training with FineWeb-Edu Only (1x L40)
+#
+# SmolLM2-135M training run with:
+# - BitNet 1.58-bit quantization (ternary weights {-1, 0, 1})
+# - Diffusion Language Model (DLM) objective
+# - Standard cross-entropy loss
+# - FineWeb-Edu only (no mixed data, no influence)
+# - Half learning rates for stability
+#
+# Usage:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/bitdistill_dlm_fineweb.yaml -y --cluster bitdistill-fineweb
+#
+# Monitor:
+#   sky logs bitdistill-fineweb
+#
+# Teardown:
+#   sky down bitdistill-fineweb -y
+
+name: wrinklefree-bitdistill-dlm-fineweb
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  disk_size: 100
+  use_spot: false
+  cloud: nebius
+
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  TOTAL_TOKENS: 5000000000  # 5B tokens
+  MAX_STEPS: 19073  # 5B tokens / (4*32*2048) tokens per step (batch=4, grad_accum=32)
+  # HALF LEARNING RATES for stability
+  MUON_LR: "0.01"  # Muon LR for 2D weights (was 0.02)
+  ADAM_LR: "1.5e-4"  # AdamW LR for embeddings/biases (was 3e-4)
+  EXPERIMENT_NAME: smollm2_135m_5b_fineweb_half_lr
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: bitdistill-fineweb-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  # Resume from checkpoint
+  RESUME_CHECKPOINT: gs://wrinklefree-checkpoints/checkpoints/smollm2_135m_5b_meta_opt_subln_fix/lightning_checkpoint/checkpoints/step_000500/last.ckpt
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+  fi
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Install gcloud CLI - handle existing broken installations
+  export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  if ! gcloud version &> /dev/null; then
+    echo "Installing Google Cloud SDK..."
+    # Remove any broken existing installation
+    rm -rf $HOME/google-cloud-sdk
+    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
+  fi
+  echo "gcloud version: $(gcloud version 2>/dev/null | head -1)"
+
+  # Install dependencies
+  uv sync --all-packages
+  # Install muon-clip from GitHub (required for MuonClip optimizer on single GPU)
+  uv pip install git+https://github.com/GAD-cell/muon-clip.git
+  # Install gcsfs for Lightning checkpoint loading from GCS
+  uv pip install gcsfs
+
+  # Activate GCS credentials and verify access
+  echo "Activating GCS credentials..."
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  if gsutil ls gs://${GCS_BUCKET}/ > /dev/null 2>&1; then
+    echo "GCS access: OK"
+  else
+    echo "ERROR: GCS access failed!"
+    exit 1
+  fi
+
+  # Verify WANDB_API_KEY is available
+  source /tmp/credentials.env
+  source /tmp/global.env
+  if [ -z "$WANDB_API_KEY" ]; then
+    echo "ERROR: WANDB_API_KEY not set!"
+    exit 1
+  fi
+  echo "WANDB_API_KEY: configured (length=${#WANDB_API_KEY})"
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$HOME/google-cloud-sdk/bin:$PATH"
+
+  # Load credentials
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+  # Explicitly export WANDB_API_KEY for subprocesses
+  export WANDB_API_KEY="${WANDB_API_KEY}"
+
+  # Activate GCS credentials
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json
+
+  # Create checkpoint directory
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  rm -rf $CHECKPOINT_DIR  # Clean previous runs
+  mkdir -p $CHECKPOINT_DIR
+
+  # Debug: verify credentials
+  echo "WANDB_API_KEY length: ${#WANDB_API_KEY}"
+
+  echo "================================================"
+  echo "WrinkleFree BitNet + DLM Training (FineWeb-Edu)"
+  echo "================================================"
+  echo "Model: $MODEL"
+  echo "Data: fineweb (FineWeb-Edu only)"
+  echo "Total Tokens: $TOTAL_TOKENS (5B)"
+  echo "Max Steps: $MAX_STEPS"
+  echo "Optimizer: PyTorch Muon + AdamW"
+  echo "Muon LR: $MUON_LR (2D weights) - HALF of original"
+  echo "AdamW LR: $ADAM_LR (embeddings/biases) - HALF of original"
+  echo "Weight Decay: 0.01 (CRITICAL for Muon stability)"
+  echo "Batch Size: 4"
+  echo "Grad Accum: 32"
+  echo "Experiment: $EXPERIMENT_NAME"
+  echo "WandB Project: $WANDB_PROJECT"
+  echo "GCS Bucket: $GCS_BUCKET"
+  echo "Resume From: $RESUME_CHECKPOINT"
+  echo "================================================"
+  echo ""
+  echo "Training Schedule:"
+  echo "- CE + DLM enabled from step 0 (no warmup)"
+  echo ""
+  echo "Objectives:"
+  echo "- continue_pretrain (CE): weight=1.0"
+  echo "- dlm: weight=1.0"
+  echo "================================================"
+  echo ""
+
+  echo "[Training] Starting Lightning training..."
+  # Using unified config with Muon+AdamW optimizer, FineWeb-Edu only
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=base \
+    data.config_name=fineweb \
+    training.max_steps=${MAX_STEPS} \
+    training.auto_batch_size=false \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=32 \
+    training.optimizer.type=muon \
+    training.optimizer.lr_muon=${MUON_LR} \
+    training.optimizer.lr_adam=${ADAM_LR} \
+    training.optimizer.weight_decay=0.01 \
+    training.lambda_warmup.enabled=false \
+    training.resume.checkpoint_path=${RESUME_CHECKPOINT} \
+    training.resume.load_optimizer_state=false \
+    training.resume.load_scheduler_state=false \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=${EXPERIMENT_NAME} \
+    training.checkpoint.save_interval=500 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.log_interval=10 \
+    training.validation.enabled=true \
+    training.validation.val_check_interval=500 \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    2>&1 | tee training.log
+
+  echo ""
+  echo "================================================"
+  echo "Training Complete!"
+  echo "================================================"
+
+  # Verify training completed successfully
+  echo ""
+  echo "[Verify] Training summary:"
+
+  # Check for key metrics in logs
+  if grep -q "loss" training.log; then
+    echo "Loss metrics found in logs"
+    grep -E "train/loss|train/continue_pretrain|train/dlm" training.log | tail -20
+  fi
+
+  # List checkpoints
+  echo ""
+  echo "[Verify] Checkpoints:"
+  find $CHECKPOINT_DIR -type f \( -name "*.ckpt" -o -name "*.pt" \) | head -10
+
+  # Final summary
+  echo ""
+  echo "================================================"
+  echo "WandB: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
+  echo "GCS: gs://${GCS_BUCKET}/checkpoints/${EXPERIMENT_NAME}/"
+  echo "================================================"

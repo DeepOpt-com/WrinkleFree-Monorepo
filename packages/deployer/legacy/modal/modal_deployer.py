@@ -9,7 +9,7 @@ Key features:
 - Simple Python API for AI tools
 
 Example usage:
-    from wf_deployer import ModalTrainer, TrainingConfig
+    from wf_deploy import ModalTrainer, TrainingConfig
 
     config = TrainingConfig(
         name="qwen3-stage2",
@@ -33,7 +33,7 @@ CLI usage:
     wf train --model qwen3_4b --stage 2
 
     # Or directly via modal
-    modal run src/wf_deployer/modal_deployer.py --model qwen3_4b --stage 2
+    modal run src/wf_deploy/modal_deployer.py --model qwen3_4b --stage 2
 
 Checkpoint resumption:
     The training code uses fingerprint-based run IDs (SHA256 of config + git commit).
@@ -57,7 +57,7 @@ from typing import Any, Literal
 
 import modal
 
-from wf_deployer.constants import (
+from wf_deploy.constants import (
     MODAL_APP_NAME,
     MODAL_VOLUME_CHECKPOINTS,
     MODAL_VOLUME_HF_CACHE,
@@ -100,7 +100,7 @@ DEFAULT_SCALE = "dev"  # Use A10G by default (cheaper)
 # GPU Configuration (set at deploy time via environment variables)
 # ============================================================================
 # Usage:
-#   modal deploy src/wf_deployer/modal_deployer.py                    # dev (1x A10G)
+#   modal deploy src/wf_deploy/modal_deployer.py                    # dev (1x A10G)
 #   MODAL_SCALE=large modal deploy ...                                # 4x H100
 #   MODAL_GPU_TYPE=A100 MODAL_GPU_COUNT=8 modal deploy ...           # custom
 
@@ -144,7 +144,7 @@ def check_scale_compatibility(requested_scale: str) -> tuple[bool, str]:
         return False, (
             f"Scale '{requested_scale}' requires {requested['gpus']}x {requested['type']}, "
             f"but Modal app deployed with {deployed_gpus}x {deployed_type}.\n"
-            f"Redeploy with: MODAL_SCALE={requested_scale} uv run modal deploy src/wf_deployer/modal_deployer.py"
+            f"Redeploy with: MODAL_SCALE={requested_scale} uv run modal deploy src/wf_deploy/modal_deployer.py"
         )
 
     if requested["gpus"] == deployed_gpus and requested["type"] == deployed_type:
@@ -203,10 +203,10 @@ training_image = (
         "TOKENIZERS_PARALLELISM": "false",
         "WF_VERSION": "2025-12-25-v1",  # Cache buster
     })
-    # Explicitly copy wf_deployer package (src layout requires add_local_dir)
+    # Explicitly copy wf_deploy package (src layout requires add_local_dir)
     .add_local_dir(
-        Path(__file__).parent,  # src/wf_deployer/
-        remote_path="/root/wf_deployer",
+        Path(__file__).parent,  # src/wf_deploy/
+        remote_path="/root/wf_deploy",
     )
 )
 
@@ -370,7 +370,7 @@ def run_training(
     # Verify GPU allocation before starting (fails fast if wrong GPU)
     gpu_info = verify_gpu_allocation(GPU_TYPE)
 
-    # 1. Install cheapertraining dependency first
+    # 1. Install wf_data dependency first
     cheaper_dir = Path("/app/WrinkleFree-CheaperTraining")
     if not cheaper_dir.exists():
         cheaper_url = REPO_CHEAPER_TRAINING
@@ -383,7 +383,7 @@ def run_training(
             ["git", "clone", "--depth=1", cheaper_clone_url, str(cheaper_dir)],
             check=True,
         )
-        print("[Modal] Installing cheapertraining...")
+        print("[Modal] Installing wf_data...")
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-e", str(cheaper_dir)],
             check=True,
@@ -1010,16 +1010,16 @@ def main(
 
     Examples:
         # Launch Stage 2 training
-        modal run wf_deployer/modal_deployer.py --model qwen3_4b --stage 2
+        modal run wf_deploy/modal_deployer.py --model qwen3_4b --stage 2
 
         # Run smoke test
-        modal run wf_deployer/modal_deployer.py --smoke
+        modal run wf_deploy/modal_deployer.py --smoke
 
         # List recent runs
-        modal run wf_deployer/modal_deployer.py --list-jobs
+        modal run wf_deploy/modal_deployer.py --list-jobs
 
         # Limited training steps
-        modal run wf_deployer/modal_deployer.py --model smollm2_135m --stage 1.9 --max-steps 100
+        modal run wf_deploy/modal_deployer.py --model smollm2_135m --stage 1.9 --max-steps 100
     """
     if list_jobs:
         runs = list_runs.remote()

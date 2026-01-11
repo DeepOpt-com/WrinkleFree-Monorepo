@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""Streamlit chat interface for BitNet models.
+"""Streamlit chat interface for DLM-BitNet models.
 
 Supports two backends:
-- bitnet_cpp: Pure C++ backend (BitNet.cpp) - ~26 tok/s, recommended
-- sglang: Python-based backend (SGLang-BitNet) - ~16 tok/s
+- native: DLM server (Rust) - RECOMMENDED
+- sglang: Python-based backend (SGLang-BitNet) - slower
 
 Environment variables:
-  BITNET_BACKEND - "bitnet_cpp" (default) or "sglang"
-  BITNET_URL - BitNet.cpp server URL (default: http://127.0.0.1:8080)
-  SGLANG_URL - SGLang server URL (default: http://127.0.0.1:30000)
+  BITNET_BACKEND - "native" (default) or "sglang"
+  NATIVE_URL - Server URL (default: http://127.0.0.1:30000)
 
 Run:
-  # BitNet.cpp backend (recommended)
-  1. Start server: ./scripts/launch_bitnet_cpp.sh
-  2. Start Streamlit: BITNET_BACKEND=bitnet_cpp uv run streamlit run demo/serve_sglang.py
+  # Native backend (recommended)
+  1. Start server: ./scripts/serve_native.sh models/model.gguf
+  2. Start Streamlit: uv run streamlit run demo/serve_sglang.py
 
-  # SGLang backend
+  # SGLang backend (slower)
   1. Start server: ./scripts/launch_sglang_bitnet.sh
   2. Start Streamlit: BITNET_BACKEND=sglang uv run streamlit run demo/serve_sglang.py
 """
@@ -30,13 +29,10 @@ import requests
 import streamlit as st
 
 # Backend selection
-BACKEND = os.environ.get("BITNET_BACKEND", "bitnet_cpp")  # "bitnet_cpp" or "sglang"
+BACKEND = os.environ.get("BITNET_BACKEND", "native")  # "native" or "sglang"
 
-# Server URLs based on backend
-if BACKEND == "bitnet_cpp":
-    API_URL = os.environ.get("BITNET_URL", "http://127.0.0.1:8080")
-else:
-    API_URL = os.environ.get("SGLANG_URL", "http://127.0.0.1:30000")
+# Server URL (same port for both backends)
+API_URL = os.environ.get("NATIVE_URL", "http://127.0.0.1:30000")
 
 # Legacy compatibility
 SGLANG_URL = API_URL
@@ -154,7 +150,7 @@ def generate_sync(
 
 # Page config
 st.set_page_config(
-    page_title="BitNet Chat (SGLang)",
+    page_title="BitNet Chat",
     page_icon="",
     layout="wide",
 )
@@ -182,12 +178,17 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("BitNet-b1.58-2B-4T Chat")
-st.caption("SGLang backend | Native SIMD kernels | Streaming generation")
+backend_captions = {
+    "native": "Native sgl-kernel | AVX512 SIMD | ~29 tok/s",
+    "bitnet_cpp": "BitNet.cpp | C++ | ~26 tok/s",
+    "sglang": "SGLang | Python | ~16 tok/s",
+}
+st.caption(backend_captions.get(BACKEND, "Unknown backend"))
 
 # Sidebar
 with st.sidebar:
     st.header("Settings")
-    max_tokens = st.slider("Max tokens", 32, 512, 256)
+    max_tokens = st.slider("Max tokens", 32, 4096, 256)
     temperature = st.slider("Temperature", 0.0, 1.5, 0.7)
     repetition_penalty = st.slider("Repetition penalty", 1.0, 2.0, 1.1)
     use_streaming = st.checkbox("Streaming", value=True)
@@ -197,13 +198,18 @@ with st.sidebar:
     # Server status
     server_info = check_server()
     if server_info["status"] == "ok":
-        backend_name = "BitNet.cpp" if BACKEND == "bitnet_cpp" else "SGLang"
+        backend_names = {"native": "Native sgl-kernel", "bitnet_cpp": "BitNet.cpp", "sglang": "SGLang"}
+        backend_name = backend_names.get(BACKEND, BACKEND)
         st.success(f"Connected to {backend_name}")
         st.caption(f"Model: {server_info['model']}")
         st.caption(f"URL: {API_URL}")
     else:
         st.error(f"Server Error: {server_info['message']}")
-        if BACKEND == "bitnet_cpp":
+        if BACKEND == "native":
+            st.info(
+                "Start server with:\n```bash\n./scripts/serve_native.sh models/dlm-bitnet-2b\n```"
+            )
+        elif BACKEND == "bitnet_cpp":
             st.info(
                 "Start server with:\n```bash\n./scripts/launch_bitnet_cpp.sh\n```"
             )
@@ -214,7 +220,10 @@ with st.sidebar:
 
     st.divider()
 
-    if BACKEND == "bitnet_cpp":
+    if BACKEND == "native":
+        st.caption("Backend: Native sgl-kernel (Python + SIMD)")
+        st.caption("Performance: ~29 tok/s")
+    elif BACKEND == "bitnet_cpp":
         st.caption("Backend: BitNet.cpp (C++)")
         st.caption("Performance: ~26 tok/s")
     else:

@@ -1,0 +1,44 @@
+# DLM Server Configuration
+#
+# This config MUST match training settings for correct inference.
+# See: packages/training/configs/objectives/block_attention_distill.yaml
+#
+# Usage:
+#   ./dlm_server --config configs/dlm_server.yaml
+#   ./dlm_server --config configs/dlm_server.yaml --port 8080  # CLI overrides YAML
+
+model_path: /path/to/dlm-model.gguf
+host: 0.0.0.0
+port: 30000
+
+# DLM block diffusion settings
+# CRITICAL: block_size must match training!
+dlm:
+  block_size: 32          # Must match training (Fast-dLLM v2 default)
+  # Confidence threshold for unmasking (iterative mode only)
+  # Lower = faster (more tokens unmasked per iteration), higher = more refinement
+  # Recommended: 0.5-0.7 for speed, 0.9 for quality
+  threshold: 0.7
+  small_block_size: 8     # Sub-block size (not used in greedy mode)
+  mask_token_id: null     # null = auto-detect from model vocab
+  max_iterations_per_block: 10  # Safety limit for iterative mode
+  # Decode mode:
+  #   "greedy" - Fast single-pass (~60 tok/s)
+  #   "iterative" - Per-paper correctness with confidence thresholding
+  #                 θ=0.5: ~60 tok/s (99% of greedy)
+  #                 θ=0.7: ~54 tok/s (89% of greedy)
+  #                 θ=0.9: ~20 tok/s (33% of greedy)
+  decode_mode: greedy
+
+# Scheduler settings
+scheduler:
+  max_sequences: 16       # Max concurrent requests
+  enable_radix_cache: true
+  radix_cache_max_tokens: 100000
+
+# Benchmark settings (set enabled: true to run benchmark instead of server)
+benchmark:
+  enabled: false
+  iterations: 50
+  max_tokens: 64
+  prompt: "What is the meaning of life?"

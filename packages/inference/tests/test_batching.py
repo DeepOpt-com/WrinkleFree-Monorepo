@@ -48,7 +48,7 @@ class TestContinuousBatching:
 
     @pytest.fixture
     def client(self):
-        from wrinklefree_inference.client.bitnet_client import BitNetClient
+        from wf_infer.client.bitnet_client import BitNetClient
         url = os.environ["INFERENCE_URL"]
         host = url.replace("http://", "").replace("https://", "").split(":")[0]
         port = int(url.split(":")[-1].split("/")[0]) if ":" in url.replace("http://", "") else 8080
@@ -233,7 +233,7 @@ class TestBatchMemoryEfficiency:
 
     @pytest.fixture
     def client(self):
-        from wrinklefree_inference.client.bitnet_client import BitNetClient
+        from wf_infer.client.bitnet_client import BitNetClient
         url = os.environ["INFERENCE_URL"]
         host = url.replace("http://", "").replace("https://", "").split(":")[0]
         port = int(url.split(":")[-1].split("/")[0]) if ":" in url.replace("http://", "") else 8080
@@ -301,13 +301,14 @@ class TestBatchMemoryEfficiency:
         assert overall_success >= 0.85, f"Low overall success rate: {overall_success*100:.0f}%"
 
 
+@pytest.mark.skip(reason="MoE not implemented. See: https://github.com/DeepOpt-com/WrinkleFree-Monorepo/issues/36")
 class TestBatchingWithMoE:
     """Test batching behavior with MoE module (unit tests, no server needed)."""
 
     def test_moe_batch_processing(self):
         """Test MoE FFN processes batches correctly."""
         import torch
-        from wrinklefree_inference.moe.expert import BitNetMoEFFN
+        from wf_infer.moe.expert import BitNetMoEFFN
 
         moe_ffn = BitNetMoEFFN(
             hidden_size=64,
@@ -332,7 +333,7 @@ class TestBatchingWithMoE:
     def test_moe_batch_consistency(self):
         """Test MoE produces consistent results across batch dimensions."""
         import torch
-        from wrinklefree_inference.moe.expert import BitNetMoEFFN
+        from wf_infer.moe.expert import BitNetMoEFFN
 
         moe_ffn = BitNetMoEFFN(
             hidden_size=64,
@@ -361,7 +362,7 @@ class TestBatchingWithMoE:
     def test_moe_expert_load_balancing(self):
         """Test that top-k routing distributes load across experts."""
         import torch
-        from wrinklefree_inference.moe.expert import BitNetMoEFFN
+        from wf_infer.moe.expert import BitNetMoEFFN
 
         moe_ffn = BitNetMoEFFN(
             hidden_size=64,

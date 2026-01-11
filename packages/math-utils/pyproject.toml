@@ -1,0 +1,17 @@
+[project]
+name = "wf-math"
+version = "0.1.0"
+description = "Pure math utilities for influence functions and gradient computation"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4.0",
+    "numpy>=1.26.0",
+    "tqdm>=4.66.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wf_math"]

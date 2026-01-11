@@ -110,7 +110,7 @@ sky jobs launch skypilot/qwen3_4b_stage1_9_8xh100.yaml
 
 | File | Change |
 |------|--------|
-| `src/wf_deployer/core.py` | Added WANDB_API_KEY passthrough, fail-loud check, distributed config |
+| `src/wf_deploy/core.py` | Added WANDB_API_KEY passthrough, fail-loud check, distributed config |
 | `skypilot/train.yaml` | Added data config selection by stage, removed hardcoded distributed |
 | `skypilot/qwen3_4b_stage1_9_8xh100.yaml` | NEW: Dedicated YAML for 8x H100 Stage 1.9 |
 | `docs/quick-start.md` | Updated setup instructions for SkyPilot-only |

@@ -1,0 +1,223 @@
+# Unified Training Configuration
+# Combines continue pre-training with optional layerwise distillation
+# Replaces separate stage1, stage1.9, stage2 with a single composable config
+
+stage: unified
+
+# Auto-convert: Converts model to BitNet on-the-fly if not already converted
+auto_convert:
+  enabled: true
+  insert_subln: true  # Add SubLN before projections (BitNet paper)
+  use_hadamard: false  # Enable online Hadamard for o_proj/down_proj (BitNet v2)
+  exclude_layers:
+    - embed_tokens
+    - lm_head
+    - embed_positions
+
+# torch.compile for 2.9x training speedup
+torch_compile:
+  enabled: true
+  mode: default
+
+# TODO: Disabled for now?
+# FP8 GEMM acceleration (H100/H200 only, auto-fallback to BF16)
+fp8:
+  enabled: true
+  recipe: rowwise
+  accumulator_dtype: bfloat16
+  min_gemm_size: 512
+  exclude_patterns:
+    - embed_tokens
+    - lm_head
+    - norm
+    - subln
+
+# Sequence packing
+packing:
+  enabled: true
+
+# Official PyTorch Muon + AdamW (PyTorch 2.9+)
+# - Muon: 2D weights (attention, FFN) with Newton-Schulz orthogonalization
+# - AdamW: Embeddings, biases, lm_head, LayerNorm
+# Built-in muP scaling - LR doesn't need retuning as model scales
+optimizer:
+  type: muon  # Official PyTorch Muon + AdamW
+  lr_muon: 0.02  # Muon LR for 2D weights (recommended default)
+  lr_adam: 3e-4  # AdamW LR for embeddings/biases
+  weight_decay: 0.01
+  momentum: 0.95  # Muon momentum
+
+scheduler:
+  type: wsd  # Warmup-Stable-Decay
+  warmup_steps: 550
+  decay_ratio: 0.2
+  decay_type: linear
+  min_lr_ratio: 0.0
+
+# Training parameters
+total_tokens: 10_000_000_000  # 10B tokens
+max_steps: null
+max_seq_length: 2048
+batch_size: 32
+gradient_accumulation_steps: 16
+gradient_clipping: 1.0
+auto_batch_size: true  # Auto batch size probing enabled (single GPU only!)
+auto_batch_size_max_val: 128  # Starting batch size (halves on OOM)
+
+# Lambda warmup for gradual quantization
+# Ramps quantization strength from 0 to 1 over warmup_steps
+# Helps stabilize early training before full ternary quantization kicks in
+lambda_warmup:
+  enabled: true
+  warmup_steps: 50
+  schedule: linear
+
+# === RESUME CONFIGURATION ===
+# Controls what state to load when resuming from a checkpoint
+resume:
+  checkpoint_path: null           # Path or gs:// URL (overrides auto-discovery)
+  load_optimizer_state: true      # false = start with fresh optimizer
+  load_scheduler_state: true      # false = start with fresh scheduler
+  load_training_state: true       # false = start from step 0
+  strict_model_load: true         # Fail on missing/unexpected keys
+
+# === OBJECTIVES SYSTEM ===
+# Composable objectives with Hydra-configurable weights
+# Each objective can be enabled/disabled and weighted independently
+objectives:
+  continue_pretrain:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+  layerwise_distill:
+    enabled: false  # Enable for distillation
+    weight: 0.5
+    loss_type: mse_normalized
+    layer_weights: progressive
+    normalize: true
+
+  # SFT objective for instruction-following (used with sft_nemotron data config)
+  # Uses nvidia/Llama-Nemotron-Post-Training-Dataset with Qwen chat template
+  sft:
+    enabled: false  # Enable for SFT phase
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+# === CURRICULUM SCHEDULE ===
+# Phase-based training with objective weight transitions
+#
+# Example multi-phase curriculum:
+#   phases:
+#     - name: pretrain
+#       end_ratio: 0.9
+#       data_config: fineweb
+#       objectives: {continue_pretrain: 1.0}
+#     - name: sft
+#       end_ratio: 1.0
+#       data_config: sft_nemotron
+#       objectives: {sft: 1.0}
+#
+curriculum:
+  enabled: true
+  interpolation: step  # "step" (immediate jump), "linear", or "cosine"
+  phases:
+    # Single phase: CE only
+    - name: main
+      end_ratio: 1.0
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0
+
+# Teacher model (only loaded if an objective requires_teacher)
+teacher:
+  fp16: true
+  offload_to_cpu: false
+  load_in_4bit: false
+  use_flash_attention: false
+
+# Checkpointing
+checkpoint:
+  save_interval: 200
+  keep_last_n: 5
+  save_optimizer: true
+
+# Logging with enhanced metrics
+# Override at CLI: training.logging.log_interval=1 for debugging
+logging:
+  log_interval: 10
+  wandb:
+    enabled: true
+    project: wrinklefree
+    entity: null
+    name: null
+    tags: [unified, bitnet]
+
+# Early stopping
+early_stopping:
+  enabled: false
+  patience: 5
+  min_delta: 0.01
+  min_evals: 10
+
+# === VALIDATION (C4 perplexity) ===
+# Periodic evaluation on held-out C4 validation set
+# License: ODC-BY (commercially friendly)
+validation:
+  enabled: true
+  config_name: c4_validation    # References wf_data config
+  val_check_interval: 500       # Evaluate every N steps
+  limit_val_batches: 50         # Number of validation batches (streaming)
+  batch_size: 8                 # Smaller batch for eval (no gradients)
+
+# === META-OPTIMIZATION ===
+# Efficient meta-optimization using O(1) methods:
+# - LDC-MTL: Objective weight optimization (CE vs distillation)
+# - ODM/EXP3: Dataset weight optimization (bandit-based data mixing)
+# - LayerLR: Per-layer learning rate optimization (LARS-inspired)
+#
+# All methods are efficient, principled, and require no external dependencies.
+# No Hessian computation, no gradient caching, no Pareto solvers.
+#
+# References:
+# - LDC-MTL (2025): https://arxiv.org/abs/2502.08585
+# - ODM (2023): https://arxiv.org/abs/2312.02406
+# - LayerLR: Inspired by LARS (https://arxiv.org/abs/1708.03888)
+meta_optimization:
+  enabled: false  # Enable meta-optimization
+
+  # LDC-MTL: Objective weight optimization
+  # Uses a small router network to learn task weights with O(1) complexity
+  ldc_mtl:
+    enabled: true              # Enable objective weight optimization
+    lambda_penalty: 0.1        # Discrepancy penalty (higher = more balanced)
+    hidden_dim: 32             # Router MLP hidden size
+    router_lr: 0.001           # Router learning rate
+    step_interval: 1           # Update router every N steps (set > grad_accum for large batches)
+
+  # ODM: Dataset weight optimization via EXP3 bandit
+  # Uses training loss as reward signal with ~0% overhead
+  odm:
+    enabled: true              # Enable dataset weight optimization
+    reward_smoothing: 0.9      # EMA coefficient (0-1, higher = more smoothing)
+    warmup_ratio: 0.01         # Fraction of steps with uniform weights
+    min_weight: 0.05           # Minimum sampling probability per dataset
+    max_weight: 0.60           # Maximum sampling probability per dataset
+
+  # LayerLR: Per-layer learning rate optimization
+  # Learns LR multipliers per layer based on gradient norms
+  # Bidirectional: increases LR when grads low, decreases when high
+  layer_lr:
+    enabled: false             # Enable per-layer LR optimization
+    lr: 0.001                  # Optimizer LR for multipliers
+    min_multiplier: 0.1        # Minimum LR multiplier (prevents collapse)
+    max_multiplier: 10.0       # Maximum LR multiplier (prevents explosion)
+    ema_decay: 0.99            # Grad norm smoothing
+    lambda_mean: 0.1           # Penalty to keep geometric mean near 1.0
+    warmup_ratio: 0.05         # Skip adaptation during LR warmup
+    step_interval: 1           # Update multipliers every N steps
+
+  # Logging
+  log_interval: 100

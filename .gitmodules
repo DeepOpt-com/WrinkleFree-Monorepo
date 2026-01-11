@@ -1,6 +1,0 @@
-[submodule "extern/BitNet"]
-	path = extern/BitNet
-	url = https://github.com/microsoft/BitNet.git
-[submodule "extern/gpucloud-dev"]
-	path = extern/gpucloud-dev
-	url = git@github.com:DeepOpt-com/runpod-dev.git

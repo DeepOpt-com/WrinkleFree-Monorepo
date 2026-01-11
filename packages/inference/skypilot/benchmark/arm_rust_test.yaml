@@ -1,0 +1,117 @@
+# SkyPilot configuration for Pure Rust BitNet Testing on ARM
+# Tests the pure Rust inference engine with ARM NEON on GCP Tau T2A
+#
+# Instance: GCP t2a-standard-8 (Ampere Altra, 8 vCPUs, 32 GB RAM)
+# Cost: ~$0.28/hour
+#
+# Launch:
+#   sky launch packages/inference/skypilot/benchmark/arm_rust_test.yaml -c arm-rust -y
+#
+# Run tests:
+#   sky exec arm-rust --workdir packages/inference
+#
+# Monitor:
+#   sky logs arm-rust --follow
+#
+# NOTE: For full benchmarks with model inference, use arm_wf_server.yaml instead
+
+name: arm-rust-test
+
+resources:
+  cloud: gcp
+  instance_type: t2a-standard-8  # Ampere Altra ARM64
+  region: us-central1
+  disk_size: 100
+  use_spot: false
+
+envs:
+  RAYON_NUM_THREADS: "8"
+  RUST_BACKTRACE: "1"
+
+file_mounts:
+  /opt/inference: .
+
+setup: |
+  set -ex
+  echo "============================================"
+  echo "Pure Rust BitNet ARM Test Setup"
+  echo "Instance: GCP t2a-standard-8 (Ampere Altra)"
+  echo "Architecture: $(uname -m)"
+  echo "============================================"
+
+  # Verify we're on ARM
+  if [ "$(uname -m)" != "aarch64" ]; then
+    echo "ERROR: This is not an ARM64 instance!"
+    exit 1
+  fi
+
+  # System dependencies
+  sudo apt-get update && sudo apt-get install -y \
+    build-essential pkg-config libssl-dev curl git protobuf-compiler
+
+  # Install Rust
+  if ! command -v cargo &> /dev/null; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
+  fi
+
+  # Verify Rust target
+  source "$HOME/.cargo/env"
+  rustup show
+  echo "Rust target: $(rustc -vV | grep host)"
+
+  echo "=== Setup Complete ==="
+
+run: |
+  set -ex
+  source "$HOME/.cargo/env"
+
+  # Use sky_workdir for latest code changes
+  WORKDIR="$HOME/sky_workdir/rust"
+  FALLBACK="/opt/inference/rust"
+
+  if [ -d "$WORKDIR" ]; then
+    cd "$WORKDIR"
+  else
+    cd "$FALLBACK"
+  fi
+
+  echo "============================================"
+  echo "Pure Rust BitNet ARM Test"
+  echo "Architecture: $(uname -m)"
+  echo "Rust target: $(rustc -vV | grep host)"
+  echo "Working directory: $(pwd)"
+  echo "============================================"
+
+  # Step 1: Run unit tests
+  echo ""
+  echo "=== Step 1: Running Unit Tests ==="
+  cargo test --lib -- --nocapture 2>&1 | head -200
+
+  # Step 2: Test bitnet kernel module specifically
+  echo ""
+  echo "=== Step 2: BitNet Kernel Tests ==="
+  cargo test kernels::bitnet -- --nocapture || echo "No kernel tests found"
+
+  # Step 3: Build wf_server binary
+  echo ""
+  echo "=== Step 3: Building wf_server (pure Rust, ARM NEON) ==="
+  cargo build --release --bin wf_server --features native-inference
+  ls -lh target/release/wf_server
+
+  # Step 4: Show binary info
+  echo ""
+  echo "=== Step 4: Binary Info ==="
+  file target/release/wf_server
+  target/release/wf_server --help | head -20
+
+  echo ""
+  echo "============================================"
+  echo "TEST COMPLETE"
+  echo "============================================"
+  echo ""
+  echo "CPU: $(lscpu | grep 'Model name' | cut -d: -f2 | xargs)"
+  echo "Architecture: $(uname -m)"
+  echo ""
+  echo "wf_server built successfully for ARM64!"
+  echo "For full benchmarks with model inference, use arm_wf_server.yaml"

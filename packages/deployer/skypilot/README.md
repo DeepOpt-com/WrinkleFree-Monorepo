@@ -17,13 +17,13 @@ We use **SkyPilot Managed Jobs** for training and **SkyServe** for inference bec
 
 | File | Purpose |
 |------|---------|
-| `train.yaml` | Multi-stage training job (Stage 1, 1.9, 2, 3) |
-| `dlm_train.yaml` | Fast-dLLM v2 SFT training for 2.5x faster inference |
+| `train.yaml` | Unified training job (uses dispatch_train.py) |
 | `smoke_test.yaml` | Quick validation (5 min, ~$1) |
-| `ablation_haar.yaml` | Haar-BitNet ablation study |
-| `ablation_saliency.yaml` | Saliency curriculum ablation study |
+| `train_hadamard_full.yaml` | Hadamard + SubLN training |
+| `train_hadamard_ce_only.yaml` | Hadamard CE-only (no DLM) |
+| `train_salient_muonclip.yaml` | Salient + MuonClip experiment |
 | `service.yaml` | SkyServe inference service definition |
-| `ssh_node_pools.yaml.example` | Template for registering Hetzner servers |
+| `eval.yaml` | Model evaluation |
 
 ---
 
@@ -57,17 +57,26 @@ Train WrinkleFree models on cloud GPUs using SkyPilot managed jobs. Managed jobs
 ### Launch Training
 
 ```bash
-# Stage 2: Continue pretraining (most common)
-sky jobs launch train.yaml -e MODEL=qwen3_4b -e STAGE=2
+# Using the CLI (recommended)
+wf train -m qwen3_4b -t base
+wf train -m qwen3_4b -t bitdistill_full --scale large
+wf train -m smollm2_135m -t lrc_run
 
-# Stage 3: Distillation fine-tuning
-sky jobs launch train.yaml -e MODEL=qwen3_4b -e STAGE=3
+# Using SkyPilot directly
+sky launch skypilot/train.yaml -y --cluster wf-train \
+  --env MODEL=qwen3_4b --env TRAINING_CONFIG=base
 
-# Custom GPU configuration
-sky jobs launch train.yaml -e MODEL=qwen3_4b -e STAGE=2 -e ACCELERATOR=A100:8
+# With total tokens
+sky launch skypilot/train.yaml -y --cluster wf-train \
+  --env MODEL=qwen3_4b --env TRAINING_CONFIG=base --env TOTAL_TOKENS=10B
 
-# SmolLM2 (smaller model, cheaper GPUs)
-sky jobs launch train.yaml -e MODEL=smollm2_135m -e STAGE=2 -e ACCELERATOR=A100:1
+# Available training configs:
+#   base:           Combined CE + DLM (recommended)
+#   bitdistill_full: Knowledge distillation
+#   lrc_run:        Low-Rank Correction
+#   salient_run:    AWQ-style salient columns
+#   sft_run:        Supervised fine-tuning
+#   smoke_test:     Quick 30-step validation
 ```
 
 ### Monitor Training
@@ -109,61 +118,6 @@ Training automatically resumes from the latest checkpoint if preempted.
 | Stage 2 (SmolLM2) | 1x A100 | ~4h | ~$10 |
 
 *Costs are approximate and depend on spot availability.*
-
----
-
-## Fast-dLLM v2 Training
-
-Train models with Fast-dLLM v2 SFT recipe for 2.5x faster inference at generation time.
-
-### What is Fast-dLLM v2?
-
-Fast-dLLM v2 (arXiv:2509.26328) enables parallel token generation using block diffusion:
-- Train with SFT on conversations (response-only loss)
-- At inference, generate multiple tokens in parallel within blocks
-- 2.5x speedup with no quality loss
-
-### Launch DLM Training
-
-```bash
-# From WrinkleFree-Deployer directory
-sky launch skypilot/dlm_train.yaml -y \
-    --env MODEL=1bitLLM/bitnet_b1_58-large \
-    --env TOKENS=1000000000 \
-    --env WANDB_API_KEY
-
-# With custom GPU config
-sky launch skypilot/dlm_train.yaml -y \
-    --accelerators H100:8 \
-    --env MODEL=1bitLLM/bitnet_b1_58-large
-```
-
-### Monitor
-
-```bash
-# View logs
-sky logs wf-dlm-train
-
-# Check GCS for checkpoints
-gsutil ls gs://wrinklefree-checkpoints/dlm/
-```
-
-### Configuration
-
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `MODEL` | `1bitLLM/bitnet_b1_58-large` | HuggingFace model path |
-| `TOKENS` | `1000000000` | Total training tokens (1B) |
-| `BLOCK_SIZE` | `32` | Block diffusion size (bd_size) |
-| `BATCH_SIZE` | `4` | Per-GPU batch size |
-| `GRAD_ACCUM` | `16` | Gradient accumulation steps |
-
-### Cost Estimate
-
-| Model | GPUs | Duration | Cost |
-|-------|------|----------|------|
-| BitNet 2B (1B tokens) | 1x H100 | ~4h | ~$15 |
-| BitNet 2B (4B tokens) | 8x H100 | ~4h | ~$60 |
 
 ---
 

@@ -7,7 +7,7 @@ and layer weighting strategies.
 import pytest
 import torch
 
-from wrinklefree.distillation import (
+from wf_train.distillation import (
     LayerwiseDistillationLoss,
     LayerwiseLossType,
 )

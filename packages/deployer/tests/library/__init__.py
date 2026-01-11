@@ -1,1 +1,1 @@
-"""Tests for the wf_deployer library."""
+"""Tests for the wf_deploy library."""

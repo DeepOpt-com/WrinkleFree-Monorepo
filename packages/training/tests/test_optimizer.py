@@ -28,7 +28,7 @@ class TestCreateOptimizer:
     def test_create_muonclip_optimizer(self):
         """Test MuonClip optimizer creation (default)."""
         pytest.importorskip("muon", reason="muon-clip not installed")
-        from wrinklefree.training.trainer import create_optimizer
+        from wf_data.training.optimizer import create_optimizer
 
         model = SimpleModel()
         # SimpleModel doesn't have attention heads, so clipping will be auto-disabled
@@ -47,7 +47,7 @@ class TestCreateOptimizer:
     def test_muonclip_with_custom_clipping(self):
         """Test MuonClip with custom clipping parameters (disabled for simple model)."""
         pytest.importorskip("muon", reason="muon-clip not installed")
-        from wrinklefree.training.trainer import create_optimizer
+        from wf_data.training.optimizer import create_optimizer
 
         model = SimpleModel()
         # Clipping requires model_config with attention heads, so it will be disabled
@@ -65,7 +65,7 @@ class TestCreateOptimizer:
     def test_muonclip_clipping_disabled(self):
         """Test MuonClip with QK-clipping disabled."""
         pytest.importorskip("muon", reason="muon-clip not installed")
-        from wrinklefree.training.trainer import create_optimizer
+        from wf_data.training.optimizer import create_optimizer
 
         model = SimpleModel()
         optimizer = create_optimizer(
@@ -84,7 +84,7 @@ class TestCreateOptimizer:
             pytest.skip("MuonClip test requires GPU (falls back to 8-bit optimizer on CPU)")
 
         pytest.importorskip("muon", reason="muon-clip not installed")
-        from wrinklefree.training.trainer import create_optimizer
+        from wf_data.training.optimizer import create_optimizer
 
         model = SimpleModel().cuda()
         optimizer = create_optimizer(
@@ -108,7 +108,7 @@ class TestCreateOptimizer:
 
     def test_adamw_8bit_fallback(self):
         """Test AdamW 8-bit optimizer creation."""
-        from wrinklefree.training.trainer import create_optimizer
+        from wf_data.training.optimizer import create_optimizer
 
         model = SimpleModel()
         optimizer = create_optimizer(
@@ -124,7 +124,7 @@ class TestCreateOptimizer:
 
     def test_adamw_optimizer(self):
         """Test standard AdamW optimizer creation."""
-        from wrinklefree.training.trainer import create_optimizer
+        from wf_data.training.optimizer import create_optimizer
 
         model = SimpleModel()
         optimizer = create_optimizer(
@@ -138,7 +138,7 @@ class TestCreateOptimizer:
 
     def test_parameter_groups_weight_decay(self):
         """Test that bias/norm params have no weight decay."""
-        from wrinklefree.training.trainer import create_optimizer
+        from wf_data.training.optimizer import create_optimizer
 
         model = SimpleModel()
         optimizer = create_optimizer(

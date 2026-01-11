@@ -1,197 +1,140 @@
 # WrinkleFree Monorepo
 
-Monorepo for 1.58-bit quantized LLM research using uv workspaces.
+1.58-bit quantized LLM research using uv workspaces.
 
-## Package Map
+## CRITICAL Rules (MUST FOLLOW)
 
-| Package | Type | Purpose |
-|---------|------|---------|
-| `packages/training` | App | 1.58-bit training pipeline (BitDistill) |
-| `packages/cheapertraining` | Lib | Shared data layer & utilities |
-| `packages/fairy2` | App | Complex-valued quantization (Fairy2i) |
-| `packages/inference` | App | Serving layer (sglang-bitnet) |
-| `packages/eval` | App | Model evaluation (lm-eval) |
-| `packages/deployer` | App | Cloud deployment (Modal/SkyPilot) |
-| `packages/converter` | App | Model format conversion (DLM) |
+1. **CHECK SYNC BEFORE REMOTE:** Before ANY ssh/remote command, check if live sync is running:
+   ```bash
+   ./sync.sh --status --preset <preset>  # Returns JSON with running status
+   ```
+   - If `"running": true` → Files are auto-syncing, proceed with remote commands
+   - If `"running": false` → Start sync first: `./sync.sh --preset <preset>`
 
-## Quick Start
+2. **NO GCP GPU:** Use Nebius or RunPod only (GCP is expensive)
 
-```bash
-# Install all packages
-uv sync --all-packages
+3. **NEVER CANCEL OTHERS' JOBS:** Only cancel SkyPilot jobs you started in this session
 
-# Run training
-uv run --package wrinklefree python scripts/train.py model=smollm2_135m training=stage2_pretrain
+4. **READ PACKAGE CLAUDE.md FIRST:** Before modifying any package, read its `packages/<pkg>/CLAUDE.md`
 
-# Run tests
-uv run pytest
-```
+5. **USE I2_S FOR GGUF:** NEVER use TQ2_0 for bf16 checkpoints - produces garbage
 
-## Key Commands
+## Quick Commands
 
 | Task | Command |
 |------|---------|
-| Install all deps | `uv sync --all-packages` |
-| Install one package | `uv sync --package wrinklefree` |
-| Run in package context | `uv run --package wrinklefree python scripts/train.py` |
-| Add dep to package | `cd packages/training && uv add torch` |
-| Run all tests | `uv run pytest` |
+| **Training (Lightning)** | `uv run --package wf-train python scripts/train_lightning.py model=smollm2_135m training=base` |
+| Training with auto batch | `... training.auto_batch_size=true` (single GPU only!) |
+| Meta-optimization | `... training.meta_optimization.enabled=true` |
+| BitDistill distillation | `... training=bitdistill_full` |
+| LRC calibration | `... training=lrc_run` |
+| Salient columns (AWQ-style) | `... training=salient_run` |
+| Salient + MuonClip (experimental) | `... training=salient_muonclip` |
+| **Deploy to cloud** | `cd packages/deployer && wf train -m smollm2_135m -t base` |
+| Cloud with scale | `wf train -m qwen3_4b -t bitdistill_full --scale large` |
+| Deploy on Modal | `wf train -m qwen3_4b -t base --backend modal` |
+| **Smoke test** | `cd packages/deployer && wf smoke -o ce` |
+| Smoke test on Modal | `wf smoke -o ce --backend modal` |
+| Smoke test preview | `wf smoke -o bitdistill --dry-run` |
+| **Check sync status** | `./sync.sh --status --preset <preset>` |
+| **Start live sync** | `./sync.sh --preset <preset>` (runs in foreground with inotify) |
+| One-time sync | `./sync.sh --preset <preset> --no-watch` |
+| Setup creds only | `./sync.sh --setup-creds --preset <preset>` |
+| Run tests | `uv run pytest packages/<pkg>/tests/` |
+| Type check | `uv run mypy packages/<pkg>/src/` |
 
-## Shared Dependencies
+## Dos and Don'ts
 
-`cheapertraining` is the shared library imported by other packages:
+### DO
+- Use PyTorch Lightning trainer (`train_lightning.py`) for new training runs
+- Use `training.auto_batch_size=true` to auto-find optimal batch size (single GPU only - not supported with DDP/FSDP!)
+- Check WandB for training metrics: https://wandb.ai/umd-leans-well/wrinklefree
+- Use `sky exec <cluster> <yaml>` to re-run jobs on existing clusters
+- Clean `/tmp/checkpoints/` on remote before re-running smoke tests
+
+### DON'T
+- Don't use TQ2_0 for bf16 checkpoints (destroys ternary weight distribution)
+- Don't push to main without PR review
+- Don't run `sky down` on clusters you didn't create
+- Don't disable `lambda_warmup` - use fast warmup (100 steps) for smoother early training
+
+## Package Navigation
+
+| Package | Namespace | Purpose | Key Files |
+|---------|-----------|---------|-----------|
+| `training` | `wf_train` | Training pipeline + Lightning | `scripts/train_lightning.py`, `src/wf_train/lightning/` |
+| `architecture` | `wf_arch` | BitLinear/BitLinearLRC/BitLinearSalient/SubLN layers | `src/wf_arch/layers/` |
+| `data_handler` | `wf_data` | Data loading + mixing | `src/wf_data/data/` |
+| `deployer` | `wf_deploy` | Cloud deployment (SkyPilot/Modal) | `skypilot/*.yaml`, `modal_deployer.py` |
+| `inference` | `wf_infer` | Model serving | `src/wf_infer/` |
+| `mobile` | N/A | Android inference (C++/JNI) | `android/` |
+| `eval` | `wf_eval` | Model evaluation | `src/wf_eval/` |
+| `math-utils` | `wf_math` | Pure math utilities | `src/wf_math/` |
+
+## Training Pipeline Overview
 
 ```
-cheapertraining (library)
-    │
-    ├──► training (wrinklefree)
-    │       Uses: cheapertraining.data, cheapertraining.influence
-    │
-    └──► fairy2
-            Uses: cheapertraining.data
+┌─────────────────────────────────────────────────────────────┐
+│                    PyTorch Lightning                        │
+│  train_lightning.py → WrinkleFreeLightningModule           │
+│         ↓                                                   │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │           ObjectiveManager (multi-task)              │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐          │   │
+│  │  │ CE Loss  │  │ BitDistl │  │   LRC    │  ...     │   │
+│  │  └──────────┘  └──────────┘  └──────────┘          │   │
+│  └─────────────────────────────────────────────────────┘   │
+│         ↓                                                   │
+│  Callbacks: BatchSizeFinder, GCS, ZClip, TokenCount        │
+│         ↓                                                   │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │           Meta-Optimization (optional)              │   │
+│  │  ┌──────────────┐    ┌──────────────┐              │   │
+│  │  │  LDC-MTL     │    │  ODM/EXP3    │              │   │
+│  │  │  (obj wts)   │    │  (data wts)  │              │   │
+│  │  └──────────────┘    └──────────────┘              │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**Adding workspace dependencies**:
-```toml
-# In pyproject.toml
-[project]
-dependencies = ["cheapertraining"]
-
-[tool.uv.sources]
-cheapertraining = { workspace = true }
-```
-
-**Important**: Changes to cheapertraining affect training and fairy2 - test both after modifications.
-
-## GCP Configuration
-
-- **Project ID**: `wrinklefree-481904`
-- **CPU Quota Limit**: 24 vCPUs per VM family in us-central1 (affects c3d, c2, etc.)
-  - Use `c3d-standard-22` (22 vCPUs) instead of larger instances
-  - Or request quota increase via GCP Console
-
-## Remote Sync (gpucloud-dev)
-
-The `gpucloud-dev` tool (in `extern/gpucloud-dev/`) handles all sync operations:
+## Key Config Overrides
 
 ```bash
-# Sync to RunPod instance
-uv run gcd sync my-dev
+# Model selection
+model=smollm2_135m          # 135M params, good for testing
+model=qwen3_4b              # 4B params, production
 
-# Sync to SSH host (uses .sync.conf preset)
-uv run gcd sync-ssh desktop
+# Training configs
+training=base            # Standard CE training (recommended)
+training=bitdistill_full    # Knowledge distillation
+training=lrc_calibration    # Low-rank correction
 
-# Smart sync (skips if watch active or no changes)
-uv run gcd sync-ssh desktop --smart
-
-# Sync with live watching
-uv run gcd sync-ssh desktop --watch
-
-# Check sync status (for AI agents)
-uv run gcd status --json
+# Common overrides
+training.max_steps=100      # Limit steps for testing
+training.auto_batch_size=true  # Auto-find max batch size (single GPU only!)
+output_dir=/tmp/checkpoints
+gcs.enabled=true gcs.bucket=wrinklefree-checkpoints
 ```
 
-### AI Agent Sync Protocol (CRITICAL)
+## GGUF Conversion (IMPORTANT)
 
-Before running commands on remote servers:
+**NEVER use TQ2_0 for bf16 checkpoints - it produces garbage output!**
 
-1. **Use `--smart` flag** (or check sync status first):
-   ```bash
-   uv run gcd sync-ssh desktop --smart
-   ```
-
-2. **Decision logic** (handled automatically with `--smart`):
-   - If `watch_active=true` → SKIP SYNC (mutagen handles it)
-   - If `files_checksum` unchanged → SKIP SYNC
-   - Otherwise → Run rsync
-
-3. **Recommended workflow**:
-   ```bash
-   # Start watch mode once at session start
-   uv run gcd sync-ssh desktop --watch
-
-   # Subsequent operations: use --smart
-   uv run gcd sync-ssh desktop --smart
-   ```
-
-This prevents the costly 90MB rsync on every command.
-
-### SSH Presets
-
-Configure `.sync.conf` for SSH hosts:
-```ini
-[project]
-uv_projects=packages/training packages/inference
-
-[desktop]
-host=Desktop
-dir=/home/lev/code/WrinkleFree
-```
-
-**Presets**: `desktop`, `runpod`, `RTX6000`
-
-## Inference Engine Quick Start
+| Format | Size | Speed | Quality | Notes |
+|--------|------|-------|---------|-------|
+| **I2_S** | 1.1GB | 55 tok/s | Good | **RECOMMENDED** - best compatibility |
+| TQ1_0 | 678MB | 63 tok/s | Good | Smaller, may conflict with some llama.cpp builds |
+| TQ2_0 | 779MB | 76 tok/s | GARBAGE | Do NOT use for bf16! |
 
 ```bash
-# On Desktop: Start Streamlit chat interface
-ssh Desktop 'cd /home/lev/code/WrinkleFree/packages/inference && \
-  uv run streamlit run demo/serve_sglang.py --server.port 7860'
-
-# Access at http://192.168.1.217:7860
+# Correct conversion workflow (I2_S recommended)
+python packages/inference/scripts/convert_checkpoint_to_gguf.py \
+    path/to/checkpoint --outfile model.gguf --outtype i2_s
 ```
 
-## SSH Hosts
+## Reference
 
-Desktop IP: `192.168.1.217` (configured in `~/.ssh/config`)
-
-## RunPod Setup (ALWAYS DO THIS)
-
-When starting a new RunPod instance, **always install gcloud**:
-
-```bash
-# Install gcloud CLI
-curl -sSL https://sdk.cloud.google.com > /tmp/install_gcloud.sh
-bash /tmp/install_gcloud.sh --disable-prompts --install-dir=/opt
-
-# Add to PATH
-echo 'export PATH=/opt/google-cloud-sdk/bin:$PATH' >> ~/.bashrc
-export PATH=/opt/google-cloud-sdk/bin:$PATH
-
-# Verify
-gcloud --version
-```
-
-## Core Principles
-
-- FAIL LOUDLY INSTEAD OF FALLBACKS
-- DO NOT LAUNCH GPU INSTANCES ON GCP - use Nebius and RunPod
-- Each package has its own CLAUDE.md with package-specific guidance
-
-## Troubleshooting
-
-### Package not found
-```bash
-uv sync --all-packages --reinstall
-```
-
-### Import errors between packages
-Ensure workspace sources are configured:
-```toml
-[tool.uv.sources]
-cheapertraining = { workspace = true }
-```
-
-### Submodule issues
-```bash
-git submodule update --init --recursive
-```
-
-## Documentation
-
-- [Quick Start](docs/quick-start.md) - Installation and first steps
-- [Architecture](docs/architecture.md) - System design and package relationships
-- [Dependencies](docs/dependencies.md) - Dependency graph and version constraints
-- [Development](docs/development.md) - Contributing and CI/CD
-
-# SKY Pilot
-### NEVER CANCEL JOBS THAT YOU DON'T OWN!!!! (ONLY CANCEL JOBS THAT YOU STARTED YOURSELF)
+- Detailed pipeline docs: `docs/ai-code/reference.md`
+- Architecture overview: `docs/architecture.md`
+- Development guide: `docs/development.md`
+- Quick start: `docs/quick-start.md`

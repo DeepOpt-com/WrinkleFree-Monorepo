@@ -75,7 +75,7 @@ docker build -f docker/Dockerfile.vllm -t wrinklefree-vllm .
 
 ```bash
 docker run -d \
-  --name wrinklefree-inference \
+  --name wf-infer \
   -p 8080:8080 \
   -v /path/to/models:/models \
   -e MODEL_PATH=/models/model.gguf \
@@ -88,7 +88,7 @@ docker run -d \
 
 ```bash
 docker run -d \
-  --name wrinklefree-inference \
+  --name wf-infer \
   -p 8080:8080 \
   -v /path/to/models:/models \
   -e MODEL_PATH=/models/model \

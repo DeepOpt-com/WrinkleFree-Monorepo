@@ -1,0 +1,151 @@
+# WrinkleFree Lightning Training Smoke Test (1x L40)
+#
+# Tests the new PyTorch Lightning-based training with:
+# - Auto batch size scaling (BatchSizeFinder)
+# - Multi-objective training
+# - GCS checkpoint uploads
+# - WandB logging
+#
+# Usage:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/smoke_test_lightning.yaml -y --cluster lightning-smoke \
+#     --env OBJECTIVE_COMBO=dlm
+#
+# Objective combinations (set via --env OBJECTIVE_COMBO):
+#   - ce_only: Just cross-entropy loss
+#   - dlm: CE + DLM (diffusion language model)
+#   - distill: CE + logits distillation
+#   - bitdistill: CE + BitDistill (logits + attention)
+#   - lrc: LRC reconstruction (post-quant recovery)
+#
+# Monitor:
+#   sky logs lightning-smoke
+#
+# Teardown:
+#   sky down lightning-smoke -y
+
+name: wrinklefree-lightning-smoke
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  use_spot: false
+  cloud: nebius
+
+# Run from monorepo root
+workdir: .
+
+file_mounts:
+  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  MAX_STEPS: 30
+  OBJECTIVE_COMBO: dlm  # Options: ce_only, dlm, distill, bitdistill, lrc
+  AUTO_BATCH_SIZE: "true"
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: lightning-${OBJECTIVE_COMBO}-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  OPTIMIZER_TYPE: muon  # Options: muon (PyTorch 2.9+), adamw, muonclip
+  BATCH_SIZE: 16  # DLM with complementary masks doubles this, so keep low
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  uv sync --all-packages
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================"
+  echo "WrinkleFree Lightning Smoke Test (1x L40)"
+  echo "================================================"
+  echo "Model: $MODEL"
+  echo "Objective combo: $OBJECTIVE_COMBO"
+  echo "Max Steps: $MAX_STEPS"
+  echo "Auto Batch Size: $AUTO_BATCH_SIZE"
+  echo "================================================"
+
+  # Set objective-specific config overrides
+  case "$OBJECTIVE_COMBO" in
+    ce_only)
+      OBJECTIVES="training.objectives.continue_pretrain.enabled=true training.objectives.dlm.enabled=false"
+      echo "Testing: Cross-entropy only"
+      ;;
+    dlm)
+      OBJECTIVES="training.objectives.continue_pretrain.enabled=true training.objectives.dlm.enabled=true training.objectives.dlm.weight=0.5"
+      echo "Testing: CE + DLM (diffusion LM)"
+      ;;
+    distill)
+      OBJECTIVES="training.objectives.continue_pretrain.enabled=true training.objectives.logits_distill.enabled=true training.objectives.logits_distill.weight=0.5"
+      echo "Testing: CE + Logits distillation"
+      ;;
+    bitdistill)
+      OBJECTIVES="training.objectives.bitdistill.enabled=true training.objectives.bitdistill.weight=1.0"
+      echo "Testing: BitDistill (logits + attention)"
+      ;;
+    lrc)
+      OBJECTIVES="training.objectives.lrc_reconstruction.enabled=true training.objectives.lrc_reconstruction.weight=1.0"
+      echo "Testing: LRC reconstruction"
+      ;;
+    *)
+      echo "Unknown objective combo: $OBJECTIVE_COMBO"
+      exit 1
+      ;;
+  esac
+
+  echo ""
+  echo "[Training] Running Lightning training..."
+  echo "Optimizer: $OPTIMIZER_TYPE"
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=base \
+    data=default \
+    training.max_steps=${MAX_STEPS} \
+    training.auto_batch_size=${AUTO_BATCH_SIZE} \
+    training.batch_size=${BATCH_SIZE} \
+    training.optimizer.type=${OPTIMIZER_TYPE} \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=lightning_${OBJECTIVE_COMBO}_smoke \
+    training.checkpoint.save_interval=10 \
+    training.logging.log_interval=1 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    $OBJECTIVES
+
+  echo ""
+  echo "================================================"
+  echo "Smoke Test Complete!"
+  echo "================================================"
+
+  # Verify checkpoints
+  echo ""
+  echo "[Verify] Checkpoints:"
+  find $CHECKPOINT_DIR -type f -name "*.ckpt" | head -10
+
+  # WandB link
+  echo ""
+  echo "WandB: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"

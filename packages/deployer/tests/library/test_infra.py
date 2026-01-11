@@ -1,4 +1,4 @@
-"""Tests for wf_deployer.infra module."""
+"""Tests for wf_deploy.infra module."""
 
 import json
 import sys
@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from wf_deployer.credentials import Credentials
-from wf_deployer.infra import Infra, InfraError
+from wf_deploy.credentials import Credentials
+from wf_deploy.infra import Infra, InfraError
 
 
 @pytest.fixture

@@ -1,0 +1,43 @@
+# Microsoft BitNet B1.58-2B-4T model configuration
+# Pre-trained 1.58-bit quantized model (bf16 STE version)
+# https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-bf16
+name: bitnet_2b
+
+# Load from HuggingFace (requires transformers with BitNet support)
+pretrained_name: microsoft/bitnet-b1.58-2B-4T
+
+# Architecture (from HuggingFace config.json)
+vocab_size: 128256
+hidden_size: 2560
+intermediate_size: 6912
+num_hidden_layers: 30
+num_attention_heads: 20
+num_kv_heads: 5
+head_dim: 128  # 2560 / 20
+max_position_embeddings: 4096
+rope_theta: 500000.0
+
+# Quantization settings
+quantization:
+  weight_bits: 1.58
+  activation_bits: 8
+  per_token_activation: true
+
+# SubLN settings
+subln:
+  enabled: true
+  eps: 1.0e-5
+  elementwise_affine: true
+
+# Model behavior
+attention_dropout: 0.0
+hidden_act: relu2
+rms_norm_eps: 1.0e-5
+tie_word_embeddings: true
+use_flash_attention: true
+
+# No teacher needed - this is already a trained BitNet model
+teacher:
+  pretrained: null
+  load_in_fp16: false
+  freeze: false

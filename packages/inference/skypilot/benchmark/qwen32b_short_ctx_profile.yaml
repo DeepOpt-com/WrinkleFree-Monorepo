@@ -1,0 +1,335 @@
+# SkyPilot configuration for Qwen2.5-32B Short Context Benchmark + Profiling
+# Measures throughput at short sequences (128-2048) and investigates performance bottlenecks
+#
+# Nebius cpu-d3_64vcpu-256gb Instance:
+# - CPU: AMD EPYC, 64 vCPUs
+# - Memory: 256 GB
+# - Cost: ~$1.59/hour
+#
+# Launch:
+#   sky launch skypilot/benchmark/qwen32b_short_ctx_profile.yaml -c qwen32b-profile -y
+#
+# Monitor:
+#   sky logs qwen32b-profile --follow
+#
+# Results:
+#   Results saved to /results/
+
+name: qwen32b-profile
+
+resources:
+  cloud: nebius
+  cpus: 64+
+  memory: 256+
+  disk_size: 300
+  use_spot: false
+
+envs:
+  MODEL_REPO: Qwen/Qwen2.5-32B
+  MODEL_NAME: Qwen2.5-32B
+  QUANT_TYPE: i2_s
+  NUM_THREADS: "48"
+  CTX_SIZES: "128,256,512,1024,2048"
+  NUM_RUNS: "3"
+  OUTPUT_TOKENS: "32"
+  CMAKE_BUILD_PARALLEL_LEVEL: "64"
+  RESULTS_DIR: /results
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+file_mounts:
+  /opt/inference: .
+
+setup: |
+  set -ex
+  echo "============================================"
+  echo "Qwen2.5-32B Short Context Benchmark + Profiling"
+  echo "Instance: Nebius cpu-d3 (AMD EPYC)"
+  echo "============================================"
+
+  # System info
+  lscpu | grep -E "(Model name|CPU\(s\)|Thread|Core|Socket|Cache)" | head -15 || true
+  free -h
+
+  # System deps
+  sudo apt-get update && sudo apt-get install -y clang cmake git curl python3-pip ccache
+
+  # Install uv
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
+
+  # Install Python packages with modern versions (avoid building tokenizers from source)
+  pip install --upgrade pip
+  pip install \
+    "huggingface_hub[cli]" \
+    hf_transfer \
+    safetensors \
+    torch \
+    numpy \
+    "transformers>=4.40.0"
+
+  # Create directories
+  sudo mkdir -p /results /models
+  sudo chown $(whoami) /results /models 2>/dev/null || true
+
+  # Install perf tools
+  sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r) || true
+
+  # Build llama.cpp with AVX-512
+  cd /opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp
+  cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_NATIVE=ON -DGGML_AVX512=ON -DGGML_AVX512_VBMI=ON -DGGML_AVX512_VNNI=ON -DCMAKE_C_FLAGS="-march=native" -DCMAKE_CXX_FLAGS="-march=native"
+  cmake --build build -j${CMAKE_BUILD_PARALLEL_LEVEL}
+
+  ls -lh build/bin/llama-cli build/bin/llama-quantize
+
+  echo "=== Setup Complete ==="
+
+run: |
+  set -ex
+
+  # Ensure Python packages are in PATH
+  export PATH="$HOME/.local/bin:$PATH"
+
+  LLAMA_CPP="/opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp"
+  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  RESULTS_FILE="${RESULTS_DIR}/short_ctx_benchmark_${TIMESTAMP}.json"
+  PERF_RESULTS="${RESULTS_DIR}/perf_analysis_${TIMESTAMP}.txt"
+
+  echo "============================================"
+  echo "Qwen2.5-32B Short Context Benchmark"
+  echo "Model: $MODEL_REPO"
+  echo "Context sizes: $CTX_SIZES"
+  echo "Runs per size: $NUM_RUNS"
+  echo "Output: $RESULTS_FILE"
+  echo "============================================"
+
+  # Step 1: Download model using Python API
+  echo "=== Step 1: Download Model ==="
+  sudo mkdir -p /models && sudo chown $(whoami) /models
+  python3 -c 'from huggingface_hub import snapshot_download; import os; snapshot_download(os.environ["MODEL_REPO"], local_dir="/models/"+os.environ["MODEL_NAME"], allow_patterns=["*.safetensors", "*.json", "*.model", "*.txt", "*.tiktoken"]); print("Download complete")'
+  ls -lh /models/$MODEL_NAME/
+
+  # Install GGUF dependencies
+  pip install sentencepiece gguf transformers
+
+  # Restore original config if it was modified previously
+  if [ -f /models/$MODEL_NAME/config.json.original ]; then
+    cp /models/$MODEL_NAME/config.json.original /models/$MODEL_NAME/config.json
+    echo "Restored original config.json"
+  fi
+
+  # Step 2: Convert to GGUF F16
+  echo "=== Step 2: Convert to GGUF F16 ==="
+  cd /opt/inference
+  python $LLAMA_CPP/convert_hf_to_gguf.py /models/$MODEL_NAME --outfile /models/$MODEL_NAME/model-f16.gguf --outtype f16
+  ls -lh /models/$MODEL_NAME/model-f16.gguf
+
+  # Step 3: Quantize to I2_S (naive ternary quantization)
+  echo "=== Step 3: Quantizing to I2_S ==="
+  $LLAMA_CPP/build/bin/llama-quantize /models/$MODEL_NAME/model-f16.gguf /models/$MODEL_NAME/model-i2s.gguf I2_S
+  ls -lh /models/$MODEL_NAME/model-i2s.gguf
+
+  MODEL_PATH="/models/$MODEL_NAME/model-i2s.gguf"
+
+  # Step 4: Run benchmarks
+  echo "=== Step 4: Short Context Benchmarks ==="
+
+  # Create benchmark script
+  cat > /tmp/benchmark.py << 'BENCHEOF'
+  import json, os, re, subprocess, time, statistics
+  from datetime import datetime
+  from dataclasses import dataclass, asdict
+
+  MODEL_PATH = os.environ["MODEL_PATH"]
+  LLAMA_CLI = os.environ["LLAMA_CLI"]
+  NUM_THREADS = int(os.environ.get("NUM_THREADS", "48"))
+  CTX_SIZES = [int(x) for x in os.environ.get("CTX_SIZES", "128,256,512,1024,2048").split(",")]
+  NUM_RUNS = int(os.environ.get("NUM_RUNS", "3"))
+  OUTPUT_TOKENS = int(os.environ.get("OUTPUT_TOKENS", "32"))
+  RESULTS_FILE = os.environ["RESULTS_FILE"]
+
+  @dataclass
+  class BenchmarkResult:
+      context_length: int
+      run_idx: int
+      prompt_eval_time_ms: float
+      prompt_tokens: int
+      prompt_tokens_per_sec: float
+      eval_time_ms: float
+      eval_tokens: int
+      eval_tokens_per_sec: float
+      total_time_s: float
+
+  def generate_prompt(target_tokens):
+      base = "The quick brown fox jumps over the lazy dog. " * 100
+      target_chars = target_tokens * 4
+      prompt = base * (target_chars // len(base) + 1)
+      return prompt[:target_chars]
+
+  def parse_timings(output):
+      timings = {}
+      for line in output.split('\n'):
+          if 'prompt eval time' in line.lower():
+              match = re.search(r'=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens.*?([\d.]+)\s*tokens per second', line)
+              if match:
+                  timings['prompt_eval_time_ms'] = float(match.group(1))
+                  timings['prompt_tokens'] = int(match.group(2))
+                  timings['prompt_tokens_per_sec'] = float(match.group(3))
+          elif 'eval time' in line.lower() and 'prompt' not in line.lower():
+              match = re.search(r'=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens.*?([\d.]+)\s*tokens per second', line)
+              if match:
+                  timings['eval_time_ms'] = float(match.group(1))
+                  timings['eval_tokens'] = int(match.group(2))
+                  timings['eval_tokens_per_sec'] = float(match.group(3))
+      return timings
+
+  def run_benchmark(prompt, context_length, run_idx):
+      prompt_file = f"/tmp/prompt_{context_length}.txt"
+      with open(prompt_file, 'w') as f:
+          f.write(prompt)
+      cmd = [LLAMA_CLI, "-m", MODEL_PATH, "-f", prompt_file, "-n", str(OUTPUT_TOKENS), "-t", str(NUM_THREADS), "-c", str(context_length + 4096), "--temp", "0", "--no-display-prompt"]
+      start = time.perf_counter()
+      result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+      total_time = time.perf_counter() - start
+      output = result.stderr + result.stdout
+      timings = parse_timings(output)
+      if 'prompt_tokens_per_sec' not in timings:
+          print(f"  Warning: Could not parse timing from output")
+          print(output[-500:])
+      return BenchmarkResult(
+          context_length=context_length,
+          run_idx=run_idx,
+          prompt_eval_time_ms=timings.get('prompt_eval_time_ms', 0),
+          prompt_tokens=timings.get('prompt_tokens', context_length),
+          prompt_tokens_per_sec=timings.get('prompt_tokens_per_sec', 0),
+          eval_time_ms=timings.get('eval_time_ms', 0),
+          eval_tokens=timings.get('eval_tokens', OUTPUT_TOKENS),
+          eval_tokens_per_sec=timings.get('eval_tokens_per_sec', 0),
+          total_time_s=total_time
+      )
+
+  def main():
+      results = []
+      print(f"{'='*60}\nQwen2.5-32B Short Context Benchmark\n{'='*60}")
+      print(f"Model: {MODEL_PATH}\nThreads: {NUM_THREADS}\nContext sizes: {CTX_SIZES}\nRuns: {NUM_RUNS}\nOutput tokens: {OUTPUT_TOKENS}\n")
+
+      for ctx_len in CTX_SIZES:
+          print(f"\n--- Context: {ctx_len} tokens ---")
+          prompt = generate_prompt(ctx_len)
+          for run_idx in range(NUM_RUNS):
+              print(f"  Run {run_idx+1}/{NUM_RUNS}...", end=" ", flush=True)
+              try:
+                  result = run_benchmark(prompt, ctx_len, run_idx)
+                  results.append(result)
+                  print(f"OK - Prefill: {result.prompt_tokens_per_sec:.1f} tok/s, Decode: {result.eval_tokens_per_sec:.1f} tok/s")
+              except Exception as e:
+                  print(f"ERROR: {e}")
+
+      print(f"\n{'='*60}\nSUMMARY\n{'='*60}")
+      print(f"{'Context':<10} {'Prefill tok/s':>15} {'Decode tok/s':>15} {'Total Time':>12}")
+      print("-" * 60)
+
+      summary = {}
+      for ctx_len in CTX_SIZES:
+          ctx_results = [r for r in results if r.context_length == ctx_len]
+          if ctx_results:
+              prefill_tps = [r.prompt_tokens_per_sec for r in ctx_results if r.prompt_tokens_per_sec > 0]
+              decode_tps = [r.eval_tokens_per_sec for r in ctx_results if r.eval_tokens_per_sec > 0]
+              if prefill_tps:
+                  avg_prefill = statistics.mean(prefill_tps)
+                  std_prefill = statistics.stdev(prefill_tps) if len(prefill_tps) > 1 else 0
+                  avg_decode = statistics.mean(decode_tps) if decode_tps else 0
+                  std_decode = statistics.stdev(decode_tps) if len(decode_tps) > 1 else 0
+                  avg_time = statistics.mean([r.total_time_s for r in ctx_results])
+                  print(f"{ctx_len:<10} {avg_prefill:>15.1f} {avg_decode:>15.1f} {avg_time:>12.2f}s")
+                  summary[str(ctx_len)] = {
+                      "avg_prefill_tok_s": round(avg_prefill, 1),
+                      "std_prefill_tok_s": round(std_prefill, 1),
+                      "avg_decode_tok_s": round(avg_decode, 1),
+                      "std_decode_tok_s": round(std_decode, 1),
+                      "avg_time_s": round(avg_time, 2),
+                      "runs": len(ctx_results)
+                  }
+
+      # Get system info
+      import platform
+      try:
+          with open('/proc/cpuinfo') as f:
+              cpuinfo = f.read()
+              cpu_model = re.search(r'model name\s*:\s*(.+)', cpuinfo)
+              cpu_model = cpu_model.group(1) if cpu_model else "Unknown"
+      except:
+          cpu_model = platform.processor()
+
+      output_data = {
+          "timestamp": datetime.now().isoformat(),
+          "model": MODEL_PATH,
+          "model_name": "Qwen2.5-32B-Ternary",
+          "quantization": "naive_ternary_i2s",
+          "hardware": {
+              "instance": "nebius-cpu-d3-64vcpu",
+              "cpu": cpu_model,
+              "vcpus": 64,
+              "memory_gb": 256
+          },
+          "config": {
+              "threads": NUM_THREADS,
+              "context_sizes": CTX_SIZES,
+              "runs_per_size": NUM_RUNS,
+              "output_tokens": OUTPUT_TOKENS
+          },
+          "summary": summary,
+          "raw_results": [asdict(r) for r in results],
+      }
+      with open(RESULTS_FILE, 'w') as f:
+          json.dump(output_data, f, indent=2)
+      print(f"\nResults saved to: {RESULTS_FILE}")
+
+  if __name__ == "__main__":
+      main()
+  BENCHEOF
+
+  export MODEL_PATH
+  export LLAMA_CLI="$LLAMA_CPP/build/bin/llama-cli"
+  export RESULTS_FILE
+  python3 /tmp/benchmark.py
+
+  # Step 5: Performance Profiling
+  echo ""
+  echo "=== Step 5: Performance Profiling ===" | tee -a $PERF_RESULTS
+  echo "Analyzing what makes inference slow..." | tee -a $PERF_RESULTS
+
+  # Generate a 512-token prompt for profiling
+  python3 -c "print('The quick brown fox jumps over the lazy dog. ' * 60)" > /tmp/profile_prompt.txt
+
+  # Check if perf is available
+  if command -v perf &> /dev/null; then
+    echo "" | tee -a $PERF_RESULTS
+    echo "--- Cache & Memory Analysis (512 ctx, 32 output tokens) ---" | tee -a $PERF_RESULTS
+    sudo perf stat -e cache-misses,cache-references,LLC-load-misses,LLC-loads,instructions,cycles \
+      $LLAMA_CLI -m $MODEL_PATH -f /tmp/profile_prompt.txt -n 32 -t $NUM_THREADS -c 2048 --temp 0 --no-display-prompt 2>&1 | tee -a $PERF_RESULTS
+
+    echo "" | tee -a $PERF_RESULTS
+    echo "--- IPC and Branch Analysis ---" | tee -a $PERF_RESULTS
+    sudo perf stat -e instructions,cycles,branch-misses,branches \
+      $LLAMA_CLI -m $MODEL_PATH -f /tmp/profile_prompt.txt -n 32 -t $NUM_THREADS -c 2048 --temp 0 --no-display-prompt 2>&1 | tee -a $PERF_RESULTS
+  else
+    echo "perf not available, skipping detailed profiling" | tee -a $PERF_RESULTS
+  fi
+
+  # Thread scaling analysis
+  echo "" | tee -a $PERF_RESULTS
+  echo "--- Thread Scaling Analysis ---" | tee -a $PERF_RESULTS
+  for THREADS in 16 32 48 64; do
+    echo "Testing with $THREADS threads..." | tee -a $PERF_RESULTS
+    $LLAMA_CLI -m $MODEL_PATH -f /tmp/profile_prompt.txt -n 16 -t $THREADS -c 2048 --temp 0 --no-display-prompt 2>&1 | grep -E "(prompt eval|eval time)" | tee -a $PERF_RESULTS
+  done
+
+  echo ""
+  echo "=== All Benchmarks Complete ==="
+  echo "Results: $RESULTS_FILE"
+  echo "Perf analysis: $PERF_RESULTS"
+  cat $RESULTS_FILE
+  echo ""
+  cat $PERF_RESULTS

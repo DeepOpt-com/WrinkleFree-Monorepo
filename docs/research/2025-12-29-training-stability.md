@@ -55,7 +55,7 @@ ZClip dynamically adjusts the clipping threshold based on gradient norm statisti
 
 **Usage**:
 ```python
-from cheapertraining.training import ZClip
+from wf_data.training import ZClip
 
 zclip = ZClip(z_threshold=3.0, ema_decay=0.99)
 
@@ -76,7 +76,7 @@ For BitNet training, gradually ramps up quantization strength:
 - Prevents catastrophic forgetting of pre-trained knowledge
 
 **Already integrated in**:
-- `wrinklefree.quantization.lambda_warmup.LambdaWarmup`
+- `wf_train.quantization.lambda_warmup.LambdaWarmup`
 - Stage 2 training (`stage2.py`)
 
 **Now also integrated in**:
@@ -99,12 +99,10 @@ conversion:
 
 | File | Changes |
 |------|---------|
-| `packages/cheapertraining/src/cheapertraining/training/gradient_clipping.py` | **New** - ZClip implementation |
-| `packages/cheapertraining/src/cheapertraining/training/__init__.py` | Export ZClip |
-| `packages/converter/scripts/train_dlm.py` | Smart mask init, lambda warmup, ZClip |
-| `packages/converter/configs/conversion/finetune.yaml` | `quantization_warmup_steps` config |
-| `packages/training/src/wrinklefree/training/stage2.py` | ZClip integration |
-| `packages/cheapertraining/configs/data/mixed_pretrain.yaml` | shuffle_buffer_size, adjusted weights |
+| `packages/data_handler/src/wf_data/training/gradient_clipping.py` | ZClip implementation |
+| `packages/data_handler/src/wf_data/training/__init__.py` | Export ZClip |
+| `packages/training/src/wf_train/training/` | ZClip integration |
+| `packages/data_handler/configs/data/mixed_pretrain.yaml` | shuffle_buffer_size, adjusted weights |
 
 ## W&B Metrics
 

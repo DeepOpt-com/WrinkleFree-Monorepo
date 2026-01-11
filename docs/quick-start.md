@@ -1,5 +1,13 @@
 # Quick Start Guide
 
+## Getting Started Guides
+
+| Guide | Description |
+|-------|-------------|
+| [Training Getting Started](guides/training-getting-started.md) | Cloud training with SkyPilot |
+| [Inference Getting Started](guides/inference-getting-started.md) | Run inference with wf_server |
+| [Cloud Deployment](guides/cloud-deployment.md) | Full SkyPilot and credentials setup |
+
 ## Prerequisites
 
 - Python 3.10+
@@ -27,42 +35,66 @@ git submodule update --init --recursive
 uv sync --all-packages
 
 # Or install a specific package
-uv sync --package wrinklefree
+uv sync --package wf-train
 ```
 
 ## Verify Installation
 
 ```bash
 # Check imports work
-uv run --package wrinklefree python -c "import wrinklefree; print('training: ok')"
-uv run --package cheapertraining python -c "import cheapertraining; print('cheapertraining: ok')"
+uv run --package wf-train python -c "import wf_train; print('training: ok')"
+uv run --package wf-data python -c "import wf_data; print('data: ok')"
+uv run --package wf-arch python -c "import wf_arch; print('arch: ok')"
 
 # Run tests
-uv run pytest packages/cheapertraining/tests/ -v --tb=short
+uv run pytest packages/data_handler/tests/ -v --tb=short
 ```
 
 ## Common Tasks
 
 ### Training a Model
 
+#### PyTorch Lightning (Recommended)
+
 ```bash
-# SmolLM2-135M (smallest, good for testing)
-uv run --package wrinklefree python packages/training/scripts/train.py \
+# SmolLM2-135M with Lightning trainer
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
-  training=stage2_pretrain \
-  data=fineweb
+  training=base
+
+# With auto batch size scaling (single GPU only - not supported with DDP/FSDP!)
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=base \
+  training.auto_batch_size=true
 
 # With limited steps for smoke test
-uv run --package wrinklefree python packages/training/scripts/train.py \
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
   model=smollm2_135m \
-  training=stage2_pretrain \
+  training=base \
   training.max_steps=100
+```
+
+### Running Distillation
+
+Distillation is integrated into the training package via the objectives system:
+
+```bash
+# BitDistill distillation (logits + attention)
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=bitdistill_full
+
+# LRC Calibration (post-quantization low-rank correction)
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m \
+  training=lrc_calibration
 ```
 
 ### Running Evaluation
 
 ```bash
-uv run --package wrinklefree_eval python packages/eval/scripts/evaluate.py \
+uv run --package wf-eval python packages/eval/scripts/run_eval.py \
   --model-path outputs/smollm2_135m/checkpoint \
   --benchmark glue
 ```
@@ -71,30 +103,43 @@ uv run --package wrinklefree_eval python packages/eval/scripts/evaluate.py \
 
 ```bash
 cd packages/deployer
+source credentials/.env
 
-# Launch training on Modal
-wf train --model smollm2_135m --stage 2 --scale dev
+# Run smoke test to verify setup
+wf smoke
 
-# Launch on SkyPilot
-wf sky launch --config skypilot/train.yaml
+# Launch training on SkyPilot (default)
+wf train -m smollm2_135m -t base
+
+# With larger GPU configuration
+wf train -m qwen3_4b -t base --scale large
 ```
 
-### Converting Models
+See [Training Getting Started](guides/training-getting-started.md) for more details.
+
+### Converting Models to GGUF
 
 ```bash
-# Convert to DLM format
-uv run --package wf_dlm_converter python packages/converter/scripts/train_dlm.py \
-  model=smollm2_135m \
-  source.path=outputs/checkpoint
+cd packages/inference
+
+# Convert checkpoint to GGUF (I2_S recommended)
+python scripts/convert_checkpoint_to_gguf.py \
+    path/to/checkpoint \
+    --outfile model.gguf \
+    --outtype i2_s
 ```
+
+**Warning**: Never use TQ2_0 for bf16 checkpoints - it corrupts weights!
+
+See [Inference Getting Started](guides/inference-getting-started.md) for running the model.
 
 ## Package Commands
 
 | Task | Command |
 |------|---------|
 | Install all | `uv sync --all-packages` |
-| Install one | `uv sync --package wrinklefree` |
-| Run in context | `uv run --package wrinklefree python ...` |
+| Install one | `uv sync --package wf-train` |
+| Run in context | `uv run --package wf-train python ...` |
 | Add dependency | `cd packages/training && uv add torch` |
 | Run tests | `uv run pytest packages/training/tests/` |
 | Type check | `uv run mypy packages/training/src/` |
@@ -123,11 +168,14 @@ Ensure workspace dependencies are configured:
 ```toml
 # In packages/training/pyproject.toml
 [tool.uv.sources]
-cheapertraining = { workspace = true }
+wf-data = { workspace = true }
+wf-arch = { workspace = true }
 ```
 
 ## Next Steps
 
-- Read [Architecture Overview](architecture.md) for system design
-- See [Development Guide](development.md) for contributing
-- Check individual package READMEs for detailed usage
+- **Training**: [Training Getting Started](guides/training-getting-started.md)
+- **Inference**: [Inference Getting Started](guides/inference-getting-started.md)
+- **Cloud Setup**: [Cloud Deployment Guide](guides/cloud-deployment.md)
+- **Architecture**: [Architecture Overview](architecture.md)
+- **Contributing**: [Development Guide](development.md)

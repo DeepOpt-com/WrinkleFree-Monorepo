@@ -1,0 +1,52 @@
+# Smoke Test Configuration
+# Fast 30-step validation for CI/CD and quick testing
+#
+# Usage:
+#   uv run --package wf-train python scripts/train_lightning.py \
+#     model=smollm2_135m training=smoke_test
+
+defaults:
+  - base
+
+stage: smoke_test
+
+# Override for fast 30-step validation
+max_steps: 30
+batch_size: 8
+max_seq_length: 256
+gradient_accumulation_steps: 1
+auto_batch_size: false
+
+# Disable expensive features
+torch_compile:
+  enabled: false  # Skip compile overhead for short runs
+
+validation:
+  enabled: false
+
+meta_optimization:
+  enabled: false
+
+# Fast checkpointing
+checkpoint:
+  save_interval: 10
+  save_optimizer: false
+
+# Frequent logging for debugging
+logging:
+  log_interval: 1
+  wandb:
+    tags: [smoke-test]
+
+# Fast lambda warmup
+lambda_warmup:
+  warmup_steps: 5
+
+# Single phase (CE only)
+curriculum:
+  phases:
+    - name: smoke
+      end_ratio: 1.0
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0

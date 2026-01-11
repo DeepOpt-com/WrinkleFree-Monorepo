@@ -1,8 +1,46 @@
 # WrinkleFree-Deployer
 
-Training job launcher for 1.58-bit quantized LLMs. Uses SkyPilot for managed GPU jobs with spot recovery.
+Training job launcher for 1.58-bit quantized LLMs. Supports two backends:
+- **SkyPilot** (default): Multi-cloud orchestration with spot recovery
+- **Modal**: Serverless GPU with fast cold starts and caching
 
-**For detailed AI discovery docs, see `docs/AIDEV.md`.**
+## CRITICAL Rules
+
+1. **RUN FROM DEPLOYER DIR**: All `wf` and `sky` commands must run from `packages/deployer`
+2. **SOURCE CREDENTIALS FIRST**: Always `source credentials/.env` before any cloud command
+3. **NEVER CANCEL OTHERS' JOBS**: Only cancel SkyPilot jobs you started in this session
+4. **USE NEBIUS**: Prefer Nebius over RunPod/GCP (better availability, lower cost)
+5. **CLEAN BEFORE RETRY**: Run `sky exec <cluster> "rm -rf /tmp/checkpoints/*"` before retrying failed jobs
+6. **FIX, DON'T FALL BACK**: When something breaks, FIX IT. Don't silently fall back to alternatives (e.g., don't switch from MuonClip to AdamW - fix MuonClip)
+7. **ALWAYS SET GCS PROJECT**: When creating SkyPilot YAMLs, ALWAYS include `GOOGLE_CLOUD_PROJECT: wrinklefree-481904` in envs section. The gcp-service-account.json is OAuth user creds (not service account), so the project ID must be set explicitly for GCS uploads to work.
+8. **USE TRAINING CONFIGS**: Use `--training/-t` flag (not `--stage/-s`). Training configs in `packages/training/configs/training/` are the source of truth.
+
+## Quick Commands
+
+```bash
+cd packages/deployer
+source credentials/.env
+
+# Training with SkyPilot (default)
+wf train -m qwen3_4b -t base                       # Combined CE + DLM
+wf train -m qwen3_4b -t bitdistill_full --scale large  # BitDistill
+wf train -m smollm2_135m -t lrc_run                # Low-Rank Correction
+wf train -m qwen3_4b -t base --dry-run             # Preview without launching
+
+# Training with Modal (fast starts, cached volumes)
+wf train -m qwen3_4b -t base --backend modal       # Use Modal instead of SkyPilot
+wf train -m smollm2_135m -t base -b modal          # Short form
+
+# Smoke tests
+wf smoke                          # Default: ce on L40S (SkyPilot)
+wf smoke -o bitdistill            # BitDistill smoke test
+wf smoke -o ce --backend modal    # Smoke test on Modal
+wf smoke --dry-run                # Preview without launching
+
+# Check logs
+wf logs <job_name>
+wf runs  # List recent jobs
+```
 
 ## Monorepo Integration
 
@@ -11,11 +49,11 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 **Orchestrates**:
 | Command | Package | Description |
 |---------|---------|-------------|
-| `wf train` | `training` | 1.58-bit quantization training |
-| `wf fairy2` | `fairy2` | Complex-valued quantization |
-| `wf dlm` | `converter` | DLM format conversion |
+| `wf train` | `training` | 1.58-bit quantization training (all stages) |
 | `wf serve` | `inference` | Model serving |
 | `wf eval` | `eval` | Model evaluation |
+
+> **Note**: Distillation is now done via training objectives (`training=bitdistill_full` or `training=lrc_calibration`).
 
 **Running commands**:
 ```bash
@@ -23,46 +61,87 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 # (train.yaml uses relative paths that require this)
 cd packages/deployer
 source credentials/.env
-uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2
+uv run --package wf-train-deployer wf train -m qwen3_4b -t base
 ```
 
-## Quick Reference
+## Training Configs
 
-**Important:** Run all `wf` commands from `packages/deployer` directory.
+| Config | Purpose | Use Case |
+|--------|---------|----------|
+| `base` | Combined CE + DLM | Default training (recommended) |
+| `bitdistill_full` | Knowledge distillation | Stage 3 distillation |
+| `lrc_run` | Low-Rank Correction | Post-quant error recovery |
+| `salient_run` | AWQ-style salient | Selective precision |
+| `sft_run` | Supervised fine-tuning | Instruction-following |
+| `smoke_test` | Fast 30-step validation | CI/CD testing |
 
-```bash
-# Set up credentials and run from deployer directory
-cd packages/deployer
-source credentials/.env
+## Smoke Test Objectives
 
-# Launch training
-uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --cloud nebius
-
-# With specific scale (4x H100)
-uv run --package wrinklefree-deployer wf train -m qwen3_4b -s 2 --scale large
-
-# Check logs
-uv run --package wrinklefree-deployer wf logs <run_id>
-
-# List recent runs
-uv run --package wrinklefree-deployer wf runs
-
-# Direct SkyPilot commands
-uv run --package wrinklefree-deployer sky check
-uv run --package wrinklefree-deployer sky jobs queue
-```
+| Objective | Description |
+|-----------|-------------|
+| `ce` | Cross-entropy only (default) |
+| `bitdistill` | BitDistill distillation |
+| `lrc` | Low-Rank Correction |
+| `salient` | AWQ-style salient columns |
+| `salient_lora` | Salient + LoRA combined |
+| `hadamard` | BitNet v2 Hadamard transform |
+| `sft` | Supervised fine-tuning |
+| `meta_opt` | Meta-optimization (LDC-MTL + ODM) |
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `src/wf_deployer/constants.py` | All magic strings, defaults, scales, GAR config |
-| `src/wf_deployer/core.py` | Main API: train(), logs(), cancel() |
-| `src/wf_deployer/cli.py` | CLI commands |
-| `skypilot/train.yaml` | SkyPilot training job template |
+| `src/wf_deploy/constants.py` | All magic strings, defaults, scales, training configs |
+| `src/wf_deploy/core.py` | Main API: train(), smoke_test_unified(), logs() |
+| `src/wf_deploy/cli.py` | CLI commands: train, smoke, logs, runs |
+| `src/wf_deploy/modal_deployer.py` | **Modal backend: ModalTrainer, run_training()** |
+| `skypilot/train.yaml` | SkyPilot unified training job (uses dispatch_train.py) |
+| `skypilot/smoke_test.yaml` | SkyPilot unified smoke test (uses dispatch_smoke.py) |
+| `skypilot/train_salient_muonclip.yaml` | MuonClip + Salient experiment (Issue #25) |
 | `skypilot/service.yaml` | SkyServe inference template |
+| `skypilot/eval.yaml` | Model evaluation template |
+| `scripts/dispatch_train.py` | Maps training config to train_lightning.py command |
+| `scripts/dispatch_smoke.py` | Maps objective to training config + overrides |
 | `credentials/.env` | Local credentials (gitignored) |
 | `credentials/gcp-service-account.json` | GCP service account for GCS + Docker auth |
+| `skypilot/_archived/` | Archived old YAMLs (for reference) |
+
+## Smoke Tests
+
+Quick validation of the training pipeline (~5 minutes):
+
+```bash
+cd packages/deployer
+source credentials/.env
+
+# Run smoke test with specific objective
+wf smoke                          # Default: ce on L40S
+wf smoke -o bitdistill            # BitDistill distillation
+wf smoke -o lrc --gpu-type H100   # LRC on H100
+wf smoke -o meta_opt --gpu-count 2  # Meta-opt with 2 GPUs
+
+# Preview without launching
+wf smoke --dry-run
+
+# Monitor
+sky logs wf-smoke-ce
+
+# Teardown
+sky down wf-smoke-ce -y
+```
+
+**Test Configuration**:
+- **Steps**: 20 total (4 warmup + 16 main training)
+- **First 20%**: Warmup on fineweb-edu
+- **Remaining 80%**: Mixed data training
+- **Checkpoints**: GCS upload every 10 steps
+- **Verifies**: Loss decreases, MuonClip works, GCS/WandB logging
+
+**Expected Results**:
+- First loss: ~10-12
+- Last loss: ~6-8 (should decrease!)
+- Checkpoints in GCS: step_10/, step_20/, final/
 
 ## Credential Management
 
@@ -117,13 +196,57 @@ Build and push with:
 ./scripts/build-image.sh
 ```
 
-## Cloud Providers
+## Modal Backend
+
+Modal provides serverless GPU compute with fast cold starts (~30s warm) and persistent volumes.
+
+### One-Time Setup
+```bash
+# Install Modal CLI
+pip install modal && modal setup
+
+# Create secrets (required)
+modal secret create wandb-api-key WANDB_API_KEY=$WANDB_API_KEY
+modal secret create gcp-credentials GOOGLE_APPLICATION_CREDENTIALS_JSON="$(cat credentials/gcp-service-account.json)"
+
+# Optional: HuggingFace token for gated models
+modal secret create hf-token HF_TOKEN=$HF_TOKEN
+```
+
+### Usage
+```bash
+# Training on Modal
+wf train -m qwen3_4b -t base --backend modal
+wf train -m smollm2_135m -t lrc_run -b modal
+
+# Smoke test on Modal
+wf smoke -o dlm --backend modal
+```
+
+### Modal vs SkyPilot Comparison
+
+| Feature | SkyPilot | Modal |
+|---------|----------|-------|
+| Startup time | ~5-10 min | ~30s (warm) |
+| Spot instances | Yes | No |
+| Multi-cloud | Yes | Modal only |
+| Persistent volumes | file_mounts | Modal Volumes |
+| Job recovery | Built-in | Via volumes |
+
+### Modal Caching
+
+- **Image layers**: Dependencies cached, ~30s warm start
+- **HF cache volume**: Model downloads persist across runs
+- **Checkpoint volume**: Training checkpoints persist for auto-resume
+
+## Cloud Providers (SkyPilot)
 
 | Provider | Config | Notes |
 |----------|--------|-------|
 | Nebius | `--cloud nebius` | $1.99/hr H100, recommended |
 | RunPod | `--cloud runpod` | Flexible, spot available |
 | GCP | `--cloud gcp` | A100/H100, expensive |
+| Vast.ai | `--cloud vast` | Cheap H100s, marketplace pricing |
 
 ## Troubleshooting
 
@@ -143,7 +266,17 @@ cat ~/.boto
 sky check
 
 # Re-authenticate
-sky check nebius  # or runpod, gcp
+sky check nebius  # or runpod, gcp, vast
+```
+
+### Vast.ai setup
+```bash
+# 1. Get API key from https://vast.ai/console/cli/
+# 2. Configure SkyPilot
+sky check vast
+
+# 3. Add to credentials/.env
+echo "VASTAI_API_KEY=your_key_here" >> credentials/.env
 ```
 
 ### Docker auth failures on Nebius/RunPod
@@ -180,10 +313,10 @@ wf train -m qwen3_4b -s 2 --secret WANDB_API_KEY=$WANDB_API_KEY
 
 ```bash
 # Run tests
-uv run --package wrinklefree-deployer pytest packages/deployer/tests/
+uv run --package wf-train-deployer pytest packages/deployer/tests/
 
 # Dry run (don't launch)
-uv run --package wrinklefree-deployer wf train -m smollm2_135m -s 2 --dry-run
+uv run --package wf-train-deployer wf train -m smollm2_135m -t base --dry-run
 
 # Lint
 uv run ruff check packages/deployer/

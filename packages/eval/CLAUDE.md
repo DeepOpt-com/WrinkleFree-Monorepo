@@ -24,7 +24,7 @@ This package is part of the WrinkleFree monorepo.
 
 **Running from monorepo root**:
 ```bash
-uv run --package wrinklefree_eval python packages/eval/scripts/run_eval.py model_path=path/to/model benchmark=bitdistill
+uv run --package wf_eval python packages/eval/scripts/run_eval.py model_path=path/to/model benchmark=bitdistill
 ```
 
 ## Quick Start
@@ -42,15 +42,13 @@ uv run python scripts/run_eval.py --model-path path/to/model --benchmark bitdist
 # Use optimized BitNet inference (requires running server)
 INFERENCE_URL=http://localhost:8080 uv run python scripts/run_eval.py --use-bitnet
 
-# Evaluate DLM (diffusion) models with Monte Carlo masking
-uv run python scripts/run_eval.py --model-path path/to/dlm-checkpoint --use-dlm --mc-iterations 128
 ```
 
 ## Evaluation API
 
 ### Simple Python API
 ```python
-from wrinklefree_eval import evaluate
+from wf_eval import evaluate
 
 # Basic evaluation
 results = evaluate("path/to/model", benchmark="bitdistill")
@@ -59,20 +57,11 @@ results = evaluate("path/to/model", benchmark="bitdistill")
 results = evaluate(
     "microsoft/BitNet-b1.58-2B-4T",
     benchmark="bitdistill",
-    wandb_project="wrinklefree-eval"
+    wandb_project="wf-eval"
 )
 
 # Smoke test
 results = evaluate("path/to/model", smoke_test=True)
-
-# DLM (diffusion) model evaluation
-# Uses Monte Carlo masking for loglikelihood computation
-results = evaluate(
-    "path/to/dlm-checkpoint",
-    benchmark="bitdistill",
-    use_dlm=True,
-    mc_iterations=128,  # Monte Carlo iterations (default: 128)
-)
 ```
 
 ### Available Benchmarks
@@ -91,7 +80,7 @@ For optimized inference, use WrinkleFree-Inference-Engine:
 cd ../inference
 
 # Serve model
-uv run wrinklefree-inference serve -m model.gguf -c 4096 --port 8080
+uv run wf-infer serve -m model.gguf -c 4096 --port 8080
 ```
 
 ### Use with Eval
@@ -120,16 +109,10 @@ INFERENCE_URL=$ENDPOINT uv run python scripts/run_eval.py --use-bitnet
 ```bash
 cd ../deployer
 
-# Evaluate standard model
+# Evaluate model
 sky jobs launch skypilot/eval.yaml \
   -e MODEL_PATH=microsoft/BitNet-b1.58-2B-4T \
   -e BENCHMARK=bitdistill
-
-# Evaluate DLM (diffusion) checkpoint from GCS
-sky jobs launch skypilot/eval.yaml \
-  -e MODEL_PATH=gs://wrinklefree-checkpoints/dlm/bitnet-b1.58-2B-4T-bf16/checkpoint-step-5000/ \
-  -e BENCHMARK=bitdistill \
-  -e USE_DLM=true
 
 # Monitor
 sky jobs queue
@@ -139,7 +122,7 @@ sky jobs logs <job_id>
 ## Architecture
 
 ```
-src/wrinklefree_eval/
+src/wf_eval/
 ├── api.py           # Simple evaluate() API
 ├── cli.py           # CLI entry point
 ├── models/
@@ -170,12 +153,12 @@ uv run python scripts/run_eval.py wandb.enabled=true wandb.project=my-project
 ## W&B Integration
 
 ```python
-from wrinklefree_eval import evaluate
+from wf_eval import evaluate
 
 # Auto-logging to W&B
 results = evaluate(
     model_path="path/to/model",
-    wandb_project="wrinklefree-eval",
+    wandb_project="wf-eval",
     wandb_run_name="my-eval-run",
 )
 ```

@@ -1,0 +1,183 @@
+# SkyPilot configuration for Qwen3-32B wf_server Benchmark
+# Tests native Rust inference engine with Qwen3-32B in I2_S format
+#
+# Instance: Nebius cpu-d3 (AMD EPYC, 64 vCPUs, 256 GB RAM)
+# Cost: ~$1.59/hour
+#
+# Launch:
+#   sky launch packages/inference/skypilot/benchmark/qwen3_32b_wf_server.yaml -c qwen3-32b-wf -y
+#
+# Re-run with code changes:
+#   sky exec qwen3-32b-wf --workdir packages/inference
+#
+# Monitor:
+#   sky logs qwen3-32b-wf --follow
+#
+# Results: Prefill throughput in tok/s
+
+name: qwen3-32b-wf
+
+resources:
+  cloud: nebius
+  cpus: 64+
+  memory: 256+
+  disk_size: 400
+  use_spot: false
+
+envs:
+  MODEL_REPO: Qwen/Qwen2.5-32B
+  MODEL_NAME: Qwen2.5-32B
+  NUM_THREADS: "64"
+  CMAKE_BUILD_PARALLEL_LEVEL: "64"
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  RAYON_NUM_THREADS: "32"
+  OMP_NUM_THREADS: "64"
+
+file_mounts:
+  /opt/inference: .
+
+setup: |
+  set -ex
+  echo "============================================"
+  echo "Qwen3-32B wf_server Benchmark Setup"
+  echo "Instance: Nebius cpu-d3 (AMD EPYC)"
+  echo "============================================"
+
+  # System dependencies
+  sudo apt-get update && sudo apt-get install -y \
+    clang cmake git curl python3-pip ccache libgomp1 build-essential \
+    pkg-config libssl-dev protobuf-compiler
+
+  # Install Rust (for wf_server)
+  if ! command -v cargo &> /dev/null; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
+  fi
+
+  # Python packages
+  pip install --upgrade pip
+  pip install "huggingface_hub[cli]" hf_transfer safetensors torch numpy "transformers>=4.40.0" sentencepiece gguf
+
+  # Directories
+  sudo mkdir -p /results /models
+  sudo chown $(whoami) /results /models
+
+  # Build llama.cpp for GGUF conversion
+  echo "=== Building llama.cpp ==="
+  cd /opt/inference/extern/llama.cpp
+  cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+    -DGGML_NATIVE=ON -DGGML_AVX512=ON -DGGML_AVX512_VBMI=ON -DGGML_AVX512_VNNI=ON \
+    -DCMAKE_C_FLAGS="-march=native" -DCMAKE_CXX_FLAGS="-march=native"
+  cmake --build build -j${CMAKE_BUILD_PARALLEL_LEVEL}
+  ls -lh build/bin/llama-cli build/bin/llama-quantize
+
+  # Build wf_server
+  echo "=== Building wf_server ==="
+  cd /opt/inference/rust
+  source "$HOME/.cargo/env"
+  cargo build --release --bin wf_server --features native-inference
+  ls -lh target/release/wf_server
+
+  echo "=== Setup Complete ==="
+
+run: |
+  set -ex
+  source "$HOME/.cargo/env"
+
+  # IMPORTANT: Use sky_workdir paths for wf_server to pick up code changes from `sky exec`
+  # llama.cpp is built once during setup, but wf_server should be rebuilt for code changes
+  LLAMA_CPP="/opt/inference/extern/llama.cpp"
+  WF_SERVER_WORKDIR="$HOME/sky_workdir/rust"
+  WF_SERVER_FALLBACK="/opt/inference/rust"
+
+  # Rebuild wf_server if code has changed (use sky_workdir for latest code)
+  if [ -d "$WF_SERVER_WORKDIR" ]; then
+    echo "=== Rebuilding wf_server from synced workdir ==="
+    cd "$WF_SERVER_WORKDIR"
+    cargo build --release --bin wf_server --features native-inference
+    WF_SERVER="$WF_SERVER_WORKDIR/target/release/wf_server"
+  else
+    WF_SERVER="$WF_SERVER_FALLBACK/target/release/wf_server"
+  fi
+  ls -lh "$WF_SERVER"
+
+  echo "============================================"
+  echo "Qwen3-32B wf_server Benchmark"
+  echo "Model: $MODEL_REPO"
+  echo "Threads: OMP=$OMP_NUM_THREADS, RAYON=$RAYON_NUM_THREADS"
+  echo "============================================"
+
+  # Step 1: Download model
+  echo "=== Step 1: Downloading $MODEL_NAME ==="
+  if [ ! -d /models/$MODEL_NAME ]; then
+    python3 -c 'from huggingface_hub import snapshot_download; import os; snapshot_download(os.environ["MODEL_REPO"], local_dir="/models/"+os.environ["MODEL_NAME"], allow_patterns=["*.safetensors", "*.json", "*.model", "*.txt", "*.tiktoken"])'
+    ls -lh /models/$MODEL_NAME/
+  else
+    echo "Model already downloaded"
+  fi
+
+  # Step 2: Convert to GGUF F16
+  echo "=== Step 2: Converting to GGUF F16 ==="
+  if [ ! -f /models/$MODEL_NAME/model-f16.gguf ]; then
+    cd /opt/inference
+    python3 $LLAMA_CPP/convert_hf_to_gguf.py /models/$MODEL_NAME \
+      --outfile /models/$MODEL_NAME/model-f16.gguf \
+      --outtype f16
+    ls -lh /models/$MODEL_NAME/model-f16.gguf
+  else
+    echo "F16 GGUF already exists"
+  fi
+
+  # Step 3: Quantize to I2_S
+  echo "=== Step 3: Quantizing to I2_S ==="
+  if [ ! -f /models/$MODEL_NAME/model-i2s.gguf ]; then
+    $LLAMA_CPP/build/bin/llama-quantize \
+      /models/$MODEL_NAME/model-f16.gguf \
+      /models/$MODEL_NAME/model-i2s.gguf \
+      I2_S
+    ls -lh /models/$MODEL_NAME/model-i2s.gguf
+  else
+    echo "I2_S GGUF already exists"
+  fi
+
+  MODEL_PATH="/models/$MODEL_NAME/model-i2s.gguf"
+  echo "Model file: $(ls -lh $MODEL_PATH)"
+
+  # Step 4: Benchmark with llama.cpp (baseline)
+  echo "=== Step 4: llama.cpp Baseline ==="
+  echo "The quick brown fox jumps over the lazy dog. " | head -c 2000 > /tmp/test_prompt.txt
+
+  echo "--- llama.cpp I2_S baseline ---"
+  $LLAMA_CPP/build/bin/llama-cli \
+    -m $MODEL_PATH \
+    -f /tmp/test_prompt.txt \
+    -n 1 \
+    -t $NUM_THREADS \
+    -c 4096 \
+    --temp 0 \
+    --no-display-prompt 2>&1 | grep -E "(prompt eval|model size)"
+
+  # Step 5: Benchmark with wf_server
+  echo ""
+  echo "=== Step 5: wf_server Benchmark ==="
+  echo "Running native Rust inference engine..."
+  echo "Note: Using --context-len 4096 to limit KV cache (model default is 128K)"
+
+  $WF_SERVER \
+    --model-path $MODEL_PATH \
+    --context-len 4096 \
+    --benchmark \
+    --benchmark-iterations 5 \
+    --benchmark-max-tokens 32
+
+  # Step 6: Summary
+  echo ""
+  echo "============================================"
+  echo "BENCHMARK COMPLETE"
+  echo "============================================"
+  echo "Model: Qwen3-32B (I2_S format)"
+  echo "Model size: $(ls -lh $MODEL_PATH | awk '{print $5}')"
+  echo "CPU: $(lscpu | grep 'Model name' | cut -d: -f2 | xargs)"
+  echo "Threads: OMP=$OMP_NUM_THREADS, RAYON=$RAYON_NUM_THREADS"
+  echo ""
+  echo "Results saved above. Compare wf_server vs llama.cpp prefill throughput."

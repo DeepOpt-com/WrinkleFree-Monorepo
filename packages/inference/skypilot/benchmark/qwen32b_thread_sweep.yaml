@@ -1,0 +1,74 @@
+# Context size sweep benchmark for Qwen2.5-32B I2_S
+# Tests different context sizes at optimal thread count (48)
+#
+# Launch on existing cluster:
+#   sky exec qwen32b-prefill skypilot/benchmark/qwen32b_thread_sweep.yaml
+
+name: ctx-sweep
+
+envs:
+  MODEL_PATH: /models/Qwen2.5-32B/model-i2s.gguf
+  THREADS: "48"
+  CTX_SIZES: "128,256,512,1024,2048,4096"
+  NUM_RUNS: "2"
+  RESULTS_DIR: /results
+
+run: |
+  set -ex
+
+  LLAMA_CLI="/opt/inference/extern/sglang-bitnet/3rdparty/llama.cpp/build/bin/llama-cli"
+
+  echo "============================================"
+  echo "Context Size Sweep Benchmark"
+  echo "Model: $MODEL_PATH"
+  echo "Threads: $THREADS"
+  echo "Context sizes: $CTX_SIZES"
+  echo "============================================"
+
+  ls -lh $MODEL_PATH
+
+  # Results file
+  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  RESULTS_FILE="/results/ctx_sweep_$TIMESTAMP.csv"
+  echo "ctx_size,run,tok_s,time_s" > $RESULTS_FILE
+
+  for CTX in $(echo $CTX_SIZES | tr ',' ' '); do
+    echo ""
+    echo "--- Testing context=$CTX tokens ---"
+
+    # Generate prompt for this context size
+    TARGET_CHARS=$((CTX * 4))
+    yes "The quick brown fox jumps over the lazy dog. " | head -c $TARGET_CHARS > /tmp/prompt.txt
+
+    for RUN in $(seq 1 $NUM_RUNS); do
+      echo -n "  Run $RUN/$NUM_RUNS... "
+
+      START=$(date +%s.%N)
+      OUTPUT=$($LLAMA_CLI -m $MODEL_PATH -f /tmp/prompt.txt -n 1 -t $THREADS -c $((CTX + 512)) --temp 0 --no-display-prompt 2>&1)
+      END=$(date +%s.%N)
+      ELAPSED=$(echo "$END - $START" | bc)
+
+      TOK_S=$(echo "$OUTPUT" | grep -i "prompt eval time" | grep -oP '[\d.]+(?=\s*tokens per second)' | tail -1)
+
+      if [ -n "$TOK_S" ]; then
+        echo "OK - $TOK_S tok/s (${ELAPSED}s)"
+        echo "$CTX,$RUN,$TOK_S,$ELAPSED" >> $RESULTS_FILE
+      else
+        echo "FAILED"
+      fi
+    done
+  done
+
+  echo ""
+  echo "=== SUMMARY ==="
+  echo "Context   Avg_Tok/s   Avg_Time"
+  echo "--------------------------------"
+  for CTX in $(echo $CTX_SIZES | tr ',' ' '); do
+    AVG_TPS=$(grep "^$CTX," $RESULTS_FILE | cut -d',' -f3 | awk '{sum+=$1; n++} END {if(n>0) printf "%.1f", sum/n; else print "N/A"}')
+    AVG_TIME=$(grep "^$CTX," $RESULTS_FILE | cut -d',' -f4 | awk '{sum+=$1; n++} END {if(n>0) printf "%.2f", sum/n; else print "N/A"}')
+    printf "%-10s %-12s %s\n" "$CTX" "$AVG_TPS" "${AVG_TIME}s"
+  done
+
+  echo ""
+  echo "Results saved to $RESULTS_FILE"
+  cat $RESULTS_FILE

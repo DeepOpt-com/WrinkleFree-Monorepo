@@ -1,0 +1,172 @@
+# Optimizer Ablation Study for BitNet Training
+#
+# Compares three optimizer configurations:
+# - muonclip: Muon for hidden weights + AdamW for embeddings (no QK-clipping)
+# - adamw: Pure AdamW for all params
+# - muonclip_clip: MuonClip with QK-clipping enabled (experimental)
+#
+# Usage:
+#   cd packages/deployer
+#   source credentials/.env
+#
+#   # Run all three ablations in parallel (3 clusters):
+#   sky launch skypilot/optimizer_ablation.yaml -y --cluster ablation-muonclip \
+#     --env OPTIMIZER=muonclip --env EXPERIMENT_NAME=ablation_muonclip
+#   sky launch skypilot/optimizer_ablation.yaml -y --cluster ablation-adamw \
+#     --env OPTIMIZER=adamw --env EXPERIMENT_NAME=ablation_adamw
+#   sky launch skypilot/optimizer_ablation.yaml -y --cluster ablation-muonclip-clip \
+#     --env OPTIMIZER=muonclip_clip --env EXPERIMENT_NAME=ablation_muonclip_clip
+#
+# Monitor: sky logs ablation-muonclip / ablation-adamw / ablation-muonclip-clip
+# Teardown: sky down ablation-muonclip ablation-adamw ablation-muonclip-clip -y
+
+name: wrinklefree-optimizer-ablation
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  disk_size: 100
+  use_spot: false
+  cloud: nebius
+
+workdir: /home/lev/code/WrinkleFreeDevWrapper/Refact
+
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFreeDevWrapper/Refact/packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  TRAINING_CONFIG: base
+  TOTAL_TOKENS: 500_000_000  # 500M tokens for ablation (half of full run)
+  MAX_STEPS: 3815  # Half of 7630 steps
+  OPTIMIZER: muonclip  # Options: muonclip, adamw, muonclip_clip
+  EXPERIMENT_NAME: ablation_muonclip
+  WANDB_PROJECT: wrinklefree
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+  fi
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Install gcloud CLI
+  export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  if ! gcloud version &> /dev/null; then
+    echo "Installing Google Cloud SDK..."
+    rm -rf $HOME/google-cloud-sdk
+    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
+  fi
+
+  # Install dependencies + muon-clip
+  uv sync --all-packages
+  uv pip install git+https://github.com/GAD-cell/muon-clip.git
+
+  # Activate GCS credentials
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  gsutil ls gs://${GCS_BUCKET}/ > /dev/null 2>&1 || (echo "GCS access failed!" && exit 1)
+
+  # Verify WANDB_API_KEY
+  source /tmp/credentials.env
+  source /tmp/global.env
+  if [ -z "$WANDB_API_KEY" ]; then
+    echo "ERROR: WANDB_API_KEY not set!"
+    exit 1
+  fi
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$HOME/google-cloud-sdk/bin:$PATH"
+
+  # Load credentials
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+  export WANDB_API_KEY="${WANDB_API_KEY}"
+
+  # Activate GCS credentials
+  gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+  export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json
+
+  # Create checkpoint directory
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  rm -rf $CHECKPOINT_DIR
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================"
+  echo "Optimizer Ablation Study"
+  echo "================================================"
+  echo "Optimizer: $OPTIMIZER"
+  echo "Experiment: $EXPERIMENT_NAME"
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS"
+  echo "================================================"
+
+  # Set optimizer overrides based on OPTIMIZER env var
+  case "$OPTIMIZER" in
+    adamw)
+      echo "Using Pure AdamW optimizer"
+      # AdamW uses lr_adam for all params (no separate lr_muon since no Muon params)
+      OPTIMIZER_OVERRIDES="training.optimizer.type=adamw training.optimizer.lr_adam=1e-4"
+      ;;
+    muonclip_clip)
+      echo "Using MuonClip with QK-clipping ENABLED (experimental)"
+      OPTIMIZER_OVERRIDES="training.optimizer.type=muonclip training.optimizer.enable_clipping=true"
+      ;;
+    muonclip|*)
+      echo "Using MuonClip (Muon + AdamW, no clipping)"
+      OPTIMIZER_OVERRIDES="training.optimizer.type=muonclip training.optimizer.enable_clipping=false"
+      ;;
+  esac
+
+  echo "Optimizer overrides: $OPTIMIZER_OVERRIDES"
+  echo "================================================"
+  echo ""
+
+  export DATA_NUM_WORKERS=2
+
+  echo "[Training] Starting Lightning training..."
+  # Use unbuffered output for real-time progress
+  PYTHONUNBUFFERED=1 uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=${TRAINING_CONFIG} \
+    training.max_steps=${MAX_STEPS} \
+    training.auto_batch_size=false \
+    $OPTIMIZER_OVERRIDES \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=${EXPERIMENT_NAME} \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.wandb.tags="[optimizer-ablation,$OPTIMIZER]" \
+    training.logging.log_interval=10 \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    2>&1 | tee training.log
+
+  echo ""
+  echo "================================================"
+  echo "Ablation Complete: $EXPERIMENT_NAME ($OPTIMIZER)"
+  echo "================================================"
+  echo ""
+
+  # Summary
+  if grep -q "train/loss" training.log; then
+    echo "Final losses:"
+    grep -E "train/loss" training.log | tail -5
+  fi
+
+  echo ""
+  echo "WandB: https://wandb.ai/${WANDB_PROJECT}"
+  echo "GCS: gs://${GCS_BUCKET}/checkpoints/${EXPERIMENT_NAME}/"
+  echo "================================================"

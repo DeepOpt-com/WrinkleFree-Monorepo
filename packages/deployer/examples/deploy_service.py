@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example: Deploy an inference service using the wf_deployer library.
+"""Example: Deploy an inference service using the wf_deploy library.
 
 This example shows how to:
 1. Load credentials from a .env file
@@ -10,7 +10,7 @@ Usage:
     python examples/deploy_service.py
 """
 
-from wf_deployer import ServiceConfig, Deployer, Credentials, ResourcesConfig
+from wf_deploy import ServiceConfig, Deployer, Credentials, ResourcesConfig
 
 
 def main():

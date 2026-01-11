@@ -3,17 +3,17 @@
 import pytest
 import torch
 
-from wrinklefree.quantization.weight_quant import (
+from wf_train.quantization.weight_quant import (
     ternary_weight_quantization,
     ternary_weight_quantization_no_scale,
     compute_weight_scale,
 )
-from wrinklefree.quantization.activation_quant import (
+from wf_train.quantization.activation_quant import (
     activation_quantization_per_token,
     activation_quantization_per_tensor,
     activation_quantization_absmean,
 )
-from wrinklefree.quantization.ste import (
+from wf_train.quantization.ste import (
     StraightThroughEstimator,
     ste_quantize,
     detach_quantize,

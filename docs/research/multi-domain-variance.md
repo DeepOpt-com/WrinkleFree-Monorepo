@@ -37,7 +37,7 @@ effectively disabling dynamic data reweighting.
 
 **Effect**: Data mixture weights stay static (25/35/10/15/15) rather than adapting to model needs.
 
-**Location**: `packages/cheapertraining/src/cheapertraining/training/optimizer.py`
+**Location**: `packages/data_handler/src/wf_data/training/optimizer.py`
 
 ### 3. Expected Variance from Data Domains
 
@@ -62,17 +62,17 @@ A batch dominated by code will have lower loss than one dominated by web text.
 
 ```bash
 # Recommended: MuonClip optimizer
-uv run python scripts/train.py \
+uv run python packages/training/scripts/train_lightning.py \
   model=qwen3_4b \
-  training=stage2_pretrain \
+  training=base \
   training.optimizer.name=muonclip \
   training.batch_size=8 \
   training.gradient_accumulation_steps=64  # effective 512
 
 # If using Adam: lower LR
-uv run python scripts/train.py \
+uv run python packages/training/scripts/train_lightning.py \
   model=qwen3_4b \
-  training=stage2_pretrain \
+  training=base \
   training.optimizer.lr=1e-4 \
   training.batch_size=8 \
   training.gradient_accumulation_steps=64

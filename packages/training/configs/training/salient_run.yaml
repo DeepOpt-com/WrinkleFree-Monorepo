@@ -1,0 +1,111 @@
+# Salient Column Training: AWQ-style activation-aware quantization
+#
+# Uses BitLinearSalient layers which keep ~1% of columns in FP16
+# based on AWQ-style saliency scoring: activation_magnitude * weight_magnitude
+#
+# Based on:
+# - AWQ: https://arxiv.org/abs/2306.00978 (Activation-aware Weight Quantization)
+# - SqueezeLLM: https://arxiv.org/abs/2306.07629 (Dense-and-Sparse Quantization)
+# - SpQR: https://arxiv.org/abs/2306.03078 (Sparse-Quantized Representation)
+#
+# Key features:
+# - ~1% of columns kept in FP16 (most important for output quality)
+# - Simpler than LRC (no U, V matrices to train)
+# - Requires calibration step to identify salient columns
+# - End-to-end trainable (both FP16 and ternary weights updated)
+# - Final 10% is SFT on Nemotron dataset (instruction-following)
+#
+# Usage:
+#   uv run python scripts/train_lightning.py \
+#     model=qwen3_0.6b training=salient_run
+
+defaults:
+  - base
+
+stage: salient_run
+
+# Salient Column Configuration
+salient:
+  enabled: true
+  ratio: 0.01  # 1% of columns in FP16
+  calibration_samples: 128
+  calibration_data: fineweb
+
+# AdamW 8-bit optimizer (stable for all model sizes)
+optimizer:
+  type: adamw
+  use_8bit: true
+  learning_rate: 5e-4
+  weight_decay: 0.01
+
+# Shorter warmup
+scheduler:
+  warmup_steps: 100
+
+# Training parameters
+total_tokens: 1_000_000_000
+max_seq_length: 1024
+batch_size: 16
+gradient_accumulation_steps: 32
+auto_batch_size: false
+
+# Lambda warmup (fast 100-step warmup to full quantization)
+lambda_warmup:
+  warmup_steps: 100
+
+# === OBJECTIVES ===
+# CE for pretrain, SFT for final phase
+objectives:
+  continue_pretrain:
+    weight: 1.0
+
+  sft:
+    enabled: true
+    weight: 1.0
+    ignore_index: -100
+    label_smoothing: 0.0
+
+# Curriculum: 25% warmup -> 65% main -> 10% SFT
+curriculum:
+  phases:
+    - name: warmup
+      end_ratio: 0.25
+      data_config: fineweb
+      objectives:
+        continue_pretrain: 1.0
+        sft: 0.0
+    - name: main
+      end_ratio: 0.90
+      data_config: mixed_pretrain
+      objectives:
+        continue_pretrain: 1.0
+        sft: 0.0
+    # SFT phase for instruction-following
+    - name: sft
+      end_ratio: 1.0
+      data_config: sft_nemotron
+      objectives:
+        continue_pretrain: 0.0
+        sft: 1.0
+
+# Logging
+logging:
+  log_interval: 2
+  wandb:
+    project: wrinklefree_v2
+    tags: [salient, bitnet, awq-style, sft, nemotron]
+
+# Memory optimization
+memory:
+  gradient_checkpointing: true
+  clear_cache_interval: 100
+
+# Meta-optimization
+meta_optimization:
+  enabled: true
+  ldc_mtl:
+    enabled: true
+  odm:
+    enabled: false
+  layer_lr:
+    enabled: false

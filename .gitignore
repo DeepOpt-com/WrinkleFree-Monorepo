@@ -7,11 +7,38 @@ node_modules/
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
+.eggs/
 
-# Claude
-.claude/
+# Training runs / TensorBoard logs
+**/runs/
+*.tfevents.*
+
+# Training outputs and checkpoints
+outputs/
+training_logs/
+checkpoints/
+models/
+*.pt
+*.pth
+*.safetensors
+*.gguf
+*.bin
+
+# Weights & Biases
+wandb/
 
 # Credentials (keep examples, ignore real creds)
 credentials/*.json
 credentials/.env
 !credentials/*.example*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

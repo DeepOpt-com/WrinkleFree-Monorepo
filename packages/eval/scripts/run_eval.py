@@ -13,7 +13,7 @@ from pathlib import Path
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from wrinklefree_eval.api import evaluate, list_benchmarks
+from wf_eval.api import evaluate, list_benchmarks
 
 
 def main():

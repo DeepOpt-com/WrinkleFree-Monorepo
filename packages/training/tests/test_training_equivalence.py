@@ -13,9 +13,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from wrinklefree.models.bitlinear import BitLinear
-from wrinklefree.models.subln import SubLN
-from wrinklefree.testing.equivalence import (
+from wf_train.models.bitlinear import BitLinear
+from wf_train.models.subln import SubLN
+from wf_train.testing.equivalence import (
     EquivalenceResult,
     compare_gradients,
     compare_hidden_states,

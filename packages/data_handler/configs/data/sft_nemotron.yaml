@@ -1,0 +1,35 @@
+# SFT Dataset Configuration - NVIDIA Llama-Nemotron-Post-Training-Dataset
+#
+# This config is for Supervised Fine-Tuning using the Nemotron dataset
+# with Qwen chat template formatting.
+#
+# Dataset: https://huggingface.co/datasets/nvidia/Llama-Nemotron-Post-Training-Dataset
+# License: CC-BY-4.0
+#
+# The dataset has 5 splits: code, math, science, chat, safety (~3.9M total examples)
+# Use split: "all" to interleave all splits, or specify one (e.g., "code", "math")
+
+name: sft_nemotron
+
+# SFT-specific configuration
+sft:
+  enabled: true
+  path: nvidia/Llama-Nemotron-Post-Training-Dataset
+  subset: SFT
+  # Use "all" to interleave all splits, or specify one: code, math, science, chat, safety
+  split: all
+  input_column: input
+  output_column: output
+  system_prompt_column: system_prompt
+  max_length: 2048
+  packed: true
+
+# Streaming settings
+streaming: true
+shuffle_buffer_size: 1000
+
+# Dataloader settings
+dataloader:
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true

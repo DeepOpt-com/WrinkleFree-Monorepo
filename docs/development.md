@@ -11,7 +11,7 @@ cd WrinkleFree-Monorepo
 uv sync --all-packages
 
 # Verify setup
-uv run pytest packages/cheapertraining/tests/ -v
+uv run pytest packages/data_handler/tests/ -v
 ```
 
 ## Adding a New Package
@@ -54,11 +54,11 @@ To use another package from the workspace:
 # In packages/mypackage/pyproject.toml
 [project]
 dependencies = [
-    "cheapertraining",  # The package name
+    "wf-data",  # The package name
 ]
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }  # Resolve from workspace
+wf-data = { workspace = true }  # Resolve from workspace
 ```
 
 ## Running Tests
@@ -68,10 +68,10 @@ cheapertraining = { workspace = true }  # Resolve from workspace
 uv run pytest
 
 # Package-specific
-uv run --package wrinklefree pytest packages/training/tests/
+uv run --package wf-train pytest packages/training/tests/
 
 # With coverage
-uv run pytest packages/training/tests/ --cov=wrinklefree --cov-report=html
+uv run pytest packages/training/tests/ --cov=wf_train --cov-report=html
 
 # Smoke tests only
 uv run pytest -m smoke
@@ -122,25 +122,39 @@ git submodule status
 
 ## Package-Specific Development
 
-### training (wrinklefree)
+### training (wf_train)
 
 ```bash
-# Run training smoke test
-uv run --package wrinklefree python packages/training/scripts/train.py \
-  model=smollm2_135m training=stage2_pretrain training.max_steps=10
+# Run Lightning training (recommended)
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=base training.max_steps=10
+
+# With auto batch size scaling
+uv run --package wf-train python packages/training/scripts/train_lightning.py \
+  model=smollm2_135m training=base training.auto_batch_size=true
 
 # Run unit tests
-uv run --package wrinklefree pytest packages/training/tests/unit/
+uv run --package wf-train pytest packages/training/tests/unit/
 ```
 
-### cheapertraining
+### wf_data
 
 ```bash
 # Run all tests
-uv run --package cheapertraining pytest packages/cheapertraining/tests/
+uv run --package wf-data pytest packages/data_handler/tests/
 
 # Test data loading
-uv run --package cheapertraining python -c "from cheapertraining.data import get_loader; print('ok')"
+uv run --package wf-data python -c "from wf_data.data import create_dataloader; print('ok')"
+```
+
+### architecture (wf-arch)
+
+```bash
+# Run all tests
+uv run --package wf-arch pytest packages/architecture/tests/
+
+# Test layer imports
+uv run --package wf-arch python -c "from wf_arch.layers import BitLinear, BitLinearLRC; print('ok')"
 ```
 
 ### deployer
@@ -184,10 +198,13 @@ jobs:
 Only test affected packages:
 ```bash
 # If only training changed
-uv run --package wrinklefree pytest packages/training/tests/
+uv run --package wf-train pytest packages/training/tests/
 
-# If cheapertraining changed (affects training and fairy2)
-uv run pytest packages/cheapertraining/tests/ packages/training/tests/ packages/fairy2/tests/
+# If wf_data changed (affects training)
+uv run pytest packages/data_handler/tests/ packages/training/tests/
+
+# If architecture changed (affects training)
+uv run pytest packages/architecture/tests/ packages/training/tests/
 ```
 
 ## Debugging Tips
@@ -196,10 +213,10 @@ uv run pytest packages/cheapertraining/tests/ packages/training/tests/ packages/
 
 ```bash
 # Check package is installed
-uv run python -c "import wrinklefree; print(wrinklefree.__file__)"
+uv run python -c "import wf_train; print(wf_train.__file__)"
 
 # Check workspace resolution
-uv tree --package wrinklefree | grep cheapertraining
+uv tree --package wf-train | grep wf-data
 ```
 
 ### Dependency Conflicts

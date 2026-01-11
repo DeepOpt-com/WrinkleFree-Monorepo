@@ -1,5 +1,5 @@
 [project]
-name = "wrinklefree"
+name = "wf-train"
 version = "0.1.0"
 description = "BitNet 1.58-bit LLM training and serving"
 authors = [{ name = "WrinkleFree Team" }]
@@ -9,7 +9,7 @@ license = { text = "MIT" }
 
 dependencies = [
     "torch>=2.5.0", # 2.5+ for Muon optimizer
-    "transformers>=4.40.0",
+    "transformers>=4.51.0",
     "datasets>=2.18.0",
     "hydra-core>=1.3.0",
     "omegaconf>=2.3.0",
@@ -21,13 +21,16 @@ dependencies = [
     "safetensors>=0.4.0",
     "accelerate>=0.27.0",
     "zstandard>=0.22.0",
-    "muon-optimizer>=0.1.0", # Muon optimizer
     "huggingface_hub>=0.20.0", # Checkpoint uploads to HF Hub
     "hf_transfer>=0.1.0", # Fast HF downloads
     "google-cloud-storage>=2.14.0", # GCS checkpoint uploads
+    "gcsfs>=2024.2.0", # GCS filesystem for Lightning checkpoint loading
     "torchao>=0.7.0", # TorchAO for FP8 training (DeepSeek-V3 style)
-    "cheapertraining", # Unified data layer (install: pip install -e ../WrinkleFree-CheaperTraining)
-    "muon-clip",
+    "wf-data",  # Data handling (streaming datasets, packing, influence mixing)
+    "wf-arch",  # BitNet architecture package (workspace)
+    "muon-fsdp2",  # FSDP-compatible Muon optimizer
+    "muon-clip @ git+https://github.com/GAD-cell/muon-clip.git",  # MuonClip for single GPU with QK clipping
+    "pytorch-lightning>=2.6.0",
 ]
 
 [project.optional-dependencies]
@@ -51,20 +54,22 @@ benchmark = [
     "matplotlib>=3.7.0",
     "seaborn>=0.12.0",
     "apollo-torch>=0.1.0",  # APOLLO memory-efficient optimizer
-    # muon-clip removed - incompatible with workspace (pins transformers==4.53.0)
 ]
 
 [project.scripts]
-wrinklefree-train = "wrinklefree.scripts.train:main"
-wrinklefree-serve = "wrinklefree.scripts.serve:main"
-wrinklefree-convert = "wrinklefree.scripts.convert:main"
+wf-train = "wf_train.scripts.train:main"
+wf-serve = "wf_train.scripts.serve:main"
+wf-convert = "wf_train.scripts.convert:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/wrinklefree"]
+packages = ["src/wf_train"]
 
 [dependency-groups]
 dev = [
@@ -86,7 +91,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --cov=wf_train --cov-report=term-missing --cov-report=html"
 markers = [
     "smoke: Quick smoke tests",
     "integration: Integration tests requiring GPU or external services",
@@ -94,7 +99,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src/wrinklefree"]
+source = ["src/wf_train"]
 branch = true
 omit = ["*/tests/*", "*/__pycache__/*"]
 
@@ -111,5 +116,5 @@ fail_under = 0
 directory = "htmlcov"
 
 [tool.uv.sources]
-cheapertraining = { workspace = true }
-muon-clip = { git = "https://github.com/GAD-cell/muon-clip" }
+wf-data = { workspace = true }
+wf-arch = { workspace = true }

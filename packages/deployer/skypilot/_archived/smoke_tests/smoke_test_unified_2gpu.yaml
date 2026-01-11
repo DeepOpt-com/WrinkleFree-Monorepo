@@ -1,0 +1,152 @@
+# WrinkleFree Unified Training Smoke Test (2x L40 - Data Parallel)
+#
+# Tests the refactored unified training with DATA PARALLELISM:
+# - Combined STE + DLM multi-task learning
+# - MuonClip optimizer with QK clipping
+# - Influence-based data remixing (enabled after warmup)
+# - GCS checkpoint uploads every 10 steps
+# - WandB logging
+# - Verify loss decreases
+# - FSDP with 2 GPUs for data parallelism
+#
+# Launch:
+#   cd packages/deployer
+#   sky launch skypilot/smoke_test_unified_2gpu.yaml -y --cluster unified-smoke-2gpu
+#
+# Monitor:
+#   sky status
+#   sky logs unified-smoke-2gpu
+#
+# Tear down:
+#   sky down unified-smoke-2gpu -y
+
+name: wrinklefree-unified-2gpu
+
+resources:
+  accelerators: L40S:2
+  use_spot: false
+  cloud: nebius
+
+# Run from monorepo root
+workdir: .
+
+# Upload credentials
+file_mounts:
+  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: smollm2_135m
+  MAX_STEPS: 20
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: unified-2gpu-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Sync all packages
+  uv sync --all-packages
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Load credentials (WANDB_API_KEY, HF token, etc.)
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "===================================================="
+  echo "WrinkleFree Unified Training Smoke Test (2x L40 DDP)"
+  echo "===================================================="
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS"
+  echo "GPUs: 2 (Data Parallelism via FSDP)"
+  echo ""
+  echo "Test Configuration:"
+  echo "  - Steps 1-4 (20%): Warmup on fineweb-edu"
+  echo "  - Steps 5-20 (80%): Mixed data training"
+  echo "  - GCS upload every 10 steps"
+  echo ""
+  echo "Features:"
+  echo "  - Combined STE + DLM (multi-task)"
+  echo "  - MuonClip + QK Clipping"
+  echo "  - FSDP data parallelism (2 GPUs)"
+  echo "  - Auto BitNet conversion"
+  echo "  - GCS checkpoint upload"
+  echo "  - WandB logging"
+  echo "===================================================="
+
+  # Run unified training with FSDP data parallelism
+  # Uses torchrun for multi-GPU launch
+  echo ""
+  echo "[Training] Running unified training with 2x L40 data parallelism..."
+
+  # Use torchrun for multi-GPU training
+  uv run --package wf-train torchrun \
+    --nproc_per_node=2 \
+    --master_port=29500 \
+    packages/training/scripts/train.py \
+    model=${MODEL} \
+    training=base \
+    data=default \
+    data.config_name=mixed_pretrain \
+    distributed=fsdp_multi \
+    distributed.num_gpus=2 \
+    training.max_steps=${MAX_STEPS} \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=unified_smoke_2gpu \
+    training.checkpoint.save_interval=10 \
+    training.logging.log_interval=1 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    training.early_stopping.enabled=false \
+    training.objectives.dlm.mask_token_id=0
+
+  echo ""
+  echo "===================================================="
+  echo "Smoke Test Complete!"
+  echo "===================================================="
+
+  # Verify loss decreased
+  echo ""
+  echo "Verifying training progress..."
+  if [ -f "$CHECKPOINT_DIR/unified_smoke_2gpu/training_log.json" ]; then
+    FIRST_LOSS=$(head -1 $CHECKPOINT_DIR/unified_smoke_2gpu/training_log.json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('loss', 0))" 2>/dev/null || echo "N/A")
+    LAST_LOSS=$(tail -1 $CHECKPOINT_DIR/unified_smoke_2gpu/training_log.json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('loss', 0))" 2>/dev/null || echo "N/A")
+    echo "First loss: $FIRST_LOSS"
+    echo "Last loss: $LAST_LOSS"
+  fi
+
+  # List checkpoints
+  echo ""
+  echo "Checkpoints saved:"
+  find $CHECKPOINT_DIR -type f -name "*.pt" -o -name "*.safetensors" 2>/dev/null | head -20 || echo "No checkpoints found"
+
+  # Verify WandB run was logged
+  echo ""
+  echo "WandB run: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
+
+  # Verify GCS upload
+  echo ""
+  echo "GCS checkpoints:"
+  gcloud storage ls "gs://${GCS_BUCKET}/experiments/" 2>/dev/null | head -10 || echo "GCS listing failed"

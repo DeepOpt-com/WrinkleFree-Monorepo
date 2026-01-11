@@ -1,0 +1,103 @@
+[package]
+name = "wf-inference"
+version = "0.3.0"
+edition = "2021"
+description = "WrinkleFree Inference Engine - Rust BitNet 1.58-bit LLM inference"
+
+[features]
+default = []
+native-inference = []  # Enable native BitNet kernels (pure Rust, no llama.cpp)
+
+[lints.rust]
+unused_qualifications = "warn"
+
+[lib]
+name = "wf_inference"
+crate-type = ["rlib"]
+
+# Pure Rust BitNet server (no llama.cpp dependency)
+[[bin]]
+name = "wf_server"
+path = "src/bin/wf_server.rs"
+required-features = ["native-inference"]
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Web framework
+axum = { version = "0.8.6", features = ["macros", "ws", "tracing"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "compression-gzip", "cors", "timeout"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["std", "preserve_order"] }
+serde_yaml = "0.9"
+
+# Async runtime
+tokio = { version = "1.42.0", features = ["full"] }
+
+# Logging & observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Performance
+rayon = "1.10"
+mimalloc = { version = "0.1", default-features = false }
+smallvec = { version = "1.13", features = ["union"] }
+parking_lot = "0.12.4"
+
+# Utilities
+thiserror = "2.0.12"
+anyhow = "1.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = "0.4"
+rand = "0.9.2"
+
+# Pure Rust GGUF reader
+memmap2 = "0.9"
+
+# C++ FFI for native inference
+libc = "0.2"
+
+[build-dependencies]
+chrono = { version = "0.4", features = ["clock"] }
+toml = "0.9"
+cc = "1.0"  # For compiling C++ inference engine
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[profile.release]
+opt-level = 3       # Optimize for speed
+lto = "fat"         # Full LTO for maximum optimization
+codegen-units = 1   # Better optimization, slower compile
+strip = true        # Strip debug symbols
+panic = "abort"     # Faster panic handling, smaller binary
+
+[profile.ci]
+inherits = "release"
+opt-level = 2       # Lighter optimization
+lto = "thin"        # Thin LTO - good balance
+codegen-units = 16  # More parallelization for faster builds
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = 1
+split-debuginfo = "unpacked"
+incremental = true
+codegen-units = 256
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.dev.build-override]
+opt-level = 3
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"
+# Use: RUSTFLAGS="-C target-cpu=native" cargo build --profile bench --features native-inference

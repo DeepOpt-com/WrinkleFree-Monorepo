@@ -1,0 +1,180 @@
+# WrinkleFree BitDistill + Meta-Optimization Training
+# Qwen3-0.6B with full hyper-optimization stack
+#
+# Features:
+# - BitDistill: CE + Logits Distillation + Attention Distillation + DLM
+# - Muon + AdamW optimizer (muonclip)
+# - Meta-optimization:
+#   - LDC-MTL: Dynamic objective weight learning (arxiv:2502.08585)
+#   - ODM/EXP3: Dataset weight optimization (arxiv:2312.02406)
+#   - LayerLR: Per-layer learning rate adaptation
+# - WandB logging + GCS checkpoints
+#
+# Launch:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/bitdistill_qwen3_0.6b_meta_opt.yaml -y --cluster bitdistill-qwen3
+#
+# Monitor:
+#   sky logs bitdistill-qwen3
+#   # WandB: https://wandb.ai/wrinklefree
+#
+# Tear down:
+#   sky down bitdistill-qwen3 -y
+
+name: wrinklefree-bitdistill-qwen3-0.6b-meta
+
+resources:
+  accelerators: A100-80GB:1
+  memory: 80+
+  use_spot: false
+  cloud: runpod
+
+# Sync from InfluenceClean
+workdir: /home/lev/code/InfluenceClean
+
+# Upload credentials
+file_mounts:
+  /tmp/gcp-creds.json: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: /home/lev/code/WrinkleFree/WrinkleFree-Deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GOOGLE_CLOUD_PROJECT: wrinklefree-481904
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: qwen3_0.6b
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_NAME: bitdistill-qwen3-0.6b-meta-v2
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Install gcloud SDK for GCS uploads (RunPod doesn't have it)
+  if ! command -v gcloud &> /dev/null; then
+    echo "Installing Google Cloud SDK..."
+    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=$HOME
+    export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+  fi
+
+  # Configure gcloud with service account for GCS uploads
+  if [ -f /tmp/gcp-creds.json ]; then
+    echo "Activating GCP service account..."
+    gcloud auth activate-service-account --key-file=/tmp/gcp-creds.json
+    gcloud config set project wrinklefree-481904
+    echo "GCS auth configured!"
+  fi
+
+  # Sync all packages
+  uv sync --all-packages
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$HOME/google-cloud-sdk/bin:$PATH"
+
+  # Load credentials
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================================"
+  echo "WrinkleFree BitDistill + Meta-Optimization Training"
+  echo "================================================================"
+  echo "Model: $MODEL (Qwen3-0.6B)"
+  echo "Total tokens: 1B (bitdistill_full.yaml default)"
+  echo ""
+  echo "Configuration:"
+  echo "  Objectives:"
+  echo "    - CE (continue_pretrain)"
+  echo "    - Logits Distillation (T=5, weight=10)"
+  echo "    - Attention Distillation (weight=1e-5)"
+  echo "    - DLM (mask_prob=0.15)"
+  echo ""
+  echo "  Optimizer: Muon + AdamW (muonclip)"
+  echo "    - lr_muon: 0.005"
+  echo "    - lr_adam: 5e-5"
+  echo "    - QK clipping enabled"
+  echo ""
+  echo "  Meta-Optimization:"
+  echo "    - LDC-MTL: Objective weight learning (lambda=0.1)"
+  echo "    - ODM/EXP3: Dataset weight optimization"
+  echo "    - LayerLR: Per-layer LR adaptation"
+  echo ""
+  echo "  Logging:"
+  echo "    - WandB: ${WANDB_PROJECT}/${WANDB_RUN_NAME}"
+  echo "    - GCS: gs://${GCS_BUCKET}/"
+  echo "================================================================"
+
+  # Run BitDistill training with full meta-optimization
+  # NOTE: Using + prefix to ADD meta_optimization config to bitdistill_full
+  # (bitdistill_full doesn't include meta_optimization by default)
+  uv run --package wf-train python packages/training/scripts/train_lightning.py \
+    model=${MODEL} \
+    training=bitdistill_full \
+    data.config_name=mixed_pretrain \
+    distributed=single_gpu \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=bitdistill_qwen3_0.6b_meta \
+    \
+    +training.meta_optimization.enabled=true \
+    +training.meta_optimization.ldc_mtl.enabled=true \
+    +training.meta_optimization.ldc_mtl.lambda_penalty=0.1 \
+    +training.meta_optimization.ldc_mtl.hidden_dim=32 \
+    +training.meta_optimization.ldc_mtl.router_lr=0.001 \
+    +training.meta_optimization.ldc_mtl.step_interval=1 \
+    +training.meta_optimization.odm.enabled=true \
+    +training.meta_optimization.odm.reward_smoothing=0.9 \
+    +training.meta_optimization.odm.warmup_ratio=0.01 \
+    +training.meta_optimization.odm.min_weight=0.05 \
+    +training.meta_optimization.odm.max_weight=0.60 \
+    +training.meta_optimization.layer_lr.enabled=true \
+    +training.meta_optimization.layer_lr.lr=0.001 \
+    +training.meta_optimization.layer_lr.min_multiplier=0.1 \
+    +training.meta_optimization.layer_lr.max_multiplier=10.0 \
+    +training.meta_optimization.layer_lr.ema_decay=0.99 \
+    +training.meta_optimization.layer_lr.lambda_mean=0.1 \
+    +training.meta_optimization.layer_lr.warmup_ratio=0.05 \
+    +training.meta_optimization.layer_lr.step_interval=1 \
+    +training.meta_optimization.log_interval=50 \
+    \
+    training.max_steps=3815 \
+    \
+    training.checkpoint.save_interval=200 \
+    training.logging.log_interval=10 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    training.logging.wandb.name=${WANDB_RUN_NAME} \
+    training.logging.wandb.tags="[bitdistill,qwen3,meta-opt,ldc-mtl,odm,layer-lr]" \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET}
+
+  echo ""
+  echo "================================================================"
+  echo "BitDistill + Meta-Optimization Training Complete!"
+  echo "================================================================"
+
+  # Final checkpoint info
+  echo ""
+  echo "Final checkpoint:"
+  ls -la $CHECKPOINT_DIR/bitdistill_qwen3_0.6b_meta/checkpoints/ 2>/dev/null || echo "No local checkpoints"
+
+  echo ""
+  echo "GCS checkpoints:"
+  gcloud storage ls "gs://${GCS_BUCKET}/experiments/" 2>/dev/null | grep bitdistill | head -10 || echo "GCS listing failed"
+
+  echo ""
+  echo "WandB run: https://wandb.ai/${WANDB_PROJECT}"

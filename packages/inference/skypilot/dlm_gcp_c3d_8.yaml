@@ -1,0 +1,51 @@
+# SkyPilot configuration for DLM inference on GCP C3D-8
+# ~$0.35/hour, 8 vCPUs (AMD EPYC Genoa), 32GB DDR5
+
+name: dlm-c3d-8
+
+resources:
+  cloud: gcp
+  instance_type: c3d-standard-8
+  region: us-central1
+  disk_size: 50
+  disk_tier: high
+  use_spot: false
+  ports:
+    - 30000
+    - 7860
+
+file_mounts:
+  /opt/models/dlm-bitnet-2b.gguf:
+    source: gs://wrinklefree-checkpoints/dlm/dlm-bitnet-2b-tq1.gguf
+    mode: COPY
+
+setup: |
+  set -ex
+  echo "=== GCP C3D-8 DLM Inference Setup ==="
+  lscpu | grep -E "(Model name|CPU|Thread|Core|Cache|AVX)" | head -15 || true
+  sudo apt-get update && sudo apt-get install -y build-essential cmake git curl python3-pip libcurl4-openssl-dev libomp-dev
+  # Remove old build if exists (force clean rebuild)
+  sudo rm -rf /opt/llama.cpp
+  sudo git clone https://github.com/ggerganov/llama.cpp.git /opt/llama.cpp
+  cd /opt/llama.cpp
+  # Use GCC without AVX512-BF16 (GCC 11 doesn't fully support Zen 4)
+  # Let llama.cpp auto-detect features with GGML_NATIVE but disable BF16
+  sudo cmake -B build \
+    -DCMAKE_C_COMPILER=gcc \
+    -DCMAKE_CXX_COMPILER=g++ \
+    -DGGML_NATIVE=OFF \
+    -DGGML_AVX512=ON \
+    -DGGML_AVX512_VBMI=ON \
+    -DGGML_AVX512_VNNI=ON \
+    -DLLAMA_CURL=OFF
+  sudo cmake --build build -j8
+  sudo pip3 install streamlit openai
+  echo "=== Setup Complete ==="
+
+run: |
+  set -ex
+  echo "DLM BitNet Inference (GCP C3D-8) - API: http://0.0.0.0:30000, UI: http://0.0.0.0:7860"
+  /opt/llama.cpp/build/bin/llama-server -m /opt/models/dlm-bitnet-2b.gguf --host 0.0.0.0 --port 30000 -t 8 -c 4096 &
+  sleep 5
+  echo 'import streamlit as st; from openai import OpenAI; st.title("DLM Chat"); client = OpenAI(base_url="http://localhost:30000/v1", api_key="x"); st.session_state.setdefault("msgs", []); [st.chat_message(m["role"]).markdown(m["content"]) for m in st.session_state.msgs]; p = st.chat_input(); exec("if p: st.session_state.msgs.append({\"role\": \"user\", \"content\": p}); st.chat_message(\"user\").markdown(p); r = client.chat.completions.create(model=\"x\", messages=st.session_state.msgs, max_tokens=256).choices[0].message.content; st.chat_message(\"assistant\").markdown(r); st.session_state.msgs.append({\"role\": \"assistant\", \"content\": r})")' > /tmp/app.py
+  streamlit run /tmp/app.py --server.port 7860 --server.address 0.0.0.0 --server.headless true

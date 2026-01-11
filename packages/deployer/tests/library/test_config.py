@@ -1,9 +1,9 @@
-"""Tests for wf_deployer.config module."""
+"""Tests for wf_deploy.config module."""
 
 import pytest
 from pydantic import ValidationError
 
-from wf_deployer.config import (
+from wf_deploy.config import (
     ResourcesConfig,
     ServiceConfig,
     TrainingConfig,

@@ -122,7 +122,7 @@ class WandBTracker:
 
         # Auto-generate name if not provided
         if name is None:
-            from wrinklefree.training.run_naming import generate_run_name
+            from wf_train.training.run_naming import generate_run_name
             name = generate_run_name(config)
 
         # Convert OmegaConf to dict if needed
@@ -177,12 +177,12 @@ class WandBTracker:
         # Auto-generate name if not provided
         if name is None:
             if num_experts > 0:
-                from wrinklefree.training.run_naming import generate_moe_benchmark_name
+                from wf_train.training.run_naming import generate_moe_benchmark_name
                 name = generate_moe_benchmark_name(
                     model_name, num_experts, top_k, quant_type, context_size, num_threads
                 )
             else:
-                from wrinklefree.training.run_naming import generate_benchmark_name
+                from wf_train.training.run_naming import generate_benchmark_name
                 name = generate_benchmark_name(
                     model_name, quant_type, context_size, num_threads, batch_size
                 )
@@ -310,7 +310,7 @@ def log_benchmark_results(
         logger.warning("wandb not available, skipping logging")
         return
 
-    from wrinklefree.training.run_naming import _generate_suffix
+    from wf_train.training.run_naming import _generate_suffix
 
     # Generate a name based on the trial
     suffix = _generate_suffix(3)

@@ -1,5 +1,91 @@
 # Research Notebook
 
+## January 1, 2026 - MuonClip + BatchSizeFinder Compatibility Fix
+
+### Problem
+
+MuonClip optimizer (from [GAD-cell/muon-clip](https://github.com/GAD-cell/muon-clip)) crashes with `KeyError: 0` in `hook_recorder.attn_inputs[index]` when used with Lightning's `BatchSizeFinder`.
+
+### Root Causes
+
+1. **Bug in muon-clip's `HookRecorder.remove_hooks()`**: The method removes hook handles but **doesn't reset `is_registered = False`**. This causes hooks to never re-register after `model.eval() → model.train()` cycles.
+
+2. **Bug in muon-clip's `flush_metrics()`**: Unconditionally tries to use `self.writer.add_scalar()`, but the writer attribute is never initialized when `log_max_logits=False`.
+
+3. **dtype mismatch in QK-clipping**: The clipping math uses float32 but AMP captures activations in bfloat16, causing `RuntimeError: expected mat1 and mat2 to have the same dtype`.
+
+### Solution (3-Part Fix)
+
+**Part 1: Patch `remove_hooks` in `module.py`** (`_create_muonclip_optimizer`):
+```python
+# WORKAROUND for upstream bug in muon-clip's HookRecorder
+if hasattr(optimizer, "hook_recorder"):
+    original_remove = optimizer.hook_recorder.remove_hooks
+    def patched_remove_hooks():
+        original_remove()
+        # Reset flag so hooks can be re-registered
+        optimizer.hook_recorder.is_registered = False
+    optimizer.hook_recorder.remove_hooks = patched_remove_hooks
+```
+
+**Part 2: Add no-op writer in `module.py`**:
+```python
+# WORKAROUND for upstream bug in muon-clip's flush_metrics()
+class _NoOpWriter:
+    def add_scalar(self, *args, **kwargs):
+        pass
+optimizer.writer = _NoOpWriter()
+```
+
+**Part 3: Add `MuonClipInitCallback` in `callbacks.py`**:
+```python
+class MuonClipInitCallback(Callback):
+    """Re-initialize MuonClip hooks after BatchSizeFinder completes."""
+
+    def on_train_start(self, trainer, pl_module):
+        optimizer = trainer.optimizers[0]
+        if hasattr(optimizer, "_optimizer"):
+            optimizer = optimizer._optimizer
+        if not hasattr(optimizer, "hook_recorder"):
+            return
+        hook_recorder = optimizer.hook_recorder
+        # Force re-registration
+        hook_recorder.is_registered = False
+        hook_recorder.register_input_hook(pl_module.model)
+```
+
+**Part 4: Disable QK-clipping** (workaround for dtype mismatch):
+```yaml
+# In lrc_dlm_influence.yaml
+optimizer:
+  enable_clipping: false  # Disabled due to bfloat16 dtype mismatch
+```
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/wrinklefree/lightning/module.py` | Patch `remove_hooks`, add no-op writer |
+| `src/wrinklefree/lightning/callbacks.py` | Add `MuonClipInitCallback` |
+| `scripts/train_lightning.py` | Wire up callback when MuonClip + auto_batch_size |
+| `configs/training/lrc_dlm_influence.yaml` | Disable QK-clipping |
+
+### Verification
+
+- GPU at 100% utilization on Nebius L40S
+- 21GB VRAM used (training running)
+- "Muon-clip: Hooked 30 layers" → "Muon-clip: Hooked 60 layers" (re-registered after BatchSizeFinder)
+- No more `KeyError: 0` or `AttributeError: 'MuonClip' object has no attribute 'writer'`
+
+### Upstream Bug Report
+
+These bugs should be reported to [GAD-cell/muon-clip](https://github.com/GAD-cell/muon-clip):
+1. `HookRecorder.remove_hooks()` should reset `is_registered = False`
+2. `flush_metrics()` should check if `self.writer` exists before calling `add_scalar()`
+3. QK-clipping should handle bfloat16 activations from AMP
+
+---
+
 ## December 26, 2024 - Stage 1.9 Completed: SmolLM2-135M with Muon Optimizer
 
 ### Run Summary
@@ -236,7 +322,7 @@ Created `src/wrinklefree/distillation/vllm_teacher.py`:
 
 ```python
 # Usage example
-from wrinklefree.distillation.vllm_teacher import VLLMTeacherWrapper
+from wf_train.distillation.vllm_teacher import VLLMTeacherWrapper
 
 teacher = VLLMTeacherWrapper(
     model_name="HuggingFaceTB/SmolLM2-135M",

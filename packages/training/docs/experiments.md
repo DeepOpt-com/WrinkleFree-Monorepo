@@ -1,88 +1,121 @@
 # Experiments and Reproduction
 
-This document details how to reproduce the key results and experiments for WrinkleFree-1.58Quant.
+How to reproduce key results and run experiments.
 
 ## Environment Setup
 
-Ensure you have installed the dependencies as described in the [README](../README.md).
-
 ```bash
-uv sync --all-extras
+# From monorepo root
+uv sync --all-packages
 ```
 
-## Experiment 1: SmolLM2-135M 1.58-bit Conversion
+## Experiment 1: Unified Training (SmolLM2-135M)
 
-This experiment demonstrates the full pipeline on a small model (SmolLM2-135M).
+The recommended training approach combining CE + DLM objectives.
 
-### 1. Stage 1: SubLN Insertion
-Stabilize the model by inserting SubLN layers.
+### Quick Test (100 steps)
 
 ```bash
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=stage1_subln \
-    distributed=single_gpu
+    training=base \
+    training.max_steps=100
 ```
 
-**Expected Result**: Training should converge quickly (few hundred steps). Loss should decrease initially and stabilize.
+**Expected**: Loss should decrease from ~10-12 to ~6-8.
 
-### 2. Stage 2: Continue Pre-training
-Adapt the model to 1.58-bit weights.
-
-#### Basic (Single Dataset)
-```bash
-uv run python scripts/train.py \
-    model=smollm2_135m \
-    training=stage2_pretrain \
-    data=fineweb \
-    distributed=single_gpu
-```
-
-#### Influence-Based Mixed Pretraining (Recommended)
-For better performance, use influence-based data selection with multiple data sources:
+### Full Training
 
 ```bash
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=stage2_pretrain \
-    data=mixed_pretrain \
-    distributed=single_gpu
+    training=base \
+    training.auto_batch_size=true \
+    gcs.enabled=true \
+    gcs.bucket=wrinklefree-checkpoints
 ```
 
-This uses the `mixed_pretrain` config which includes:
-- **FineWeb** (40%): General web content
-- **SlimPajama** (30%): Curated web content
-- **OpenWebMath** (15%): Mathematical reasoning
-- **CodeParrot** (15%): Code (OSS, ungated)
+## Experiment 2: Influence-Based Data Remixing
 
-The influence system dynamically adjusts these weights based on a probe dataset (FineWeb-Edu) to optimize for the target distribution.
+Verify the impact of dynamic dataset weight optimization.
 
-**Note**: This stage typically requires ~10B tokens for good performance.
-**Influence Integration**: Enabled by default in `stage2_pretrain.yaml`. The optimizer is wrapped with `InfluenceAwareOptimizer` which updates mixture weights every 1000 steps.
-
-### 3. Stage 3: Distillation
-Fine-tune with teacher guidance.
+### With Influence (Recommended)
 
 ```bash
-uv run python scripts/train.py \
+uv run python scripts/train_lightning.py \
     model=smollm2_135m \
-    training=stage3_distill_smollm2 \
-    data=downstream \
-    distillation=classification \
-    distributed=single_gpu
+    training=base \
+    data.config_name=mixed_pretrain \
+    training.influence.enabled=true \
+    training.influence.warmup_steps=1000 \
+    training.influence.update_interval=5000
 ```
 
-**Metrics**: Monitor `eval/loss`, `eval/accuracy` (if applicable), and distillation losses (`loss_logits`, `loss_attention`).
+### Without Influence (Baseline)
 
-## Experiment 2: Influence-based Data Selection
+```bash
+uv run python scripts/train_lightning.py \
+    model=smollm2_135m \
+    training=base \
+    data.config_name=mixed_pretrain \
+    training.influence.enabled=false
+```
 
-Verify the impact of influence-based data weighting.
+**Comparison**: The influence-guided run should achieve lower validation loss on target domains.
 
-1.  **Baseline**: Run Stage 2 with static mixture weights (e.g., 50/50).
-2.  **Influence**: Run Stage 2 with `influence.enabled=true` and a relevant probe set.
-3.  **Comparison**: Compare validation loss on the target domain. The influence-guided run should achieve lower loss with fewer tokens.
+## Experiment 3: LRC Calibration
+
+Post-quantization recovery using Low-Rank Correction.
+
+```bash
+uv run python scripts/train_lightning.py \
+    model=smollm2_135m \
+    training=lrc_calibration \
+    training.max_steps=5000
+```
+
+**Expected**: Recovery of quantization errors without full retraining.
+
+## Experiment 4: Knowledge Distillation
+
+Teacher-student distillation using BitDistill objectives.
+
+```bash
+uv run python scripts/train_lightning.py \
+    model=smollm2_135m \
+    training=bitdistill_full
+```
+
+## Cloud Deployment
+
+For larger experiments, use SkyPilot via the deployer package:
+
+```bash
+cd packages/deployer
+source credentials/.env
+
+# Launch smoke test
+sky launch skypilot/smoke_test_lightning.yaml -y --cluster smoke
+
+# Monitor
+sky logs smoke
+
+# Teardown
+sky down smoke -y
+```
 
 ## Troubleshooting
 
-- **OOM Errors**: Reduce `batch_size` or `max_seq_length`. Enable `gradient_checkpointing`.
-- **Divergence**: Check learning rate (lower it for quantized training). Ensure `warmup_steps` is sufficient in Stage 2.
+**OOM Errors**:
+- Enable auto batch size: `training.auto_batch_size=true`
+- Reduce batch size: `training.batch_size=1`
+- Use FSDP: `distributed=fsdp_multi`
+
+**Divergence**:
+- Check learning rate (lower it)
+- Ensure warmup steps are sufficient
+- Try AdamW instead of MuonClip: `training.optimizer.type=adamw`
+
+**Slow Training**:
+- Enable auto batch size to maximize GPU utilization
+- Use mixed_pretrain data config (pre-tokenized)

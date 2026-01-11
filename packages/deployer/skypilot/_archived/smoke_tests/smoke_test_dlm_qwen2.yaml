@@ -1,0 +1,148 @@
+# WrinkleFree DLM Smoke Test - Qwen2 0.5B (1x L40)
+#
+# Tests DLM training with dlm_config.json checkpoint saving:
+# - Combined STE + DLM multi-task learning
+# - Verifies dlm_config.json is saved with checkpoints
+# - GCS checkpoint uploads
+#
+# Launch:
+#   cd packages/deployer
+#   source credentials/.env
+#   sky launch skypilot/smoke_test_dlm_qwen2.yaml -y --cluster dlm-qwen2-smoke
+#
+# Monitor:
+#   sky logs dlm-qwen2-smoke
+#
+# Tear down:
+#   sky down dlm-qwen2-smoke -y
+
+name: wrinklefree-dlm-qwen2-smoke
+
+resources:
+  accelerators: L40S:1
+  memory: 64+
+  use_spot: false
+  cloud: runpod
+
+# Run from monorepo root
+workdir: .
+
+# Upload credentials
+file_mounts:
+  /tmp/gcp-creds.json: packages/deployer/credentials/gcp-service-account.json
+  /tmp/credentials.env: packages/deployer/credentials/.env
+  /tmp/global.env: ~/.config/.env.global
+
+envs:
+  GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-creds.json
+  GCS_BUCKET: wrinklefree-checkpoints
+  MODEL: qwen2_0.5b
+  MAX_STEPS: 30
+  WANDB_PROJECT: wrinklefree
+  WANDB_RUN_ID: dlm-qwen2-smoke-${SKYPILOT_TASK_ID}
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+
+setup: |
+  set -e
+  cd ~/sky_workdir
+
+  # Install uv if not present
+  if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  # Sync all packages
+  uv sync --all-packages
+
+  echo "Setup complete!"
+
+run: |
+  set -e
+  cd ~/sky_workdir
+  export PATH="$HOME/.cargo/bin:$PATH"
+
+  # Load credentials (WANDB_API_KEY, HF token, etc.)
+  source /tmp/credentials.env
+  source /tmp/global.env
+  export HF_TOKEN="${HUGGINGFACE_WRITE_TOKEN}"
+
+  CHECKPOINT_DIR="/tmp/checkpoints"
+  mkdir -p $CHECKPOINT_DIR
+
+  echo "================================================"
+  echo "WrinkleFree DLM Smoke Test - Qwen2 0.5B (1x L40)"
+  echo "================================================"
+  echo "Model: $MODEL"
+  echo "Max Steps: $MAX_STEPS"
+  echo ""
+  echo "Test Objectives:"
+  echo "  - Verify DLM training works with Qwen2 0.5B"
+  echo "  - Verify dlm_config.json is saved with checkpoints"
+  echo "  - GCS checkpoint upload every 10 steps"
+  echo ""
+  echo "Features:"
+  echo "  - Combined STE + DLM (multi-task learning)"
+  echo "  - MuonClip optimizer"
+  echo "  - Auto BitNet conversion"
+  echo "================================================"
+
+  # Run unified training with STE + DLM
+  echo ""
+  echo "[Training] Running unified training with STE+DLM..."
+  uv run --package wf-train python packages/training/scripts/train.py \
+    model=${MODEL} \
+    training=base \
+    data=default \
+    distributed=single_gpu \
+    training.max_steps=${MAX_STEPS} \
+    training.batch_size=4 \
+    training.gradient_accumulation_steps=4 \
+    output_dir=$CHECKPOINT_DIR \
+    experiment_name=dlm_qwen2_smoke \
+    training.checkpoint.save_interval=10 \
+    training.logging.log_interval=1 \
+    training.logging.wandb.enabled=true \
+    training.logging.wandb.project=${WANDB_PROJECT} \
+    gcs.enabled=true \
+    gcs.bucket=${GCS_BUCKET} \
+    training.early_stopping.enabled=false \
+    training.curriculum.enabled=false \
+    training.objectives.dlm.enabled=true \
+    training.objectives.dlm.weight=0.5 \
+    training.objectives.dlm.mask_token_id=0
+
+  echo ""
+  echo "================================================"
+  echo "Training Complete! Verifying results..."
+  echo "================================================"
+
+  # Verify dlm_config.json was saved
+  echo ""
+  echo "[Verify] Checking for dlm_config.json in checkpoints..."
+  DLM_CONFIG=$(find $CHECKPOINT_DIR -name "dlm_config.json" | head -1)
+  if [ -n "$DLM_CONFIG" ]; then
+    echo "SUCCESS: Found dlm_config.json at: $DLM_CONFIG"
+    echo "Contents:"
+    cat "$DLM_CONFIG"
+  else
+    echo "WARNING: dlm_config.json not found in checkpoints"
+    echo "Checkpoint contents:"
+    find $CHECKPOINT_DIR -type f | head -20
+  fi
+
+  # List all checkpoints
+  echo ""
+  echo "[Verify] Checkpoints saved:"
+  find $CHECKPOINT_DIR -type d -name "step_*" -o -name "final" 2>/dev/null | head -10
+
+  # Check GCS upload
+  echo ""
+  echo "[Verify] GCS checkpoints:"
+  gcloud storage ls "gs://${GCS_BUCKET}/experiments/" 2>/dev/null | grep -i dlm | head -5 || echo "No DLM checkpoints in GCS yet"
+
+  echo ""
+  echo "================================================"
+  echo "DLM Smoke Test Complete!"
+  echo "WandB: https://wandb.ai/${WANDB_PROJECT}/runs/${WANDB_RUN_ID}"
+  echo "================================================"

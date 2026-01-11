@@ -1,0 +1,8 @@
+# Continue Pre-Training Objective
+# Standard cross-entropy language modeling loss
+enabled: true
+weight: 1.0
+
+# Loss parameters
+ignore_index: -100
+label_smoothing: 0.0
