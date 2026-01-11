@@ -211,6 +211,8 @@ impl BitNetEngine {
     ) -> Result<Self, EngineError> {
         let reader = GgufReader::open(path)?;
         reader.print_summary();
+        reader.print_layer0_tensors();
+        reader.print_subnorm_tensors();
 
         // Load embeddings first to infer vocab_size if needed
         let embed_tokens = load_f32_tensor(&reader, "token_embd.weight")?;
@@ -409,12 +411,18 @@ impl BitNetEngine {
     }
 
     /// Get token embedding.
+    /// GGUF stores embeddings in PyTorch layout: [vocab_size, hidden_size] row-major.
+    /// Each row is one token's embedding vector (contiguous in memory).
     fn get_embedding(&self, token_id: usize) -> Vec<f32> {
         use std::sync::atomic::{AtomicBool, Ordering};
         static DEBUG_EMBEDDING: AtomicBool = AtomicBool::new(false);
 
-        let offset = token_id * self.config.hidden_size;
-        let embedding = self.embed_tokens[offset..offset + self.config.hidden_size].to_vec();
+        let hidden_size = self.config.hidden_size;
+
+        // GGUF layout: [vocab_size, hidden_size] row-major (same as PyTorch)
+        // Row token_id is at positions [token_id * hidden_size .. (token_id + 1) * hidden_size]
+        let start = token_id * hidden_size;
+        let embedding: Vec<f32> = self.embed_tokens[start..start + hidden_size].to_vec();
 
         // Debug: print first embedding
         if !DEBUG_EMBEDDING.swap(true, Ordering::SeqCst) {
@@ -424,6 +432,9 @@ impl BitNetEngine {
                 embedding.iter().cloned().fold(f32::INFINITY, f32::min),
                 embedding.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
                 embedding.iter().sum::<f32>() / embedding.len() as f32);
+            // Also print L2 norm to verify embedding quality
+            let l2_norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+            eprintln!("  L2 norm: {:.6}", l2_norm);
         }
 
         embedding
@@ -540,6 +551,18 @@ impl BitNetEngine {
             *h += f;
         }
 
+        // Debug: Print layer output stats for all layers (first time only)
+        {
+            use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+            static DEBUG_LAYER_OUTPUTS: AtomicUsize = AtomicUsize::new(0);
+            let call_num = DEBUG_LAYER_OUTPUTS.fetch_add(1, AtomicOrdering::SeqCst);
+            // Print for first forward pass (first 30 layers = num_layers)
+            if call_num < 30 {
+                let (min, max) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("=== LAYER {} OUTPUT (pos 0) ===  Min: {:.2}, Max: {:.2}", layer_idx, min, max);
+            }
+        }
+
         hidden
     }
 
@@ -548,11 +571,42 @@ impl BitNetEngine {
         let h = self.config.hidden_size;
         let mut output = Vec::with_capacity(seq_len * h);
 
+        // Debug: track norm operations
+        static DEBUG_NORM_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let norm_count = DEBUG_NORM_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Debug first few norm calls
+        if norm_count < 3 {
+            eprintln!("=== APPLY_NORM DEBUG (call {}) ===", norm_count);
+            eprintln!("  hidden.len: {}, gamma.len: {}, seq_len: {}, h: {}", hidden.len(), gamma.len(), seq_len, h);
+            eprintln!("  hidden first 8: {:?}", &hidden[..8.min(hidden.len())]);
+            eprintln!("  gamma first 8: {:?}", &gamma[..8.min(gamma.len())]);
+            let (hmin, hmax) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+            let (gmin, gmax) = gamma.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+            eprintln!("  hidden min/max: {:.6}/{:.6}, gamma min/max: {:.6}/{:.6}", hmin, hmax, gmin, gmax);
+        }
+
         for i in 0..seq_len {
             let start = i * h;
             let slice = &hidden[start..start + h];
+
+            // Debug RMS for first position of first few calls
+            if norm_count < 3 && i == 0 {
+                let sum_sq: f32 = slice.iter().map(|x| x * x).sum();
+                let mean_sq = sum_sq / slice.len() as f32;
+                let rms = (mean_sq + self.config.rms_norm_eps).sqrt();
+                eprintln!("  Position 0 RMS: {:.6} (sum_sq: {:.2}, len: {})", rms, sum_sq, slice.len());
+            }
+
             let normed = rms_norm_with_scale(slice, gamma, self.config.rms_norm_eps);
             output.extend_from_slice(&normed);
+        }
+
+        // Debug output for first few calls
+        if norm_count < 3 {
+            eprintln!("  output first 8: {:?}", &output[..8.min(output.len())]);
+            let (omin, omax) = output.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+            eprintln!("  output min/max: {:.6}/{:.6}", omin, omax);
         }
 
         output
@@ -593,15 +647,37 @@ impl BitNetEngine {
             use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
             static DEBUG_QKV: AtomicBool = AtomicBool::new(false);
             if !DEBUG_QKV.swap(true, AtomicOrdering::SeqCst) {
-                eprintln!("=== Q PROJECTION (layer 0, before SubLN) ===");
-                eprintln!("  First 8 Q values: {:?}", &q[..8]);
+                // Debug input quantization
+                eprintln!("=== LAYER 0 ATTENTION INPUT ===");
+                eprintln!("  hidden_scale: {:.6}", hidden_scale);
+                eprintln!("  First 16 quantized_hidden: {:?}", &quantized_hidden[..16.min(quantized_hidden.len())]);
+                eprintln!("  Q weight scale: {:.6}", self.layers[layer_idx].q_proj.scale);
+                eprintln!("  Q shape: ({}, {})", self.layers[layer_idx].q_proj.out_features, self.layers[layer_idx].q_proj.in_features);
+                eprintln!("  First 8 Q weight bytes: {:?}", &self.layers[layer_idx].q_proj.data[..8]);
+
+                eprintln!("=== Q PROJECTION (layer 0) ===");
+                eprintln!("  First 16 Q values: {:?}", &q[..16]);
                 let (min, max) = q.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
                 eprintln!("  Q min: {:.6}, max: {:.6}, mean: {:.6}", min, max, q.iter().sum::<f32>() / q.len() as f32);
 
-                eprintln!("=== K PROJECTION (layer 0, before SubLN) ===");
-                eprintln!("  First 8 K values: {:?}", &k[..8]);
-                let (min, max) = k.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
-                eprintln!("  K min: {:.6}, max: {:.6}, mean: {:.6}", min, max, k.iter().sum::<f32>() / k.len() as f32);
+                eprintln!("=== K PROJECTION (layer 0) ===");
+                eprintln!("  First 16 K values: {:?}", &k[..16.min(k.len())]);
+                let (kmin, kmax) = k.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  K min: {:.6}, max: {:.6}", kmin, kmax);
+
+                // Also print Q and K at position 5 BEFORE RoPE
+                let h = self.config.hidden_size;
+                let pos5_start = 5 * h;
+                if q.len() > pos5_start + 16 {
+                    eprintln!("=== Q BEFORE ROPE (layer 0, pos 5, first 16) ===");
+                    eprintln!("  Q[pos5][0:16]: {:?}", &q[pos5_start..pos5_start + 16]);
+                }
+                let kv_dim = num_kv_heads * head_dim;
+                let k_pos5_start = 5 * kv_dim;
+                if k.len() > k_pos5_start + 16 {
+                    eprintln!("=== K BEFORE ROPE (layer 0, pos 5, first 16) ===");
+                    eprintln!("  K[pos5][0:16]: {:?}", &k[k_pos5_start..k_pos5_start + 16]);
+                }
             }
         }
 
@@ -618,6 +694,40 @@ impl BitNetEngine {
         // Apply RoPE to Q and K
         let q = self.apply_rope(&q, start_pos, seq_len, num_heads, head_dim);
         let k = self.apply_rope(&k, start_pos, seq_len, num_kv_heads, head_dim);
+
+        // Debug RoPE output for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_ROPE: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_ROPE.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== Q AFTER ROPE (layer 0, first head) ===");
+                eprintln!("  First 16 Q values (head 0): {:?}", &q[..16]);
+                let (min, max) = q.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Q after RoPE min: {:.6}, max: {:.6}", min, max);
+                eprintln!("  start_pos: {}, seq_len: {}, num_heads: {}, head_dim: {}", start_pos, seq_len, num_heads, head_dim);
+
+                eprintln!("=== K AFTER ROPE (layer 0, first head) ===");
+                eprintln!("  First 16 K values (head 0): {:?}", &k[..16.min(k.len())]);
+                let (kmin, kmax) = k.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  K after RoPE min: {:.6}, max: {:.6}", kmin, kmax);
+
+                // Print Q and K at position 5 (last) to verify layout
+                let h = self.config.hidden_size;
+                let pos5_start = 5 * h;
+                if q.len() > pos5_start + 16 {
+                    eprintln!("=== Q AFTER ROPE (layer 0, pos 5, first 16) ===");
+                    eprintln!("  Q len: {}, pos5_start: {}", q.len(), pos5_start);
+                    eprintln!("  Q[pos5][0:16]: {:?}", &q[pos5_start..pos5_start + 16]);
+                }
+                let kv_h = kv_dim;
+                let k_pos5_start = 5 * kv_h;
+                if k.len() > k_pos5_start + 16 {
+                    eprintln!("=== K AFTER ROPE (layer 0, pos 5, first 16) ===");
+                    eprintln!("  K len: {}, k_pos5_start: {}", k.len(), k_pos5_start);
+                    eprintln!("  K[pos5][0:16]: {:?}", &k[k_pos5_start..k_pos5_start + 16]);
+                }
+            }
+        }
 
         if PROFILING_ENABLED.load(Ordering::Relaxed) {
             PROFILE_ROPE_US.fetch_add(rope_start.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -647,10 +757,10 @@ impl BitNetEngine {
         // Profile: output projection
         let o_proj_start = Instant::now();
 
-        // Output projection
+        // Output projection first
         let mut result = self.linear_forward_ref(&self.layers[layer_idx].o_proj, &attn_out, seq_len);
 
-        // Apply SubLN AFTER O projection (per HuggingFace: attn_output = self.attn_sub_norm(attn_output))
+        // Apply SubLN AFTER O projection (llama.cpp order)
         if let Some(ref sub_norm) = self.layers[layer_idx].attn_sub_norm {
             let h = self.config.hidden_size;
             for i in 0..seq_len {
@@ -717,6 +827,36 @@ impl BitNetEngine {
                 // Softmax
                 softmax_inplace(&mut scores);
 
+                // Debug: print attention scores/weights for last position, head 0, layer 0
+                if layer_idx == 0 && qi == q_len - 1 && head == 0 {
+                    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+                    static DEBUG_ATTN_WEIGHTS: AtomicBool = AtomicBool::new(false);
+                    if !DEBUG_ATTN_WEIGHTS.swap(true, AtomicOrdering::SeqCst) {
+                        // Print Q values for this position
+                        eprintln!("=== Q VALUES (layer 0, head 0, last pos) ===");
+                        eprintln!("  Q first 16: {:?}", &q_vec[..16.min(q_vec.len())]);
+
+                        // Print K values for positions 0 and 1
+                        for ki in 0..2.min(kv_len) {
+                            let k_start = ki * num_kv_heads * head_dim + kv_head * head_dim;
+                            let k_vec = &all_keys[k_start..k_start + head_dim];
+                            eprintln!("=== K VALUES (layer 0, head 0, pos {}) ===", ki);
+                            eprintln!("  K first 16: {:?}", &k_vec[..16.min(k_vec.len())]);
+                        }
+
+                        // Print raw scores before softmax
+                        let raw_scores: Vec<f32> = (0..kv_len).map(|ki| {
+                            let k_start = ki * num_kv_heads * head_dim + kv_head * head_dim;
+                            let k_vec = &all_keys[k_start..k_start + head_dim];
+                            dot(q_vec, k_vec) * scale
+                        }).collect();
+                        eprintln!("=== ATTENTION RAW SCORES (layer 0, head 0, last pos) ===");
+                        eprintln!("  scale: {:.6}, raw_scores: {:?}", scale, raw_scores);
+                        eprintln!("=== ATTENTION WEIGHTS (layer 0, head 0, last pos) ===");
+                        eprintln!("  kv_len: {}, scores: {:?}", kv_len, &scores);
+                    }
+                }
+
                 // Weighted sum of values
                 let out_start = qi * h + head * head_dim;
                 for ki in 0..kv_len {
@@ -737,8 +877,48 @@ impl BitNetEngine {
         // Profile: entire FFN
         let ffn_start = Instant::now();
 
+        // Debug FFN input for layer 0 BEFORE quantization
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FFN_INPUT: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FFN_INPUT.swap(true, AtomicOrdering::SeqCst) {
+                // NOTE: The 'hidden' parameter here is ALREADY NORMALIZED (from apply_norm in layer_forward)
+                // So these values reflect post-norm, not pre-norm
+                eprintln!("=== FFN INPUT (already normed, layer 0) ===");
+                eprintln!("  Length: {}, seq_len: {}", hidden.len(), seq_len);
+                eprintln!("  First 8 values: {:?}", &hidden[..8.min(hidden.len())]);
+                let (min, max) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {:.6}, Max: {:.6}, Mean: {:.6}", min, max, hidden.iter().sum::<f32>() / hidden.len() as f32);
+                // Print the FFN norm gamma values
+                let ffn_gamma = &self.layers[layer_idx].ffn_norm;
+                let (gmin, gmax) = ffn_gamma.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  FFN norm gamma first 8: {:?}", &ffn_gamma[..8.min(ffn_gamma.len())]);
+                eprintln!("  FFN norm gamma min: {:.6}, max: {:.6}", gmin, gmax);
+
+                // Debug gate_proj dimensions
+                let gp = &self.layers[layer_idx].gate_proj;
+                eprintln!("=== GATE_PROJ WEIGHTS ===");
+                eprintln!("  in_features: {}, out_features: {}", gp.in_features, gp.out_features);
+                eprintln!("  data len: {} bytes, scale: {}", gp.data.len(), gp.scale);
+                eprintln!("  First 8 packed bytes: {:?}", &gp.data[..8.min(gp.data.len())]);
+            }
+        }
+
         // Quantize input ONCE for gate and up projections (2x speedup on quantization)
         let (quantized_hidden, hidden_scale) = self.kernel.quantize_activations(hidden);
+
+        // Debug quantized values for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_QUANT: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_QUANT.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== QUANTIZED FFN INPUT ===");
+                eprintln!("  Length: {}, scale: {}", quantized_hidden.len(), hidden_scale);
+                eprintln!("  First 8 values: {:?}", &quantized_hidden[..8.min(quantized_hidden.len())]);
+                let (min, max) = quantized_hidden.iter().fold((i8::MAX, i8::MIN), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Min: {}, Max: {}", min, max);
+            }
+        }
 
         // Gate and up projections using pre-quantized activations
         let mut gate = self.linear_forward_quantized(
@@ -823,6 +1003,27 @@ impl BitNetEngine {
         // Down projection
         let result = self.linear_forward_ref(&self.layers[layer_idx].down_proj, &intermediate, seq_len);
 
+        // DEBUG: down_proj output for layer 0
+        if layer_idx == 0 {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_DOWN_OUT: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_DOWN_OUT.swap(true, AtomicOrdering::SeqCst) {
+                let dp = &self.layers[layer_idx].down_proj;
+                eprintln!("=== DOWN_PROJ (layer 0) ===");
+                eprintln!("  in_features: {}, out_features: {}", dp.in_features, dp.out_features);
+                eprintln!("  weight scale: {:.6}", dp.scale);
+                eprintln!("  Input range: ({:.2}, {:.2})",
+                    intermediate.iter().fold(f32::INFINITY, |a, &b| a.min(b)),
+                    intermediate.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)));
+                let input_scale = intermediate.iter().map(|x| x.abs()).fold(0.0f32, |a, b| a.max(b)) / 127.0;
+                eprintln!("  Input quant scale: {:.6}", input_scale);
+                eprintln!("  Combined scale: {:.6}", dp.scale * input_scale);
+                eprintln!("  Output first 8: {:?}", &result[..8.min(result.len())]);
+                let (min, max) = result.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                eprintln!("  Output range: ({:.2}, {:.2})", min, max);
+            }
+        }
+
         if PROFILING_ENABLED.load(Ordering::Relaxed) {
             PROFILE_FFN_US.fetch_add(ffn_start.elapsed().as_micros() as u64, Ordering::Relaxed);
         }
@@ -868,13 +1069,16 @@ impl BitNetEngine {
         // - weights: [M x K/4] packed ternary
         // - activations: [K x N] INT8
         // - output: [M x N] FP32
+        // HuggingFace AutoBitLinear (which this model uses) MULTIPLIES by weight_scale
+        // AutoBitLinear: output = W @ fake_quant(x) * weight_scale
+        // Our int8 version: output = W @ quant(x) * input_scale * weight_scale
         self.kernel.gemm(
             out_features,
             seq_len,
             in_features,
             &weights.data,
             &quantized_input,
-            weights.scale * input_scale,
+            input_scale * weights.scale,
         )
     }
 
@@ -899,13 +1103,46 @@ impl BitNetEngine {
             "Quantized input size mismatch"
         );
 
+        // Debug: log unusual scale values
+        // HuggingFace AutoBitLinear MULTIPLIES by weight_scale
+        let combined_scale = input_scale * weights.scale;
+        static SCALE_DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let debug_num = SCALE_DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if debug_num < 20 {
+            eprintln!("=== LINEAR FORWARD #{} ===", debug_num);
+            eprintln!("  Shape: ({}, {}), weight_scale: {:.6}, input_scale: {:.6}, combined: {:.6}",
+                out_features, in_features, weights.scale, input_scale, combined_scale);
+        }
+        if combined_scale > 10.0 || combined_scale < 1e-6 || combined_scale.is_nan() {
+            eprintln!("WARNING: linear_forward with unusual combined scale: {:.6}", combined_scale);
+            eprintln!("  weight_scale: {:.6}, input_scale: {:.6}", weights.scale, input_scale);
+        }
+
+        // Debug: For first call (Q proj layer 0), compute and print raw integer dot product
+        if debug_num == 0 {
+            use crate::kernels::bitnet::vec_dot_scalar;
+            let k_packed = in_features / 4;
+            let first_row_weights = &weights.data[..k_packed];
+            let first_col_acts = &quantized_input[..in_features];
+            let int_dot = vec_dot_scalar(first_row_weights, first_col_acts);
+            let scaled_result = (int_dot as f32) * combined_scale;
+            eprintln!("=== RAW DOT PRODUCT DEBUG (Q proj row 0, col 0) ===");
+            eprintln!("  Integer dot product: {}", int_dot);
+            eprintln!("  Scaled result: {:.6} (int_dot * {:.6})", scaled_result, combined_scale);
+            eprintln!("  For comparison, bitnet.cpp would compute:");
+            let act_sum: i32 = first_col_acts.iter().map(|&x| x as i32).sum();
+            eprintln!("    act_sum = {}", act_sum);
+            eprintln!("    (encoded_dot - act_sum) = {} - {} = {}", int_dot + act_sum, act_sum, int_dot);
+            eprintln!("    Since we use true ternary, our dot already equals true_dot");
+        }
+
         self.kernel.gemm(
             out_features,
             seq_len,
             in_features,
             &weights.data,
             quantized_input,
-            weights.scale * input_scale,
+            combined_scale,
         )
     }
 
@@ -926,17 +1163,20 @@ impl BitNetEngine {
             for head in 0..num_heads {
                 let offset = i * num_heads * head_dim + head * head_dim;
 
+                // Use INTERLEAVED indexing: (2j, 2j+1) pairs, NOT split-half
+                // This matches the LLaMA RoPE convention
                 for j in 0..half_dim {
                     let freq = self.rope_freqs[j];
                     let angle = pos as f32 * freq;
                     let cos = angle.cos();
                     let sin = angle.sin();
 
-                    let x0 = output[offset + j];
-                    let x1 = output[offset + j + half_dim];
+                    // Interleaved pairs: (0,1), (2,3), (4,5), etc.
+                    let x0 = output[offset + 2 * j];
+                    let x1 = output[offset + 2 * j + 1];
 
-                    output[offset + j] = x0 * cos - x1 * sin;
-                    output[offset + j + half_dim] = x0 * sin + x1 * cos;
+                    output[offset + 2 * j] = x0 * cos - x1 * sin;
+                    output[offset + 2 * j + 1] = x0 * sin + x1 * cos;
                 }
             }
         }
@@ -950,8 +1190,37 @@ impl BitNetEngine {
         // Profile: output projection
         let output_start = Instant::now();
 
+        // DEBUG: Print final hidden state before norm
+        {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_FINAL: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_FINAL.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== FINAL HIDDEN (before output norm) ===");
+                eprintln!("  Length: {}", hidden.len());
+                eprintln!("  First 8 values: {:?}", &hidden[..8.min(hidden.len())]);
+                let (min, max) = hidden.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                let mean = hidden.iter().sum::<f32>() / hidden.len() as f32;
+                eprintln!("  Min: {:.4}, Max: {:.4}, Mean: {:.4}", min, max, mean);
+            }
+        }
+
         // Apply final norm
         let normed = rms_norm_with_scale(hidden, &self.output_norm, self.config.rms_norm_eps);
+
+        // DEBUG: Print normed values
+        {
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static DEBUG_NORMED: AtomicBool = AtomicBool::new(false);
+            if !DEBUG_NORMED.swap(true, AtomicOrdering::SeqCst) {
+                eprintln!("=== NORMED HIDDEN (after output norm) ===");
+                eprintln!("  First 8 values: {:?}", &normed[..8.min(normed.len())]);
+                let (min, max) = normed.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &x| (min.min(x), max.max(x)));
+                let mean = normed.iter().sum::<f32>() / normed.len() as f32;
+                eprintln!("  Min: {:.4}, Max: {:.4}, Mean: {:.4}", min, max, mean);
+                // Also print output norm weights
+                eprintln!("  Output norm weights first 8: {:?}", &self.output_norm[..8.min(self.output_norm.len())]);
+            }
+        }
 
         // Project to vocabulary using parallel computation with BF16 weights
         // BF16 halves memory bandwidth: 128K vocab × 2560 hidden × 2 bytes = 655MB
@@ -959,24 +1228,38 @@ impl BitNetEngine {
         let hidden_size = self.config.hidden_size;
         let vocab_size = self.config.vocab_size;
 
+        // GGUF stores embeddings in PyTorch layout: [vocab_size, hidden_size] row-major.
+        // For tied embeddings (LM head = embedding.T):
+        //   logits = hidden @ embedding.T
+        //   logits[i] = Σ_h hidden[h] * embedding[i, h]
+        //   With row-major: embedding[i, h] = data[i * hidden_size + h]
+        //
+        // Computation: for each vocab token i, dot product hidden with row i of embedding
         let logits = if let Some(ref output_proj_bf16) = self.output_proj_bf16 {
-            // Use BF16 output projection weights (parallel)
-            (0..vocab_size)
-                .into_par_iter()
-                .map(|i| {
-                    let offset = i * hidden_size;
-                    dot_bf16_simd(&normed, &output_proj_bf16[offset..offset + hidden_size])
-                })
-                .collect()
+            // Separate output projection (same layout as embeddings)
+            let mut logits = vec![0.0f32; vocab_size];
+            for i in 0..vocab_size {
+                let row_start = i * hidden_size;
+                let mut sum = 0.0f32;
+                for h in 0..hidden_size {
+                    sum += normed[h] * bf16_to_f32(output_proj_bf16[row_start + h]);
+                }
+                logits[i] = sum;
+            }
+            logits
         } else {
-            // Tied embeddings - use BF16 version (parallel)
-            (0..vocab_size)
-                .into_par_iter()
-                .map(|i| {
-                    let offset = i * hidden_size;
-                    dot_bf16_simd(&normed, &self.embed_tokens_bf16[offset..offset + hidden_size])
-                })
-                .collect()
+            // Tied embeddings - dot product hidden with each embedding row
+            // logits[i] = dot(hidden, embedding[i])
+            let mut logits = vec![0.0f32; vocab_size];
+            for i in 0..vocab_size {
+                let row_start = i * hidden_size;
+                let mut sum = 0.0f32;
+                for h in 0..hidden_size {
+                    sum += normed[h] * bf16_to_f32(self.embed_tokens_bf16[row_start + h]);
+                }
+                logits[i] = sum;
+            }
+            logits
         };
 
         if PROFILING_ENABLED.load(Ordering::Relaxed) {
@@ -1019,6 +1302,20 @@ impl BitNetEngine {
             indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
             eprintln!("Top 5 logits: {:?}", &indexed[..5.min(indexed.len())]);
             eprintln!("NaN count: {}, Inf count: {}", logits.iter().filter(|x| x.is_nan()).count(), logits.iter().filter(|x| x.is_infinite()).count());
+            // Check specific tokens that should be predicted
+            eprintln!("Token 11 (comma) logit: {:.4}, rank: {}", logits[11], indexed.iter().position(|(i, _)| *i == 11).unwrap_or(usize::MAX));
+            eprintln!("Token 0 logit: {:.4}, Token 1 logit: {:.4}", logits[0], logits[1]);
+            // Check token 12366 (" Paris") - should be top prediction for "The capital of France is"
+            if logits.len() > 12366 {
+                let paris_rank = indexed.iter().position(|(i, _)| *i == 12366).unwrap_or(usize::MAX);
+                eprintln!("Token 12366 (Paris) logit: {:.4}, rank: {}", logits[12366], paris_rank);
+
+                // Check embedding values for Paris
+                let hidden_size = 2560;
+                let paris_emb_start = 12366 * hidden_size;
+                eprintln!("Paris embedding first 8: {:?}",
+                    &self.embed_tokens[paris_emb_start..paris_emb_start + 8]);
+            }
         }
 
         let token_id = sample_token_with_penalty(&logits, sampling_config, &mut rng, &all_tokens);
@@ -1061,7 +1358,19 @@ fn load_f32_tensor(reader: &GgufReader, name: &str) -> Result<Vec<f32>, EngineEr
         .find_tensor(name)
         .ok_or_else(|| EngineError::MissingTensor(name.to_string()))?;
 
+    // Debug: print tensor info for norm weights
+    if name.contains("norm") {
+        eprintln!("=== LOADING F32 TENSOR '{}' ===", name);
+        eprintln!("  shape: {:?}, dtype: {:?}, offset: {}, n_bytes: {}",
+            tensor.shape, tensor.dtype, tensor.data_offset, tensor.n_bytes);
+    }
+
     let data = reader.tensor_data(tensor);
+
+    // Debug: print first bytes for norm weights
+    if name.contains("norm") {
+        eprintln!("  First 16 raw bytes: {:02x?}", &data[..16.min(data.len())]);
+    }
 
     match tensor.dtype {
         GgmlQuantType::F32 => {
@@ -1070,6 +1379,12 @@ fn load_f32_tensor(reader: &GgufReader, name: &str) -> Result<Vec<f32>, EngineEr
                 .chunks_exact(4)
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
+
+            // Debug: print first values for norm weights
+            if name.contains("norm") {
+                eprintln!("  First 4 values: {:?}", &floats[..4.min(floats.len())]);
+            }
+
             Ok(floats)
         }
         GgmlQuantType::F16 => {
@@ -1113,7 +1428,47 @@ fn load_quantized_weights(
         )));
     }
 
-    repack_ternary_weights(data, tensor.dtype, &tensor.shape).map_err(|e| e.into())
+    let result = repack_ternary_weights(data, tensor.dtype, &tensor.shape)?;
+
+    // Debug: Print Q projection details for comparison with Python
+    if name == "blk.0.attn_q.weight" {
+        eprintln!("\n=== Q PROJECTION DEBUG (blk.0.attn_q.weight) ===");
+        eprintln!("GGUF shape: {:?}, dtype: {:?}", tensor.shape, tensor.dtype);
+        eprintln!("Native format: out={}, in={}, scale={:.6}", result.out_features, result.in_features, result.scale);
+
+        // Print first 8 raw bytes from GGUF
+        if data.len() >= 8 {
+            eprintln!("Raw GGUF first 8 bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
+        }
+
+        // Decode first 32 ternary values manually to compare with Python
+        // Python expects: [0, -1, -1, 1, 0, -1, 1, -1, 0, 1, -1, 0, -1, 1, 1, 0, 0, 0, 0, 0, -1, 0, -1, 1, 0, -1, 0, -1, 0, 0, 0, 0]
+        let mut first_32 = Vec::with_capacity(32);
+        for byte_idx in 0..8 {
+            if byte_idx >= data.len() { break; }
+            let byte = data[byte_idx];
+            for shift in [6, 4, 2, 0] {
+                let val = (byte >> shift) & 0x03;
+                let ternary = match val { 0 => -1i8, 1 => 0i8, 2 => 1i8, _ => 0i8 };
+                first_32.push(ternary);
+            }
+        }
+        eprintln!("Rust decoded first 32: {:?}", first_32);
+        eprintln!("Python expected first 32: [0, -1, -1, 1, 0, -1, 1, -1, 0, 1, -1, 0, -1, 1, 1, 0, 0, 0, 0, 0, -1, 0, -1, 1, 0, -1, 0, -1, 0, 0, 0, 0]");
+
+        // Check packed_size location for scale
+        let n_elements = result.out_features * result.in_features;
+        let packed_size = n_elements / 4;
+        if data.len() >= packed_size + 4 {
+            let scale_bytes = &data[packed_size..packed_size + 4];
+            let scale_val = f32::from_le_bytes([scale_bytes[0], scale_bytes[1], scale_bytes[2], scale_bytes[3]]);
+            eprintln!("Scale at offset {}: {:.6} (bytes: {:02x} {:02x} {:02x} {:02x})",
+                packed_size, scale_val, scale_bytes[0], scale_bytes[1], scale_bytes[2], scale_bytes[3]);
+        }
+    }
+
+    Ok(result)
 }
 
 /// Load layer weights.

@@ -446,6 +446,43 @@ impl GgufReader {
             println!("  ... and {} more", self.tensors.len() - 10);
         }
     }
+
+    /// Print all layer 0 tensors with offsets for debugging.
+    pub fn print_layer0_tensors(&self) {
+        println!("\n=== LAYER 0 TENSORS (for debugging) ===");
+        println!("Data offset base: {}", self.data_offset);
+        for t in &self.tensors {
+            if t.name.contains("blk.0") {
+                let relative = t.data_offset - self.data_offset;
+                println!("  {} [{:?}] {:?} @ offset {} (rel: {}) - {} bytes",
+                    t.name, t.shape, t.dtype, t.data_offset, relative, t.n_bytes);
+                // Print first 16 bytes of data
+                let data = self.tensor_data(t);
+                let bytes: Vec<String> = data.iter().take(16).map(|b| format!("{:02x}", b)).collect();
+                println!("    First 16 bytes: {}", bytes.join(" "));
+            }
+        }
+        println!();
+    }
+
+    /// Print all sub_norm tensors to debug the offset issue.
+    pub fn print_subnorm_tensors(&self) {
+        println!("\n=== ALL ffn_sub_norm TENSORS (debugging offset issue) ===");
+        for t in &self.tensors {
+            if t.name.contains("ffn_sub_norm") {
+                let relative = t.data_offset - self.data_offset;
+                println!("  {} [{:?}] {:?} @ offset {} (rel: {}) - {} bytes",
+                    t.name, t.shape, t.dtype, t.data_offset, relative, t.n_bytes);
+                // Print first and last 16 bytes
+                let data = self.tensor_data(t);
+                let first_bytes: Vec<String> = data.iter().take(16).map(|b| format!("{:02x}", b)).collect();
+                let last_bytes: Vec<String> = data.iter().rev().take(16).rev().map(|b| format!("{:02x}", b)).collect();
+                println!("    First 16: {}", first_bytes.join(" "));
+                println!("    Last 16:  {}", last_bytes.join(" "));
+            }
+        }
+        println!();
+    }
 }
 
 #[cfg(test)]

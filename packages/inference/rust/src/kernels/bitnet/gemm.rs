@@ -98,8 +98,12 @@ fn gemv_parallel(
 }
 
 /// Multi-column GEMM with row parallelization.
+///
+/// Produces output in (N, M) row-major format: output[col * M + row]
+/// This matches the expected layout for downstream consumers that expect
+/// (seq_len, out_features) format where each position's features are contiguous.
 fn gemm_parallel(
-    _m: usize,
+    m: usize,
     n: usize,
     k: usize,
     packed_weights: &[u8],
@@ -109,22 +113,23 @@ fn gemm_parallel(
 ) {
     let k_packed = k / 4;
 
-    // Parallelize over rows
+    // Parallelize over columns (positions) to produce (N, M) row-major output
+    // Each column produces M outputs for one position
     output
-        .par_chunks_mut(n)
+        .par_chunks_mut(m)
         .enumerate()
-        .for_each(|(row, out_row)| {
-            let w_start = row * k_packed;
-            let w_row = &packed_weights[w_start..w_start + k_packed];
+        .for_each(|(col, out_col)| {
+            // Extract activation column for this position
+            let a_col_start = col * k;
+            let a_col = &activations[a_col_start..a_col_start + k];
 
-            for col in 0..n {
-                // Extract column from activations (column-major layout)
-                // activations[i, col] = activations[col * k + i]
-                let a_col_start = col * k;
-                let a_col = &activations[a_col_start..a_col_start + k];
+            // Compute dot product for each output row
+            for row in 0..m {
+                let w_start = row * k_packed;
+                let w_row = &packed_weights[w_start..w_start + k_packed];
 
                 let dot = vec_dot(w_row, a_col);
-                out_row[col] = (dot as f32) * scale;
+                out_col[row] = (dot as f32) * scale;
             }
         });
 }

@@ -73,33 +73,44 @@ impl Tokenizer {
         while i < bytes.len() {
             let mut found = false;
 
-            // Try to match longest token first (up to 20 chars)
-            for len in (1..=20.min(bytes.len() - i)).rev() {
-                if let Ok(substr) = std::str::from_utf8(&bytes[i..i + len]) {
-                    // Try exact match
-                    if let Some(&id) = self.token_to_id.get(substr) {
-                        tokens.push(id);
-                        i += len;
-                        found = true;
-                        break;
-                    }
+            // Special handling for spaces: LLaMA tokenizers use Ġ prefix
+            // So " capital" should match "Ġcapital" in the vocab
+            if bytes[i] == b' ' && i + 1 < bytes.len() {
+                // Try to match space + following text as a Ġ-prefixed token
+                for len in (1..=20.min(bytes.len() - i - 1)).rev() {
+                    if let Ok(substr) = std::str::from_utf8(&bytes[i + 1..i + 1 + len]) {
+                        // Try with Ġ prefix (GPT-style, represents leading space)
+                        let with_g = format!("Ġ{}", substr);
+                        if let Some(&id) = self.token_to_id.get(&with_g) {
+                            tokens.push(id);
+                            i += 1 + len; // Skip space + matched text
+                            found = true;
+                            break;
+                        }
 
-                    // Try with leading space (common in BPE)
-                    let with_space = format!("▁{}", substr);
-                    if let Some(&id) = self.token_to_id.get(&with_space) {
-                        tokens.push(id);
-                        i += len;
-                        found = true;
-                        break;
+                        // Try with ▁ prefix (SentencePiece style)
+                        let with_space = format!("▁{}", substr);
+                        if let Some(&id) = self.token_to_id.get(&with_space) {
+                            tokens.push(id);
+                            i += 1 + len;
+                            found = true;
+                            break;
+                        }
                     }
+                }
+            }
 
-                    // Try with Ġ prefix (GPT-style)
-                    let with_g = format!("Ġ{}", substr);
-                    if let Some(&id) = self.token_to_id.get(&with_g) {
-                        tokens.push(id);
-                        i += len;
-                        found = true;
-                        break;
+            if !found {
+                // Try to match longest token first (up to 20 chars)
+                for len in (1..=20.min(bytes.len() - i)).rev() {
+                    if let Ok(substr) = std::str::from_utf8(&bytes[i..i + len]) {
+                        // Try exact match
+                        if let Some(&id) = self.token_to_id.get(substr) {
+                            tokens.push(id);
+                            i += len;
+                            found = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -112,10 +123,18 @@ impl Tokenizer {
                 if let Some(&id) = self.token_to_id.get(&byte_token) {
                     tokens.push(id);
                 } else {
-                    // Last resort: use the byte value directly if in vocab range
-                    if (byte as usize) < self.id_to_token.len() {
-                        tokens.push(byte as i32);
+                    // For space, try common space tokens
+                    if byte == b' ' {
+                        // Try "Ġ" itself as a space token
+                        if let Some(&id) = self.token_to_id.get("Ġ") {
+                            tokens.push(id);
+                        } else if let Some(&id) = self.token_to_id.get("▁") {
+                            tokens.push(id);
+                        } else if let Some(&id) = self.token_to_id.get(" ") {
+                            tokens.push(id);
+                        }
                     }
+                    // For other bytes, no good fallback - just skip for now
                 }
                 i += 1;
             }

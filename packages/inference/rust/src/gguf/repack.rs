@@ -50,31 +50,120 @@ pub fn repack_ternary_weights(
         return Err(GgufError::InvalidDimensions);
     }
 
-    // GGUF stores shapes in column-major order:
-    // shape[0] = columns (in_features), shape[1] = rows (out_features)
+    // GGUF shape convention: shape[0] is the fast-varying dimension (columns).
+    // For a weight matrix W of shape (out_features, in_features):
+    //   shape[0] = in_features (columns, varies fastest in memory)
+    //   shape[1] = out_features (rows)
+    // Data is stored in ROW-MAJOR order: data[row * n_cols + col] = W[row, col]
     let in_features = shape[0];
     let out_features = shape[1];
 
-    // For I2_S: Microsoft's format is ALREADY in the exact interleaved layout our kernel expects!
-    // 128-element blocks, 32 bytes each, with weights interleaved at positions 0, 32, 64, 96.
-    // We can use the raw bytes directly without any decode/repack.
+    // Microsoft's GGUF I2_S format is SEQUENTIAL, NOT interleaved!
+    // We need to decode to ternary values, then repack to our kernel's interleaved format.
     //
-    // Scale factor: BitNet models are trained from scratch with ternary weights and SubLN.
-    // SubLN (per-position RMSNorm after each projection) handles activation scaling.
-    // We use scale = 1.0 and let SubLN do the normalization.
+    // I2_S DATA LAYOUT (Microsoft/GGUF):
+    //   Total size = n_elements / 4 + 32 bytes
+    //   - Bytes 0..(n/4-1): Packed 2-bit weights (SEQUENTIAL layout)
+    //     - byte[j] contains weights [4j, 4j+1, 4j+2, 4j+3] at bits [7:6], [5:4], [3:2], [1:0]
+    //   - Last 32 bytes: Extra data including weight scale
+    //     - Bytes 0-3: Weight scale (F32)
+    //     - Bytes 4-31: Other metadata
+    //
+    // Our kernel's INTERLEAVED format:
+    //   - byte[j].bits[7:6] → weight for activation[j]
+    //   - byte[j].bits[5:4] → weight for activation[j+32]
+    //   - byte[j].bits[3:2] → weight for activation[j+64]
+    //   - byte[j].bits[1:0] → weight for activation[j+96]
+    //
+    // REPACKING IS REQUIRED - decode GGUF sequential to ternary, then repack to interleaved!
     if gguf_type == GgmlQuantType::I2_S {
-        // No artificial scaling - SubLN handles normalization
-        let scale = 1.0;
+        let n_elements = out_features * in_features;
+        let packed_size = n_elements / 4;
 
-        static DEBUG_PRINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !DEBUG_PRINTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            eprintln!("=== I2_S DIRECT PASSTHROUGH (scale=1.0, SubLN handles normalization) ===");
-            eprintln!("  out_features: {}, in_features: {}", out_features, in_features);
-            eprintln!("  GGUF data bytes: {}, expected: {}", gguf_data.len(), out_features * in_features / 4);
+        // Extract weight scale from the last 32 bytes (first F32)
+        let scale = if gguf_data.len() >= packed_size + 4 {
+            let scale_bytes = &gguf_data[packed_size..packed_size + 4];
+            f32::from_le_bytes([scale_bytes[0], scale_bytes[1], scale_bytes[2], scale_bytes[3]])
+        } else {
+            1.0 // Fallback
+        };
+
+        // Debug: track how many I2_S tensors we've processed and their scales
+        static TENSOR_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let tensor_num = TENSOR_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Print first 10 tensors to see scale distribution
+        if tensor_num < 10 {
+            eprintln!("=== I2_S TENSOR #{} ===", tensor_num);
+            eprintln!("  Shape: ({}, {}), scale_f32_0: {:.6}", out_features, in_features, scale);
+            // Show all 32 extra bytes and interpret them
+            if gguf_data.len() >= packed_size + 32 {
+                let extra = &gguf_data[packed_size..packed_size + 32];
+                eprintln!("  Extra 32 bytes: {:02x} {:02x} {:02x} {:02x} | {:02x} {:02x} {:02x} {:02x} | {:02x} {:02x} {:02x} {:02x} | ...",
+                    extra[0], extra[1], extra[2], extra[3],
+                    extra[4], extra[5], extra[6], extra[7],
+                    extra[8], extra[9], extra[10], extra[11]);
+                // Interpret as multiple floats
+                let f0 = f32::from_le_bytes([extra[0], extra[1], extra[2], extra[3]]);
+                let f1 = f32::from_le_bytes([extra[4], extra[5], extra[6], extra[7]]);
+                let f2 = f32::from_le_bytes([extra[8], extra[9], extra[10], extra[11]]);
+                eprintln!("  As F32s: [{:.6}, {:.6}, {:.6}, ...]", f0, f1, f2);
+                // Maybe it's stored at offset 4?
+                eprintln!("  1/scale_f32_0: {:.6}, 1/scale_f32_1: {:.6}", 1.0/f0, 1.0/f1);
+            }
+        }
+
+        // Warn if scale is outside reasonable range for BitNet
+        if scale < 0.001 || scale > 1.0 || scale.is_nan() || scale.is_infinite() {
+            eprintln!("WARNING: I2_S tensor #{} has unusual scale: {:.6} (expected 0.001-1.0)", tensor_num, scale);
+            eprintln!("  This may cause numerical issues in inference!");
+        }
+
+        // Decode GGUF sequential data to ternary values
+        let ternary_values = decode_i2_s(&gguf_data[..packed_size], n_elements)?;
+
+        // Repack to our kernel's interleaved format
+        let native_data = pack_native_format(&ternary_values, out_features, in_features);
+
+        // Verify first few values
+        static VERIFY_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !VERIFY_ONCE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("=== VERIFYING REPACK FOR FIRST I2_S TENSOR ===");
+            // Check first row sum (all activations = 1 case)
+            let row0_sum: i32 = ternary_values[..in_features].iter().map(|&x| x as i32).sum();
+            eprintln!("  Row 0 sum (reference): {}", row0_sum);
+
+            // Verify by unpacking native format and checking first row
+            let blocks_per_row = (in_features + 127) / 128;
+            let bytes_per_row = blocks_per_row * 32;
+            let mut repacked_sum = 0i32;
+            for block in 0..blocks_per_row {
+                let block_offset = block * 32;
+                for byte_idx in 0..32 {
+                    let packed_byte = native_data[block_offset + byte_idx];
+                    let w0 = ((packed_byte >> 6) & 0x03) as i32 - 1;
+                    let w1 = ((packed_byte >> 4) & 0x03) as i32 - 1;
+                    let w2 = ((packed_byte >> 2) & 0x03) as i32 - 1;
+                    let w3 = (packed_byte & 0x03) as i32 - 1;
+
+                    // These map to activations at: byte_idx, byte_idx+32, byte_idx+64, byte_idx+96
+                    let base = block * 128;
+                    if base + byte_idx < in_features { repacked_sum += w0; }
+                    if base + byte_idx + 32 < in_features { repacked_sum += w1; }
+                    if base + byte_idx + 64 < in_features { repacked_sum += w2; }
+                    if base + byte_idx + 96 < in_features { repacked_sum += w3; }
+                }
+            }
+            eprintln!("  Row 0 sum (repacked): {}", repacked_sum);
+            if row0_sum == repacked_sum {
+                eprintln!("  ✓ Repack VERIFIED - sums match!");
+            } else {
+                eprintln!("  ✗ Repack MISMATCH - sums differ by {}", (row0_sum - repacked_sum).abs());
+            }
         }
 
         return Ok(NativeWeightFormat {
-            data: gguf_data.to_vec(),
+            data: native_data,
             scale,
             out_features,
             in_features,
@@ -111,7 +200,7 @@ fn decode_gguf_ternary(
 /// Decode I2_S format: pure 2-bit signed integer, no scale factors.
 /// Block: 256 elements = 64 bytes (4 weights per byte)
 ///
-/// SIMPLE sequential extraction, MSB-first (shifts 6,4,2,0).
+/// LSB-first extraction (shifts 0,2,4,6) as used by bitnet.cpp.
 /// Encoding: 00=-1, 01=0, 10=+1
 fn decode_i2_s(data: &[u8], n_elements: usize) -> Result<Vec<i8>, GgufError> {
     let mut output = Vec::with_capacity(n_elements);
@@ -122,13 +211,13 @@ fn decode_i2_s(data: &[u8], n_elements: usize) -> Result<Vec<i8>, GgufError> {
     let mut count_zero = 0usize;
     let mut count_pos1 = 0usize;
 
-    // Simple sequential extraction: MSB-first, 4 weights per byte
+    // LSB-first extraction as used by bitnet.cpp: shifts 0, 2, 4, 6
     for &byte in data.iter() {
         if output.len() >= n_elements {
             break;
         }
-        // MSB-first: shifts 6, 4, 2, 0
-        for shift in [6, 4, 2, 0] {
+        // LSB-first: shifts 0, 2, 4, 6 (matches bitnet.cpp ggml_vec_dot_i2_i8_s)
+        for shift in [0, 2, 4, 6] {
             if output.len() >= n_elements {
                 break;
             }
@@ -147,7 +236,7 @@ fn decode_i2_s(data: &[u8], n_elements: usize) -> Result<Vec<i8>, GgufError> {
     // Print debug stats for first tensor
     if !DEBUG_PRINTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         let total = count_neg1 + count_zero + count_pos1;
-        eprintln!("=== I2_S DECODE STATS (sequential MSB-first) ===");
+        eprintln!("=== I2_S DECODE STATS (LSB-first, bitnet.cpp compatible) ===");
         eprintln!("Total: {}, -1: {} ({:.1}%), 0: {} ({:.1}%), +1: {} ({:.1}%)",
             total,
             count_neg1, (count_neg1 as f64 / total as f64) * 100.0,
@@ -304,7 +393,9 @@ fn decode_iq2_s(data: &[u8], n_elements: usize) -> Result<Vec<i8>, GgufError> {
 /// - byte[j].bits[2:3] -> weight[j+64]
 /// - byte[j].bits[0:1] -> weight[j+96]
 ///
-/// This matches Microsoft BitNet's I2_S format exactly (row-major, same interleaving).
+/// NOTE: This is DIFFERENT from Microsoft's I2_S format, which uses sequential layout.
+/// Microsoft I2_S: byte[j] contains weights [4j, 4j+1, 4j+2, 4j+3] (sequential)
+/// Our native: byte[j] contains weights [j, j+32, j+64, j+96] (interleaved)
 fn pack_native_format(
     ternary: &[i8],
     out_features: usize,

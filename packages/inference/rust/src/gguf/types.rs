@@ -203,6 +203,12 @@ impl GgmlQuantType {
 
     /// Returns the number of bytes needed to store `n_elements` values.
     pub fn bytes_for_elements(&self, n_elements: usize) -> usize {
+        // I2_S uses a special formula: n_elements / 4 + 32 (32 extra bytes per tensor)
+        // This matches llama.cpp's: nbytes = nbytes / 4 + 32 for GGML_TYPE_I2_S
+        if matches!(self, Self::I2_S) {
+            return n_elements / 4 + 32;
+        }
+
         let (block_size, type_size) = self.block_info();
         let n_blocks = (n_elements + block_size - 1) / block_size;
         n_blocks * type_size
