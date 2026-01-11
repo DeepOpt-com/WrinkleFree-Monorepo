@@ -1,5 +1,13 @@
 # Quick Start Guide
 
+## Getting Started Guides
+
+| Guide | Description |
+|-------|-------------|
+| [Training Getting Started](guides/training-getting-started.md) | Cloud training with SkyPilot |
+| [Inference Getting Started](guides/inference-getting-started.md) | Run inference with wf_server |
+| [Cloud Deployment](guides/cloud-deployment.md) | Full SkyPilot and credentials setup |
+
 ## Prerequisites
 
 - Python 3.10+
@@ -95,25 +103,35 @@ uv run --package wf-eval python packages/eval/scripts/run_eval.py \
 
 ```bash
 cd packages/deployer
+source credentials/.env
 
-# Launch training on Modal
-wf train --model smollm2_135m --stage 2 --scale dev
+# Run smoke test to verify setup
+wf smoke
 
-# Launch on SkyPilot
-wf sky launch --config skypilot/train.yaml
+# Launch training on SkyPilot (default)
+wf train -m smollm2_135m -t base
+
+# With larger GPU configuration
+wf train -m qwen3_4b -t base --scale large
 ```
+
+See [Training Getting Started](guides/training-getting-started.md) for more details.
 
 ### Converting Models to GGUF
 
-See the root `CLAUDE.md` for the correct DLM GGUF conversion workflow. Key point: use I2_S format for bf16 DLM checkpoints (NOT TQ2_0).
-
 ```bash
-# Convert using the inference package converter
-python packages/inference/scripts/convert_checkpoint_to_gguf.py \
+cd packages/inference
+
+# Convert checkpoint to GGUF (I2_S recommended)
+python scripts/convert_checkpoint_to_gguf.py \
     path/to/checkpoint \
     --outfile model.gguf \
     --outtype i2_s
 ```
+
+**Warning**: Never use TQ2_0 for bf16 checkpoints - it corrupts weights!
+
+See [Inference Getting Started](guides/inference-getting-started.md) for running the model.
 
 ## Package Commands
 
@@ -156,6 +174,8 @@ wf-arch = { workspace = true }
 
 ## Next Steps
 
-- Read [Architecture Overview](architecture.md) for system design
-- See [Development Guide](development.md) for contributing
-- Check individual package READMEs for detailed usage
+- **Training**: [Training Getting Started](guides/training-getting-started.md)
+- **Inference**: [Inference Getting Started](guides/inference-getting-started.md)
+- **Cloud Setup**: [Cloud Deployment Guide](guides/cloud-deployment.md)
+- **Architecture**: [Architecture Overview](architecture.md)
+- **Contributing**: [Development Guide](development.md)

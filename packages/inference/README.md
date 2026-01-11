@@ -2,6 +2,8 @@
 
 Rust inference engine for **BitNet** 1.58-bit quantized LLMs with DLM block diffusion support.
 
+> **New to inference?** See the [Getting Started Guide](../../docs/guides/inference-getting-started.md).
+
 ## Quick Start
 
 ```bash

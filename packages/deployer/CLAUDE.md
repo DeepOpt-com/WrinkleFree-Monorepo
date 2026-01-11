@@ -61,7 +61,7 @@ This package is the **orchestrator** for the WrinkleFree monorepo - it launches 
 # (train.yaml uses relative paths that require this)
 cd packages/deployer
 source credentials/.env
-uv run --package wf-train-deployer wf train -m qwen3_4b -s 2
+uv run --package wf-train-deployer wf train -m qwen3_4b -t base
 ```
 
 ## Training Configs
@@ -316,7 +316,7 @@ wf train -m qwen3_4b -s 2 --secret WANDB_API_KEY=$WANDB_API_KEY
 uv run --package wf-train-deployer pytest packages/deployer/tests/
 
 # Dry run (don't launch)
-uv run --package wf-train-deployer wf train -m smollm2_135m -s 2 --dry-run
+uv run --package wf-train-deployer wf train -m smollm2_135m -t base --dry-run
 
 # Lint
 uv run ruff check packages/deployer/

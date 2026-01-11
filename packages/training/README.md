@@ -4,6 +4,8 @@
 
 BitNet 1.58-bit LLM training framework using PyTorch Lightning.
 
+> **New to training?** See the [Getting Started Guide](../../docs/guides/training-getting-started.md) for cloud deployment.
+
 ## Overview
 
 WrinkleFree trains language models with **1.58-bit (ternary) weights** {-1, 0, 1}, achieving significant memory savings and faster inference while maintaining performance comparable to full-precision models.

@@ -26,7 +26,6 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-
 class KVCacheDtype(Enum):
     """Supported KV cache data types."""
     BF16 = "bfloat16"
